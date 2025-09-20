@@ -28,7 +28,7 @@ export function DownloadPackageButton({ onDownload, disabled, isBusy }: Download
           d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 12l4.5 4.5m0 0l4.5-4.5m-4.5 4.5V3"
         />
       </svg>
-      {isBusy ? 'Paket Hazırlanıyor...' : 'Paket indir'}
+      {isBusy ? 'Paket Hazırlanıyor...' : 'Rapor paketini indir'}
     </button>
   );
 }

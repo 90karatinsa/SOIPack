@@ -82,6 +82,20 @@ Geçersiz ya da süresi dolmuş lisanslar `402` durum kodu ve `LICENSE_INVALID` 
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. `compliance_matrix.html` ve `trace_matrix.html` tarayıcıda açılarak müşteriye canlı demo yapılabilir; `compliance_matrix.pdf` aynı dizinde yer alır ve denetim arşivi için hazırdır.【F:docs/demo_script.md†L18-L25】 Paket arşivi, HTML/PDF raporlarını ve manifest dosyalarını `release/soi-pack-*.zip` içinde taşır.【F:docs/demo_script.md†L26-L31】
 
+### Web arayüzü ile pipeline takibi
+
+SOIPack, REST API üzerinden yürütülen işleri gözlemlemek için React tabanlı bir arayüz sunar. Arayüzü başlatmak için repoda aşağıdaki komutu uygulayın:
+
+```bash
+npm run ui
+```
+
+Varsayılan olarak UI, aynı origin üzerindeki `/v1` uç noktalarına istek yapar; farklı bir API adresi kullanıyorsanız `VITE_API_BASE_URL` ortam değişkenini `npm run ui` komutundan önce tanımlayabilirsiniz. Giriş ekranına JWT tokenınızı yazdığınızda import → analyze → report adımları sırasıyla tetiklenir, her işin kuyruk/durum bilgisi gerçek zamanlı olarak “Pipeline aşamaları” bölümünde güncellenir ve sunucudan dönen uyarılar çalıştırma günlüğünde yer alır. İşlem tamamlandığında uyum ve izlenebilirlik matrisleri API’den gelen JSON dosyalarına göre doldurulur; “Rapor paketini indir” butonu ise sunucuda üretilen `analysis.json`, `snapshot.json`, `traces.json` ve HTML raporlarını gerçek dosya içerikleriyle zip halinde indirir.
+
+Arayüzdeki temel görünüm aşağıda özetlenmiştir:
+
+![SOIPack UI pipeline görünümü](images/ui-pipeline.png)
+
 ## Hata Kodları
 SOIPack CLI süreçleri başarı ve başarısızlık durumlarını aşağıdaki çıkış kodlarıyla bildirir:
 
