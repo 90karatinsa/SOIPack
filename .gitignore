@@ -7,3 +7,5 @@ packages/*/dist
 examples/minimal/.soipack
 examples/minimal/dist
 examples/minimal/release
+**/*.tsbuildinfo
+.demo
