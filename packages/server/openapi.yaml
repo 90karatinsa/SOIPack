@@ -194,6 +194,101 @@ components:
               type: string
             archive:
               type: string
+    JobSummary:
+      type: object
+      required:
+        - id
+        - kind
+        - status
+        - hash
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        kind:
+          type: string
+          enum: [import, analyze, report, pack]
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        hash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    JobError:
+      type: object
+      required:
+        - statusCode
+        - code
+        - message
+      properties:
+        statusCode:
+          type: integer
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    JobDetailsResponse:
+      allOf:
+        - $ref: '#/components/schemas/JobSummary'
+        - type: object
+          properties:
+            result:
+              type: object
+              nullable: true
+              additionalProperties: true
+            error:
+              oneOf:
+                - $ref: '#/components/schemas/JobError'
+                - type: 'null'
+    JobListResponse:
+      type: object
+      required:
+        - jobs
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobSummary'
+    JobMutationResponse:
+      type: object
+      required:
+        - status
+        - id
+        - kind
+      properties:
+        status:
+          type: string
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        kind:
+          type: string
+          enum: [import, analyze, report, pack]
+    ManifestFetchResponse:
+      type: object
+      required:
+        - manifestId
+        - jobId
+        - manifest
+      properties:
+        manifestId:
+          type: string
+        jobId:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        manifest:
+          type: object
+          additionalProperties: true
 paths:
   /health:
     get:
@@ -437,6 +532,159 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/jobs:
+    get:
+      operationId: listJobs
+      summary: Kiracıya ait işleri listeler.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: kind
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [import, analyze, report, pack]
+          description: Döndürülecek iş türleri. Virgülle ayrılmış veya tekrarlanan parametreler desteklenir.
+        - in: query
+          name: status
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [queued, running, completed, failed]
+          description: Döndürülecek iş durumları.
+      responses:
+        '200':
+          description: İş listesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobListResponse'
+        '400':
+          description: Geçersiz filtre parametresi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/jobs/{id}:
+    get:
+      operationId: getJob
+      summary: Belirli bir işin durumunu döner.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: İş durumu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetailsResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: İş bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteJob
+      summary: Tamamlanmış bir işin çıktısını kalıcı depolamadan siler.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: İş çıktıları temizlendi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobMutationResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: İş bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: İş henüz tamamlanmadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      summary: Kuyrukta bekleyen bir işi iptal eder.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: İş iptal edildi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobMutationResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: İş bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: İş iptal edilemez durumda.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/reports/{id}/{asset}:
     get:
       operationId: getReportAsset
@@ -472,6 +720,70 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Rapor veya dosya bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/manifests/{manifestId}:
+    get:
+      operationId: getManifest
+      summary: Paketlenmiş manifest içeriğini döner.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: manifestId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Manifest içeriği.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestFetchResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Manifest bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/packages/{id}:
+    get:
+      operationId: downloadPackage
+      summary: Oluşturulmuş paket arşivini indirir.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: Paket arşiv dosyası.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Paket bulunamadı.
           content:
             application/json:
               schema:

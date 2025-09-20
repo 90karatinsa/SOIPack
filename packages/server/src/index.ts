@@ -24,8 +24,8 @@ import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jo
 import type { JSONWebKeySet } from 'jose';
 
 import { HttpError } from './errors';
-import { JobDetails, JobQueue, JobSummary } from './queue';
-import { FileSystemStorage, StorageProvider, UploadedFileMap } from './storage';
+import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
+import { FileSystemStorage, PipelineDirectories, StorageProvider, UploadedFileMap } from './storage';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 
 type FileMap = Record<string, Express.Multer.File[]>;
@@ -195,6 +195,56 @@ const computeHash = (entries: HashEntry[]): string => {
 };
 
 const createJobId = (hash: string): string => hash.slice(0, 16);
+
+const JOB_KINDS: readonly JobKind[] = ['import', 'analyze', 'report', 'pack'];
+const JOB_STATUSES: readonly JobStatus[] = ['queued', 'running', 'completed', 'failed'];
+
+const parseFilterParam = <T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T[] | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const inputs = Array.isArray(value) ? (value as unknown[]) : [value];
+  const collected: string[] = [];
+  inputs.forEach((entry) => {
+    const segments = String(entry)
+      .split(',')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    collected.push(...segments);
+  });
+
+  if (collected.length === 0) {
+    throw new HttpError(400, 'INVALID_REQUEST', `${label} için en az bir değer belirtilmelidir.`);
+  }
+
+  const allowedSet = new Set(allowed);
+  collected.forEach((entry) => {
+    if (!allowedSet.has(entry as T)) {
+      throw new HttpError(400, 'INVALID_REQUEST', `${label} değeri geçerli değil: ${entry}`);
+    }
+  });
+
+  return collected as T[];
+};
+
+const jobMatchesFilters = (
+  job: JobSummary,
+  kinds?: readonly JobKind[],
+  statuses?: readonly JobStatus[],
+): boolean => {
+  if (kinds && kinds.length > 0 && !kinds.includes(job.kind)) {
+    return false;
+  }
+  if (statuses && statuses.length > 0 && !statuses.includes(job.status)) {
+    return false;
+  }
+  return true;
+};
 
 interface VerifiedLicense {
   hash: string;
@@ -715,6 +765,72 @@ const locateJobMetadata = async (
   return undefined;
 };
 
+const removeJobArtifacts = async (
+  storage: StorageProvider,
+  directories: PipelineDirectories,
+  tenantId: string,
+  jobId: string,
+  kind: JobKind,
+): Promise<void> => {
+  switch (kind) {
+    case 'import':
+      await Promise.all([
+        storage.removeDirectory(path.join(directories.workspaces, tenantId, jobId)),
+        storage.removeDirectory(path.join(directories.uploads, tenantId, jobId)),
+      ]);
+      return;
+    case 'analyze':
+      await storage.removeDirectory(path.join(directories.analyses, tenantId, jobId));
+      return;
+    case 'report':
+      await storage.removeDirectory(path.join(directories.reports, tenantId, jobId));
+      return;
+    case 'pack':
+      await storage.removeDirectory(path.join(directories.packages, tenantId, jobId));
+      return;
+    default:
+      throw new HttpError(500, 'UNKNOWN_JOB_KIND', `Bilinmeyen iş türü: ${kind}`);
+  }
+};
+
+const findPackMetadataByManifestId = async (
+  storage: StorageProvider,
+  directories: PipelineDirectories,
+  tenantId: string,
+  manifestId: string,
+): Promise<PackJobMetadata | undefined> => {
+  const tenantPackagesDir = path.join(directories.packages, tenantId);
+  if (!(await storage.fileExists(tenantPackagesDir))) {
+    return undefined;
+  }
+
+  const jobIds = await storage.listSubdirectories(tenantPackagesDir);
+  for (const jobId of jobIds) {
+    const jobDir = path.join(tenantPackagesDir, jobId);
+    const metadataPath = path.join(jobDir, METADATA_FILE);
+    if (!(await storage.fileExists(metadataPath))) {
+      continue;
+    }
+
+    let metadata: PackJobMetadata;
+    try {
+      metadata = await storage.readJson<PackJobMetadata>(metadataPath);
+    } catch {
+      continue;
+    }
+
+    if (metadata.tenantId !== tenantId) {
+      continue;
+    }
+
+    if (metadata.outputs?.manifestId === manifestId) {
+      return metadata;
+    }
+  }
+
+  return undefined;
+};
+
 const runRetentionSweep = async (
   storage: StorageProvider,
   queue: JobQueue,
@@ -1070,7 +1186,12 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      const jobs = queue.list(tenantId).map(serializeJobSummary);
+      const kinds = parseFilterParam<JobKind>(req.query.kind as unknown, JOB_KINDS, 'İş türü');
+      const statuses = parseFilterParam<JobStatus>(req.query.status as unknown, JOB_STATUSES, 'İş durumu');
+      const jobs = queue
+        .list(tenantId)
+        .filter((job) => jobMatchesFilters(job, kinds, statuses))
+        .map(serializeJobSummary);
       res.json({ jobs });
     }),
   );
@@ -1094,6 +1215,78 @@ export const createServer = (config: ServerConfig): Express => {
     }),
   );
 
+  app.get(
+    '/v1/manifests/:manifestId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { manifestId } = req.params as { manifestId?: string };
+      if (!manifestId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');
+      }
+      if (!/^[A-Za-z0-9._-]+$/.test(manifestId)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId değeri geçerli değil.');
+      }
+
+      const metadata = await findPackMetadataByManifestId(storage, directories, tenantId, manifestId);
+      if (!metadata) {
+        throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'İstenen manifest bulunamadı.');
+      }
+
+      const manifestPath = metadata.outputs?.manifestPath;
+      if (!manifestPath || !(await storage.fileExists(manifestPath))) {
+        throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'Manifest dosyası bulunamadı.');
+      }
+
+      const manifest = await storage.readJson<Record<string, unknown>>(manifestPath);
+      res.json({
+        manifestId: metadata.outputs.manifestId,
+        jobId: metadata.id,
+        manifest,
+      });
+    }),
+  );
+
+  app.get(
+    '/v1/packages/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Paket kimliği belirtilmelidir.');
+      }
+
+      const packageDir = path.join(directories.packages, tenantId, id);
+      const metadataPath = path.join(packageDir, METADATA_FILE);
+      if (!(await storage.fileExists(metadataPath))) {
+        throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'İstenen paket bulunamadı.');
+      }
+
+      const metadata = await storage.readJson<PackJobMetadata>(metadataPath);
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen paket bu kiracıya ait değil.');
+      }
+
+      const archivePath = metadata.outputs?.archivePath;
+      if (!archivePath || !(await storage.fileExists(archivePath))) {
+        throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'Paket arşiv dosyası bulunamadı.');
+      }
+
+      const archiveName = path.basename(archivePath);
+      res.type('application/zip');
+      await new Promise<void>((resolve, reject) => {
+        res.download(archivePath, archiveName, (error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }),
+  );
+
   app.post(
     '/v1/admin/cleanup',
     requireAuth,
@@ -1101,6 +1294,69 @@ export const createServer = (config: ServerConfig): Express => {
       const { tenantId } = getAuthContext(req);
       const summary = await runRetentionSweep(storage, queue, tenantId, config.retention ?? {}, jobLicenses);
       res.json({ status: 'ok', summary });
+    }),
+  );
+
+  app.post(
+    '/v1/jobs/:id/cancel',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
+      }
+
+      const job = queue.get(tenantId, id);
+      if (!job) {
+        throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
+      }
+      if (job.status === 'running') {
+        throw new HttpError(409, 'JOB_RUNNING', 'Çalışan işler iptal edilemez.');
+      }
+      if (job.status !== 'queued') {
+        throw new HttpError(409, 'JOB_NOT_CANCELLABLE', 'Yalnızca kuyruğa alınmış işler iptal edilebilir.');
+      }
+
+      queue.remove(tenantId, id);
+      await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
+      jobLicenses.delete(createScopedJobKey(tenantId, id));
+
+      res.json({ status: 'cancelled', id, kind: job.kind });
+    }),
+  );
+
+  app.delete(
+    '/v1/jobs/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
+      }
+
+      let job = queue.get(tenantId, id);
+      if (!job) {
+        const adopted = await locateJobMetadata(storage, queue, tenantId, id);
+        if (!adopted) {
+          throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
+        }
+        job = adopted as JobDetails<unknown>;
+      }
+
+      if (job.status === 'running') {
+        throw new HttpError(409, 'JOB_RUNNING', 'Çalışan işler silinemez.');
+      }
+      if (job.status === 'queued') {
+        throw new HttpError(409, 'JOB_NOT_FINISHED', 'Önce işi iptal etmelisiniz.');
+      }
+
+      queue.remove(tenantId, id);
+      await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
+      jobLicenses.delete(createScopedJobKey(tenantId, id));
+
+      res.json({ status: 'deleted', id, kind: job.kind });
     }),
   );
 

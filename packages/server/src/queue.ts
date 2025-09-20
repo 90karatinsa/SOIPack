@@ -1,8 +1,8 @@
-import { toHttpError } from './errors';
+import { HttpError, toHttpError } from './errors';
 
-type JobKind = 'import' | 'analyze' | 'report' | 'pack';
+export type JobKind = 'import' | 'analyze' | 'report' | 'pack';
 
-type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 
 interface JobErrorInfo {
   statusCode: number;
@@ -140,6 +140,38 @@ export class JobQueue {
       return undefined;
     }
     return this.toDetails(job) as JobDetails<T>;
+  }
+
+  public remove<T = unknown>(tenantId: string, id: string): JobDetails<T> | undefined {
+    const key = this.getKey(tenantId, id);
+    const job = this.jobs.get(key);
+    if (!job) {
+      return undefined;
+    }
+
+    if (job.status === 'running') {
+      throw new HttpError(409, 'JOB_RUNNING', 'İş şu anda çalışıyor ve kaldırılamaz.');
+    }
+
+    this.jobs.delete(key);
+    this.removeFromOrder(job);
+    this.removeFromPending(job);
+
+    return this.toDetails(job) as JobDetails<T>;
+  }
+
+  private removeFromOrder(job: InternalJob<any>): void {
+    const index = this.order.indexOf(job);
+    if (index >= 0) {
+      this.order.splice(index, 1);
+    }
+  }
+
+  private removeFromPending(job: InternalJob<any>): void {
+    const index = this.pending.indexOf(job);
+    if (index >= 0) {
+      this.pending.splice(index, 1);
+    }
   }
 
   private process(): void {
