@@ -23,7 +23,10 @@ import multer from 'multer';
 import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JSONWebKeySet } from 'jose';
 
-import { HttpError } from './errors';
+import pino, { type Logger } from 'pino';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+
+import { HttpError, toHttpError } from './errors';
 import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
 import { FileSystemStorage, PipelineDirectories, StorageProvider, UploadedFileMap } from './storage';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
@@ -170,6 +173,8 @@ interface PackJobResult {
 const METADATA_FILE = 'job.json';
 const LICENSE_HEADER = 'x-soipack-license';
 const LICENSE_FILE_FIELD = 'license';
+
+const DEFAULT_METRICS_MARK = Symbol('soipack:defaultMetricsRegistered');
 
 const getFieldValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -557,6 +562,8 @@ export interface ServerConfig {
   retention?: RetentionConfig;
   uploadPolicies?: UploadPolicyOverrides;
   scanner?: FileScanner;
+  logger?: Logger;
+  metricsRegistry?: Registry;
 }
 
 type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
@@ -1067,6 +1074,36 @@ export const createServer = (config: ServerConfig): Express => {
   const licenseCache = new Map<string, LicensePayload>();
   const jobLicenses = new Map<string, VerifiedLicense>();
 
+  const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
+  const metricsRegistry = config.metricsRegistry ?? new Registry();
+  const registryWithMark = metricsRegistry as Registry & { [DEFAULT_METRICS_MARK]?: boolean };
+  if (!registryWithMark[DEFAULT_METRICS_MARK]) {
+    collectDefaultMetrics({ register: metricsRegistry });
+    registryWithMark[DEFAULT_METRICS_MARK] = true;
+  }
+
+  const jobDurationHistogram = new Histogram({
+    name: 'soipack_job_duration_seconds',
+    help: 'SOIPack işlerinin çalışma süreleri (saniye cinsinden).',
+    labelNames: ['tenantId', 'kind', 'status'] as const,
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300],
+    registers: [metricsRegistry],
+  });
+
+  const jobErrorCounter = new Counter({
+    name: 'soipack_job_errors_total',
+    help: 'Başarısız SOIPack işlerinin toplam sayısı.',
+    labelNames: ['tenantId', 'kind', 'code'] as const,
+    registers: [metricsRegistry],
+  });
+
+  const jobQueueDepthGauge = new Gauge({
+    name: 'soipack_job_queue_depth',
+    help: 'Kiracı başına kuyruğa alınmış veya çalışan işlerin sayısı.',
+    labelNames: ['tenantId'] as const,
+    registers: [metricsRegistry],
+  });
+
   const verifyLicenseContent = async (content: Buffer): Promise<VerifiedLicense> => {
     const hash = createHash('sha256').update(content).digest('hex');
     const cached = licenseCache.get(hash);
@@ -1173,6 +1210,120 @@ export const createServer = (config: ServerConfig): Express => {
 
   const requireAuth = createAuthMiddleware(config.auth);
   const queue = new JobQueue();
+
+  const updateQueueDepth = (tenantId: string): void => {
+    const activeJobs = queue
+      .list(tenantId)
+      .filter((job) => job.status === 'queued' || job.status === 'running').length;
+    jobQueueDepthGauge.set({ tenantId }, activeJobs);
+  };
+
+  const instrumentJobRun = <T>(
+    context: { tenantId: string; id: string; kind: JobKind; hash: string },
+    run: () => Promise<T>,
+  ): (() => Promise<T>) => {
+    return async () => {
+      const startedAt = process.hrtime.bigint();
+      try {
+        const result = await run();
+        const durationNs = process.hrtime.bigint() - startedAt;
+        const durationSeconds = Number(durationNs) / 1_000_000_000;
+        jobDurationHistogram.observe(
+          { tenantId: context.tenantId, kind: context.kind, status: 'completed' },
+          durationSeconds,
+        );
+        logger.info({
+          event: 'job_completed',
+          tenantId: context.tenantId,
+          jobId: context.id,
+          kind: context.kind,
+          hash: context.hash,
+          durationMs: durationSeconds * 1000,
+        });
+        setImmediate(() => updateQueueDepth(context.tenantId));
+        return result;
+      } catch (error) {
+        const durationNs = process.hrtime.bigint() - startedAt;
+        const durationSeconds = Number(durationNs) / 1_000_000_000;
+        const normalized = toHttpError(error, {
+          code: 'JOB_FAILED',
+          message: 'İş başarısız oldu.',
+          statusCode: 500,
+        });
+        jobDurationHistogram.observe(
+          { tenantId: context.tenantId, kind: context.kind, status: 'failed' },
+          durationSeconds,
+        );
+        jobErrorCounter.inc({
+          tenantId: context.tenantId,
+          kind: context.kind,
+          code: normalized.code,
+        });
+        logger.error(
+          {
+            event: 'job_failed',
+            tenantId: context.tenantId,
+            jobId: context.id,
+            kind: context.kind,
+            hash: context.hash,
+            durationMs: durationSeconds * 1000,
+            error: {
+              code: normalized.code,
+              message: normalized.message,
+              details: normalized.details ?? undefined,
+            },
+          },
+          normalized.message,
+        );
+        setImmediate(() => updateQueueDepth(context.tenantId));
+        throw error;
+      }
+    };
+  };
+
+  const enqueueObservedJob = <T>(options: {
+    tenantId: string;
+    id: string;
+    kind: JobKind;
+    hash: string;
+    run: () => Promise<T>;
+  }): JobDetails<T> => {
+    const job = queue.enqueue<T>({
+      tenantId: options.tenantId,
+      id: options.id,
+      kind: options.kind,
+      hash: options.hash,
+      run: instrumentJobRun(options, options.run),
+    });
+    logger.info({
+      event: 'job_created',
+      tenantId: options.tenantId,
+      jobId: options.id,
+      kind: options.kind,
+      hash: options.hash,
+    });
+    updateQueueDepth(options.tenantId);
+    return job;
+  };
+
+  const sendJobResponse = <T>(
+    res: Response,
+    job: JobDetails<T>,
+    tenantId: string,
+    options?: { reused?: boolean },
+  ): void => {
+    respondWithJob(res, job, options);
+    if (options?.reused) {
+      logger.info({
+        event: 'job_reused',
+        tenantId,
+        jobId: job.id,
+        kind: job.kind,
+        hash: job.hash,
+        status: job.status,
+      });
+    }
+  };
 
   app.get(
     '/health',
@@ -1321,6 +1472,7 @@ export const createServer = (config: ServerConfig): Express => {
       queue.remove(tenantId, id);
       await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
       jobLicenses.delete(createScopedJobKey(tenantId, id));
+      updateQueueDepth(tenantId);
 
       res.json({ status: 'cancelled', id, kind: job.kind });
     }),
@@ -1355,6 +1507,7 @@ export const createServer = (config: ServerConfig): Express => {
       queue.remove(tenantId, id);
       await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
       jobLicenses.delete(createScopedJobKey(tenantId, id));
+      updateQueueDepth(tenantId);
 
       res.json({ status: 'deleted', id, kind: job.kind });
     }),
@@ -1430,7 +1583,9 @@ export const createServer = (config: ServerConfig): Express => {
         if (existingJob) {
           ensureJobLicense(tenantId, importId, license);
           await ensureCleanup();
-          respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
+          sendJobResponse(res, existingJob, tenantId, {
+            reused: existingJob.status === 'completed',
+          });
           return;
         }
 
@@ -1440,19 +1595,19 @@ export const createServer = (config: ServerConfig): Express => {
           ensureJobLicense(tenantId, metadata.id, license);
           const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
           await ensureCleanup();
-          respondWithJob(res, adopted, { reused: true });
+          sendJobResponse(res, adopted, tenantId, { reused: true });
           return;
         }
 
         const uploadedFiles = convertFileMap(fileMap);
         const level = asCertificationLevel(stringFields.level);
 
-        const job = queue.enqueue<ImportJobResult>({
-          tenantId,
-          id: importId,
-          kind: 'import',
-          hash,
-          run: async () => {
+      const job = enqueueObservedJob<ImportJobResult>({
+        tenantId,
+        id: importId,
+        kind: 'import',
+        hash,
+        run: async () => {
             await storage.ensureDirectory(workspaceDir);
 
             try {
@@ -1506,7 +1661,7 @@ export const createServer = (config: ServerConfig): Express => {
         });
 
         registerJobLicense(tenantId, importId, license);
-        respondWithJob(res, job);
+        sendJobResponse(res, job, tenantId);
       } catch (error) {
         await ensureCleanup();
         throw error;
@@ -1572,7 +1727,9 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = queue.get<AnalyzeJobResult>(tenantId, analyzeId);
       if (existingJob) {
         ensureJobLicense(tenantId, analyzeId, license);
-        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
+        sendJobResponse(res, existingJob, tenantId, {
+          reused: existingJob.status === 'completed',
+        });
         return;
       }
 
@@ -1581,11 +1738,11 @@ export const createServer = (config: ServerConfig): Express => {
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<AnalyzeJobResult>;
-        respondWithJob(res, adopted, { reused: true });
+        sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
 
-      const job = queue.enqueue<AnalyzeJobResult>({
+      const job = enqueueObservedJob<AnalyzeJobResult>({
         tenantId,
         id: analyzeId,
         kind: 'analyze',
@@ -1637,7 +1794,7 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, analyzeId, license);
-      respondWithJob(res, job);
+      sendJobResponse(res, job, tenantId);
     }),
   );
 
@@ -1667,7 +1824,9 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = queue.get<ReportJobResult>(tenantId, reportId);
       if (existingJob) {
         ensureJobLicense(tenantId, reportId, license);
-        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
+        sendJobResponse(res, existingJob, tenantId, {
+          reused: existingJob.status === 'completed',
+        });
         return;
       }
 
@@ -1676,11 +1835,11 @@ export const createServer = (config: ServerConfig): Express => {
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ReportJobResult>;
-        respondWithJob(res, adopted, { reused: true });
+        sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
 
-      const job = queue.enqueue<ReportJobResult>({
+      const job = enqueueObservedJob<ReportJobResult>({
         tenantId,
         id: reportId,
         kind: 'report',
@@ -1730,7 +1889,7 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, reportId, license);
-      respondWithJob(res, job);
+      sendJobResponse(res, job, tenantId);
     }),
   );
 
@@ -1760,7 +1919,9 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = queue.get<PackJobResult>(tenantId, packId);
       if (existingJob) {
         ensureJobLicense(tenantId, packId, license);
-        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
+        sendJobResponse(res, existingJob, tenantId, {
+          reused: existingJob.status === 'completed',
+        });
         return;
       }
 
@@ -1769,11 +1930,11 @@ export const createServer = (config: ServerConfig): Express => {
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<PackJobResult>;
-        respondWithJob(res, adopted, { reused: true });
+        sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
 
-      const job = queue.enqueue<PackJobResult>({
+      const job = enqueueObservedJob<PackJobResult>({
         tenantId,
         id: packId,
         kind: 'pack',
@@ -1820,7 +1981,7 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, packId, license);
-      respondWithJob(res, job);
+      sendJobResponse(res, job, tenantId);
     }),
   );
 
@@ -1867,6 +2028,15 @@ export const createServer = (config: ServerConfig): Express => {
           }
         });
       });
+    }),
+  );
+
+  app.get(
+    '/metrics',
+    requireAuth,
+    createAsyncHandler(async (_req, res) => {
+      res.set('Content-Type', metricsRegistry.contentType);
+      res.send(await metricsRegistry.metrics());
     }),
   );
 

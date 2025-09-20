@@ -158,9 +158,27 @@ BASE_URL=http://localhost:3000
 - `docker compose logs -f server` komutu ile hata ayıklama günlüklerini takip edebilirsiniz.
 - Saklama politikaları ayarlıysa (örn. `SOIPACK_RETENTION_*_DAYS`), eski iş çıktıları `POST /v1/admin/cleanup` çağrısıyla temizlenir. JSON yanıtı hangi dizinlerden kaç kaydın silindiğini gösterir.
 
+## 5. Gözlemlenebilirlik
+
+- Sunucu varsayılan olarak [Pino](https://getpino.io) tabanlı JSON günlükleri üretir. Her iş için aşağıdaki olaylar yazılır:
+  - `job_created`: Kuyruğa yeni iş eklendiğinde.
+  - `job_completed`: Pipeline başarıyla tamamlandığında (süre ms cinsinden `durationMs`).
+  - `job_reused`: Aynı parametrelerle oluşturulmuş önceki bir iş yeniden kullanıldığında.
+  - `job_failed`: İş çalışırken hata aldığında (HTTP hata kodu ve ayrıntılar dahil).
+  Bu günlükleri `docker compose logs -f server` veya kendi log toplayıcınıza yönlendirerek inceleyebilirsiniz.
+- Prometheus uyumlu metrikler `/metrics` uç noktasından sunulur ve diğer API çağrıları gibi JWT ile kimlik doğrulaması gerektirir:
+  ```bash
+  curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/metrics
+  ```
+  Başlıca metrikler:
+  - `soipack_job_duration_seconds{tenantId,kind,status}`: Her iş türü için tamamlanma/başarısızlık süre histogramı.
+  - `soipack_job_queue_depth{tenantId}`: Kuyrukta bekleyen veya çalışan iş sayısı.
+  - `soipack_job_errors_total{tenantId,kind,code}`: Hata koduna göre başarısız işlerin sayısı.
+  Varsayılan Prometheus registry’si süreç istatistiklerini de içerir. Dışarıdan bir Prometheus sunucusu bu uç noktayı scrape ederek panolar oluşturabilir.
+
 Bu adımlar tamamlandığında air-gapped ortamda `docker compose up -d` komutuyla SOIPack API'si PDF/rapor üretecek şekilde hazır olacaktır.
 
-## 5. Dosya Taraması ve Antivirüs Servisi
+## 6. Dosya Taraması ve Antivirüs Servisi
 
 - Sunucu, yüklenen her dosyayı kalıcı depolamaya taşımadan önce geçici bir dizine (örn. `/tmp/soipack-upload-*`) yazar ve içerik türü/payload boyutlarını alan bazında doğrular.
 - `SOIPACK_SCAN_COMMAND` ortam değişkeni tanımlandığında her dosya bu komuta parametre olarak **dosya yoluyla** iletilir. Komut 0 ile dönerse yükleme temiz kabul edilir, `SOIPACK_SCAN_INFECTED_EXIT_CODES` listesindeki kodlardan biri ile dönerse yükleme tehdit olarak işaretlenir ve HTTP 422 hatası verilir.
