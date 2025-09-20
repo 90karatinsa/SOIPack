@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="AuthTests">
+  <testcase classname="AuthTests" name="validates login" time="1.0" id="AuthTests#validates login">
+    <properties>
+      <property name="requirements" value="REQ-1" />
+    </properties>
+  </testcase>
+  <testcase classname="AuthTests" name="handles lockout" time="1.1" id="AuthTests#handles lockout" />
+</testsuite>

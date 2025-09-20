@@ -1,11 +1,10 @@
-import { CoverageMetric, CoverageSummary, FileCoverageSummary, TestResult } from '@soipack/adapters';
 import {
-  Evidence,
-  Objective,
-  ObjectiveArtifactType,
-  Requirement,
-  TraceLink,
-} from '@soipack/core';
+  CoverageMetric,
+  CoverageSummary,
+  FileCoverageSummary,
+  TestResult,
+} from '@soipack/adapters';
+import { Evidence, Objective, ObjectiveArtifactType, Requirement, TraceLink } from '@soipack/core';
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
@@ -88,7 +87,8 @@ const createNodeKey = (type: TraceNodeType, id: string): string => `${type}:${id
 
 const normalizePath = (value: string): string => value.replace(/\\/g, '/');
 
-const isRequirementNode = (node: InternalNode): node is RequirementNode => node.type === 'requirement';
+const isRequirementNode = (node: InternalNode): node is RequirementNode =>
+  node.type === 'requirement';
 const isTestNode = (node: InternalNode): node is TestNode => node.type === 'test';
 const isCodeNode = (node: InternalNode): node is CodeNode => node.type === 'code';
 
@@ -97,6 +97,7 @@ export class TraceEngine {
   private readonly requirementIds = new Set<string>();
   private readonly testIds = new Set<string>();
   private readonly testToRequirements = new Map<string, Set<string>>();
+  private readonly requirementToCode = new Map<string, Set<string>>();
   private readonly coverageByFile = new Map<string, FileCoverageSummary>();
 
   constructor(private readonly bundle: ImportBundle) {
@@ -106,6 +107,7 @@ export class TraceEngine {
     this.indexTraceLinks(bundle.traceLinks ?? []);
     this.buildRequirementNodes(bundle.requirements);
     this.buildTestNodes(bundle.testResults, bundle.testToCodeMap ?? {});
+    this.linkManualCodeNodes();
   }
 
   private aggregateCoverageMetrics(codePaths: CodePath[]): {
@@ -138,7 +140,13 @@ export class TraceEngine {
       }
     });
 
-    const finalize = ({ covered, total }: { covered: number; total: number }): CoverageMetric | undefined => {
+    const finalize = ({
+      covered,
+      total,
+    }: {
+      covered: number;
+      total: number;
+    }): CoverageMetric | undefined => {
       if (total === 0) {
         return undefined;
       }
@@ -186,7 +194,14 @@ export class TraceEngine {
   }
 
   private indexTraceLinks(links: TraceLink[]): void {
+    const processed = new Set<string>();
     links.forEach((link) => {
+      const linkKey = `${link.from}::${link.to}::${link.type}`;
+      if (processed.has(linkKey)) {
+        return;
+      }
+      processed.add(linkKey);
+
       const fromIsRequirement = this.requirementIds.has(link.from);
       const toIsRequirement = this.requirementIds.has(link.to);
       const fromIsTest = this.testIds.has(link.from);
@@ -197,6 +212,14 @@ export class TraceEngine {
       } else if (toIsRequirement && fromIsTest) {
         this.ensureTestRequirementLink(link.from, link.to);
       }
+
+      if (link.type === 'implements') {
+        if (fromIsRequirement && !toIsRequirement && !toIsTest) {
+          this.ensureRequirementCodeLink(link.from, link.to);
+        } else if (toIsRequirement && !fromIsRequirement && !fromIsTest) {
+          this.ensureRequirementCodeLink(link.to, link.from);
+        }
+      }
     });
   }
 
@@ -204,6 +227,51 @@ export class TraceEngine {
     const existing = this.testToRequirements.get(testId) ?? new Set<string>();
     existing.add(requirementId);
     this.testToRequirements.set(testId, existing);
+  }
+
+  private ensureRequirementCodeLink(requirementId: string, rawPath: string): void {
+    const normalizedPath = normalizePath(rawPath.trim());
+    if (!normalizedPath) {
+      return;
+    }
+    const existing = this.requirementToCode.get(requirementId) ?? new Set<string>();
+    existing.add(normalizedPath);
+    this.requirementToCode.set(requirementId, existing);
+  }
+
+  private linkManualCodeNodes(): void {
+    this.requirementToCode.forEach((codePaths, requirementId) => {
+      const requirementKey = createNodeKey('requirement', requirementId);
+      const requirementNode = this.nodes.get(requirementKey);
+      if (!requirementNode || !isRequirementNode(requirementNode)) {
+        return;
+      }
+
+      codePaths.forEach((codePath) => {
+        const normalized = normalizePath(codePath);
+        const coverage = this.coverageByFile.get(normalized) ?? this.coverageByFile.get(codePath);
+        const codeKey = createNodeKey('code', normalized);
+        const existing = this.nodes.get(codeKey);
+        if (existing && isCodeNode(existing)) {
+          this.linkNodes(requirementKey, codeKey);
+          return;
+        }
+
+        const codeNode: CodeNode = {
+          key: codeKey,
+          id: normalized,
+          type: 'code',
+          data: {
+            path: normalized,
+            coverage,
+          },
+          links: new Set(),
+        };
+
+        this.nodes.set(codeKey, codeNode);
+        this.linkNodes(requirementKey, codeKey);
+      });
+    });
   }
 
   private buildRequirementNodes(requirements: Requirement[]): void {
@@ -334,19 +402,25 @@ export class TraceEngine {
 
     requirementNode.links.forEach((neighborKey) => {
       const neighbor = this.nodes.get(neighborKey);
-      if (!neighbor || !isTestNode(neighbor)) {
+      if (!neighbor) {
+        return;
+      }
+      if (isTestNode(neighbor)) {
+        tests.push(neighbor.data);
+        neighbor.links.forEach((codeKey) => {
+          const codeNode = this.nodes.get(codeKey);
+          if (!codeNode || !isCodeNode(codeNode)) {
+            return;
+          }
+
+          code.set(codeKey, codeNode.data);
+        });
         return;
       }
 
-      tests.push(neighbor.data);
-      neighbor.links.forEach((codeKey) => {
-        const codeNode = this.nodes.get(codeKey);
-        if (!codeNode || !isCodeNode(codeNode)) {
-          return;
-        }
-
-        code.set(codeKey, codeNode.data);
-      });
+      if (isCodeNode(neighbor)) {
+        code.set(neighborKey, neighbor.data);
+      }
     });
 
     return {

@@ -3,6 +3,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 
 import { Manifest } from '@soipack/core';
+import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifest, verifyManifestSignature } from '@soipack/packager';
 
 import { exitCodes, runAnalyze, runImport, runPack, runReport, runVerify } from './index';
@@ -19,7 +20,10 @@ MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
 
 describe('@soipack/cli pipeline', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
-  const objectivesPath = path.resolve(__dirname, '../../../data/objectives/do178c_objectives.min.json');
+  const objectivesPath = path.resolve(
+    __dirname,
+    '../../../data/objectives/do178c_objectives.min.json',
+  );
   let tempRoot: string;
 
   beforeAll(async () => {
@@ -107,7 +111,14 @@ describe('@soipack/cli pipeline', () => {
 
     await fs.writeFile(
       lcovPath,
-      ['TN:AuthTests#validates login', 'SF:src/auth/login.ts', 'DA:1,1', 'LF:1', 'LH:1', 'end_of_record'].join('\n'),
+      [
+        'TN:AuthTests#validates login',
+        'SF:src/auth/login.ts',
+        'DA:1,1',
+        'LF:1',
+        'LH:1',
+        'end_of_record',
+      ].join('\n'),
       'utf8',
     );
 
@@ -118,7 +129,55 @@ describe('@soipack/cli pipeline', () => {
     });
 
     expect(result.workspace.testToCodeMap).toHaveProperty('AuthTests#validates login');
-    expect(result.workspace.testToCodeMap['AuthTests#validates login']).toEqual(['src/auth/login.ts']);
+    expect(result.workspace.testToCodeMap['AuthTests#validates login']).toEqual([
+      'src/auth/login.ts',
+    ]);
+  });
+
+  it('ingests manual trace links and merges them with generated data without duplicates', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'manual-links');
+    const workDir = path.join(tempRoot, 'manual-links-workspace');
+
+    const result = await runImport({
+      output: workDir,
+      jira: path.join(fixtureDir, 'issues.csv'),
+      junit: path.join(fixtureDir, 'results.xml'),
+      lcov: path.join(fixtureDir, 'lcov.info'),
+      traceLinksCsv: path.join(fixtureDir, 'trace-links.csv'),
+      traceLinksJson: path.join(fixtureDir, 'trace-links.json'),
+    });
+
+    expect(result.warnings).toContain(
+      'Birden fazla kaynaktan gelen yinelenen izlenebilirlik bağlantıları bulundu ve yok sayıldı.',
+    );
+
+    expect(result.workspace.traceLinks).toHaveLength(3);
+    expect(result.workspace.traceLinks).toEqual(
+      expect.arrayContaining([
+        { from: 'REQ-1', to: 'AuthTests#validates login', type: 'verifies' },
+        { from: 'REQ-2', to: 'AuthTests#handles lockout', type: 'verifies' },
+        { from: 'REQ-3', to: 'src/auth/login.ts', type: 'implements' },
+      ]),
+    );
+
+    const bundle: ImportBundle = {
+      requirements: result.workspace.requirements,
+      objectives: [],
+      testResults: result.workspace.testResults,
+      coverage: result.workspace.coverage,
+      evidenceIndex: result.workspace.evidenceIndex,
+      traceLinks: result.workspace.traceLinks,
+      testToCodeMap: result.workspace.testToCodeMap,
+      generatedAt: result.workspace.metadata.generatedAt,
+    };
+
+    const engine = new TraceEngine(bundle);
+    const manualTrace = engine.getRequirementTrace('REQ-3');
+    expect(manualTrace.tests).toHaveLength(0);
+    expect(manualTrace.code.map((entry) => entry.path)).toContain('src/auth/login.ts');
+
+    const derivedTrace = engine.getRequirementTrace('REQ-2');
+    expect(derivedTrace.tests.map((test) => test.testId)).toContain('AuthTests#handles lockout');
   });
 });
 
@@ -135,8 +194,14 @@ describe('runVerify', () => {
 
   const createManifest = (): Manifest => ({
     files: [
-      { path: 'reports/compliance_matrix.html', sha256: 'abc123def4567890abc123def4567890abc123def4567890abc123def4567890' },
-      { path: 'reports/gaps.html', sha256: 'def123abc4567890def123abc4567890def123abc4567890def123abc4567890' },
+      {
+        path: 'reports/compliance_matrix.html',
+        sha256: 'abc123def4567890abc123def4567890abc123def4567890abc123def4567890',
+      },
+      {
+        path: 'reports/gaps.html',
+        sha256: 'def123abc4567890def123abc4567890def123abc4567890def123abc4567890',
+      },
     ],
     createdAt: '2024-01-01T00:00:00.000Z',
     toolVersion: '1.0.0-test',
@@ -153,8 +218,7 @@ describe('runVerify', () => {
     const signaturePath = path.join(tempDir, 'manifest.sig');
     const publicKeyPath = path.join(tempDir, 'public.pem');
 
-    const manifestJson =
-      overrides.manifestJson ?? `${JSON.stringify(manifest, null, 2)}\n`;
+    const manifestJson = overrides.manifestJson ?? `${JSON.stringify(manifest, null, 2)}\n`;
     await fs.writeFile(manifestPath, manifestJson, 'utf8');
 
     const signatureValue = overrides.signature ?? signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
@@ -180,12 +244,21 @@ describe('runVerify', () => {
     const originalSignature = signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
     const tamperedManifest = {
       ...manifest,
-      files: [...manifest.files, { path: 'evidence/new.txt', sha256: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef' }],
+      files: [
+        ...manifest.files,
+        {
+          path: 'evidence/new.txt',
+          sha256: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+        },
+      ],
     } satisfies Manifest;
 
-    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(tamperedManifest, {
-      signature: originalSignature,
-    });
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(
+      tamperedManifest,
+      {
+        signature: originalSignature,
+      },
+    );
 
     const result = await runVerify({ manifestPath, signaturePath, publicKeyPath });
 

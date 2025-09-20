@@ -28,7 +28,12 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom
 
 import { HttpError, toHttpError } from './errors';
 import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
-import { FileSystemStorage, PipelineDirectories, StorageProvider, UploadedFileMap } from './storage';
+import {
+  FileSystemStorage,
+  PipelineDirectories,
+  StorageProvider,
+  UploadedFileMap,
+} from './storage';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 
 type FileMap = Record<string, Express.Multer.File[]>;
@@ -264,7 +269,11 @@ const asCertificationLevel = (value: string | undefined): CertificationLevel | u
   if (['A', 'B', 'C', 'D', 'E'].includes(upper)) {
     return upper as CertificationLevel;
   }
-  throw new HttpError(400, 'INVALID_LEVEL', 'Geçersiz seviye değeri. Geçerli değerler A-E aralığındadır.');
+  throw new HttpError(
+    400,
+    'INVALID_LEVEL',
+    'Geçersiz seviye değeri. Geçerli değerler A-E aralığındadır.',
+  );
 };
 
 const assertDirectoryExists = async (
@@ -325,7 +334,13 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
   },
   reqif: {
     maxSizeBytes: maxUploadSize,
-    allowedMimeTypes: ['application/xml', 'text/xml', 'application/zip', 'application/x-zip-compressed', 'application/octet-stream'],
+    allowedMimeTypes: [
+      'application/xml',
+      'text/xml',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+    ],
   },
   junit: {
     maxSizeBytes: maxUploadSize,
@@ -352,7 +367,20 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
   },
   objectives: {
     maxSizeBytes: maxUploadSize,
-    allowedMimeTypes: ['application/json', 'text/*', 'application/zip', 'application/x-zip-compressed'],
+    allowedMimeTypes: [
+      'application/json',
+      'text/*',
+      'application/zip',
+      'application/x-zip-compressed',
+    ],
+  },
+  traceLinksCsv: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['text/csv', 'text/plain', 'application/octet-stream'],
+  },
+  traceLinksJson: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['application/json', 'text/*', 'application/octet-stream'],
   },
 });
 
@@ -387,7 +415,11 @@ const mergeUploadPolicies = (
   return base;
 };
 
-const ensureFileWithinPolicy = (field: string, file: Express.Multer.File, policy: UploadFieldPolicy): void => {
+const ensureFileWithinPolicy = (
+  field: string,
+  file: Express.Multer.File,
+  policy: UploadFieldPolicy,
+): void => {
   if (file.size > policy.maxSizeBytes) {
     throw new HttpError(
       413,
@@ -398,7 +430,9 @@ const ensureFileWithinPolicy = (field: string, file: Express.Multer.File, policy
   }
 
   if (policy.allowedMimeTypes.length > 0) {
-    const allowed = policy.allowedMimeTypes.some((pattern) => matchesMimeType(file.mimetype, pattern));
+    const allowed = policy.allowedMimeTypes.some((pattern) =>
+      matchesMimeType(file.mimetype, pattern),
+    );
     if (!allowed) {
       throw new HttpError(
         415,
@@ -446,18 +480,15 @@ const scanUploadedFiles = async (scanner: FileScanner, fileMap: FileMap): Promis
         });
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : 'Dosya tarama servisine ulaşılamadı veya hata verdi.';
-        throw new HttpError(
-          502,
-          'FILE_SCAN_ERROR',
-          `${file.originalname} taranamadı: ${message}`,
-          {
-            field,
-            originalname: file.originalname,
-            mimetype: file.mimetype,
-            error: message,
-          },
-        );
+          error instanceof Error
+            ? error.message
+            : 'Dosya tarama servisine ulaşılamadı veya hata verdi.';
+        throw new HttpError(502, 'FILE_SCAN_ERROR', `${file.originalname} taranamadı: ${message}`, {
+          field,
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          error: message,
+        });
       }
 
       if (!result.clean) {
@@ -647,10 +678,7 @@ const toReportResult = (
   },
 });
 
-const toPackResult = (
-  storage: StorageProvider,
-  metadata: PackJobMetadata,
-): PackJobResult => ({
+const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): PackJobResult => ({
   manifestId: metadata.outputs.manifestId,
   outputs: {
     directory: storage.toRelativePath(metadata.directory),
@@ -674,7 +702,11 @@ const serializeJobDetails = <T>(job: JobDetails<T>) => ({
   error: job.error ?? undefined,
 });
 
-const respondWithJob = <T>(res: Response, job: JobDetails<T>, options?: { reused?: boolean }): void => {
+const respondWithJob = <T>(
+  res: Response,
+  job: JobDetails<T>,
+  options?: { reused?: boolean },
+): void => {
   const payload = {
     ...serializeJobDetails(job),
     ...(options?.reused !== undefined ? { reused: options.reused } : {}),
@@ -683,8 +715,8 @@ const respondWithJob = <T>(res: Response, job: JobDetails<T>, options?: { reused
     job.status === 'completed'
       ? 200
       : job.status === 'failed'
-      ? job.error?.statusCode ?? 500
-      : 202;
+        ? (job.error?.statusCode ?? 500)
+        : 202;
   res.status(statusCode).json(payload);
 };
 
@@ -735,7 +767,11 @@ const adoptJobFromMetadata = (
         result: toPackResult(storage, metadata),
       });
     default:
-      throw new HttpError(500, 'UNKNOWN_JOB_KIND', `Bilinmeyen iş türü: ${(metadata as JobMetadata).kind}`);
+      throw new HttpError(
+        500,
+        'UNKNOWN_JOB_KIND',
+        `Bilinmeyen iş türü: ${(metadata as JobMetadata).kind}`,
+      );
   }
 };
 
@@ -887,7 +923,13 @@ const runRetentionSweep = async (
   for (const descriptor of descriptors) {
     const policy = retention[descriptor.target];
     if (!policy || policy.maxAgeMs === undefined || policy.maxAgeMs < 0) {
-      results.push({ target: descriptor.target, removed: 0, retained: 0, skipped: 0, configured: false });
+      results.push({
+        target: descriptor.target,
+        removed: 0,
+        retained: 0,
+        skipped: 0,
+        configured: false,
+      });
       continue;
     }
 
@@ -947,9 +989,8 @@ const runRetentionSweep = async (
   return results;
 };
 
-const createAsyncHandler = <T extends Request>(
-  handler: (req: T, res: Response) => Promise<void>,
-) =>
+const createAsyncHandler =
+  <T extends Request>(handler: (req: T, res: Response) => Promise<void>) =>
   async (req: T, res: Response, next: NextFunction): Promise<void> => {
     try {
       await handler(req, res);
@@ -963,8 +1004,8 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
   const keyStore = jwks
     ? createLocalJWKSet(jwks)
     : jwksUri
-    ? createRemoteJWKSet(new URL(jwksUri))
-    : null;
+      ? createRemoteJWKSet(new URL(jwksUri))
+      : null;
 
   if (!keyStore) {
     throw new Error('Kimlik doğrulama yapılandırmasında jwksUri veya jwks tanımlanmalıdır.');
@@ -1005,7 +1046,11 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
 
       const tenantValue = payload[tenantClaim];
       if (typeof tenantValue !== 'string' || tenantValue.trim() === '') {
-        throw new HttpError(403, 'TENANT_REQUIRED', 'Belirteç geçerli bir tenant kimliği içermiyor.');
+        throw new HttpError(
+          403,
+          'TENANT_REQUIRED',
+          'Belirteç geçerli bir tenant kimliği içermiyor.',
+        );
       }
 
       if (!tenantPattern.test(tenantValue)) {
@@ -1020,7 +1065,11 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
 
       const userValue = payload[userClaim] ?? payload.sub;
       if (typeof userValue !== 'string' || userValue.trim() === '') {
-        throw new HttpError(403, 'USER_REQUIRED', 'Belirteç geçerli bir kullanıcı kimliği içermiyor.');
+        throw new HttpError(
+          403,
+          'USER_REQUIRED',
+          'Belirteç geçerli bir kullanıcı kimliği içermiyor.',
+        );
       }
       const subject = userValue;
 
@@ -1065,8 +1114,7 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
 };
 
 export const createServer = (config: ServerConfig): Express => {
-  const storage =
-    config.storageProvider ?? new FileSystemStorage(path.resolve(config.storageDir));
+  const storage = config.storageProvider ?? new FileSystemStorage(path.resolve(config.storageDir));
   const directories = storage.directories;
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
@@ -1338,7 +1386,11 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
       const kinds = parseFilterParam<JobKind>(req.query.kind as unknown, JOB_KINDS, 'İş türü');
-      const statuses = parseFilterParam<JobStatus>(req.query.status as unknown, JOB_STATUSES, 'İş durumu');
+      const statuses = parseFilterParam<JobStatus>(
+        req.query.status as unknown,
+        JOB_STATUSES,
+        'İş durumu',
+      );
       const jobs = queue
         .list(tenantId)
         .filter((job) => jobMatchesFilters(job, kinds, statuses))
@@ -1358,7 +1410,9 @@ export const createServer = (config: ServerConfig): Express => {
       }
       const job =
         queue.get(tenantId, id) ??
-        (await locateJobMetadata(storage, queue, tenantId, id, (metadata) => hydrateJobLicense(metadata, tenantId)));
+        (await locateJobMetadata(storage, queue, tenantId, id, (metadata) =>
+          hydrateJobLicense(metadata, tenantId),
+        ));
       if (!job) {
         throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
       }
@@ -1379,7 +1433,12 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'manifestId değeri geçerli değil.');
       }
 
-      const metadata = await findPackMetadataByManifestId(storage, directories, tenantId, manifestId);
+      const metadata = await findPackMetadataByManifestId(
+        storage,
+        directories,
+        tenantId,
+        manifestId,
+      );
       if (!metadata) {
         throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'İstenen manifest bulunamadı.');
       }
@@ -1443,7 +1502,13 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      const summary = await runRetentionSweep(storage, queue, tenantId, config.retention ?? {}, jobLicenses);
+      const summary = await runRetentionSweep(
+        storage,
+        queue,
+        tenantId,
+        config.retention ?? {},
+        jobLicenses,
+      );
       res.json({ status: 'ok', summary });
     }),
   );
@@ -1466,7 +1531,11 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(409, 'JOB_RUNNING', 'Çalışan işler iptal edilemez.');
       }
       if (job.status !== 'queued') {
-        throw new HttpError(409, 'JOB_NOT_CANCELLABLE', 'Yalnızca kuyruğa alınmış işler iptal edilebilir.');
+        throw new HttpError(
+          409,
+          'JOB_NOT_CANCELLABLE',
+          'Yalnızca kuyruğa alınmış işler iptal edilebilir.',
+        );
       }
 
       queue.remove(tenantId, id);
@@ -1522,6 +1591,8 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'cobertura', maxCount: 1 },
     { name: 'git', maxCount: 1 },
     { name: 'objectives', maxCount: 1 },
+    { name: 'traceLinksCsv', maxCount: 1 },
+    { name: 'traceLinksJson', maxCount: 1 },
   ]);
 
   app.post(
@@ -1541,7 +1612,10 @@ export const createServer = (config: ServerConfig): Express => {
 
       try {
         Object.entries(fileMap).forEach(([field, files]) => {
-          const policy = uploadPolicies[field] ?? { maxSizeBytes: maxUploadSize, allowedMimeTypes: ['*'] };
+          const policy = uploadPolicies[field] ?? {
+            maxSizeBytes: maxUploadSize,
+            allowedMimeTypes: ['*'],
+          };
           files.forEach((file) => ensureFileWithinPolicy(field, file, policy));
         });
 
@@ -1593,7 +1667,11 @@ export const createServer = (config: ServerConfig): Express => {
           const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
           hydrateJobLicense(metadata, tenantId);
           ensureJobLicense(tenantId, metadata.id, license);
-          const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
+          const adopted = adoptJobFromMetadata(
+            storage,
+            queue,
+            metadata,
+          ) as JobDetails<ImportJobResult>;
           await ensureCleanup();
           sendJobResponse(res, adopted, tenantId, { reused: true });
           return;
@@ -1602,16 +1680,19 @@ export const createServer = (config: ServerConfig): Express => {
         const uploadedFiles = convertFileMap(fileMap);
         const level = asCertificationLevel(stringFields.level);
 
-      const job = enqueueObservedJob<ImportJobResult>({
-        tenantId,
-        id: importId,
-        kind: 'import',
-        hash,
-        run: async () => {
+        const job = enqueueObservedJob<ImportJobResult>({
+          tenantId,
+          id: importId,
+          kind: 'import',
+          hash,
+          run: async () => {
             await storage.ensureDirectory(workspaceDir);
 
             try {
-              const persisted = await storage.persistUploads(path.join(tenantId, importId), uploadedFiles);
+              const persisted = await storage.persistUploads(
+                path.join(tenantId, importId),
+                uploadedFiles,
+              );
               const importOptions: ImportOptions = {
                 output: workspaceDir,
                 jira: persisted.jira?.[0],
@@ -1620,6 +1701,8 @@ export const createServer = (config: ServerConfig): Express => {
                 lcov: persisted.lcov?.[0],
                 cobertura: persisted.cobertura?.[0],
                 git: persisted.git?.[0],
+                traceLinksCsv: persisted.traceLinksCsv?.[0],
+                traceLinksJson: persisted.traceLinksJson?.[0],
                 objectives: persisted.objectives?.[0],
                 level,
                 projectName: stringFields.projectName,
@@ -1639,7 +1722,10 @@ export const createServer = (config: ServerConfig): Express => {
                   projectName: stringFields.projectName ?? null,
                   projectVersion: stringFields.projectVersion ?? null,
                   files: Object.fromEntries(
-                    Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
+                    Object.entries(persisted).map(([key, values]) => [
+                      key,
+                      values.map((value) => path.basename(value)),
+                    ]),
                   ),
                 },
                 license: toLicenseMetadata(license),
@@ -1692,7 +1778,8 @@ export const createServer = (config: ServerConfig): Express => {
       const workspace = await storage.readJson<ImportWorkspace>(
         path.join(workspaceDir, 'workspace.json'),
       );
-      const effectiveLevel = asCertificationLevel(body.level) ?? workspace.metadata.targetLevel ?? 'C';
+      const effectiveLevel =
+        asCertificationLevel(body.level) ?? workspace.metadata.targetLevel ?? 'C';
       const effectiveProjectName = body.projectName ?? workspace.metadata.project?.name;
       const effectiveProjectVersion = body.projectVersion ?? workspace.metadata.project?.version;
 
@@ -1737,7 +1824,11 @@ export const createServer = (config: ServerConfig): Express => {
         const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
-        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<AnalyzeJobResult>;
+        const adopted = adoptJobFromMetadata(
+          storage,
+          queue,
+          metadata,
+        ) as JobDetails<AnalyzeJobResult>;
         sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
@@ -1834,7 +1925,11 @@ export const createServer = (config: ServerConfig): Express => {
         const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
-        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ReportJobResult>;
+        const adopted = adoptJobFromMetadata(
+          storage,
+          queue,
+          metadata,
+        ) as JobDetails<ReportJobResult>;
         sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
@@ -2042,9 +2137,12 @@ export const createServer = (config: ServerConfig): Express => {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    const normalized = error instanceof HttpError ? error : new HttpError(500, 'UNEXPECTED_ERROR', 'Beklenmeyen bir sunucu hatası oluştu.', {
-      cause: error instanceof Error ? error.message : String(error),
-    });
+    const normalized =
+      error instanceof HttpError
+        ? error
+        : new HttpError(500, 'UNEXPECTED_ERROR', 'Beklenmeyen bir sunucu hatası oluştu.', {
+            cause: error instanceof Error ? error.message : String(error),
+          });
     res.status(normalized.statusCode).json({
       error: {
         code: normalized.code,
@@ -2056,4 +2154,3 @@ export const createServer = (config: ServerConfig): Express => {
 
   return app;
 };
-
