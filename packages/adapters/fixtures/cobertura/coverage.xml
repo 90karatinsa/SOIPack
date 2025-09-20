@@ -13,7 +13,7 @@
             </method>
           </methods>
           <lines>
-            <line number="10" hits="1" branch="false" />
+              <line number="10" hits="1" branch="false" tests="AuthSuite#passes" />
             <line number="11" hits="0" branch="true" condition-coverage="50% (1/2)" />
           </lines>
         </class>
@@ -26,7 +26,7 @@
             </method>
           </methods>
           <lines>
-            <line number="5" hits="1" branch="false" />
+              <line number="5" hits="1" branch="false" tests="AuditSuite#records" />
           </lines>
         </class>
       </classes>

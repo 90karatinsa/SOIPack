@@ -25,6 +25,7 @@ const main = async (): Promise<void> => {
   const traceHtml = renderTraceMatrix(fixture.traces, {
     manifestId: fixture.manifestId,
     title: 'SOIPack İzlenebilirlik Matrisi',
+    coverage: fixture.snapshot.requirementCoverage,
   });
   await fs.writeFile(path.join(outputDir, 'trace-matrix.html'), traceHtml, 'utf-8');
 

@@ -92,6 +92,34 @@ describe('@soipack/cli pipeline', () => {
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
   });
+
+  it('derives test-to-code mapping from coverage adapters', async () => {
+    const mappingRoot = await fs.mkdtemp(path.join(tempRoot, 'mapping-'));
+    const workDir = path.join(mappingRoot, 'workspace');
+    const junitPath = path.join(mappingRoot, 'results.xml');
+    const lcovPath = path.join(mappingRoot, 'lcov.info');
+
+    await fs.writeFile(
+      junitPath,
+      `<?xml version="1.0"?><testsuite name="Sample"><testcase classname="AuthTests" name="validates login" time="1.2" /></testsuite>`,
+      'utf8',
+    );
+
+    await fs.writeFile(
+      lcovPath,
+      ['TN:AuthTests#validates login', 'SF:src/auth/login.ts', 'DA:1,1', 'LF:1', 'LH:1', 'end_of_record'].join('\n'),
+      'utf8',
+    );
+
+    const result = await runImport({
+      output: workDir,
+      junit: junitPath,
+      lcov: lcovPath,
+    });
+
+    expect(result.workspace.testToCodeMap).toHaveProperty('AuthTests#validates login');
+    expect(result.workspace.testToCodeMap['AuthTests#validates login']).toEqual(['src/auth/login.ts']);
+  });
 });
 
 describe('runVerify', () => {

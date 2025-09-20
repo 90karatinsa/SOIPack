@@ -175,11 +175,31 @@ describe('TraceEngine', () => {
 
     const loginCoverage = trace.code.find((item) => item.path === 'src/auth/login.ts');
     expect(loginCoverage?.coverage?.statements.covered).toBe(30);
+
+    const graph = engine.getGraph();
+    const codeNode = graph.nodes.find(
+      (node) => node.type === 'code' && node.id === 'src/auth/login.ts',
+    );
+    expect(codeNode?.type).toBe('code');
+    if (codeNode?.type === 'code') {
+      expect(codeNode.data.coverage?.statements?.percentage).toBeCloseTo(75, 2);
+    }
   });
 
   it('incorporates trace links when tests lack explicit requirement references', () => {
     const trace = engine.getRequirementTrace('REQ-3');
     expect(trace.tests.map((test) => test.testId)).toContain('TC-4');
+  });
+
+  it('summarizes coverage status per requirement', () => {
+    const coverage = engine.getRequirementCoverage();
+    const req1 = coverage.find((item) => item.requirement.id === 'REQ-1');
+    const req3 = coverage.find((item) => item.requirement.id === 'REQ-3');
+
+    expect(req1?.status).toBe('partial');
+    expect(req1?.coverage?.statements?.percentage).toBeCloseTo(83.33, 2);
+    expect(req3?.status).toBe('covered');
+    expect(req3?.coverage?.statements?.percentage).toBe(100);
   });
 });
 
@@ -251,5 +271,16 @@ describe('Compliance snapshot generation', () => {
     expect(types.requirement).toBe(3);
     expect(types.test).toBe(4);
     expect(types.code).toBe(2);
+  });
+
+  it('includes requirement coverage breakdowns', () => {
+    expect(snapshot.requirementCoverage).toHaveLength(3);
+    const coverageByRequirement = new Map(
+      snapshot.requirementCoverage.map((item) => [item.requirement.id, item]),
+    );
+
+    expect(coverageByRequirement.get('REQ-1')?.status).toBe('partial');
+    expect(coverageByRequirement.get('REQ-3')?.status).toBe('covered');
+    expect(coverageByRequirement.get('REQ-3')?.coverage?.statements?.percentage).toBe(100);
   });
 });

@@ -1,4 +1,4 @@
-TN:
+TN:AuthSuite#passes
 SF:/workspace/app/src/file1.ts
 DA:1,1
 DA:2,0
@@ -13,6 +13,7 @@ FNDA:1,doThing
 FNF:1
 FNH:1
 end_of_record
+TN:AuditSuite#records
 SF:/workspace/app/src/file2.ts
 DA:1,3
 LF:1

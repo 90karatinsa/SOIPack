@@ -143,6 +143,187 @@ const normalizeRelativePath = (filePath: string): string => {
   return normalized.split(path.sep).join('/');
 };
 
+const tokenize = (value: string): string[] =>
+  value
+    .split(/[^A-Za-z0-9_/.-]+/)
+    .flatMap((segment) => segment.split(/[\\/]/))
+    .map((segment) => segment.trim().toLowerCase())
+    .filter((segment) => segment.length >= 2);
+
+const createTestLookup = (tests: TestResult[]) => {
+  const direct = new Map<string, string>();
+  const lower = new Map<string, string>();
+  const tokenIndex = new Map<string, Set<string>>();
+  const visited = new Set<string>();
+
+  const registerToken = (token: string, testId: string) => {
+    if (!token) {
+      return;
+    }
+    const existing = tokenIndex.get(token) ?? new Set<string>();
+    existing.add(testId);
+    tokenIndex.set(token, existing);
+  };
+
+  const registerCandidate = (raw: string | undefined, testId: string): void => {
+    if (!raw) {
+      return;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return;
+    }
+    const key = `${testId}::${trimmed}`;
+    if (visited.has(key)) {
+      return;
+    }
+    visited.add(key);
+
+    if (!direct.has(trimmed)) {
+      direct.set(trimmed, testId);
+    }
+    const lowerTrimmed = trimmed.toLowerCase();
+    if (!lower.has(lowerTrimmed)) {
+      lower.set(lowerTrimmed, testId);
+    }
+
+    tokenize(trimmed).forEach((token) => registerToken(token, testId));
+
+    const whitespaceToken = trimmed.split(/\s+/)[0];
+    if (whitespaceToken && whitespaceToken !== trimmed) {
+      registerCandidate(whitespaceToken, testId);
+    }
+
+    const hashIndex = trimmed.indexOf('#');
+    if (hashIndex > 0) {
+      registerCandidate(trimmed.slice(0, hashIndex), testId);
+    }
+
+    const colonIndex = trimmed.indexOf(':');
+    if (colonIndex > 0) {
+      registerCandidate(trimmed.slice(0, colonIndex), testId);
+    }
+
+    if (trimmed.includes('/')) {
+      const base = trimmed.substring(trimmed.lastIndexOf('/') + 1);
+      if (base && base !== trimmed) {
+        registerCandidate(base, testId);
+      }
+    }
+  };
+
+  tests.forEach((test) => {
+    registerCandidate(test.testId, test.testId);
+    registerCandidate(test.className, test.testId);
+    registerCandidate(test.name, test.testId);
+  });
+
+  const resolve = (testName: string): string | undefined => {
+    const trimmed = testName.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const directMatch = direct.get(trimmed) ?? direct.get(trimmed.replace(/^['"]|['"]$/g, ''));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    const lowerTrimmed = trimmed.toLowerCase();
+    const lowerMatch =
+      lower.get(lowerTrimmed) ?? lower.get(lowerTrimmed.replace(/^['"]|['"]$/g, ''));
+    if (lowerMatch) {
+      return lowerMatch;
+    }
+
+    const tokens = tokenize(trimmed);
+    if (tokens.length === 0) {
+      return undefined;
+    }
+
+    const scores = new Map<string, number>();
+    tokens.forEach((token) => {
+      const ids = tokenIndex.get(token);
+      if (!ids) {
+        return;
+      }
+      ids.forEach((id) => {
+        scores.set(id, (scores.get(id) ?? 0) + 1);
+      });
+    });
+
+    if (scores.size === 0) {
+      return undefined;
+    }
+
+    const sorted = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 1 || sorted[0][1] > sorted[1][1]) {
+      return sorted[0][0];
+    }
+
+    return undefined;
+  };
+
+  return { resolve };
+};
+
+const normalizeCoveragePath = (filePath: string, origin: string): string | undefined => {
+  const trimmed = filePath.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (path.isAbsolute(trimmed)) {
+    return normalizeRelativePath(trimmed);
+  }
+
+  const cwdResolved = path.resolve(trimmed);
+  const originResolved = path.resolve(path.dirname(origin), trimmed);
+
+  const cwdRelative = path.relative(process.cwd(), cwdResolved);
+  const originRelative = path.relative(process.cwd(), originResolved);
+
+  const normalized =
+    originRelative.length > 0 && originRelative.length < cwdRelative.length
+      ? originResolved
+      : cwdResolved;
+
+  return normalizeRelativePath(normalized);
+};
+
+const deriveTestToCodeMap = (
+  tests: TestResult[],
+  coverageMaps: Array<{ map: Record<string, string[]>; origin: string }>,
+): Record<string, string[]> => {
+  if (tests.length === 0 || coverageMaps.length === 0) {
+    return {};
+  }
+
+  const lookup = createTestLookup(tests);
+  const combined = new Map<string, Set<string>>();
+
+  coverageMaps.forEach(({ map, origin }) => {
+    Object.entries(map).forEach(([testName, files]) => {
+      const resolvedTestId = lookup.resolve(testName);
+      if (!resolvedTestId) {
+        return;
+      }
+      files.forEach((file) => {
+        const normalized = normalizeCoveragePath(file, origin);
+        if (!normalized) {
+          return;
+        }
+        const existing = combined.get(resolvedTestId) ?? new Set<string>();
+        existing.add(normalized);
+        combined.set(resolvedTestId, existing);
+      });
+    });
+  });
+
+  return Object.fromEntries(
+    Array.from(combined.entries()).map(([testId, files]) => [testId, Array.from(files).sort()]),
+  );
+};
+
 const createEvidence = (
   artifact: ObjectiveArtifactType,
   source: EvidenceSource,
@@ -227,6 +408,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   let coverage: CoverageSummary | undefined;
   let gitMetadata: BuildInfo | null | undefined;
   const testResults: TestResult[] = [];
+  const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
     reqif: options.reqif ? normalizeRelativePath(options.reqif) : undefined,
@@ -280,6 +462,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const result = await importLcov(options.lcov);
     warnings.push(...result.warnings);
     coverage = result.data;
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.lcov) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -293,6 +478,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const result = await importCobertura(options.cobertura);
     warnings.push(...result.warnings);
     coverage = result.data;
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -303,6 +491,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   } else if (options.cobertura) {
     const result = await importCobertura(options.cobertura);
     warnings.push(...result.warnings);
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -327,13 +518,14 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
 
   const mergedRequirements = mergeRequirements(requirements);
   const traceLinks = buildTraceLinksFromTests(testResults);
+  const testToCodeMap = deriveTestToCodeMap(testResults, coverageMaps);
 
   const workspace: ImportWorkspace = {
     requirements: mergedRequirements,
     testResults,
     coverage,
     traceLinks,
-    testToCodeMap: {},
+    testToCodeMap,
     evidenceIndex,
     git: gitMetadata,
     metadata: {
@@ -514,6 +706,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     title: analysis.metadata.project?.name
       ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
       : 'SOIPack İzlenebilirlik Matrisi',
+    coverage: snapshot.requirementCoverage,
   });
   const gapsHtml = renderGaps(snapshot, {
     objectivesMetadata: analysis.objectives,

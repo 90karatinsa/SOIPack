@@ -48,6 +48,7 @@ export interface CoverageSummary {
     functions?: CoverageMetric;
   };
   files: FileCoverageSummary[];
+  testMap?: Record<string, string[]>;
 }
 
 export interface BuildInfo {

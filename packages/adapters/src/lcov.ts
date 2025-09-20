@@ -90,6 +90,19 @@ export const importLcov = async (filePath: string): Promise<ParseResult<Coverage
 
   const summaries: FileCoverageSummary[] = [];
   let current: FileAccumulator | undefined;
+  let currentTestName: string | undefined;
+  const testFiles = new Map<string, Set<string>>();
+
+  const registerTestFile = (testName: string | undefined, file: string | undefined) => {
+    const normalizedTestName = testName?.trim();
+    const normalizedFile = file?.trim();
+    if (!normalizedTestName || !normalizedFile) {
+      return;
+    }
+    const existing = testFiles.get(normalizedTestName) ?? new Set<string>();
+    existing.add(normalizedFile);
+    testFiles.set(normalizedTestName, existing);
+  };
 
   lines.forEach((line, index) => {
     const lineNumber = index + 1;
@@ -97,7 +110,14 @@ export const importLcov = async (filePath: string): Promise<ParseResult<Coverage
       if (current) {
         summaries.push(finalizeFile(current));
       }
-      current = createAccumulator(line.substring(3).trim());
+      const file = line.substring(3).trim();
+      current = createAccumulator(file);
+      registerTestFile(currentTestName, file);
+      return;
+    }
+
+    if (line.startsWith('TN:')) {
+      currentTestName = line.substring(3).trim();
       return;
     }
 
@@ -156,6 +176,7 @@ export const importLcov = async (filePath: string): Promise<ParseResult<Coverage
     if (line.trim() === 'end_of_record') {
       summaries.push(finalizeFile(current));
       current = undefined;
+      currentTestName = undefined;
     }
   });
 
@@ -168,5 +189,8 @@ export const importLcov = async (filePath: string): Promise<ParseResult<Coverage
   }
 
   const totals = accumulateTotals(summaries);
-  return { data: { totals, files: summaries }, warnings };
+  const testMapEntries = Array.from(testFiles.entries()).map(([testName, files]) => [testName, Array.from(files)]);
+  const testMap = testMapEntries.length > 0 ? Object.fromEntries(testMapEntries) : undefined;
+
+  return { data: { totals, files: summaries, testMap }, warnings };
 };

@@ -1,5 +1,12 @@
+import type { CoverageMetric } from '@soipack/adapters';
 import { Objective, ObjectiveArtifactType, Requirement, TestCase } from '@soipack/core';
-import { ComplianceSnapshot, ComplianceStatistics, RequirementTrace } from '@soipack/engine';
+import {
+  ComplianceSnapshot,
+  ComplianceStatistics,
+  RequirementTrace,
+  RequirementCoverageStatus,
+  CoverageStatus,
+} from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
 import packageInfo from '../package.json';
@@ -31,7 +38,9 @@ export interface ComplianceMatrixOptions extends BaseReportOptions {
   objectivesMetadata?: Objective[];
 }
 
-export interface TraceMatrixOptions extends BaseReportOptions {}
+export interface TraceMatrixOptions extends BaseReportOptions {
+  coverage?: RequirementCoverageStatus[];
+}
 
 export interface GapReportOptions extends BaseReportOptions {
   objectivesMetadata?: Objective[];
@@ -49,6 +58,15 @@ interface ComplianceMatrixRow {
   evidenceRefs: string[];
 }
 
+interface RequirementCoverageRow {
+  requirementId: string;
+  requirementTitle: string;
+  statusLabel: string;
+  statusClass: string;
+  coverageLabel?: string;
+  codePaths: string[];
+}
+
 interface TraceMatrixRow {
   requirementId: string;
   requirementTitle: string;
@@ -63,6 +81,12 @@ interface TraceMatrixRow {
     path: string;
     coverageLabel?: string;
   }>;
+  coverage?: {
+    status: CoverageStatus;
+    statusLabel: string;
+    statusClass: string;
+    coverageLabel?: string;
+  };
 }
 
 interface GapReportRow {
@@ -85,6 +109,13 @@ export interface ComplianceMatrixJson {
     satisfiedArtifacts: string[];
     missingArtifacts: string[];
     evidenceRefs: string[];
+  }>;
+  requirementCoverage: Array<{
+    requirementId: string;
+    title?: string;
+    status: RequirementCoverageStatus['status'];
+    coverage?: RequirementCoverageStatus['coverage'];
+    codePaths: string[];
   }>;
 }
 
@@ -117,6 +148,12 @@ const testStatusLabels: Record<string, { label: string; className: string }> = {
   skipped: { label: 'Atlandı', className: 'status-partial' },
 };
 
+const coverageStatusLabels: Record<CoverageStatus, { label: string; className: string }> = {
+  covered: { label: 'Tam Kaplandı', className: 'status-covered' },
+  partial: { label: 'Kısmen Kaplandı', className: 'status-partial' },
+  missing: { label: 'Kapsam Yok', className: 'status-missing' },
+};
+
 const gapLabels: Record<GapCategoryKey, string> = {
   plans: 'Planlama Kanıtları',
   standards: 'Standart & Konfigürasyon',
@@ -142,6 +179,94 @@ const artifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
   configurationIndex: 'Konfigürasyon İndeksi',
   git: 'Sürüm Kontrol',
   other: 'Diğer',
+};
+
+const formatCoverageMetrics = (
+  coverage?: RequirementCoverageStatus['coverage'],
+): string | undefined => {
+  if (!coverage) {
+    return undefined;
+  }
+
+  const segments: string[] = [];
+  const statements = coverage.statements?.percentage;
+  const branches = coverage.branches?.percentage;
+  const functions = coverage.functions?.percentage;
+
+  if (typeof statements === 'number') {
+    segments.push(`Satır: ${statements}%`);
+  }
+  if (typeof branches === 'number') {
+    segments.push(`Dallanma: ${branches}%`);
+  }
+  if (typeof functions === 'number') {
+    segments.push(`Fonksiyon: ${functions}%`);
+  }
+
+  return segments.length ? segments.join(' | ') : undefined;
+};
+
+const aggregateCoverageFromCode = (
+  code: RequirementTrace['code'],
+): RequirementCoverageStatus['coverage'] => {
+  const totals = {
+    statements: { covered: 0, total: 0 },
+    branches: { covered: 0, total: 0 },
+    functions: { covered: 0, total: 0 },
+  };
+
+  code.forEach((entry) => {
+    const coverage = entry.coverage;
+    if (!coverage) {
+      return;
+    }
+    if (coverage.statements) {
+      totals.statements.covered += coverage.statements.covered;
+      totals.statements.total += coverage.statements.total;
+    }
+    if (coverage.branches) {
+      totals.branches.covered += coverage.branches.covered;
+      totals.branches.total += coverage.branches.total;
+    }
+    if (coverage.functions) {
+      totals.functions.covered += coverage.functions.covered;
+      totals.functions.total += coverage.functions.total;
+    }
+  });
+
+  const finalize = ({ covered, total }: { covered: number; total: number }): CoverageMetric | undefined => {
+    if (total === 0) {
+      return undefined;
+    }
+    return {
+      covered,
+      total,
+      percentage: Number(((covered / total) * 100).toFixed(2)),
+    };
+  };
+
+  return {
+    statements: finalize(totals.statements),
+    branches: finalize(totals.branches),
+    functions: finalize(totals.functions),
+  };
+};
+
+const determineCoverageStatus = (
+  code: RequirementTrace['code'],
+  coverage?: RequirementCoverageStatus['coverage'],
+): CoverageStatus => {
+  if (code.length === 0) {
+    return 'missing';
+  }
+  const statements = coverage?.statements;
+  if (!statements || statements.total === 0) {
+    return 'missing';
+  }
+  if (statements.covered >= statements.total) {
+    return 'covered';
+  }
+  return 'partial';
 };
 
 const baseStyles = `
@@ -466,7 +591,51 @@ const complianceTemplate = nunjucks.compile(
         {% endfor %}
       </tbody>
     </table>
-  </section>`,
+  </section>
+  {% if requirementCoverage.length %}
+    <section class="section">
+      <h2>Gereksinim Kapsamı</h2>
+      <p class="section-lead">
+        Testler ve kod izleri ile ilişkilendirilen gereksinimlerin kapsam durumunu gösterir. Yetersiz kapsama sahip alanları hızla tespit etmeyi sağlar.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gereksinim</th>
+            <th>Kapsam Durumu</th>
+            <th>Kod Dosyaları</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in requirementCoverage %}
+            <tr>
+              <td>
+                <div class="cell-title">{{ row.requirementId }}</div>
+                <div class="cell-description">{{ row.requirementTitle }}</div>
+              </td>
+              <td>
+                <span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span>
+                {% if row.coverageLabel %}
+                  <div class="muted">{{ row.coverageLabel }}</div>
+                {% endif %}
+              </td>
+              <td>
+                {% if row.codePaths.length %}
+                  <ul class="list">
+                    {% for path in row.codePaths %}
+                      <li><code class="code-pill">{{ path }}</code></li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="muted">Kod bağlantısı yok</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}`,
   env,
 );
 
@@ -492,6 +661,14 @@ const traceTemplate = nunjucks.compile(
               <div class="cell-description">{{ row.requirementTitle }}</div>
               {% if row.requirementStatus %}
                 <div class="muted">Durum: {{ row.requirementStatus }}</div>
+              {% endif %}
+              {% if row.coverage %}
+                <div>
+                  <span class="badge {{ row.coverage.statusClass }}">{{ row.coverage.statusLabel }}</span>
+                  {% if row.coverage.coverageLabel %}
+                    <div class="muted">{{ row.coverage.coverageLabel }}</div>
+                  {% endif %}
+                </div>
               {% endif %}
             </td>
             <td>
@@ -594,14 +771,42 @@ const escapeHtml = (value: string): string =>
 const formatArtifact = (artifact: ObjectiveArtifactType): string =>
   artifactLabels[artifact] ?? artifact.toUpperCase();
 
-const buildSummaryMetrics = (stats: ComplianceStatistics): LayoutSummaryMetric[] => [
-  { label: 'Hedefler', value: stats.objectives.total.toString() },
-  { label: 'Tamamlanan', value: stats.objectives.covered.toString() },
-  { label: 'Kısmi', value: stats.objectives.partial.toString() },
-  { label: 'Eksik', value: stats.objectives.missing.toString() },
-  { label: 'Testler', value: stats.tests.total.toString() },
-  { label: 'Kod Yolları', value: stats.codePaths.total.toString() },
-];
+const buildSummaryMetrics = (
+  stats: ComplianceStatistics,
+  requirementCoverage: RequirementCoverageStatus[] = [],
+): LayoutSummaryMetric[] => {
+  const metrics: LayoutSummaryMetric[] = [
+    { label: 'Hedefler', value: stats.objectives.total.toString() },
+    { label: 'Tamamlanan', value: stats.objectives.covered.toString() },
+    { label: 'Kısmi', value: stats.objectives.partial.toString() },
+    { label: 'Eksik', value: stats.objectives.missing.toString() },
+    { label: 'Testler', value: stats.tests.total.toString() },
+    { label: 'Kod Yolları', value: stats.codePaths.total.toString() },
+  ];
+
+  if (requirementCoverage.length > 0) {
+    const coverageCounts = requirementCoverage.reduce<Record<CoverageStatus, number>>(
+      (acc, entry) => {
+        acc[entry.status] += 1;
+        return acc;
+      },
+      { covered: 0, partial: 0, missing: 0 },
+    );
+
+    metrics.push({
+      label: 'Kapsamlı Gereksinimler',
+      value: `${coverageCounts.covered}/${requirementCoverage.length}`,
+      accent: coverageCounts.covered === requirementCoverage.length,
+    });
+    metrics.push({
+      label: 'Eksik/Kısmi Kapsam',
+      value: `${coverageCounts.partial}/${coverageCounts.missing}`,
+      accent: coverageCounts.partial + coverageCounts.missing > 0,
+    });
+  }
+
+  return metrics;
+};
 
 const renderLayout = (context: LayoutContext): string => {
   const version = context.version ?? packageInfo.version;
@@ -638,13 +843,25 @@ export const renderComplianceMatrix = (
     };
   });
 
+  const requirementCoverageRows: RequirementCoverageRow[] = snapshot.requirementCoverage.map((entry) => {
+    const meta = coverageStatusLabels[entry.status];
+    return {
+      requirementId: entry.requirement.id,
+      requirementTitle: entry.requirement.title,
+      statusLabel: meta.label,
+      statusClass: meta.className,
+      coverageLabel: formatCoverageMetrics(entry.coverage),
+      codePaths: entry.codePaths.map((code) => code.path),
+    };
+  });
+
   const html = renderLayout({
     title: options.title ?? 'SOIPack Uyum Matrisi',
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? snapshot.generatedAt,
     version: options.version ?? packageInfo.version,
-    summaryMetrics: buildSummaryMetrics(snapshot.stats),
-    content: complianceTemplate.render({ objectives: rows }),
+    summaryMetrics: buildSummaryMetrics(snapshot.stats, snapshot.requirementCoverage),
+    content: complianceTemplate.render({ objectives: rows, requirementCoverage: requirementCoverageRows }),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
   });
 
@@ -667,6 +884,13 @@ export const renderComplianceMatrix = (
       missingArtifacts: [...row.missingArtifacts],
       evidenceRefs: [...row.evidenceRefs],
     })),
+    requirementCoverage: snapshot.requirementCoverage.map((entry) => ({
+      requirementId: entry.requirement.id,
+      title: entry.requirement.title,
+      status: entry.status,
+      coverage: entry.coverage,
+      codePaths: entry.codePaths.map((code) => code.path),
+    })),
   };
 
   return { html, json };
@@ -676,39 +900,45 @@ export const renderTraceMatrix = (
   trace: RequirementTrace[],
   options: TraceMatrixOptions = {},
 ): string => {
-  const rows: TraceMatrixRow[] = trace.map((item) => ({
-    requirementId: item.requirement.id,
-    requirementTitle: item.requirement.title,
-    requirementStatus: item.requirement.status,
-    tests: item.tests.map((test) => {
-      const meta = testStatusLabels[test.status] ?? { label: test.status ?? 'Bilinmiyor', className: 'badge-soft' };
-      return {
-        id: test.testId,
-        name: test.name ?? test.testId,
-        statusLabel: meta.label,
-        statusClass: meta.className,
-      };
-    }),
-    codePaths: item.code.map((code) => {
-      const statements = code.coverage?.statements?.percentage;
-      const branches = code.coverage?.branches?.percentage;
-      const functions = code.coverage?.functions?.percentage;
-      const coverageSegments: string[] = [];
-      if (typeof statements === 'number') {
-        coverageSegments.push(`Satır: ${statements}%`);
-      }
-      if (typeof branches === 'number') {
-        coverageSegments.push(`Dallanma: ${branches}%`);
-      }
-      if (typeof functions === 'number') {
-        coverageSegments.push(`Fonksiyon: ${functions}%`);
-      }
-      return {
+  const coverageLookup = new Map(
+    (options.coverage ?? []).map((entry) => [entry.requirement.id, entry]),
+  );
+
+  const rows: TraceMatrixRow[] = trace.map((item) => {
+    const coverageEntry = coverageLookup.get(item.requirement.id);
+    const aggregatedCoverage = coverageEntry?.coverage ?? aggregateCoverageFromCode(item.code);
+    const status = coverageEntry?.status ?? determineCoverageStatus(item.code, aggregatedCoverage);
+    const statusMeta = coverageStatusLabels[status];
+
+    return {
+      requirementId: item.requirement.id,
+      requirementTitle: item.requirement.title,
+      requirementStatus: item.requirement.status,
+      tests: item.tests.map((test) => {
+        const meta = testStatusLabels[test.status] ?? { label: test.status ?? 'Bilinmiyor', className: 'badge-soft' };
+        return {
+          id: test.testId,
+          name: test.name ?? test.testId,
+          statusLabel: meta.label,
+          statusClass: meta.className,
+        };
+      }),
+      codePaths: item.code.map((code) => ({
         path: code.path,
-        coverageLabel: coverageSegments.length ? coverageSegments.join(' | ') : undefined,
-      };
-    }),
-  }));
+        coverageLabel: formatCoverageMetrics({
+          statements: code.coverage?.statements,
+          branches: code.coverage?.branches,
+          functions: code.coverage?.functions,
+        }),
+      })),
+      coverage: {
+        status,
+        statusLabel: statusMeta.label,
+        statusClass: statusMeta.className,
+        coverageLabel: formatCoverageMetrics(aggregatedCoverage),
+      },
+    };
+  });
 
   const summaryMetrics: LayoutSummaryMetric[] = [
     { label: 'Gereksinimler', value: rows.length.toString() },
@@ -721,6 +951,26 @@ export const renderTraceMatrix = (
       value: rows.reduce((acc, row) => acc + row.codePaths.length, 0).toString(),
     },
   ];
+
+  if (rows.length > 0) {
+    const coverageCounts = rows.reduce<Record<CoverageStatus, number>>(
+      (acc, row) => {
+        acc[row.coverage?.status ?? 'missing'] += 1;
+        return acc;
+      },
+      { covered: 0, partial: 0, missing: 0 },
+    );
+    summaryMetrics.push({
+      label: 'Kapsamlı Gereksinimler',
+      value: `${coverageCounts.covered}/${rows.length}`,
+      accent: coverageCounts.covered === rows.length,
+    });
+    summaryMetrics.push({
+      label: 'Eksik/Kısmi Kapsam',
+      value: `${coverageCounts.partial}/${coverageCounts.missing}`,
+      accent: coverageCounts.partial + coverageCounts.missing > 0,
+    });
+  }
 
   return renderLayout({
     title: options.title ?? 'SOIPack İzlenebilirlik Matrisi',

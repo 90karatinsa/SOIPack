@@ -88,6 +88,10 @@ describe('@soipack/adapters', () => {
     expect(data.totals.statements).toMatchObject({ covered: 2, total: 3, percentage: 66.67 });
     expect(data.totals.branches).toMatchObject({ covered: 1, total: 2, percentage: 50 });
     expect(data.totals.functions).toMatchObject({ covered: 1, total: 1, percentage: 100 });
+    expect(data.testMap).toEqual({
+      'AuthSuite#passes': ['/workspace/app/src/file1.ts'],
+      'AuditSuite#records': ['/workspace/app/src/file2.ts'],
+    });
   });
 
   it('imports Cobertura coverage summaries', async () => {
@@ -100,6 +104,10 @@ describe('@soipack/adapters', () => {
     expect(data.totals.statements).toMatchObject({ covered: 2, total: 3, percentage: 66.67 });
     expect(data.totals.branches).toMatchObject({ covered: 1, total: 2, percentage: 50 });
     expect(data.totals.functions).toMatchObject({ covered: 2, total: 2, percentage: 100 });
+    expect(data.testMap).toEqual({
+      'AuthSuite#passes': ['src/example.ts'],
+      'AuditSuite#records': ['src/other.ts'],
+    });
   });
 
   it('collects git metadata', async () => {
