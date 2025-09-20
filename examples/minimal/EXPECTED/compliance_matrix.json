@@ -1,0 +1,212 @@
+{
+  "generatedAt": "2024-03-01T10:00:00.000Z",
+  "version": "0.1.0",
+  "stats": {
+    "objectives": {
+      "total": 12,
+      "covered": 2,
+      "partial": 9,
+      "missing": 1
+    },
+    "requirements": {
+      "total": 13
+    },
+    "tests": {
+      "total": 12,
+      "passed": 9,
+      "failed": 2,
+      "skipped": 1
+    },
+    "codePaths": {
+      "total": 0
+    }
+  },
+  "objectives": [
+    {
+      "id": "A-1-Obj1",
+      "status": "partial",
+      "description": "Define PSAC addressing software lifecycle and level.",
+      "area": "Plans",
+      "satisfiedArtifacts": [
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [
+        "PSAC"
+      ],
+      "evidenceRefs": [
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "A-2-Obj2",
+      "status": "partial",
+      "description": "Establish software development plan tailoring activities.",
+      "area": "Plans",
+      "satisfiedArtifacts": [
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [
+        "SDP"
+      ],
+      "evidenceRefs": [
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "A-3-Obj3",
+      "status": "partial",
+      "description": "Capture verification plan with objectives and responsibilities.",
+      "area": "Plans",
+      "satisfiedArtifacts": [
+        "Test Sonuçları"
+      ],
+      "missingArtifacts": [
+        "SVR"
+      ],
+      "evidenceRefs": [
+        "testResults:examples/minimal/results.xml"
+      ]
+    },
+    {
+      "id": "A-4-Obj4",
+      "status": "missing",
+      "description": "Specify configuration management activities and audits.",
+      "area": "Plans",
+      "satisfiedArtifacts": [],
+      "missingArtifacts": [
+        "Konfigürasyon İndeksi",
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "B-1-Obj5",
+      "status": "partial",
+      "description": "Define software coding standards to guide implementation.",
+      "area": "Standards",
+      "satisfiedArtifacts": [
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": [
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "B-2-Obj6",
+      "status": "partial",
+      "description": "Establish verification standards for reviews and testing.",
+      "area": "Standards",
+      "satisfiedArtifacts": [
+        "Kod Kapsamı"
+      ],
+      "missingArtifacts": [
+        "SVR"
+      ],
+      "evidenceRefs": [
+        "coverage:examples/minimal/lcov.info",
+        "coverage:examples/minimal/coverage.xml"
+      ]
+    },
+    {
+      "id": "C-1-Obj7",
+      "status": "partial",
+      "description": "Review high level requirements for correctness and safety.",
+      "area": "Reviews",
+      "satisfiedArtifacts": [
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": [
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "C-2-Obj8",
+      "status": "partial",
+      "description": "Ensure low level requirements trace to high level intent.",
+      "area": "Reviews",
+      "satisfiedArtifacts": [
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": [
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "C-3-Obj9",
+      "status": "partial",
+      "description": "Confirm source code meets standards and requirements.",
+      "area": "Reviews",
+      "satisfiedArtifacts": [
+        "Sürüm Kontrol"
+      ],
+      "missingArtifacts": [
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": [
+        "git:."
+      ]
+    },
+    {
+      "id": "D-1-Obj10",
+      "status": "covered",
+      "description": "Execute requirements-based tests covering nominal cases.",
+      "area": "Verification",
+      "satisfiedArtifacts": [
+        "Test Sonuçları",
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [],
+      "evidenceRefs": [
+        "testResults:examples/minimal/results.xml",
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    },
+    {
+      "id": "D-2-Obj11",
+      "status": "partial",
+      "description": "Perform robustness testing for off-nominal behavior.",
+      "area": "Verification",
+      "satisfiedArtifacts": [
+        "Test Sonuçları"
+      ],
+      "missingArtifacts": [
+        "Analiz Raporu"
+      ],
+      "evidenceRefs": [
+        "testResults:examples/minimal/results.xml"
+      ]
+    },
+    {
+      "id": "E-1-Obj12",
+      "status": "covered",
+      "description": "Demonstrate structural coverage achieves required level.",
+      "area": "Coverage",
+      "satisfiedArtifacts": [
+        "Kod Kapsamı",
+        "İzlenebilirlik"
+      ],
+      "missingArtifacts": [],
+      "evidenceRefs": [
+        "coverage:examples/minimal/lcov.info",
+        "coverage:examples/minimal/coverage.xml",
+        "traceability:examples/minimal/requirements.csv",
+        "traceability:examples/minimal/spec.reqif"
+      ]
+    }
+  ]
+}

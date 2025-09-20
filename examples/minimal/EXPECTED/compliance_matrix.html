@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>SOIPack Demo Avionics Uyum Matrisi</title>
+    <style>
+      
+  :root {
+    color-scheme: light;
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    background: #f3f5f9;
+    color: #0f172a;
+  }
+
+  .report-header {
+    background: linear-gradient(135deg, #0f172a, #1d2b64);
+    color: #f8fafc;
+    padding: 32px 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .report-header h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 600;
+  }
+
+  .report-meta {
+    margin: 0;
+    font-size: 14px;
+    opacity: 0.9;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .summary-card {
+    background: rgba(15, 23, 42, 0.35);
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .summary-card strong {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  main {
+    padding: 32px 48px 48px;
+  }
+
+  .section {
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+    padding: 24px 28px;
+    margin-bottom: 32px;
+  }
+
+  .section h2 {
+    margin-top: 0;
+    font-size: 20px;
+    color: #1e293b;
+  }
+
+  .section-lead {
+    color: #475569;
+    margin-bottom: 16px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-bottom: 2px solid #e2e8f0;
+    padding: 12px;
+  }
+
+  td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 14px 12px;
+    vertical-align: top;
+  }
+
+  .cell-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .cell-subtitle {
+    font-size: 13px;
+    color: #334155;
+    margin-top: 4px;
+  }
+
+  .cell-description {
+    color: #475569;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #e2e8f0;
+    color: #0f172a;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .badge-soft {
+    background: rgba(15, 23, 42, 0.08);
+  }
+
+  .badge-critical {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .status-covered {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .status-partial {
+    background: #fef9c3;
+    color: #854d0e;
+  }
+
+  .status-missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .muted {
+    color: #64748b;
+    font-size: 13px;
+  }
+
+  .list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+    display: grid;
+    gap: 12px;
+  }
+
+  .code-pill {
+    display: inline-block;
+    padding: 4px 10px;
+    background: #eef2ff;
+    color: #312e81;
+    border-radius: 8px;
+    font-size: 12px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .gap-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .gap-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    min-height: 180px;
+  }
+
+  .gap-card h3 {
+    margin-top: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  footer {
+    padding: 0 48px 32px;
+    color: #475569;
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  @media print {
+    body {
+      background: #ffffff;
+    }
+
+    footer {
+      display: none;
+    }
+  }
+
+      @page {
+        margin: 25mm 20mm;
+        size: A4;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="report-header">
+      <div>
+        <h1>SOIPack Demo Avionics Uyum Matrisi</h1>
+        
+          <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
+        
+        <p class="report-meta">Kanıt Manifest ID: <strong>N/A</strong></p>
+        <p class="report-meta">Rapor Tarihi: 2024-03-01 10:00 UTC</p>
+      </div>
+      <div class="summary-grid">
+        
+          <div class="summary-card">
+            <span>Hedefler</span>
+            <strong>12</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Tamamlanan</span>
+            <strong>2</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Kısmi</span>
+            <strong>9</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Eksik</span>
+            <strong>1</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Testler</span>
+            <strong>12</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Kod Yolları</span>
+            <strong>0</strong>
+          </div>
+        
+      </div>
+    </header>
+    <main>
+      <section class="section">
+    <h2>Uyum Matrisi</h2>
+    <p class="section-lead">
+      Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Hedef</th>
+          <th>Durum</th>
+          <th>Sağlanan Kanıtlar</th>
+          <th>Eksik Kanıtlar</th>
+          <th>Kanıt Referansları</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+          <tr>
+            <td>
+              <div class="cell-title">A-1-Obj1</div>
+              
+                <div class="cell-subtitle">Plans</div>
+              
+              
+                <div class="cell-description">Define PSAC addressing software lifecycle and level.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">PSAC</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">A-2-Obj2</div>
+              
+                <div class="cell-subtitle">Plans</div>
+              
+              
+                <div class="cell-description">Establish software development plan tailoring activities.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">SDP</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">A-3-Obj3</div>
+              
+                <div class="cell-subtitle">Plans</div>
+              
+              
+                <div class="cell-description">Capture verification plan with objectives and responsibilities.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Test Sonuçları</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">SVR</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">testResults:examples/minimal/results.xml</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">A-4-Obj4</div>
+              
+                <div class="cell-subtitle">Plans</div>
+              
+              
+                <div class="cell-description">Specify configuration management activities and audits.</div>
+              
+            </td>
+            <td><span class="badge status-missing">Eksik</span></td>
+            <td>
+              
+                <span class="muted">Kanıt bulunmuyor</span>
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Konfigürasyon İndeksi</span>
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <span class="muted">Referans bulunmuyor</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">B-1-Obj5</div>
+              
+                <div class="cell-subtitle">Standards</div>
+              
+              
+                <div class="cell-description">Define software coding standards to guide implementation.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">B-2-Obj6</div>
+              
+                <div class="cell-subtitle">Standards</div>
+              
+              
+                <div class="cell-description">Establish verification standards for reviews and testing.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Kod Kapsamı</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">SVR</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">coverage:examples/minimal/lcov.info</li>
+                  
+                    <li class="muted">coverage:examples/minimal/coverage.xml</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">C-1-Obj7</div>
+              
+                <div class="cell-subtitle">Reviews</div>
+              
+              
+                <div class="cell-description">Review high level requirements for correctness and safety.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">C-2-Obj8</div>
+              
+                <div class="cell-subtitle">Reviews</div>
+              
+              
+                <div class="cell-description">Ensure low level requirements trace to high level intent.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">C-3-Obj9</div>
+              
+                <div class="cell-subtitle">Reviews</div>
+              
+              
+                <div class="cell-description">Confirm source code meets standards and requirements.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Sürüm Kontrol</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">git:.</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">D-1-Obj10</div>
+              
+                <div class="cell-subtitle">Verification</div>
+              
+              
+                <div class="cell-description">Execute requirements-based tests covering nominal cases.</div>
+              
+            </td>
+            <td><span class="badge status-covered">Tam Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Test Sonuçları</span>
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                <span class="muted">Eksik kanıt yok</span>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">testResults:examples/minimal/results.xml</li>
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">D-2-Obj11</div>
+              
+                <div class="cell-subtitle">Verification</div>
+              
+              
+                <div class="cell-description">Perform robustness testing for off-nominal behavior.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Test Sonuçları</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Analiz Raporu</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">testResults:examples/minimal/results.xml</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">E-1-Obj12</div>
+              
+                <div class="cell-subtitle">Coverage</div>
+              
+              
+                <div class="cell-description">Demonstrate structural coverage achieves required level.</div>
+              
+            </td>
+            <td><span class="badge status-covered">Tam Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Kod Kapsamı</span>
+                
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                <span class="muted">Eksik kanıt yok</span>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">coverage:examples/minimal/lcov.info</li>
+                  
+                    <li class="muted">coverage:examples/minimal/coverage.xml</li>
+                  
+                    <li class="muted">traceability:examples/minimal/requirements.csv</li>
+                  
+                    <li class="muted">traceability:examples/minimal/spec.reqif</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+      </tbody>
+    </table>
+  </section>
+    </main>
+    <footer>
+      <span>SOIPack Sürüm 0.1.0</span>
+      <span>Sayfa numarası PDF çıktısında görüntülenecektir.</span>
+    </footer>
+  </body>
+</html>

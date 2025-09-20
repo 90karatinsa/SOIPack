@@ -1,0 +1,14 @@
+{
+  "psac": {
+    "title": "Plan for Software Aspects of Certification",
+    "path": "artifacts/PSAC.pdf"
+  },
+  "sdp": {
+    "title": "Software Development Plan",
+    "path": "artifacts/SDP.pdf"
+  },
+  "svp": {
+    "title": "Software Verification Plan",
+    "path": "artifacts/SVVP.pdf"
+  }
+}

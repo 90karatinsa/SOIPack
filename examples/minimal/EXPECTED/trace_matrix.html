@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>SOIPack Demo Avionics İzlenebilirlik Matrisi</title>
+    <style>
+      
+  :root {
+    color-scheme: light;
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    background: #f3f5f9;
+    color: #0f172a;
+  }
+
+  .report-header {
+    background: linear-gradient(135deg, #0f172a, #1d2b64);
+    color: #f8fafc;
+    padding: 32px 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .report-header h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 600;
+  }
+
+  .report-meta {
+    margin: 0;
+    font-size: 14px;
+    opacity: 0.9;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .summary-card {
+    background: rgba(15, 23, 42, 0.35);
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .summary-card strong {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  main {
+    padding: 32px 48px 48px;
+  }
+
+  .section {
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+    padding: 24px 28px;
+    margin-bottom: 32px;
+  }
+
+  .section h2 {
+    margin-top: 0;
+    font-size: 20px;
+    color: #1e293b;
+  }
+
+  .section-lead {
+    color: #475569;
+    margin-bottom: 16px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-bottom: 2px solid #e2e8f0;
+    padding: 12px;
+  }
+
+  td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 14px 12px;
+    vertical-align: top;
+  }
+
+  .cell-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .cell-subtitle {
+    font-size: 13px;
+    color: #334155;
+    margin-top: 4px;
+  }
+
+  .cell-description {
+    color: #475569;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #e2e8f0;
+    color: #0f172a;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .badge-soft {
+    background: rgba(15, 23, 42, 0.08);
+  }
+
+  .badge-critical {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .status-covered {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .status-partial {
+    background: #fef9c3;
+    color: #854d0e;
+  }
+
+  .status-missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .muted {
+    color: #64748b;
+    font-size: 13px;
+  }
+
+  .list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+    display: grid;
+    gap: 12px;
+  }
+
+  .code-pill {
+    display: inline-block;
+    padding: 4px 10px;
+    background: #eef2ff;
+    color: #312e81;
+    border-radius: 8px;
+    font-size: 12px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .gap-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .gap-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    min-height: 180px;
+  }
+
+  .gap-card h3 {
+    margin-top: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  footer {
+    padding: 0 48px 32px;
+    color: #475569;
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  @media print {
+    body {
+      background: #ffffff;
+    }
+
+    footer {
+      display: none;
+    }
+  }
+
+      @page {
+        margin: 25mm 20mm;
+        size: A4;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="report-header">
+      <div>
+        <h1>SOIPack Demo Avionics İzlenebilirlik Matrisi</h1>
+        
+          <p class="report-meta">Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü</p>
+        
+        <p class="report-meta">Kanıt Manifest ID: <strong>N/A</strong></p>
+        <p class="report-meta">Rapor Tarihi: 2024-03-01 10:00 UTC</p>
+      </div>
+      <div class="summary-grid">
+        
+          <div class="summary-card">
+            <span>Gereksinimler</span>
+            <strong>13</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Bağlı Testler</span>
+            <strong>14</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Kod İzleri</span>
+            <strong>0</strong>
+          </div>
+        
+      </div>
+    </header>
+    <main>
+      <section class="section">
+    <h2>İzlenebilirlik Matrisi</h2>
+    <p class="section-lead">
+      Gereksinimlerin testler ve kod yolları ile eşleşmesini gösteren izlenebilirlik tablosu. Denetlenebilirliği sağlamak için kanıt zincirini ortaya koyar.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Gereksinim</th>
+          <th>Test Kanıtları</th>
+          <th>Kod Yolları</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-1</div>
+              <div class="cell-description">Flight control computer shall start within 5s</div>
+              
+                <div class="muted">Durum: verified</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">boot completes within five seconds</div>
+                      <div class="muted">poweron#boot completes within five seconds</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-1-RFC</div>
+              <div class="cell-description">FCC boot sequence requirements refined from hardware ICD.</div>
+              
+                <div class="muted">Durum: draft</div>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Test kaydı yok</span>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-10</div>
+              <div class="cell-description">Guarded switch status shall be debounced</div>
+              
+                <div class="muted">Durum: verified</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-partial">Atlandı</span>
+                      <div class="cell-title">guarded switch debounce</div>
+                      <div class="muted">io#guarded switch debounce</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-2</div>
+              <div class="cell-description">Display health indication on primary screen</div>
+              
+                <div class="muted">Durum: implemented</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">health banner visible</div>
+                      <div class="muted">display#health banner visible</div>
+                    </li>
+                  
+                    <li>
+                      <span class="badge status-missing">Başarısız</span>
+                      <div class="cell-title">health banner updates on faults</div>
+                      <div class="muted">display#health banner updates on faults</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-3</div>
+              <div class="cell-description">Compute crosscheck between dual ADC inputs</div>
+              
+                <div class="muted">Durum: draft</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">crosscheck delta within limits</div>
+                      <div class="muted">adc#crosscheck delta within limits</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-4</div>
+              <div class="cell-description">Provide aural alert when autopilot disengages</div>
+              
+                <div class="muted">Durum: verified</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">aural tone plays on autopilot disengage</div>
+                      <div class="muted">alerts#aural tone plays on autopilot disengage</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-4-DER</div>
+              <div class="cell-description">Derived requirement clarifying the aural alert tone duration.</div>
+              
+                <div class="muted">Durum: draft</div>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Test kaydı yok</span>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-5</div>
+              <div class="cell-description">Record configuration signatures to maintenance log</div>
+              
+                <div class="muted">Durum: approved</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-missing">Başarısız</span>
+                      <div class="cell-title">configuration hash stored</div>
+                      <div class="muted">maintenance#configuration hash stored</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-6</div>
+              <div class="cell-description">Support dual power supply switchover</div>
+              
+                <div class="muted">Durum: verified</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">psu switchover under load</div>
+                      <div class="muted">power#psu switchover under load</div>
+                    </li>
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">psu switchover jitter</div>
+                      <div class="muted">power#psu switchover jitter</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-7</div>
+              <div class="cell-description">Provide BIT coverage summary</div>
+              
+                <div class="muted">Durum: implemented</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-missing">Başarısız</span>
+                      <div class="cell-title">health banner updates on faults</div>
+                      <div class="muted">display#health banner updates on faults</div>
+                    </li>
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">psu switchover jitter</div>
+                      <div class="muted">power#psu switchover jitter</div>
+                    </li>
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">bit coverage summary exported</div>
+                      <div class="muted">maintenance#bit coverage summary exported</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-8</div>
+              <div class="cell-description">Expose ARINC-429 maintenance port</div>
+              
+                <div class="muted">Durum: verified</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">arinc429 port enumerates</div>
+                      <div class="muted">maintenance#arinc429 port enumerates</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-9</div>
+              <div class="cell-description">Log reason codes for mode transitions</div>
+              
+                <div class="muted">Durum: draft</div>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li>
+                      <span class="badge status-covered">Başarılı</span>
+                      <div class="cell-title">mode transition logging</div>
+                      <div class="muted">logger#mode transition logging</div>
+                    </li>
+                  
+                </ul>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">REQ-9-DER</div>
+              <div class="cell-description">Derived logging requirement referencing ARP4754A traceability guidance.</div>
+              
+                <div class="muted">Durum: draft</div>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Test kaydı yok</span>
+              
+            </td>
+            <td>
+              
+                <span class="muted">Kod bağlantısı yok</span>
+              
+            </td>
+          </tr>
+        
+      </tbody>
+    </table>
+  </section>
+    </main>
+    <footer>
+      <span>SOIPack Sürüm 0.1.0</span>
+      <span>Sayfa numarası PDF çıktısında görüntülenecektir.</span>
+    </footer>
+  </body>
+</html>

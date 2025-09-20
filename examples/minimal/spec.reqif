@@ -2,10 +2,24 @@
 <REQ-IF>
   <CORE-CONTENT>
     <SPEC-OBJECTS>
-      <SPEC-OBJECT IDENTIFIER="REQ-3">
+      <SPEC-OBJECT IDENTIFIER="REQ-1-RFC">
         <VALUES>
           <ATTRIBUTE-VALUE-XHTML>
-            <THE-VALUE>Log flight faults for post-flight review.</THE-VALUE>
+            <THE-VALUE>FCC boot sequence requirements refined from hardware ICD.</THE-VALUE>
+          </ATTRIBUTE-VALUE-XHTML>
+        </VALUES>
+      </SPEC-OBJECT>
+      <SPEC-OBJECT IDENTIFIER="REQ-4-DER">
+        <VALUES>
+          <ATTRIBUTE-VALUE-XHTML>
+            <THE-VALUE>Derived requirement clarifying the aural alert tone duration.</THE-VALUE>
+          </ATTRIBUTE-VALUE-XHTML>
+        </VALUES>
+      </SPEC-OBJECT>
+      <SPEC-OBJECT IDENTIFIER="REQ-9-DER">
+        <VALUES>
+          <ATTRIBUTE-VALUE-XHTML>
+            <THE-VALUE>Derived logging requirement referencing ARP4754A traceability guidance.</THE-VALUE>
           </ATTRIBUTE-VALUE-XHTML>
         </VALUES>
       </SPEC-OBJECT>

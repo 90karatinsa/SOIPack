@@ -1,16 +1,66 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="DemoSuite" tests="3" failures="0" skipped="1">
-  <testcase classname="DemoSuite" name="verifies requirement 1" time="1.2">
+<testsuite name="DemoIntegration" tests="12" failures="2" skipped="1" time="31.8">
+  <testcase classname="poweron" name="boot completes within five seconds" time="3.2">
     <properties>
       <property name="requirements" value="REQ-1" />
     </properties>
   </testcase>
-  <testcase classname="DemoSuite" name="verifies requirements 2 and 3" time="1.5">
+  <testcase classname="display" name="health banner visible" time="2.1">
     <properties>
-      <property name="requirements" value="REQ-2 REQ-3" />
+      <property name="requirements" value="REQ-2" />
     </properties>
   </testcase>
-  <testcase classname="DemoSuite" name="pending failure case" time="0.5">
-    <skipped />
+  <testcase classname="display" name="health banner updates on faults" time="2.9">
+    <properties>
+      <property name="requirements" value="REQ-2 REQ-7" />
+    </properties>
+    <failure message="Indicator did not refresh within 200 ms">Polling interval exceeded specification.</failure>
+  </testcase>
+  <testcase classname="adc" name="crosscheck delta within limits" time="1.4">
+    <properties>
+      <property name="requirements" value="REQ-3" />
+    </properties>
+  </testcase>
+  <testcase classname="alerts" name="aural tone plays on autopilot disengage" time="1.1">
+    <properties>
+      <property name="requirements" value="REQ-4" />
+    </properties>
+  </testcase>
+  <testcase classname="maintenance" name="configuration hash stored" time="3.8">
+    <properties>
+      <property name="requirements" value="REQ-5" />
+    </properties>
+    <failure message="Hash entry missing from log">Expected signature entry was not written to the maintenance channel.</failure>
+  </testcase>
+  <testcase classname="power" name="psu switchover under load" time="4.4">
+    <properties>
+      <property name="requirements" value="REQ-6" />
+    </properties>
+  </testcase>
+  <testcase classname="power" name="psu switchover jitter" time="3.6">
+    <properties>
+      <property name="requirements" value="REQ-6 REQ-7" />
+    </properties>
+  </testcase>
+  <testcase classname="maintenance" name="bit coverage summary exported" time="2.7">
+    <properties>
+      <property name="requirements" value="REQ-7" />
+    </properties>
+  </testcase>
+  <testcase classname="maintenance" name="arinc429 port enumerates" time="2.0">
+    <properties>
+      <property name="requirements" value="REQ-8" />
+    </properties>
+  </testcase>
+  <testcase classname="logger" name="mode transition logging" time="2.3">
+    <properties>
+      <property name="requirements" value="REQ-9" />
+    </properties>
+  </testcase>
+  <testcase classname="io" name="guarded switch debounce" time="2.3">
+    <properties>
+      <property name="requirements" value="REQ-10" />
+    </properties>
+    <skipped message="Manual verification pending" />
   </testcase>
 </testsuite>
