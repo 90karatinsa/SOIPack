@@ -1,9 +1,13 @@
 import fs, { promises as fsPromises } from 'fs';
 import os from 'os';
 import path from 'path';
+import { Writable } from 'stream';
 
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import request from 'supertest';
+import pino from 'pino';
+
+import { Registry } from 'prom-client';
 
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
@@ -30,6 +34,31 @@ const demoLicensePath = path.resolve(__dirname, '../../..', 'data', 'licenses', 
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const createLogCapture = () => {
+  const entries: Array<Record<string, unknown>> = [];
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      const lines = chunk
+        .toString()
+        .split(/\n/u)
+        .map((line: string) => line.trim())
+        .filter((line: string) => line.length > 0);
+      lines.forEach((line: string) => {
+        try {
+          entries.push(JSON.parse(line));
+        } catch {
+          // Ignore malformed log lines.
+        }
+      });
+      callback();
+    },
+  });
+  const logger = pino({ level: 'info', base: undefined }, stream);
+  return { logger, entries };
+};
+
+const flushLogs = async () => new Promise((resolve) => setImmediate(resolve));
+
 const waitForJobCompletion = async (
   app: ReturnType<typeof createServer>,
   token: string,
@@ -53,6 +82,27 @@ const waitForJobCompletion = async (
   throw new Error(`Job ${jobId} did not complete in time: ${JSON.stringify(lastResponse?.body)}`);
 };
 
+const waitForJobFailure = async (
+  app: ReturnType<typeof createServer>,
+  token: string,
+  jobId: string,
+) => {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const response = await request(app)
+      .get(`/v1/jobs/${jobId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    if (response.body.status === 'failed') {
+      return response.body;
+    }
+    if (response.body.status === 'completed') {
+      throw new Error(`Job ${jobId} unexpectedly completed.`);
+    }
+    await delay(250);
+  }
+  throw new Error(`Job ${jobId} did not fail in time.`);
+};
+
 jest.setTimeout(60000);
 
 describe('@soipack/server REST API', () => {
@@ -70,6 +120,8 @@ describe('@soipack/server REST API', () => {
   let privateKey: KeyLike;
   let jwks: JSONWebKeySet;
   let baseConfig: ServerConfig;
+  let metricsRegistry: Registry;
+  let logEntries: Array<Record<string, unknown>>;
 
   const createAccessToken = async ({
     tenant = tenantId,
@@ -114,6 +166,10 @@ describe('@soipack/server REST API', () => {
     publicJwk.kid = 'test-key';
     jwks = { keys: [publicJwk] };
 
+    const logCapture = createLogCapture();
+    logEntries = logCapture.entries;
+    metricsRegistry = new Registry();
+
     baseConfig = {
       auth: {
         issuer,
@@ -132,11 +188,20 @@ describe('@soipack/server REST API', () => {
         reports: { maxAgeMs: 0 },
         packages: { maxAgeMs: 0 },
       },
+      logger: logCapture.logger,
+      metricsRegistry,
     };
 
     app = createServer(baseConfig);
 
     token = await createAccessToken();
+  });
+
+  beforeEach(() => {
+    metricsRegistry?.resetMetrics();
+    if (logEntries) {
+      logEntries.length = 0;
+    }
   });
 
   afterAll(async () => {
@@ -206,6 +271,7 @@ describe('@soipack/server REST API', () => {
       uploadPolicies: {
         jira: { maxSizeBytes: 32, allowedMimeTypes: ['application/json'] },
       },
+      metricsRegistry: new Registry(),
     });
 
     try {
@@ -240,6 +306,7 @@ describe('@soipack/server REST API', () => {
       ...baseConfig,
       storageDir: scanningStorageDir,
       scanner: scanningScanner,
+      metricsRegistry: new Registry(),
     });
 
     try {
@@ -568,6 +635,187 @@ describe('@soipack/server REST API', () => {
     await expect(fsPromises.access(deletedWorkspace, fs.constants.F_OK)).rejects.toThrow();
     const deletedUploads = path.join(storageDir, 'uploads', tenantId, firstImport.body.id);
     await expect(fsPromises.access(deletedUploads, fs.constants.F_OK)).rejects.toThrow();
+  });
+
+  it('emits structured logs and metrics for successful jobs', async () => {
+    const projectVersion = `1.0.${Date.now()}`;
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Observability Project')
+      .field('projectVersion', projectVersion)
+      .expect(202);
+
+    const importId: string = importResponse.body.id;
+    await waitForJobCompletion(app, token, importId);
+
+    const reuseResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Observability Project')
+      .field('projectVersion', projectVersion)
+      .expect(200);
+
+    expect(reuseResponse.body.reused).toBe(true);
+
+    await flushLogs();
+
+    const creationLog = logEntries.find(
+      (entry) => entry.event === 'job_created' && entry.jobId === importId,
+    ) as Record<string, unknown> | undefined;
+    expect(creationLog).toMatchObject({ tenantId, kind: 'import' });
+
+    const completionLog = logEntries.find(
+      (entry) => entry.event === 'job_completed' && entry.jobId === importId,
+    ) as Record<string, unknown> | undefined;
+    expect(completionLog).toBeDefined();
+    expect(typeof completionLog?.durationMs).toBe('number');
+
+    const reuseLog = logEntries.find(
+      (entry) => entry.event === 'job_reused' && entry.jobId === importId,
+    ) as Record<string, unknown> | undefined;
+    expect(reuseLog).toMatchObject({ tenantId, kind: 'import', status: 'completed' });
+
+    const metricsResponse = await request(app)
+      .get('/metrics')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const metricsLines = metricsResponse.text.split('\n');
+
+    const durationLine = metricsLines.find((line) =>
+      line.startsWith(
+        `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="import",status="completed"}`,
+      ),
+    );
+    expect(durationLine).toBe(
+      `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="import",status="completed"} 1`,
+    );
+
+    const queueLine = metricsLines.find((line) =>
+      line.startsWith(`soipack_job_queue_depth{tenantId="${tenantId}"}`),
+    );
+    expect(queueLine).toBe(`soipack_job_queue_depth{tenantId="${tenantId}"} 0`);
+
+    const errorLine = metricsLines.find((line) =>
+      line.startsWith(`soipack_job_errors_total{tenantId="${tenantId}",kind="import"`),
+    );
+    if (errorLine) {
+      expect(errorLine.endsWith(' 0')).toBe(true);
+    }
+  });
+
+  it('emits metrics and logs when a job fails', async () => {
+    const failingStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-fail-test-'));
+    const failingSigningKeyPath = path.join(failingStorageDir, 'signing-key.pem');
+    await fsPromises.writeFile(failingSigningKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
+
+    const failingLogCapture = createLogCapture();
+    const failingRegistry = new Registry();
+
+    const failingApp = createServer({
+      ...baseConfig,
+      storageDir: failingStorageDir,
+      signingKeyPath: failingSigningKeyPath,
+      logger: failingLogCapture.logger,
+      metricsRegistry: failingRegistry,
+    });
+
+    try {
+      const importResponse = await request(failingApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Failing Project')
+        .field('projectVersion', '1.0.0')
+        .expect(202);
+      const importId: string = importResponse.body.id;
+      await waitForJobCompletion(failingApp, token, importId);
+
+      const analyzeResponse = await request(failingApp)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId })
+        .expect(202);
+      const analyzeId: string = analyzeResponse.body.id;
+      await waitForJobCompletion(failingApp, token, analyzeId);
+
+      const reportResponse = await request(failingApp)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ analysisId: analyzeId })
+        .expect(202);
+      const reportId: string = reportResponse.body.id;
+      await waitForJobCompletion(failingApp, token, reportId);
+
+      await fsPromises.rm(failingSigningKeyPath);
+
+      const packResponse = await request(failingApp)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ reportId })
+        .expect(202);
+
+      const failedJob = await waitForJobFailure(failingApp, token, packResponse.body.id);
+      expect(failedJob.status).toBe('failed');
+
+      await flushLogs();
+
+      const packCreationLog = failingLogCapture.entries.find(
+        (entry) => entry.event === 'job_created' && entry.jobId === packResponse.body.id,
+      ) as Record<string, unknown> | undefined;
+      expect(packCreationLog).toMatchObject({ tenantId, kind: 'pack' });
+
+      const failureLog = failingLogCapture.entries.find(
+        (entry) => entry.event === 'job_failed' && entry.jobId === packResponse.body.id,
+      ) as Record<string, unknown> | undefined;
+      expect(failureLog).toMatchObject({ tenantId, kind: 'pack' });
+      expect((failureLog?.error as { code?: string } | undefined)?.code).toBe('PIPELINE_ERROR');
+
+      const metricsResponse = await request(failingApp)
+        .get('/metrics')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const metricsLines = metricsResponse.text.split('\n');
+
+      const failureDurationLine = metricsLines.find((line) =>
+        line.startsWith(
+          `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="pack",status="failed"}`,
+        ),
+      );
+      expect(failureDurationLine).toBe(
+        `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="pack",status="failed"} 1`,
+      );
+
+      const errorLine = metricsLines.find((line) =>
+        line.startsWith(
+          `soipack_job_errors_total{tenantId="${tenantId}",kind="pack",code="PIPELINE_ERROR"}`,
+        ),
+      );
+      expect(errorLine).toBe(
+        `soipack_job_errors_total{tenantId="${tenantId}",kind="pack",code="PIPELINE_ERROR"} 1`,
+      );
+
+      const queueDepthLine = metricsLines.find((line) =>
+        line.startsWith(`soipack_job_queue_depth{tenantId="${tenantId}"}`),
+      );
+      expect(queueDepthLine).toBe(`soipack_job_queue_depth{tenantId="${tenantId}"} 0`);
+    } finally {
+      await fsPromises.rm(failingStorageDir, { recursive: true, force: true });
+    }
   });
 });
 
