@@ -12,6 +12,7 @@ interface JobErrorInfo {
 }
 
 interface InternalJob<T = unknown> {
+  tenantId: string;
   id: string;
   kind: JobKind;
   hash: string;
@@ -38,6 +39,7 @@ export interface JobDetails<T = unknown> extends JobSummary {
 }
 
 interface EnqueueOptions<T> {
+  tenantId: string;
   id: string;
   kind: JobKind;
   hash: string;
@@ -45,6 +47,7 @@ interface EnqueueOptions<T> {
 }
 
 interface AdoptOptions<T> {
+  tenantId: string;
   id: string;
   kind: JobKind;
   hash: string;
@@ -68,14 +71,20 @@ export class JobQueue {
     this.concurrency = Math.max(1, concurrency);
   }
 
-  public enqueue<T>({ id, kind, hash, run }: EnqueueOptions<T>): JobDetails<T> {
-    const existing = this.jobs.get(id);
+  private getKey(tenantId: string, id: string): string {
+    return `${tenantId}:${id}`;
+  }
+
+  public enqueue<T>({ tenantId, id, kind, hash, run }: EnqueueOptions<T>): JobDetails<T> {
+    const key = this.getKey(tenantId, id);
+    const existing = this.jobs.get(key);
     if (existing) {
       return this.toDetails(existing);
     }
 
     const createdAt = new Date();
     const job: InternalJob<T> = {
+      tenantId,
       id,
       kind,
       hash,
@@ -85,7 +94,7 @@ export class JobQueue {
       run,
     };
 
-    this.jobs.set(id, job);
+    this.jobs.set(key, job);
     this.order.push(job);
     this.pending.push(job);
     this.process();
@@ -93,8 +102,9 @@ export class JobQueue {
     return this.toDetails(job);
   }
 
-  public adoptCompleted<T>({ id, kind, hash, createdAt, updatedAt, result }: AdoptOptions<T>): JobDetails<T> {
-    const existing = this.jobs.get(id);
+  public adoptCompleted<T>({ tenantId, id, kind, hash, createdAt, updatedAt, result }: AdoptOptions<T>): JobDetails<T> {
+    const key = this.getKey(tenantId, id);
+    const existing = this.jobs.get(key);
     if (existing) {
       if (existing.status === 'completed' && existing.result === undefined) {
         existing.result = result;
@@ -105,6 +115,7 @@ export class JobQueue {
     const created = new Date(createdAt);
     const updated = updatedAt ? new Date(updatedAt) : created;
     const job: InternalJob<T> = {
+      tenantId,
       id,
       kind,
       hash,
@@ -114,17 +125,17 @@ export class JobQueue {
       result,
     };
 
-    this.jobs.set(id, job);
+    this.jobs.set(key, job);
     this.order.push(job);
     return this.toDetails(job);
   }
 
-  public list(): JobSummary[] {
-    return this.order.map((job) => this.toSummary(job));
+  public list(tenantId: string): JobSummary[] {
+    return this.order.filter((job) => job.tenantId === tenantId).map((job) => this.toSummary(job));
   }
 
-  public get<T = unknown>(id: string): JobDetails<T> | undefined {
-    const job = this.jobs.get(id);
+  public get<T = unknown>(tenantId: string, id: string): JobDetails<T> | undefined {
+    const job = this.jobs.get(this.getKey(tenantId, id));
     if (!job) {
       return undefined;
     }

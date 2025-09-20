@@ -20,12 +20,37 @@ import {
 import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import multer from 'multer';
+import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
+import type { JSONWebKeySet } from 'jose';
 
 import { HttpError } from './errors';
 import { JobDetails, JobQueue, JobSummary } from './queue';
 import { FileSystemStorage, StorageProvider, UploadedFileMap } from './storage';
 
 type FileMap = Record<string, Express.Multer.File[]>;
+
+interface AuthContext {
+  token: string;
+  tenantId: string;
+  subject: string;
+  claims: JWTPayload;
+}
+
+const AUTH_CONTEXT_SYMBOL = Symbol('soipack:auth');
+
+const setAuthContext = (req: Request, context: AuthContext): void => {
+  Reflect.set(req, AUTH_CONTEXT_SYMBOL, context);
+};
+
+const getAuthContext = (req: Request): AuthContext => {
+  const context = Reflect.get(req, AUTH_CONTEXT_SYMBOL) as AuthContext | undefined;
+  if (!context) {
+    throw new HttpError(500, 'AUTH_CONTEXT_MISSING', 'Kimlik doğrulama bağlamı bulunamadı.');
+  }
+  return context;
+};
+
+const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenantId}:${jobId}`;
 
 interface JobLicenseMetadata {
   hash: string;
@@ -42,6 +67,7 @@ interface HashEntry {
 }
 
 interface BaseJobMetadata {
+  tenantId: string;
   id: string;
   hash: string;
   kind: 'import' | 'analyze' | 'report' | 'pack';
@@ -260,8 +286,20 @@ const toLicensePayloadFromMetadata = (metadata: JobLicenseMetadata): LicensePayl
   features: metadata.features?.length ? metadata.features : undefined,
 });
 
+export interface JwtAuthConfig {
+  issuer: string;
+  audience: string;
+  tenantClaim: string;
+  userClaim?: string;
+  scopeClaim?: string;
+  requiredScopes?: string[];
+  jwksUri?: string;
+  jwks?: JSONWebKeySet;
+  clockToleranceSeconds?: number;
+}
+
 export interface ServerConfig {
-  token: string;
+  auth: JwtAuthConfig;
   storageDir: string;
   signingKeyPath: string;
   licensePublicKeyPath: string;
@@ -400,6 +438,7 @@ const adoptJobFromMetadata = (
   switch (metadata.kind) {
     case 'import':
       return queue.adoptCompleted<ImportJobResult>({
+        tenantId: metadata.tenantId,
         id: metadata.id,
         kind: metadata.kind,
         hash: metadata.hash,
@@ -409,6 +448,7 @@ const adoptJobFromMetadata = (
       });
     case 'analyze':
       return queue.adoptCompleted<AnalyzeJobResult>({
+        tenantId: metadata.tenantId,
         id: metadata.id,
         kind: metadata.kind,
         hash: metadata.hash,
@@ -418,6 +458,7 @@ const adoptJobFromMetadata = (
       });
     case 'report':
       return queue.adoptCompleted<ReportJobResult>({
+        tenantId: metadata.tenantId,
         id: metadata.id,
         kind: metadata.kind,
         hash: metadata.hash,
@@ -427,6 +468,7 @@ const adoptJobFromMetadata = (
       });
     case 'pack':
       return queue.adoptCompleted<PackJobResult>({
+        tenantId: metadata.tenantId,
         id: metadata.id,
         kind: metadata.kind,
         hash: metadata.hash,
@@ -442,6 +484,7 @@ const adoptJobFromMetadata = (
 const locateJobMetadata = async (
   storage: StorageProvider,
   queue: JobQueue,
+  tenantId: string,
   jobId: string,
   onMetadata?: (metadata: JobMetadata) => void,
 ): Promise<JobDetails<unknown> | undefined> => {
@@ -453,10 +496,14 @@ const locateJobMetadata = async (
   ];
 
   for (const location of locations) {
-    const candidateDir = path.join(location.dir, jobId);
+    const tenantDir = path.join(location.dir, tenantId);
+    const candidateDir = path.join(tenantDir, jobId);
     const metadataPath = path.join(candidateDir, METADATA_FILE);
     if (await storage.fileExists(metadataPath)) {
       const metadata = await readJobMetadata<JobMetadata>(storage, candidateDir);
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen iş bu kiracıya ait değil.');
+      }
       if (onMetadata) {
         onMetadata(metadata);
       }
@@ -470,42 +517,43 @@ const locateJobMetadata = async (
 const runRetentionSweep = async (
   storage: StorageProvider,
   queue: JobQueue,
+  tenantId: string,
   retention: RetentionConfig,
   jobLicenses: Map<string, VerifiedLicense>,
   now: Date = new Date(),
 ): Promise<RetentionStats[]> => {
   const descriptors: Array<{
     target: RetentionTarget;
-    directory: string;
-    cleanup: (id: string) => Promise<void>;
+    baseDirectory: string;
+    cleanup: (tenant: string, id: string) => Promise<void>;
   }> = [
     {
       target: 'uploads',
-      directory: storage.directories.workspaces,
-      cleanup: async (id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.workspaces, id));
-        await storage.removeDirectory(path.join(storage.directories.uploads, id));
+      baseDirectory: storage.directories.workspaces,
+      cleanup: async (tenant: string, id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.workspaces, tenant, id));
+        await storage.removeDirectory(path.join(storage.directories.uploads, tenant, id));
       },
     },
     {
       target: 'analyses',
-      directory: storage.directories.analyses,
-      cleanup: async (id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.analyses, id));
+      baseDirectory: storage.directories.analyses,
+      cleanup: async (tenant: string, id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.analyses, tenant, id));
       },
     },
     {
       target: 'reports',
-      directory: storage.directories.reports,
-      cleanup: async (id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.reports, id));
+      baseDirectory: storage.directories.reports,
+      cleanup: async (tenant: string, id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.reports, tenant, id));
       },
     },
     {
       target: 'packages',
-      directory: storage.directories.packages,
-      cleanup: async (id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.packages, id));
+      baseDirectory: storage.directories.packages,
+      cleanup: async (tenant: string, id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.packages, tenant, id));
       },
     },
   ];
@@ -519,19 +567,21 @@ const runRetentionSweep = async (
       continue;
     }
 
-    const ids = await storage.listSubdirectories(descriptor.directory);
+    const tenantDirectory = path.join(descriptor.baseDirectory, tenantId);
+    const hasTenantDirectory = await storage.fileExists(tenantDirectory);
+    const ids = hasTenantDirectory ? await storage.listSubdirectories(tenantDirectory) : [];
     let removed = 0;
     let retained = 0;
     let skipped = 0;
 
     for (const id of ids) {
-      const job = queue.get(id);
+      const job = queue.get(tenantId, id);
       if (job && (job.status === 'queued' || job.status === 'running')) {
         skipped += 1;
         continue;
       }
 
-      const jobDir = path.join(descriptor.directory, id);
+      const jobDir = path.join(tenantDirectory, id);
       const metadataPath = path.join(jobDir, METADATA_FILE);
       if (!(await storage.fileExists(metadataPath))) {
         skipped += 1;
@@ -559,8 +609,8 @@ const runRetentionSweep = async (
       }
 
       try {
-        await descriptor.cleanup(id);
-        jobLicenses.delete(id);
+        await descriptor.cleanup(tenantId, id);
+        jobLicenses.delete(createScopedJobKey(tenantId, id));
         removed += 1;
       } catch {
         skipped += 1;
@@ -584,19 +634,109 @@ const createAsyncHandler = <T extends Request>(
     }
   };
 
-const createAuthMiddleware = (token: string) => {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    const header = req.get('authorization');
-    if (!header || !header.startsWith('Bearer ')) {
-      next(new HttpError(401, 'UNAUTHORIZED', 'Bearer kimlik doğrulaması gerekiyor.'));
-      return;
+const createAuthMiddleware = (config: JwtAuthConfig) => {
+  const { jwks, jwksUri } = config;
+  const keyStore = jwks
+    ? createLocalJWKSet(jwks)
+    : jwksUri
+    ? createRemoteJWKSet(new URL(jwksUri))
+    : null;
+
+  if (!keyStore) {
+    throw new Error('Kimlik doğrulama yapılandırmasında jwksUri veya jwks tanımlanmalıdır.');
+  }
+
+  const tenantClaim = config.tenantClaim;
+  const userClaim = config.userClaim ?? 'sub';
+  const scopeClaim = config.scopeClaim ?? 'scope';
+  const requiredScopes = (config.requiredScopes ?? []).map((scope) => scope.trim()).filter(Boolean);
+  const scopeSet = new Set(requiredScopes);
+  const clockTolerance = config.clockToleranceSeconds ?? 5;
+  const tenantPattern = /^[A-Za-z0-9._-]+$/;
+
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const header = req.get('authorization');
+      if (!header || !header.startsWith('Bearer ')) {
+        throw new HttpError(401, 'UNAUTHORIZED', 'Bearer kimlik doğrulaması gerekiyor.');
+      }
+
+      const token = header.slice('Bearer '.length).trim();
+      if (!token) {
+        throw new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.');
+      }
+
+      let payload: JWTPayload;
+      try {
+        const result = await jwtVerify(token, keyStore, {
+          issuer: config.issuer,
+          audience: config.audience,
+          clockTolerance,
+        });
+        payload = result.payload;
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        throw new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.', { cause });
+      }
+
+      const tenantValue = payload[tenantClaim];
+      if (typeof tenantValue !== 'string' || tenantValue.trim() === '') {
+        throw new HttpError(403, 'TENANT_REQUIRED', 'Belirteç geçerli bir tenant kimliği içermiyor.');
+      }
+
+      if (!tenantPattern.test(tenantValue)) {
+        throw new HttpError(
+          403,
+          'TENANT_INVALID',
+          'Tenant kimliği yalnızca harf, sayı, nokta, alt çizgi ve tire içerebilir.',
+        );
+      }
+
+      const tenantId = tenantValue;
+
+      const userValue = payload[userClaim] ?? payload.sub;
+      if (typeof userValue !== 'string' || userValue.trim() === '') {
+        throw new HttpError(403, 'USER_REQUIRED', 'Belirteç geçerli bir kullanıcı kimliği içermiyor.');
+      }
+      const subject = userValue;
+
+      if (scopeSet.size > 0) {
+        const scopeSources: unknown[] = [payload[scopeClaim]];
+        if (scopeClaim !== 'scope') {
+          scopeSources.push(payload.scope);
+        }
+        if (scopeClaim !== 'scp') {
+          scopeSources.push(payload.scp);
+        }
+
+        const scopes: string[] = [];
+        scopeSources.forEach((value) => {
+          if (typeof value === 'string') {
+            scopes.push(...value.split(/\s+/u).filter(Boolean));
+          } else if (Array.isArray(value)) {
+            value.forEach((entry) => {
+              if (typeof entry === 'string') {
+                scopes.push(...entry.split(/\s+/u).filter(Boolean));
+              }
+            });
+          }
+        });
+
+        const missing = [...scopeSet].filter((scope) => !scopes.includes(scope));
+        if (missing.length > 0) {
+          throw new HttpError(
+            403,
+            'INSUFFICIENT_SCOPE',
+            `Belirteç gerekli yetkileri içermiyor: ${missing.join(', ')}`,
+          );
+        }
+      }
+
+      setAuthContext(req, { token, tenantId, subject, claims: payload });
+      next();
+    } catch (error) {
+      next(error);
     }
-    const provided = header.slice('Bearer '.length).trim();
-    if (provided !== token) {
-      next(new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.'));
-      return;
-    }
-    next();
   };
 };
 
@@ -635,28 +775,35 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
 
-  const registerJobLicense = (jobId: string, license: VerifiedLicense): void => {
+  const registerJobLicense = (tenantId: string, jobId: string, license: VerifiedLicense): void => {
     licenseCache.set(license.hash, license.payload);
-    jobLicenses.set(jobId, license);
+    jobLicenses.set(createScopedJobKey(tenantId, jobId), license);
   };
 
-  const ensureJobLicense = (jobId: string, license: VerifiedLicense): void => {
-    const existing = jobLicenses.get(jobId);
+  const ensureJobLicense = (tenantId: string, jobId: string, license: VerifiedLicense): void => {
+    const key = createScopedJobKey(tenantId, jobId);
+    const existing = jobLicenses.get(key);
     if (existing) {
       if (existing.hash !== license.hash) {
         throw new HttpError(401, 'LICENSE_MISMATCH', 'İş mevcut lisansla eşleşmiyor.');
       }
       return;
     }
-    registerJobLicense(jobId, license);
+    registerJobLicense(tenantId, jobId, license);
   };
 
-  const hydrateJobLicense = (metadata: JobMetadata): void => {
+  const hydrateJobLicense = (metadata: JobMetadata, expectedTenantId?: string): void => {
     if (!metadata.license) {
       throw new HttpError(500, 'LICENSE_METADATA_MISSING', 'İş lisans bilgisi eksik.');
     }
+    if (!metadata.tenantId) {
+      throw new HttpError(500, 'TENANT_METADATA_MISSING', 'İş tenant bilgisi eksik.');
+    }
+    if (expectedTenantId && metadata.tenantId !== expectedTenantId) {
+      throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen iş bu kiracıya ait değil.');
+    }
     const payload = toLicensePayloadFromMetadata(metadata.license);
-    registerJobLicense(metadata.id, { hash: metadata.license.hash, payload });
+    registerJobLicense(metadata.tenantId, metadata.id, { hash: metadata.license.hash, payload });
   };
 
   const requireLicenseToken = async (req: Request, fileMap?: FileMap): Promise<VerifiedLicense> => {
@@ -688,7 +835,7 @@ export const createServer = (config: ServerConfig): Express => {
   const app = express();
   app.use(express.json());
 
-  const requireAuth = createAuthMiddleware(config.token);
+  const requireAuth = createAuthMiddleware(config.auth);
   const queue = new JobQueue();
 
   app.get(
@@ -701,8 +848,9 @@ export const createServer = (config: ServerConfig): Express => {
   app.get(
     '/v1/jobs',
     requireAuth,
-    createAsyncHandler(async (_req, res) => {
-      const jobs = queue.list().map(serializeJobSummary);
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const jobs = queue.list(tenantId).map(serializeJobSummary);
       res.json({ jobs });
     }),
   );
@@ -711,11 +859,14 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/jobs/:id',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
-      const job = queue.get(id) ?? (await locateJobMetadata(storage, queue, id, hydrateJobLicense));
+      const job =
+        queue.get(tenantId, id) ??
+        (await locateJobMetadata(storage, queue, tenantId, id, (metadata) => hydrateJobLicense(metadata, tenantId)));
       if (!job) {
         throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
       }
@@ -726,8 +877,9 @@ export const createServer = (config: ServerConfig): Express => {
   app.post(
     '/v1/admin/cleanup',
     requireAuth,
-    createAsyncHandler(async (_req, res) => {
-      const summary = await runRetentionSweep(storage, queue, config.retention ?? {}, jobLicenses);
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const summary = await runRetentionSweep(storage, queue, tenantId, config.retention ?? {}, jobLicenses);
       res.json({ status: 'ok', summary });
     }),
   );
@@ -748,6 +900,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     importFields,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const fileMap = (req.files as FileMap) ?? {};
       const license = await requireLicenseToken(req, fileMap);
       const body = req.body as Record<string, unknown>;
@@ -778,20 +931,20 @@ export const createServer = (config: ServerConfig): Express => {
 
       const hash = computeHash(hashEntries);
       const importId = createJobId(hash);
-      const workspaceDir = path.join(directories.workspaces, importId);
+      const workspaceDir = path.join(directories.workspaces, tenantId, importId);
       const metadataPath = path.join(workspaceDir, METADATA_FILE);
 
-      const existingJob = queue.get<ImportJobResult>(importId);
+      const existingJob = queue.get<ImportJobResult>(tenantId, importId);
       if (existingJob) {
-        ensureJobLicense(importId, license);
+        ensureJobLicense(tenantId, importId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
-        hydrateJobLicense(metadata);
-        ensureJobLicense(metadata.id, license);
+        hydrateJobLicense(metadata, tenantId);
+        ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
@@ -801,6 +954,7 @@ export const createServer = (config: ServerConfig): Express => {
       const level = asCertificationLevel(stringFields.level);
 
       const job = queue.enqueue<ImportJobResult>({
+        tenantId,
         id: importId,
         kind: 'import',
         hash,
@@ -808,7 +962,7 @@ export const createServer = (config: ServerConfig): Express => {
           await storage.ensureDirectory(workspaceDir);
 
           try {
-            const persisted = await storage.persistUploads(importId, uploadedFiles);
+            const persisted = await storage.persistUploads(path.join(tenantId, importId), uploadedFiles);
             const importOptions: ImportOptions = {
               output: workspaceDir,
               jira: persisted.jira?.[0],
@@ -825,6 +979,7 @@ export const createServer = (config: ServerConfig): Express => {
 
             const result = await runImport(importOptions);
             const metadata: ImportJobMetadata = {
+              tenantId,
               id: importId,
               hash,
               kind: 'import',
@@ -850,13 +1005,13 @@ export const createServer = (config: ServerConfig): Express => {
             return toImportResult(storage, metadata);
           } catch (error) {
             await storage.removeDirectory(workspaceDir);
-            await storage.removeDirectory(path.join(directories.uploads, importId));
+            await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
             throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
           }
         },
       });
 
-      registerJobLicense(importId, license);
+      registerJobLicense(tenantId, importId, license);
       respondWithJob(res, job);
     }),
   );
@@ -865,6 +1020,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/analyze',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       const body = req.body as {
         importId?: string;
@@ -877,7 +1033,7 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'importId alanı zorunludur.');
       }
 
-      const workspaceDir = path.join(directories.workspaces, body.importId);
+      const workspaceDir = path.join(directories.workspaces, tenantId, body.importId);
       await assertDirectoryExists(storage, workspaceDir, 'Çalışma alanı');
 
       const workspace = await storage.readJson<ImportWorkspace>(
@@ -901,26 +1057,27 @@ export const createServer = (config: ServerConfig): Express => {
         ].filter((entry) => entry.value !== undefined) as HashEntry[],
       );
       const analyzeId = createJobId(hash);
-      const analysisDir = path.join(directories.analyses, analyzeId);
+      const analysisDir = path.join(directories.analyses, tenantId, analyzeId);
       const metadataPath = path.join(analysisDir, METADATA_FILE);
 
-      const existingJob = queue.get<AnalyzeJobResult>(analyzeId);
+      const existingJob = queue.get<AnalyzeJobResult>(tenantId, analyzeId);
       if (existingJob) {
-        ensureJobLicense(analyzeId, license);
+        ensureJobLicense(tenantId, analyzeId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
-        hydrateJobLicense(metadata);
-        ensureJobLicense(metadata.id, license);
+        hydrateJobLicense(metadata, tenantId);
+        ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<AnalyzeJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
 
       const job = queue.enqueue<AnalyzeJobResult>({
+        tenantId,
         id: analyzeId,
         kind: 'analyze',
         hash,
@@ -938,6 +1095,7 @@ export const createServer = (config: ServerConfig): Express => {
             const result = await runAnalyze(analyzeOptions);
 
             const metadata: AnalyzeJobMetadata = {
+              tenantId,
               id: analyzeId,
               hash,
               kind: 'analyze',
@@ -969,7 +1127,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
-      registerJobLicense(analyzeId, license);
+      registerJobLicense(tenantId, analyzeId, license);
       respondWithJob(res, job);
     }),
   );
@@ -978,13 +1136,14 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/report',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       const body = req.body as { analysisId?: string; manifestId?: string };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
       }
 
-      const analysisDir = path.join(directories.analyses, body.analysisId);
+      const analysisDir = path.join(directories.analyses, tenantId, body.analysisId);
       await assertDirectoryExists(storage, analysisDir, 'Analiz çıktısı');
 
       const hashEntries: HashEntry[] = [{ key: 'analysisId', value: body.analysisId }];
@@ -993,26 +1152,27 @@ export const createServer = (config: ServerConfig): Express => {
       }
       const hash = computeHash(hashEntries);
       const reportId = createJobId(hash);
-      const reportDir = path.join(directories.reports, reportId);
+      const reportDir = path.join(directories.reports, tenantId, reportId);
       const metadataPath = path.join(reportDir, METADATA_FILE);
 
-      const existingJob = queue.get<ReportJobResult>(reportId);
+      const existingJob = queue.get<ReportJobResult>(tenantId, reportId);
       if (existingJob) {
-        ensureJobLicense(reportId, license);
+        ensureJobLicense(tenantId, reportId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
-        hydrateJobLicense(metadata);
-        ensureJobLicense(metadata.id, license);
+        hydrateJobLicense(metadata, tenantId);
+        ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ReportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
 
       const job = queue.enqueue<ReportJobResult>({
+        tenantId,
         id: reportId,
         kind: 'report',
         hash,
@@ -1027,6 +1187,7 @@ export const createServer = (config: ServerConfig): Express => {
             const result = await runReport(reportOptions);
 
             const metadata: ReportJobMetadata = {
+              tenantId,
               id: reportId,
               hash,
               kind: 'report',
@@ -1059,7 +1220,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
-      registerJobLicense(reportId, license);
+      registerJobLicense(tenantId, reportId, license);
       respondWithJob(res, job);
     }),
   );
@@ -1068,13 +1229,14 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/pack',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       const body = req.body as { reportId?: string; packageName?: string };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
       }
 
-      const reportDir = path.join(directories.reports, body.reportId);
+      const reportDir = path.join(directories.reports, tenantId, body.reportId);
       await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
 
       const hashEntries: HashEntry[] = [
@@ -1083,26 +1245,27 @@ export const createServer = (config: ServerConfig): Express => {
       ];
       const hash = computeHash(hashEntries);
       const packId = createJobId(hash);
-      const packageDir = path.join(directories.packages, packId);
+      const packageDir = path.join(directories.packages, tenantId, packId);
       const metadataPath = path.join(packageDir, METADATA_FILE);
 
-      const existingJob = queue.get<PackJobResult>(packId);
+      const existingJob = queue.get<PackJobResult>(tenantId, packId);
       if (existingJob) {
-        ensureJobLicense(packId, license);
+        ensureJobLicense(tenantId, packId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
-        hydrateJobLicense(metadata);
-        ensureJobLicense(metadata.id, license);
+        hydrateJobLicense(metadata, tenantId);
+        ensureJobLicense(tenantId, metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<PackJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
 
       const job = queue.enqueue<PackJobResult>({
+        tenantId,
         id: packId,
         kind: 'pack',
         hash,
@@ -1119,6 +1282,7 @@ export const createServer = (config: ServerConfig): Express => {
             const result = await runPack(packOptions);
 
             const metadata: PackJobMetadata = {
+              tenantId,
               id: packId,
               hash,
               kind: 'pack',
@@ -1146,7 +1310,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
-      registerJobLicense(packId, license);
+      registerJobLicense(tenantId, packId, license);
       respondWithJob(res, job);
     }),
   );
@@ -1155,17 +1319,23 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/reports/:id/:asset(*)',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
       const { id, asset } = req.params as { id?: string; asset?: string };
       if (!id || !asset) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Rapor kimliği ve dosya yolu belirtilmelidir.');
       }
 
-      const reportDir = path.join(directories.reports, id);
+      const reportDir = path.join(directories.reports, tenantId, id);
       await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
 
       const metadataPath = path.join(reportDir, METADATA_FILE);
       if (!(await storage.fileExists(metadataPath))) {
         throw new HttpError(404, 'NOT_FOUND', 'İstenen rapor bulunamadı.');
+      }
+
+      const metadata = await storage.readJson<ReportJobMetadata>(metadataPath);
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen rapor bu kiracıya ait değil.');
       }
 
       const safeAsset = asset.replace(/^\/+/, '');

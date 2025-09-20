@@ -2,6 +2,7 @@ import fs, { promises as fsPromises } from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import request from 'supertest';
 
 import { Manifest } from '@soipack/core';
@@ -54,12 +55,45 @@ const waitForJobCompletion = async (
 jest.setTimeout(60000);
 
 describe('@soipack/server REST API', () => {
-  const token = 'test-token';
+  const tenantId = 'tenant-a';
+  const issuer = 'https://auth.test';
+  const audience = 'soipack-api';
+  const tenantClaim = 'tenant';
+  const requiredScope = 'soipack.api';
+  let token: string;
   let storageDir: string;
   let app: ReturnType<typeof createServer>;
   let signingKeyPath: string;
   let licensePublicKeyPath: string;
   let licenseHeader: string;
+  let privateKey: KeyLike;
+  let jwks: JSONWebKeySet;
+
+  const createAccessToken = async ({
+    tenant = tenantId,
+    subject = 'user-1',
+    scope = requiredScope,
+    expiresIn = '2h',
+  }: {
+    tenant?: string;
+    subject?: string;
+    scope?: string | null;
+    expiresIn?: string | number;
+  } = {}): Promise<string> => {
+    const payload: Record<string, unknown> = { [tenantClaim]: tenant };
+    if (scope) {
+      payload.scope = scope;
+    }
+
+    return new SignJWT(payload)
+      .setProtectedHeader({ alg: 'RS256', kid: jwks.keys[0].kid })
+      .setIssuer(issuer)
+      .setAudience(audience)
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime(expiresIn)
+      .sign(privateKey);
+  };
 
   beforeAll(async () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
@@ -69,8 +103,24 @@ describe('@soipack/server REST API', () => {
     await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
     const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
     licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
+
+    const { publicKey, privateKey: generatedPrivateKey } = await generateKeyPair('RS256');
+    privateKey = generatedPrivateKey;
+    const publicJwk = (await exportJWK(publicKey)) as JWK;
+    publicJwk.use = 'sig';
+    publicJwk.alg = 'RS256';
+    publicJwk.kid = 'test-key';
+    jwks = { keys: [publicJwk] };
+
     app = createServer({
-      token,
+      auth: {
+        issuer,
+        audience,
+        tenantClaim,
+        jwks,
+        requiredScopes: [requiredScope],
+        clockToleranceSeconds: 0,
+      },
       storageDir,
       signingKeyPath,
       licensePublicKeyPath,
@@ -81,6 +131,8 @@ describe('@soipack/server REST API', () => {
         packages: { maxAgeMs: 0 },
       },
     });
+
+    token = await createAccessToken();
   });
 
   afterAll(async () => {
@@ -89,6 +141,25 @@ describe('@soipack/server REST API', () => {
 
   it('rejects unauthorized requests', async () => {
     const response = await request(app).post('/v1/import').expect(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('rejects tokens missing required scopes', async () => {
+    const otherScopeToken = await createAccessToken({ scope: 'other.scope' });
+    const response = await request(app)
+      .get('/v1/jobs')
+      .set('Authorization', `Bearer ${otherScopeToken}`)
+      .expect(403);
+    expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('rejects expired tokens', async () => {
+    const shortLivedToken = await createAccessToken({ expiresIn: '1s' });
+    await delay(1600);
+    const response = await request(app)
+      .get('/v1/jobs')
+      .set('Authorization', `Bearer ${shortLivedToken}`)
+      .expect(401);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
@@ -143,7 +214,7 @@ describe('@soipack/server REST API', () => {
     expect(importJob.result.outputs.workspace).toMatch(/^workspaces\//);
     expect(Array.isArray(importJob.result.warnings)).toBe(true);
 
-    const uploadDir = path.join(storageDir, 'uploads', importResponse.body.id);
+    const uploadDir = path.join(storageDir, 'uploads', tenantId, importResponse.body.id);
     await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).resolves.toBeUndefined();
 
     const importList = await request(app)
@@ -200,6 +271,13 @@ describe('@soipack/server REST API', () => {
     const reportJob = await waitForJobCompletion(app, token, reportQueued.body.id);
     expect(reportJob.result.outputs.complianceHtml).toMatch(/^reports\//);
 
+    const otherTenantToken = await createAccessToken({ tenant: 'tenant-b' });
+    const crossTenantJob = await request(app)
+      .get(`/v1/jobs/${importResponse.body.id}`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(crossTenantJob.body.error.code).toBe('JOB_NOT_FOUND');
+
     const reportReuse = await request(app)
       .post('/v1/report')
       .set('Authorization', `Bearer ${token}`)
@@ -246,6 +324,12 @@ describe('@soipack/server REST API', () => {
 
     expect(reportAsset.text).toContain('<html');
 
+    const forbiddenAsset = await request(app)
+      .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(forbiddenAsset.body.error.code).toBe('NOT_FOUND');
+
     const cleanupResponse = await request(app)
       .post('/v1/admin/cleanup')
       .set('Authorization', `Bearer ${token}`)
@@ -264,16 +348,22 @@ describe('@soipack/server REST API', () => {
 
     await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).rejects.toThrow();
     await expect(
-      fsPromises.access(path.join(storageDir, 'workspaces', importResponse.body.id), fs.constants.F_OK),
+      fsPromises.access(
+        path.join(storageDir, 'workspaces', tenantId, importResponse.body.id),
+        fs.constants.F_OK,
+      ),
     ).rejects.toThrow();
     await expect(
-      fsPromises.access(path.join(storageDir, 'analyses', analyzeQueued.body.id), fs.constants.F_OK),
+      fsPromises.access(
+        path.join(storageDir, 'analyses', tenantId, analyzeQueued.body.id),
+        fs.constants.F_OK,
+      ),
     ).rejects.toThrow();
     await expect(
-      fsPromises.access(path.join(storageDir, 'reports', reportQueued.body.id), fs.constants.F_OK),
+      fsPromises.access(path.join(storageDir, 'reports', tenantId, reportQueued.body.id), fs.constants.F_OK),
     ).rejects.toThrow();
     await expect(
-      fsPromises.access(path.join(storageDir, 'packages', packQueued.body.id), fs.constants.F_OK),
+      fsPromises.access(path.join(storageDir, 'packages', tenantId, packQueued.body.id), fs.constants.F_OK),
     ).rejects.toThrow();
   });
 });

@@ -3,16 +3,69 @@ import process from 'process';
 
 import dotenv from 'dotenv';
 
-import { RetentionConfig, createServer } from './index';
+import { JwtAuthConfig, RetentionConfig, createServer } from './index';
 
 dotenv.config();
 
-const token = process.env.SOIPACK_API_TOKEN;
-
-if (!token) {
+const authIssuer = process.env.SOIPACK_AUTH_ISSUER;
+if (!authIssuer) {
   // eslint-disable-next-line no-console
-  console.error('SOIPACK_API_TOKEN ortam değişkeni tanımlanmalıdır.');
+  console.error('SOIPACK_AUTH_ISSUER ortam değişkeni tanımlanmalıdır.');
   process.exit(1);
+}
+
+const authAudience = process.env.SOIPACK_AUTH_AUDIENCE;
+if (!authAudience) {
+  // eslint-disable-next-line no-console
+  console.error('SOIPACK_AUTH_AUDIENCE ortam değişkeni tanımlanmalıdır.');
+  process.exit(1);
+}
+
+const authJwksUri = process.env.SOIPACK_AUTH_JWKS_URI;
+if (!authJwksUri) {
+  // eslint-disable-next-line no-console
+  console.error('SOIPACK_AUTH_JWKS_URI ortam değişkeni tanımlanmalıdır.');
+  process.exit(1);
+}
+
+const authTenantClaim = process.env.SOIPACK_AUTH_TENANT_CLAIM ?? 'tenant';
+const authUserClaim = process.env.SOIPACK_AUTH_USER_CLAIM;
+const authScopeClaim = process.env.SOIPACK_AUTH_SCOPE_CLAIM;
+const authRequiredScopes = process.env.SOIPACK_AUTH_REQUIRED_SCOPES
+  ?.split(',')
+  .map((scope) => scope.trim())
+  .filter((scope) => scope.length > 0);
+
+const clockToleranceSource = process.env.SOIPACK_AUTH_CLOCK_TOLERANCE_SECONDS;
+let authClockToleranceSeconds: number | undefined;
+if (clockToleranceSource) {
+  const parsed = Number.parseFloat(clockToleranceSource);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error('SOIPACK_AUTH_CLOCK_TOLERANCE_SECONDS sıfır veya pozitif bir sayı olmalıdır.');
+    process.exit(1);
+  }
+  authClockToleranceSeconds = parsed;
+}
+
+const authConfig: JwtAuthConfig = {
+  issuer: authIssuer,
+  audience: authAudience,
+  tenantClaim: authTenantClaim,
+  jwksUri: authJwksUri,
+};
+
+if (authUserClaim) {
+  authConfig.userClaim = authUserClaim;
+}
+if (authScopeClaim) {
+  authConfig.scopeClaim = authScopeClaim;
+}
+if (authRequiredScopes && authRequiredScopes.length > 0) {
+  authConfig.requiredScopes = authRequiredScopes;
+}
+if (authClockToleranceSeconds !== undefined) {
+  authConfig.clockToleranceSeconds = authClockToleranceSeconds;
 }
 
 const storageDir = process.env.SOIPACK_STORAGE_DIR
@@ -82,7 +135,13 @@ if (packagesDays !== undefined) {
   retention.packages = { maxAgeMs: packagesDays };
 }
 
-const app = createServer({ token, storageDir, signingKeyPath, licensePublicKeyPath, retention });
+const app = createServer({
+  auth: authConfig,
+  storageDir,
+  signingKeyPath,
+  licensePublicKeyPath,
+  retention,
+});
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console
