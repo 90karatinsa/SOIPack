@@ -1,4 +1,8 @@
+import { execFile } from 'child_process';
+import os from 'os';
 import path from 'path';
+import { promises as fs } from 'fs';
+import { promisify } from 'util';
 
 import {
   importCobertura,
@@ -11,7 +15,30 @@ import {
   toRequirement,
 } from './index';
 
+const execFileAsync = promisify(execFile);
+
+const createGitRepository = async (): Promise<string> => {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-git-'));
+
+  await execFileAsync('git', ['init'], { cwd: repoRoot });
+  await execFileAsync('git', ['checkout', '-b', 'main'], { cwd: repoRoot });
+  await execFileAsync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
+  await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
+
+  await fs.writeFile(path.join(repoRoot, 'README.md'), '# Test Repository\n', 'utf8');
+  await execFileAsync('git', ['add', 'README.md'], { cwd: repoRoot });
+  await execFileAsync('git', ['commit', '-m', 'Initial commit'], { cwd: repoRoot });
+
+  return repoRoot;
+};
+
 describe('@soipack/adapters', () => {
+  const tempRepos: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(tempRepos.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
   it('normalizes supported artifacts to lowercase', () => {
     const adapter = registerAdapter({
       name: 'JUnit XML',
@@ -157,17 +184,56 @@ describe('@soipack/adapters', () => {
     });
   });
 
-  it('collects git metadata', async () => {
-    const { data, warnings } = await importGitMetadata(path.resolve(__dirname, '../../..'));
+  it('collects rich git metadata for clean repositories', async () => {
+    const repoRoot = await createGitRepository();
+    tempRepos.push(repoRoot);
+
+    await execFileAsync('git', ['remote', 'add', 'origin', 'https://example.com/repo.git'], {
+      cwd: repoRoot,
+    });
+
+    const { data, warnings } = await importGitMetadata(repoRoot);
 
     expect(warnings).toHaveLength(0);
     expect(data).not.toBeNull();
     expect(data).toEqual(
       expect.objectContaining({
         hash: expect.any(String),
-        author: expect.any(String),
-        date: expect.any(String),
+        author: 'Test User',
+        branches: ['main'],
+        tags: [],
+        dirty: false,
+        remoteOrigins: ['https://example.com/repo.git'],
       }),
     );
+  });
+
+  it('captures tags that point to the current commit', async () => {
+    const repoRoot = await createGitRepository();
+    tempRepos.push(repoRoot);
+
+    await execFileAsync('git', ['tag', 'v1.0.0'], { cwd: repoRoot });
+
+    const { data } = await importGitMetadata(repoRoot);
+
+    expect(data).not.toBeNull();
+    expect(data?.tags).toEqual(['v1.0.0']);
+  });
+
+  it('marks dirty working trees and reports warnings', async () => {
+    const repoRoot = await createGitRepository();
+    tempRepos.push(repoRoot);
+
+    await execFileAsync('git', ['remote', 'add', 'origin', 'https://example.com/repo.git'], {
+      cwd: repoRoot,
+    });
+
+    await fs.appendFile(path.join(repoRoot, 'README.md'), 'Modified\n', 'utf8');
+
+    const { data, warnings } = await importGitMetadata(repoRoot);
+
+    expect(data).not.toBeNull();
+    expect(data?.dirty).toBe(true);
+    expect(warnings).toContain('Repository has uncommitted changes.');
   });
 });

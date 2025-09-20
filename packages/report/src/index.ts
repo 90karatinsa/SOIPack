@@ -1,4 +1,4 @@
-import type { CoverageMetric } from '@soipack/adapters';
+import type { BuildInfo, CoverageMetric } from '@soipack/adapters';
 import { Objective, ObjectiveArtifactType, Requirement, TestCase } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -26,6 +26,7 @@ interface BaseReportOptions {
   manifestId?: string;
   generatedAt?: string;
   version?: string;
+  git?: BuildInfo | null;
 }
 
 interface LayoutContext extends BaseReportOptions {
@@ -117,6 +118,7 @@ export interface ComplianceMatrixJson {
     coverage?: RequirementCoverageStatus['coverage'];
     codePaths: string[];
   }>;
+  git?: BuildInfo | null;
 }
 
 export interface ComplianceMatrixResult {
@@ -301,6 +303,31 @@ const baseStyles = `
     margin: 0;
     font-size: 14px;
     opacity: 0.9;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  .report-meta + .report-meta {
+    margin-top: 4px;
+  }
+
+  .report-meta-flag {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(248, 113, 113, 0.35);
+    color: #fee2e2;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .git-meta {
+    margin-top: 16px;
+    display: grid;
+    gap: 4px;
   }
 
   .summary-grid {
@@ -507,6 +534,39 @@ const layoutTemplate = nunjucks.compile(
         {% endif %}
         <p class="report-meta">Kanıt Manifest ID: <strong>{{ manifestId or 'N/A' }}</strong></p>
         <p class="report-meta">Rapor Tarihi: {{ generatedAt }}</p>
+        {% if git %}
+          <div class="git-meta">
+            <p class="report-meta">
+              Commit:
+              <strong>
+                <abbr title="{{ git.hash }}">{{ git.shortHash }}</abbr>
+              </strong>
+              {% if git.dirty %}
+                <span class="report-meta-flag">Kirli</span>
+              {% endif %}
+            </p>
+            {% if git.branches and git.branches.length %}
+              <p class="report-meta">Dallar: {{ git.branches | join(', ') }}</p>
+            {% endif %}
+            {% if git.tags and git.tags.length %}
+              <p class="report-meta">Etiketler: {{ git.tags | join(', ') }}</p>
+            {% endif %}
+            {% if git.remoteOrigins and git.remoteOrigins.length %}
+              <p class="report-meta">Origin: {{ git.remoteOrigins | join(', ') }}</p>
+            {% endif %}
+            {% if git.author or git.formattedDate %}
+              <p class="report-meta">
+                {% if git.author %}Yazar: {{ git.author }}{% endif %}
+                {% if git.formattedDate %}
+                  {% if git.author %} • {% endif %}{{ git.formattedDate }}
+                {% endif %}
+              </p>
+            {% endif %}
+            {% if git.message %}
+              <p class="report-meta">Mesaj: {{ git.message }}</p>
+            {% endif %}
+          </div>
+        {% endif %}
       </div>
       <div class="summary-grid">
         {% for metric in summaryMetrics %}
@@ -760,6 +820,21 @@ const formatDate = (value: string): string => {
   return `${isoDate} ${time} UTC`;
 };
 
+const buildGitContext = (git?: BuildInfo | null) => {
+  if (!git) {
+    return undefined;
+  }
+
+  const shortHash = git.hash ? git.hash.slice(0, 12) : '';
+  const formattedDate = git.date ? formatDate(git.date) : undefined;
+
+  return {
+    ...git,
+    shortHash: shortHash || git.hash,
+    formattedDate,
+  };
+};
+
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, '&amp;')
@@ -814,6 +889,7 @@ const renderLayout = (context: LayoutContext): string => {
     ...context,
     generatedAt: formatDate(context.generatedAt ?? new Date().toISOString()),
     version,
+    git: buildGitContext(context.git),
   });
 };
 
@@ -863,6 +939,7 @@ export const renderComplianceMatrix = (
     summaryMetrics: buildSummaryMetrics(snapshot.stats, snapshot.requirementCoverage),
     content: complianceTemplate.render({ objectives: rows, requirementCoverage: requirementCoverageRows }),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
+    git: options.git,
   });
 
   const json: ComplianceMatrixJson = {
@@ -891,6 +968,7 @@ export const renderComplianceMatrix = (
       coverage: entry.coverage,
       codePaths: entry.codePaths.map((code) => code.path),
     })),
+    git: options.git ?? null,
   };
 
   return { html, json };
@@ -980,6 +1058,7 @@ export const renderTraceMatrix = (
     summaryMetrics,
     content: traceTemplate.render({ rows }),
     subtitle: 'Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü',
+    git: options.git,
   });
 };
 
@@ -1020,6 +1099,7 @@ export const renderGaps = (
     summaryMetrics,
     content: gapsTemplate.render({ categories }),
     subtitle: 'Kanıt eksikliği bulunan alanların özet görünümü',
+    git: options.git,
   });
 };
 

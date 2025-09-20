@@ -36,6 +36,31 @@
     margin: 0;
     font-size: 14px;
     opacity: 0.9;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  .report-meta + .report-meta {
+    margin-top: 4px;
+  }
+
+  .report-meta-flag {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(248, 113, 113, 0.35);
+    color: #fee2e2;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .git-meta {
+    margin-top: 16px;
+    display: grid;
+    gap: 4px;
   }
 
   .summary-grid {
@@ -233,6 +258,19 @@
         
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
+        <div class="git-meta">
+          <p class="report-meta">
+            Commit:
+            <strong>
+              <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
+            </strong>
+          </p>
+          <p class="report-meta">Dallar: main</p>
+          <p class="report-meta">Etiketler: v1.0.0</p>
+          <p class="report-meta">Origin: https://example.com/repo.git</p>
+          <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
+          <p class="report-meta">Mesaj: Add avionics tests</p>
+        </div>
       </div>
       <div class="summary-grid">
         

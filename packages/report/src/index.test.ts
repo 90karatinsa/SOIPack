@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import type { BuildInfo } from '@soipack/adapters';
 import { createRequirement, TestCase } from '@soipack/core';
 
 import {
@@ -21,6 +22,16 @@ describe('@soipack/report', () => {
   const goldenDir = path.resolve(__dirname, '__fixtures__', 'goldens');
   const sanitizeHtml = (value: string): string => value.replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ').trim();
   const hashHtml = (value: string): string => createHash('sha256').update(sanitizeHtml(value)).digest('hex');
+  const gitFixture: BuildInfo = {
+    hash: '1234567890abcdef1234567890abcdef12345678',
+    author: 'Example Dev',
+    date: '2024-02-01T09:00:00Z',
+    message: 'Add avionics tests',
+    branches: ['main'],
+    tags: ['v1.0.0'],
+    dirty: false,
+    remoteOrigins: ['https://example.com/repo.git'],
+  };
 
   it('renders compliance matrix with JSON payload', () => {
     const fixture = createReportFixture();
@@ -28,6 +39,7 @@ describe('@soipack/report', () => {
       manifestId: fixture.manifestId,
       objectivesMetadata: fixture.objectives,
       title: 'Kurumsal Uyum Matrisi',
+      git: gitFixture,
     });
 
     expect(result.json.manifestId).toBe(fixture.manifestId);
@@ -36,10 +48,12 @@ describe('@soipack/report', () => {
     expect(result.json.requirementCoverage).toHaveLength(
       fixture.snapshot.requirementCoverage.length,
     );
+    expect(result.json.git).toEqual(gitFixture);
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
     expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
     expect(result.html).toContain('Kanıt Manifest ID');
+    expect(result.html).toContain('Commit:');
   });
 
   it('renders trace matrix with trace information', () => {
@@ -49,6 +63,7 @@ describe('@soipack/report', () => {
       title: 'Kurumsal İzlenebilirlik Matrisi',
       generatedAt: fixture.snapshot.generatedAt,
       coverage: fixture.snapshot.requirementCoverage,
+      git: gitFixture,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');
@@ -62,6 +77,7 @@ describe('@soipack/report', () => {
       manifestId: fixture.manifestId,
       objectivesMetadata: fixture.objectives,
       title: 'Uyum Boşlukları',
+      git: gitFixture,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'gaps.html'), 'utf-8');
