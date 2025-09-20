@@ -14,7 +14,9 @@
     "lint": "eslint \"{packages,docs}/**/*.{ts,tsx}\" --max-warnings=0",
     "test": "jest",
     "format": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --write",
-    "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check"
+    "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check",
+    "demo": "bash examples/minimal/demo.sh",
+    "demo:test": "node examples/minimal/verify-demo.js"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^6.19.0",

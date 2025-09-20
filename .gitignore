@@ -3,3 +3,6 @@ node_modules
 coverage
 .dist
 packages/*/dist
+examples/minimal/.soipack
+examples/minimal/dist
+examples/minimal/release

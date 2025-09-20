@@ -49,6 +49,15 @@ import { hideBin } from 'yargs/helpers';
 
 import packageInfo from '../package.json';
 
+const fixedTimestampSource = process.env.SOIPACK_DEMO_TIMESTAMP;
+const parsedFixedTimestamp = fixedTimestampSource ? new Date(fixedTimestampSource) : undefined;
+const hasFixedTimestamp = parsedFixedTimestamp !== undefined && !Number.isNaN(parsedFixedTimestamp.getTime());
+
+const getCurrentDate = (): Date =>
+  hasFixedTimestamp ? new Date(parsedFixedTimestamp!.getTime()) : new Date();
+
+const getCurrentTimestamp = (): string => getCurrentDate().toISOString();
+
 interface ImportPaths {
   jira?: string;
   reqif?: string;
@@ -131,7 +140,7 @@ const createEvidence = (
     source,
     path: normalizeRelativePath(filePath),
     summary,
-    timestamp: new Date().toISOString(),
+    timestamp: getCurrentTimestamp(),
   },
 });
 
@@ -314,7 +323,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     evidenceIndex,
     git: gitMetadata,
     metadata: {
-      generatedAt: new Date().toISOString(),
+      generatedAt: getCurrentTimestamp(),
       warnings,
       inputs: normalizedInputs,
       project: options.projectName || options.projectVersion ? {
@@ -422,7 +431,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
         }
       : undefined,
     level,
-    generatedAt: new Date().toISOString(),
+    generatedAt: getCurrentTimestamp(),
   };
 
   await writeJsonFile(snapshotPath, snapshot);
@@ -574,6 +583,8 @@ const createArchive = async (
   inputDir: string,
   manifest: ManifestData,
   outputPath: string,
+  manifestContent: string,
+  signature?: string,
 ): Promise<void> => {
   await ensureDirectory(path.dirname(outputPath));
   const zip = new ZipFile();
@@ -588,10 +599,16 @@ const createArchive = async (
   zip.outputStream.pipe(output);
 
   for (const file of manifest.files) {
-    zip.addFile(path.resolve(inputDir, file.path), file.path);
+    const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
+    zip.addFile(path.resolve(inputDir, file.path), file.path, options);
   }
 
-  zip.addBuffer(Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'), 'manifest.json');
+  zip.addBuffer(Buffer.from(manifestContent, 'utf8'), 'manifest.json');
+  if (signature) {
+    const normalizedSignature = signature.endsWith('\n') ? signature : `${signature}\n`;
+    const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
+    zip.addBuffer(Buffer.from(normalizedSignature, 'utf8'), 'manifest.sig', options);
+  }
   zip.end();
 
   await completion;
@@ -605,19 +622,23 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const files = await listFilesRecursively(inputDir, inputDir);
   const manifest: ManifestData = {
     files,
-    createdAt: new Date().toISOString(),
+    createdAt: getCurrentTimestamp(),
     toolVersion: packageInfo.version,
   };
 
-  const manifestContent = JSON.stringify(manifest);
-  const manifestId = createHash('sha256').update(manifestContent).digest('hex').slice(0, 12);
+  const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
+  const manifestHash = createHash('sha256').update(manifestSerialized).digest('hex');
+  const manifestId = manifestHash.slice(0, 12);
+  const manifestSignature = manifestHash;
 
   const manifestPath = path.join(outputDir, 'manifest.json');
-  await writeJsonFile(manifestPath, manifest);
+  await fsPromises.writeFile(manifestPath, manifestSerialized, 'utf8');
+  const signaturePath = path.join(outputDir, 'manifest.sig');
+  await fsPromises.writeFile(signaturePath, `${manifestSignature}\n`, 'utf8');
 
   const archiveName = options.packageName ?? `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
-  await createArchive(inputDir, manifest, archivePath);
+  await createArchive(inputDir, manifest, archivePath, manifestSerialized, `${manifestSignature}\n`);
 
   return { manifestPath, archivePath, manifestId };
 };

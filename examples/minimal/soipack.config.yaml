@@ -5,7 +5,7 @@ level: "C"
 objectives:
   file: "../../data/objectives/do178c_objectives.min.json"
 inputs:
-  jira: "issues.csv"
+  jira: "requirements.csv"
   reqif: "spec.reqif"
   junit: "results.xml"
   lcov: "lcov.info"
@@ -16,6 +16,9 @@ output:
   analysis: ".soipack/out"
   reports: "dist/reports"
   release: "release"
+artifacts:
+  map: "artifact_map.json"
+  directory: "artifacts"
 pack:
-  name: "soipack-demo.zip"
+  name: "soi-pack-demo.zip"
   input: "dist"

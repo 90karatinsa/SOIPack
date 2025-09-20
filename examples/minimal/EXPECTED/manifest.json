@@ -1,0 +1,34 @@
+{
+  "files": [
+    {
+      "path": "reports/analysis.json",
+      "sha256": "86975191a4f26d9ae2da90a7f6d6995668973c3a893e2cd2f75967649cccbed3"
+    },
+    {
+      "path": "reports/compliance.html",
+      "sha256": "aa98913e8b575da85a869b93b5adbe8091cbf76b4a28d7ea166cf5248e811558"
+    },
+    {
+      "path": "reports/compliance.json",
+      "sha256": "f5e6b0097879ce5fd88dc716b02192cb64d15bfdba0a9b219cc4ba4b95801281"
+    },
+    {
+      "path": "reports/gaps.html",
+      "sha256": "5525833715617176a476b72bbc0dbd3e6e19546e0eb9063c29cf3f4d1e18a9f4"
+    },
+    {
+      "path": "reports/snapshot.json",
+      "sha256": "9413a4617aef46dcee07017c9cd85b123cfc3ccbdd35780cadb1561cb48e5f68"
+    },
+    {
+      "path": "reports/trace.html",
+      "sha256": "0815dc3c8792062c339f355b7085ae53e66ba051ac8a14e067af5e27c60e295b"
+    },
+    {
+      "path": "reports/traces.json",
+      "sha256": "cbcd935099611db4ced9a1f96653a76f88102651b42d394f055697bc26629f06"
+    }
+  ],
+  "createdAt": "2024-03-01T10:00:00.000Z",
+  "toolVersion": "0.1.0"
+}
