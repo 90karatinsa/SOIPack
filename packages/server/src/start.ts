@@ -4,6 +4,8 @@ import process from 'process';
 import dotenv from 'dotenv';
 
 import { JwtAuthConfig, RetentionConfig, createServer } from './index';
+import { createCommandScanner } from './scanner';
+import type { FileScanner } from './scanner';
 
 dotenv.config();
 
@@ -135,12 +137,54 @@ if (packagesDays !== undefined) {
   retention.packages = { maxAgeMs: packagesDays };
 }
 
+let scanner: FileScanner | undefined;
+const scanCommand = process.env.SOIPACK_SCAN_COMMAND;
+if (scanCommand) {
+  const scanArgs = process.env.SOIPACK_SCAN_ARGS
+    ?.split(',')
+    .map((arg) => arg.trim())
+    .filter((arg) => arg.length > 0);
+  const timeoutSource = process.env.SOIPACK_SCAN_TIMEOUT_MS;
+  let timeoutMs: number | undefined;
+  if (timeoutSource) {
+    const parsed = Number.parseInt(timeoutSource, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      // eslint-disable-next-line no-console
+      console.error('SOIPACK_SCAN_TIMEOUT_MS pozitif bir tam sayı olmalıdır.');
+      process.exit(1);
+    }
+    timeoutMs = parsed;
+  }
+
+  const infectedCodesSource = process.env.SOIPACK_SCAN_INFECTED_EXIT_CODES;
+  let infectedExitCodes: number[] | undefined;
+  if (infectedCodesSource) {
+    const parsed = infectedCodesSource
+      .split(',')
+      .map((value) => Number.parseInt(value.trim(), 10))
+      .filter((value) => Number.isFinite(value));
+    if (parsed.length === 0) {
+      // eslint-disable-next-line no-console
+      console.error('SOIPACK_SCAN_INFECTED_EXIT_CODES en az bir tamsayı içermelidir.');
+      process.exit(1);
+    }
+    infectedExitCodes = parsed;
+  }
+
+  scanner = createCommandScanner(scanCommand, {
+    args: scanArgs,
+    timeoutMs,
+    infectedExitCodes,
+  });
+}
+
 const app = createServer({
   auth: authConfig,
   storageDir,
   signingKeyPath,
   licensePublicKeyPath,
   retention,
+  scanner,
 });
 
 app.listen(port, () => {

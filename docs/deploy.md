@@ -67,6 +67,11 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    PORT=3000
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
+   # Antivirüs komut satırı entegrasyonu (örn. ClamAV)
+   SOIPACK_SCAN_COMMAND=/usr/bin/clamdscan
+   SOIPACK_SCAN_ARGS=--fdpass,--no-summary
+   SOIPACK_SCAN_TIMEOUT_MS=60000
+   SOIPACK_SCAN_INFECTED_EXIT_CODES=1
    # Eski çıktıları otomatik temizlemek için gün bazında saklama süreleri (opsiyonel)
    SOIPACK_RETENTION_UPLOADS_DAYS=14
    SOIPACK_RETENTION_ANALYSES_DAYS=30
@@ -154,3 +159,11 @@ BASE_URL=http://localhost:3000
 - Saklama politikaları ayarlıysa (örn. `SOIPACK_RETENTION_*_DAYS`), eski iş çıktıları `POST /v1/admin/cleanup` çağrısıyla temizlenir. JSON yanıtı hangi dizinlerden kaç kaydın silindiğini gösterir.
 
 Bu adımlar tamamlandığında air-gapped ortamda `docker compose up -d` komutuyla SOIPack API'si PDF/rapor üretecek şekilde hazır olacaktır.
+
+## 5. Dosya Taraması ve Antivirüs Servisi
+
+- Sunucu, yüklenen her dosyayı kalıcı depolamaya taşımadan önce geçici bir dizine (örn. `/tmp/soipack-upload-*`) yazar ve içerik türü/payload boyutlarını alan bazında doğrular.
+- `SOIPACK_SCAN_COMMAND` ortam değişkeni tanımlandığında her dosya bu komuta parametre olarak **dosya yoluyla** iletilir. Komut 0 ile dönerse yükleme temiz kabul edilir, `SOIPACK_SCAN_INFECTED_EXIT_CODES` listesindeki kodlardan biri ile dönerse yükleme tehdit olarak işaretlenir ve HTTP 422 hatası verilir.
+- Tarama komutu zaman aşımına uğrarsa veya 0/tehdit kodları dışında bir çıkış kodu üretirse istek HTTP 502 hatasıyla reddedilir. Varsayılan zaman aşımı `SOIPACK_SCAN_TIMEOUT_MS` değeri ile milisaniye cinsinden yapılandırılabilir.
+- `SOIPACK_SCAN_ARGS` listesinde (virgül ile ayrılmış) belirtilen ek parametreler her çağrıda komuta iletilir. ClamAV için önerilen değerler: `SOIPACK_SCAN_COMMAND=/usr/bin/clamdscan` ve `SOIPACK_SCAN_ARGS=--fdpass,--no-summary`.
+- Tarama servisinin `SOIPACK` konteyneri tarafından erişilebilir olması, gerekli imza/güncelleme işlemlerinin operasyon ekiplerince yönetilmesi ve yükleme başına en fazla dosya boyutu limitlerini (örn. lisans dosyaları için 512 KB, analiz girdileri için 25 MB) karşılayacak performansı sağlaması gerekir.
