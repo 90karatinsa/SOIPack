@@ -26,7 +26,13 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker save soipack/server:latest | gzip > soipack-server.tar.gz
    ```
-6. Aşağıdaki dosyaları hedef ortama kopyalayın:
+6. Kurum içi registry'e yüklemeniz gerekiyorsa imajı etiketleyip push edin:
+   ```bash
+   docker tag soipack/server:latest registry.example.com/soipack/server:v0.1.0
+   docker push registry.example.com/soipack/server:v0.1.0
+   ```
+   Yukarıdaki `registry.example.com` ve etiket değerlerini kendi ortamınıza göre güncelleyin.
+7. Aşağıdaki dosyaları hedef ortama kopyalayın:
    - `soipack-server.tar.gz`
    - `docker-compose.yaml`
    - `.env.example` yerine oluşturacağınız `.env` dosyası için şablon (aşağıya bakın)

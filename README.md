@@ -33,6 +33,8 @@ npm install
 
 CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak için aşağıdaki adımları izleyin. Tüm komutlar depo kök dizininden çalıştırılmalıdır.
 
+> Not: SOIPack CLI, demo lisansını doğrulamak için `--license` bayrağına ihtiyaç duyar. Depoyla birlikte gelen örnek anahtar `data/licenses/demo-license.key` yolunda bulunur.
+
 1. CLI derlemesini hazırlayın:
 
    ```bash
@@ -42,7 +44,7 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
 2. Örnek artefaktları çalışma alanına aktarın:
 
    ```bash
-   node packages/cli/dist/index.js import \
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key import \
      --jira examples/minimal/issues.csv \
      --reqif examples/minimal/spec.reqif \
      --junit examples/minimal/results.xml \
@@ -59,7 +61,7 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
 3. Uyum analizini üretin:
 
    ```bash
-   node packages/cli/dist/index.js analyze \
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
      -i .soipack/work \
      -o .soipack/out \
      --level C \
@@ -71,19 +73,19 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
 4. Raporları oluşturun:
 
    ```bash
-   node packages/cli/dist/index.js report -i .soipack/out -o dist/reports
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
 
 5. Dağıtım paketini hazırlayın:
 
    ```bash
-   node packages/cli/dist/index.js pack -i dist -o release --name soipack-demo.zip
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
 
 Tek komutla tüm adımların çalıştığı pipeline için örnek yapılandırmayı kullanabilirsiniz:
 
 ```bash
-node packages/cli/dist/index.js run --config examples/minimal/soipack.config.yaml
+node packages/cli/dist/index.js --license data/licenses/demo-license.key run --config examples/minimal/soipack.config.yaml
 ```
 
 Bu adımlar `examples/minimal` altındaki örnek verilerle birlikte çalışır. Aynı dizindeki `demo.sh` betiği, CLI derlemesini kontrol ederek pipeline komutunu otomatik olarak çalıştırır.

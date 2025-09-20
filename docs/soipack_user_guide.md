@@ -33,9 +33,11 @@ SOIPack, gereksinim-test izlenebilirliği, uyumluluk raporlaması ve imzalı da�
 ### Pipeline'ı manuel çalıştırma
 Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi kullanırken özelleştirilebilir:
 
+> Not: Tüm CLI komutları lisans doğrulaması yapar. Örnek demo anahtarını `--license data/licenses/demo-license.key` argümanı ile ilettiğinizden emin olun.
+
 1. **Örnek veriyi içe aktarın**
    ```bash
-   node packages/cli/dist/index.js import \
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key import \
      --jira examples/minimal/issues.csv \
      --reqif examples/minimal/spec.reqif \
      --junit examples/minimal/results.xml \
@@ -50,7 +52,7 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    ```
 2. **Uyum analizini hesaplayın**
    ```bash
-   node packages/cli/dist/index.js analyze \
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
      -i .soipack/work \
      -o .soipack/out \
      --level C \
@@ -60,14 +62,14 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    ```
 3. **Raporları üretin**
    ```bash
-   node packages/cli/dist/index.js report -i .soipack/out -o dist/reports
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
 4. **Dağıtım paketini oluşturun**
    ```bash
-   node packages/cli/dist/index.js pack -i dist -o release --name soipack-demo.zip
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
 
-Pipeline'ın YAML sürümü için `node packages/cli/dist/index.js run --config examples/minimal/soipack.config.yaml` komutunu çalıştırabilirsiniz; bu komut demo betiğinin tetiklediği konfigürasyonla aynıdır.【F:README.md†L36-L73】
+Pipeline'ın YAML sürümü için `node packages/cli/dist/index.js --license data/licenses/demo-license.key run --config examples/minimal/soipack.config.yaml` komutunu çalıştırabilirsiniz; bu komut demo betiğinin tetiklediği konfigürasyonla aynıdır.【F:README.md†L36-L73】
 
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. `compliance_matrix.html` ve `trace_matrix.html` tarayıcıda açılarak müşteriye canlı demo yapılabilir; `compliance_matrix.pdf` aynı dizinde yer alır ve denetim arşivi için hazırdır.【F:docs/demo_script.md†L18-L25】 Paket arşivi, HTML/PDF raporlarını ve manifest dosyalarını `release/soi-pack-*.zip` içinde taşır.【F:docs/demo_script.md†L26-L31】
