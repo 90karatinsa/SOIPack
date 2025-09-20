@@ -701,6 +701,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     title: analysis.metadata.project?.name
       ? `${analysis.metadata.project.name} Uyum Matrisi`
       : 'SOIPack Uyum Matrisi',
+    git: analysis.git,
   });
   const traceHtml = renderTraceMatrix(traces, {
     generatedAt: analysis.metadata.generatedAt,
@@ -708,6 +709,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
       ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
       : 'SOIPack İzlenebilirlik Matrisi',
     coverage: snapshot.requirementCoverage,
+    git: analysis.git,
   });
   const gapsHtml = renderGaps(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -716,6 +718,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     title: analysis.metadata.project?.name
       ? `${analysis.metadata.project.name} Kanıt Boşlukları`
       : 'SOIPack Uyumluluk Boşlukları',
+    git: analysis.git,
   });
 
   const outputDir = path.resolve(options.output);

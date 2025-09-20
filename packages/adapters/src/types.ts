@@ -64,4 +64,8 @@ export interface BuildInfo {
   author: string;
   date: string;
   message: string;
+  branches: string[];
+  tags: string[];
+  dirty: boolean;
+  remoteOrigins: string[];
 }
