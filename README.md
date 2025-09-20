@@ -7,6 +7,7 @@ SOIPack, yazılım odaklı organizasyonların gereksinim, test, kod ve kalite ar
 - **@soipack/core** – Gereksinim ve test domain şemaları, ortak türler.
 - **@soipack/adapters** – Jira CSV, ReqIF, JUnit XML, LCOV/Cobertura ve Git gibi kaynaklardan veri bağdaştırıcılarının temel iskeleti.
 - **@soipack/engine** – Hedef eşleme ve izlenebilirlik hesaplamalarını yöneten çekirdek motor.
+- **@soipack/packager** – Manifest ve Ed25519 imzası ile veri paketleri oluşturan yardımcılar.
 - **@soipack/report** – HTML/JSON rapor şablonları ve Playwright tabanlı PDF üretimi için yardımcılar.
 - **@soipack/cli** – İzlenebilirlik işlemlerini otomatikleştiren komut satırı istemcisi.
 - **@soipack/server** – Express ve OpenAPI tabanlı REST servisleri.
@@ -27,6 +28,16 @@ npm install
 | `npm run test`         | Jest ile birim testlerini çalıştırır.      |
 | `npm run format`       | Prettier ile biçimlendirme uygular.        |
 | `npm run format:check` | Prettier biçimlendirmesini kontrol eder.   |
+
+### Ed25519 Anahtar Üretimi
+
+Paket manifestlerini imzalamak için bir Ed25519 anahtar çifti oluşturun:
+
+```bash
+openssl genpkey -algorithm Ed25519 -out ed25519_private.pem
+```
+
+İsteğe bağlı olarak kamu anahtarını çıkarmak için `openssl pkey -in ed25519_private.pem -pubout -out ed25519_public.pem` komutunu kullanabilirsiniz.
 
 ## Lisans
 
