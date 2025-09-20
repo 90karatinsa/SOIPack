@@ -2,7 +2,20 @@ import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
 
+import { Manifest } from '@soipack/core';
+import { verifyManifestSignature } from '@soipack/packager';
+
 import { exitCodes, runAnalyze, runImport, runPack, runReport } from './index';
+
+const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
+-----END PRIVATE KEY-----
+`;
+
+const TEST_SIGNING_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
+-----END PUBLIC KEY-----
+`;
 
 describe('@soipack/cli pipeline', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
@@ -65,6 +78,7 @@ describe('@soipack/cli pipeline', () => {
       input: distDir,
       output: releaseDir,
       packageName: 'demo.zip',
+      signingKey: TEST_SIGNING_PRIVATE_KEY,
     });
 
     const archiveStats = await fs.stat(packResult.archivePath);
@@ -73,5 +87,9 @@ describe('@soipack/cli pipeline', () => {
 
     const manifestStats = await fs.stat(packResult.manifestPath);
     expect(manifestStats.isFile()).toBe(true);
+
+    const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
+    const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
   });
 });

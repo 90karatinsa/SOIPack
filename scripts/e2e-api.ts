@@ -9,6 +9,11 @@ import { AddressInfo } from 'net';
 
 import { createServer } from '../packages/server/src/index';
 
+const DEMO_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
+-----END PRIVATE KEY-----
+`;
+
 const example = (...segments: string[]): string => path.resolve('examples', 'minimal', ...segments);
 
 const ensureOk = async <T>(response: Response): Promise<T> => {
@@ -42,7 +47,9 @@ interface PackResultBody {
 const main = async (): Promise<void> => {
   const token = process.env.SOIPACK_E2E_TOKEN ?? 'demo-token';
   const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-api-e2e-'));
-  const app = createServer({ token, storageDir });
+  const signingKeyPath = path.join(storageDir, 'signing-key.pem');
+  await fsPromises.writeFile(signingKeyPath, DEMO_SIGNING_PRIVATE_KEY, 'utf8');
+  const app = createServer({ token, storageDir, signingKeyPath });
   const server = app.listen(0);
   await once(server, 'listening');
   const address = server.address() as AddressInfo;

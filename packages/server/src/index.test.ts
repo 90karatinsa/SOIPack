@@ -4,7 +4,20 @@ import path from 'path';
 
 import request from 'supertest';
 
+import { Manifest } from '@soipack/core';
+import { verifyManifestSignature } from '@soipack/packager';
+
 import { createServer } from './index';
+
+const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
+-----END PRIVATE KEY-----
+`;
+
+const TEST_SIGNING_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
+-----END PUBLIC KEY-----
+`;
 
 const minimalExample = (...segments: string[]): string =>
   path.resolve(__dirname, '../../..', 'examples', 'minimal', ...segments);
@@ -15,10 +28,13 @@ describe('@soipack/server REST API', () => {
   const token = 'test-token';
   let storageDir: string;
   let app: ReturnType<typeof createServer>;
+  let signingKeyPath: string;
 
   beforeAll(async () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
-    app = createServer({ token, storageDir });
+    signingKeyPath = path.join(storageDir, 'signing-key.pem');
+    await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
+    app = createServer({ token, storageDir, signingKeyPath });
   });
 
   afterAll(async () => {
@@ -106,6 +122,13 @@ describe('@soipack/server REST API', () => {
 
     const archivePath = path.resolve(storageDir, packResponse.body.outputs.archive);
     await expect(fsPromises.access(archivePath, fs.constants.F_OK)).resolves.toBeUndefined();
+
+    const manifestPath = path.resolve(storageDir, packResponse.body.outputs.manifest);
+    const manifestDir = path.dirname(manifestPath);
+    const signaturePath = path.join(manifestDir, 'manifest.sig');
+    const manifest = JSON.parse(await fsPromises.readFile(manifestPath, 'utf8')) as Manifest;
+    const signature = (await fsPromises.readFile(signaturePath, 'utf8')).trim();
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
 
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportResponse.body.id}/compliance.html`)

@@ -18,6 +18,13 @@ if (!token) {
 const storageDir = process.env.SOIPACK_STORAGE_DIR
   ? path.resolve(process.env.SOIPACK_STORAGE_DIR)
   : path.resolve('.soipack/server');
+const signingKeyPathSource = process.env.SOIPACK_SIGNING_KEY_PATH;
+if (!signingKeyPathSource) {
+  // eslint-disable-next-line no-console
+  console.error('SOIPACK_SIGNING_KEY_PATH ortam değişkeni tanımlanmalıdır.');
+  process.exit(1);
+}
+const signingKeyPath = path.resolve(signingKeyPathSource);
 const portSource = process.env.PORT ?? '3000';
 const port = Number.parseInt(portSource, 10);
 
@@ -27,7 +34,7 @@ if (Number.isNaN(port) || port <= 0) {
   process.exit(1);
 }
 
-const app = createServer({ token, storageDir });
+const app = createServer({ token, storageDir, signingKeyPath });
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console

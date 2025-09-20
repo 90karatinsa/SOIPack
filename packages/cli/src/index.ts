@@ -42,6 +42,7 @@ import {
   renderGaps,
   renderTraceMatrix,
 } from '@soipack/report';
+import { buildManifest, signManifest } from '@soipack/packager';
 import { ZipFile } from 'yazl';
 import YAML from 'yaml';
 import yargs from 'yargs';
@@ -549,6 +550,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
 export interface PackOptions {
   input: string;
   output: string;
+  signingKey: string;
   packageName?: string;
 }
 
@@ -558,41 +560,8 @@ export interface PackResult {
   manifestId: string;
 }
 
-interface ManifestFileEntry {
-  path: string;
-  sha256: string;
-}
-
-interface ManifestData {
-  files: ManifestFileEntry[];
-  createdAt: string;
-  toolVersion: string;
-}
-
-const listFilesRecursively = async (directory: string, base: string): Promise<ManifestFileEntry[]> => {
-  const entries = await fsPromises.readdir(directory, { withFileTypes: true });
-  const files: ManifestFileEntry[] = [];
-
-  for (const entry of entries) {
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFilesRecursively(fullPath, base);
-      files.push(...nested);
-    } else if (entry.isFile()) {
-      const relative = path.relative(base, fullPath).split(path.sep).join('/');
-      const buffer = await fsPromises.readFile(fullPath);
-      const hash = createHash('sha256').update(buffer).digest('hex');
-      files.push({ path: relative, sha256: hash });
-    }
-  }
-
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return files;
-};
-
 const createArchive = async (
-  inputDir: string,
-  manifest: ManifestData,
+  files: Array<{ absolutePath: string; manifestPath: string }>,
   outputPath: string,
   manifestContent: string,
   signature?: string,
@@ -609,9 +578,9 @@ const createArchive = async (
 
   zip.outputStream.pipe(output);
 
-  for (const file of manifest.files) {
+  for (const file of files) {
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addFile(path.resolve(inputDir, file.path), file.path, options);
+    zip.addFile(file.absolutePath, file.manifestPath, options);
   }
 
   zip.addBuffer(Buffer.from(manifestContent, 'utf8'), 'manifest.json');
@@ -625,31 +594,64 @@ const createArchive = async (
   await completion;
 };
 
+const directoryExists = async (target: string): Promise<boolean> => {
+  try {
+    const stats = await fsPromises.stat(target);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const resolveReportDirectory = async (inputDir: string): Promise<string> => {
+  const candidate = path.join(inputDir, 'reports');
+  if (await directoryExists(candidate)) {
+    return candidate;
+  }
+  return inputDir;
+};
+
+const resolveEvidenceDirectories = async (inputDir: string, reportDir: string): Promise<string[]> => {
+  if (inputDir === reportDir) {
+    return [];
+  }
+
+  const entries = await fsPromises.readdir(inputDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(inputDir, entry.name))
+    .filter((dir) => path.resolve(dir) !== path.resolve(reportDir));
+};
+
 export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const inputDir = path.resolve(options.input);
   const outputDir = path.resolve(options.output);
   await ensureDirectory(outputDir);
 
-  const files = await listFilesRecursively(inputDir, inputDir);
-  const manifest: ManifestData = {
-    files,
-    createdAt: getCurrentTimestamp(),
+  const reportDir = await resolveReportDirectory(inputDir);
+  const evidenceDirs = await resolveEvidenceDirectories(inputDir, reportDir);
+  const now = getCurrentDate();
+
+  const { manifest, files } = await buildManifest({
+    reportDir,
+    evidenceDirs,
     toolVersion: packageInfo.version,
-  };
+    now,
+  });
 
   const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
+  const signature = signManifest(manifest, options.signingKey);
   const manifestHash = createHash('sha256').update(manifestSerialized).digest('hex');
   const manifestId = manifestHash.slice(0, 12);
-  const manifestSignature = manifestHash;
 
   const manifestPath = path.join(outputDir, 'manifest.json');
   await fsPromises.writeFile(manifestPath, manifestSerialized, 'utf8');
   const signaturePath = path.join(outputDir, 'manifest.sig');
-  await fsPromises.writeFile(signaturePath, `${manifestSignature}\n`, 'utf8');
+  await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
   const archiveName = options.packageName ?? `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
-  await createArchive(inputDir, manifest, archivePath, manifestSerialized, `${manifestSignature}\n`);
+  await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
 
   return { manifestPath, archivePath, manifestId };
 };
@@ -676,7 +678,11 @@ interface RunConfig {
   };
 }
 
-export const runPipeline = async (configPath: string, logger?: Logger): Promise<number> => {
+export const runPipeline = async (
+  configPath: string,
+  options: { signingKey: string },
+  logger?: Logger,
+): Promise<number> => {
   const absoluteConfig = path.resolve(configPath);
   const raw = await fsPromises.readFile(absoluteConfig, 'utf8');
   const config = YAML.parse(raw) as RunConfig;
@@ -733,6 +739,7 @@ export const runPipeline = async (configPath: string, logger?: Logger): Promise<
     input: packInput,
     output: releaseDir,
     packageName: config.pack?.name,
+    signingKey: options.signingKey,
   });
 
   logger?.info(
@@ -1064,6 +1071,11 @@ if (require.main === module) {
           .option('name', {
             describe: 'Çıktı paketi dosya adı.',
             type: 'string',
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+            demandOption: true,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -1074,16 +1086,25 @@ if (require.main === module) {
           input: argv.input,
           output: argv.output,
           name: argv.name,
+          signingKeyPath: argv.signingKey,
         };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
+          const signingKeyOption = Array.isArray(argv.signingKey)
+            ? argv.signingKey[0]
+            : argv.signingKey;
+          const signingKeyPath = path.resolve(signingKeyOption as string);
+          context.signingKeyPath = signingKeyPath;
+          const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
             packageName: argv.name,
+            signingKey,
           });
 
           logger.info(
@@ -1106,22 +1127,40 @@ if (require.main === module) {
       'run',
       'YAML konfigürasyonu ile uçtan uca içe aktarım → analiz → rapor → paket akışını çalıştırır.',
       (y) =>
-        y.option('config', {
-          alias: 'c',
-          describe: 'soipack.config.yaml yolu.',
-          type: 'string',
-          demandOption: true,
-        }),
+        y
+          .option('config', {
+            alias: 'c',
+            describe: 'soipack.config.yaml yolu.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
-        const context = { command: 'run', licensePath, config: argv.config };
+        const context = {
+          command: 'run',
+          licensePath,
+          config: argv.config,
+          signingKeyPath: argv.signingKey,
+        };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
-          const exitCode = await runPipeline(argv.config, logger);
+          const signingKeyOption = Array.isArray(argv.signingKey)
+            ? argv.signingKey[0]
+            : argv.signingKey;
+          const signingKeyPath = path.resolve(signingKeyOption as string);
+          context.signingKeyPath = signingKeyPath;
+          const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+
+          const exitCode = await runPipeline(argv.config, { signingKey }, logger);
           process.exitCode = exitCode;
         } catch (error) {
           logCliError(logger, error, context);

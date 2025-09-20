@@ -229,6 +229,7 @@ const assertDirectoryExists = async (directory: string, kind: string): Promise<v
 export interface ServerConfig {
   token: string;
   storageDir: string;
+  signingKeyPath: string;
   maxUploadSizeBytes?: number;
 }
 
@@ -276,6 +277,7 @@ const createPipelineError = (error: unknown, message: string): HttpError => {
 
 export const createServer = (config: ServerConfig): Express => {
   const directories = createDirectories(path.resolve(config.storageDir));
+  const signingKeyPath = path.resolve(config.signingKeyPath);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -638,7 +640,13 @@ export const createServer = (config: ServerConfig): Express => {
       const reportDir = path.join(directories.reports, body.reportId);
       await assertDirectoryExists(reportDir, 'Rapor çıktısı');
 
-      const hashEntries: HashEntry[] = [{ key: 'reportId', value: body.reportId }];
+      const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+      const signingKeyHash = createHash('sha256').update(signingKey).digest('hex');
+
+      const hashEntries: HashEntry[] = [
+        { key: 'reportId', value: body.reportId },
+        { key: 'signingKey', value: signingKeyHash },
+      ];
       if (body.packageName) {
         hashEntries.push({ key: 'packageName', value: body.packageName });
       }
@@ -670,6 +678,7 @@ export const createServer = (config: ServerConfig): Express => {
           input: reportDir,
           output: packageDir,
           packageName: body.packageName,
+          signingKey,
         };
         const result = await runPack(packOptions);
 
