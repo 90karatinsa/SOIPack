@@ -1,0 +1,21 @@
+{
+  "name": "@soipack/cli",
+  "version": "0.1.0",
+  "description": "Command line interface for SOIPack workflows.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "soipack": "dist/index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@soipack/adapters": "0.1.0",
+    "@soipack/core": "0.1.0",
+    "@soipack/engine": "0.1.0",
+    "@soipack/report": "0.1.0"
+  },
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "test": "jest --config ./jest.config.cjs"
+  }
+}
