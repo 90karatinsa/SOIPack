@@ -1,0 +1,12 @@
+{
+  "name": "@soipack/core",
+  "version": "0.1.0",
+  "description": "SOIPack core domain types and validation helpers.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "test": "jest --config ./jest.config.cjs"
+  }
+}

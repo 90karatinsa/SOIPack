@@ -1,0 +1,16 @@
+{
+  "name": "@soipack/report",
+  "version": "0.1.0",
+  "description": "Reporting templates for SOIPack traceability insights.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "dependencies": {
+    "@soipack/core": "0.1.0",
+    "@soipack/engine": "0.1.0"
+  },
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "test": "jest --config ./jest.config.cjs"
+  }
+}
