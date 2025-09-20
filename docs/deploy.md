@@ -134,7 +134,7 @@ BASE_URL=http://localhost:3000
    ```
    Yanıttaki `outputs.directory` alanı, `data/` altında oluşturulan rapor klasörünü gösterir. Örneğin `data/reports/<rapor-id>/compliance_matrix.pdf` dosyasını açarak PDF üretimini doğrulayabilirsiniz.
 
-4. (İsteğe bağlı) Raporu paketleyin:
+4. (İsteğe bağlı) Raporu paketleyin ve arşiv/manifesti indirin:
    ```bash
    curl -X POST "$BASE_URL/v1/pack" \
      -H "Authorization: Bearer $TOKEN" \
@@ -142,12 +142,35 @@ BASE_URL=http://localhost:3000
      -d "{\"reportId\":\"<rapor-id>\"}"
    ```
 
-   Manifest ve imza dosyaları oluşturulduktan sonra teslimattan önce doğrulamak için üretim anahtarınızla aşağıdaki komutu çalıştırabilirsiniz:
+   Yanıtın `id` alanını `PACKAGE_ID` olarak kaydedin. Paket arşivi ile manifesti JWT kimlik doğrulamasıyla çekmek için:
 
    ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     "$BASE_URL/v1/packages/$PACKAGE_ID/archive" \
+     --output soipack-$PACKAGE_ID.zip
+
+   curl -H "Authorization: Bearer $TOKEN" \
+     "$BASE_URL/v1/packages/$PACKAGE_ID/manifest" \
+     --output manifest-$PACKAGE_ID.json
+   ```
+
+   Aynı işlem CLI üzerinden de yapılabilir:
+
+   ```bash
+   node packages/cli/dist/index.js download \
+     --api "$BASE_URL" \
+     --token "$TOKEN" \
+     --package "$PACKAGE_ID" \
+     --output artifacts/
+   ```
+
+   Arşiv içinde yer alan `manifest.sig` dosyası ile indirilen manifesti teslimat öncesinde doğrulamak için:
+
+   ```bash
+   unzip artifacts/soipack-$PACKAGE_ID.zip manifest.sig
    node packages/cli/dist/index.js verify \
-     --manifest data/packages/<paket-id>/manifest.json \
-     --signature data/packages/<paket-id>/manifest.sig \
+     --manifest manifest-$PACKAGE_ID.json \
+     --signature manifest.sig \
      --public-key path/to/ed25519_public.pem
    ```
 

@@ -21,7 +21,7 @@ export default function App() {
   const isTokenActive = token.trim().length > 0;
   const { runPipeline, downloadArtifacts, state, reset } = usePipeline(token);
 
-  const { logs, isRunning, isDownloading, jobs, reportData, reportAssets, error, lastCompletedAt } = state;
+  const { logs, isRunning, isDownloading, jobs, reportData, packageJob, error, lastCompletedAt } = state;
 
   const canRunPipeline = selectedFiles.length > 0;
 
@@ -40,7 +40,7 @@ export default function App() {
 
   const jobStates = useMemo(
     () =>
-      (['import', 'analyze', 'report'] as const)
+      (['import', 'analyze', 'report', 'pack'] as const)
         .map((kind) => {
           const job = jobs[kind];
           if (!job) {
@@ -82,7 +82,7 @@ export default function App() {
           </div>
           <DownloadPackageButton
             onDownload={() => downloadArtifacts()}
-            disabled={!isTokenActive || !reportAssets}
+            disabled={!isTokenActive || !packageJob || packageJob.status !== 'completed'}
             isBusy={isDownloading}
           />
         </header>

@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import os from 'os';
 import path from 'path';
+import { pipeline as streamPipeline } from 'stream/promises';
 
 import {
   AnalyzeOptions,
@@ -42,6 +43,18 @@ const sanitizeUploadFileName = (fileName: string): string => {
   const baseName = path.basename(fileName || 'upload');
   const normalized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return normalized || 'upload';
+};
+
+const sanitizeDownloadFileName = (fileName: string, fallback: string): string => {
+  const baseName = path.basename(fileName || fallback);
+  const normalized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return normalized || fallback;
+};
+
+const buildContentDisposition = (fileName: string): string => {
+  const fallback = fileName.replace(/"/g, "'");
+  const encoded = encodeURIComponent(fileName);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 };
 
 interface AuthContext {
@@ -874,6 +887,72 @@ const findPackMetadataByManifestId = async (
   return undefined;
 };
 
+const resolvePackageMetadata = async (
+  storage: StorageProvider,
+  directories: PipelineDirectories,
+  tenantId: string,
+  packageId: string | undefined,
+): Promise<{ metadata: PackJobMetadata; directory: string }> => {
+  if (!packageId) {
+    throw new HttpError(400, 'INVALID_REQUEST', 'Paket kimliği belirtilmelidir.');
+  }
+
+  const packageDir = path.join(directories.packages, tenantId, packageId);
+  const metadataPath = path.join(packageDir, METADATA_FILE);
+  if (!(await storage.fileExists(metadataPath))) {
+    throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'İstenen paket bulunamadı.');
+  }
+
+  const metadata = await storage.readJson<PackJobMetadata>(metadataPath);
+  if (metadata.tenantId !== tenantId) {
+    throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen paket bu kiracıya ait değil.');
+  }
+
+  return { metadata, directory: packageDir };
+};
+
+const streamStorageFile = async (
+  res: Response,
+  storage: StorageProvider,
+  filePath: string,
+  options: { contentType: string; fallbackName: string },
+): Promise<void> => {
+  const info = await storage.getFileInfo(filePath).catch(() => undefined);
+  const fileName = sanitizeDownloadFileName(path.basename(filePath), options.fallbackName);
+  res.setHeader('Content-Type', options.contentType);
+  res.setHeader('Content-Disposition', buildContentDisposition(fileName));
+  res.setHeader('Cache-Control', 'private, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  if (info?.size !== undefined) {
+    res.setHeader('Content-Length', info.size.toString());
+  }
+
+  const stream = await storage.openReadStream(filePath);
+  stream.once('error', (error) => {
+    if (!res.headersSent) {
+      res.removeHeader('Content-Length');
+    }
+    res.destroy(error);
+  });
+
+  await streamPipeline(stream, res);
+};
+
+const streamPackageArtifact = async (
+  res: Response,
+  storage: StorageProvider,
+  artifactPath: string | undefined,
+  notFoundCode: string,
+  notFoundMessage: string,
+  options: { contentType: string; fallbackName: string },
+): Promise<void> => {
+  if (!artifactPath || !(await storage.fileExists(artifactPath))) {
+    throw new HttpError(404, notFoundCode, notFoundMessage);
+  }
+
+  await streamStorageFile(res, storage, artifactPath, options);
+};
+
 const runRetentionSweep = async (
   storage: StorageProvider,
   queue: JobQueue,
@@ -1457,44 +1536,47 @@ export const createServer = (config: ServerConfig): Express => {
     }),
   );
 
-  app.get(
-    '/v1/packages/:id',
-    requireAuth,
-    createAsyncHandler(async (req, res) => {
+  const createPackageStreamHandler = (
+    selector: (metadata: PackJobMetadata) => string | undefined,
+    notFoundCode: string,
+    notFoundMessage: string,
+    options: { contentType: string; fallbackName: string },
+  ) =>
+    createAsyncHandler(async (req: Request, res: Response) => {
       const { tenantId } = getAuthContext(req);
       const { id } = req.params as { id?: string };
-      if (!id) {
-        throw new HttpError(400, 'INVALID_REQUEST', 'Paket kimliği belirtilmelidir.');
-      }
+      const { metadata } = await resolvePackageMetadata(storage, directories, tenantId, id);
 
-      const packageDir = path.join(directories.packages, tenantId, id);
-      const metadataPath = path.join(packageDir, METADATA_FILE);
-      if (!(await storage.fileExists(metadataPath))) {
-        throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'İstenen paket bulunamadı.');
-      }
+      await streamPackageArtifact(res, storage, selector(metadata), notFoundCode, notFoundMessage, options);
+    });
 
-      const metadata = await storage.readJson<PackJobMetadata>(metadataPath);
-      if (metadata.tenantId !== tenantId) {
-        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen paket bu kiracıya ait değil.');
-      }
+  app.get('/v1/packages/:id', requireAuth, createPackageStreamHandler(
+    (metadata) => metadata.outputs?.archivePath,
+    'PACKAGE_NOT_FOUND',
+    'Paket arşiv dosyası bulunamadı.',
+    { contentType: 'application/zip', fallbackName: 'package.zip' },
+  ));
 
-      const archivePath = metadata.outputs?.archivePath;
-      if (!archivePath || !(await storage.fileExists(archivePath))) {
-        throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'Paket arşiv dosyası bulunamadı.');
-      }
+  app.get(
+    '/v1/packages/:id/archive',
+    requireAuth,
+    createPackageStreamHandler(
+      (metadata) => metadata.outputs?.archivePath,
+      'PACKAGE_NOT_FOUND',
+      'Paket arşiv dosyası bulunamadı.',
+      { contentType: 'application/zip', fallbackName: 'package.zip' },
+    ),
+  );
 
-      const archiveName = path.basename(archivePath);
-      res.type('application/zip');
-      await new Promise<void>((resolve, reject) => {
-        res.download(archivePath, archiveName, (error) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
-    }),
+  app.get(
+    '/v1/packages/:id/manifest',
+    requireAuth,
+    createPackageStreamHandler(
+      (metadata) => metadata.outputs?.manifestPath,
+      'MANIFEST_NOT_FOUND',
+      'Manifest dosyası bulunamadı.',
+      { contentType: 'application/json; charset=utf-8', fallbackName: 'manifest.json' },
+    ),
   );
 
   app.post(

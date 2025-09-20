@@ -31,6 +31,8 @@ export interface StorageProvider {
   ensureDirectory(target: string): Promise<void>;
   removeDirectory(target: string): Promise<void>;
   fileExists(target: string): Promise<boolean>;
+  openReadStream(target: string): Promise<NodeJS.ReadableStream>;
+  getFileInfo(target: string): Promise<{ size?: number } | undefined>;
   readJson<T>(filePath: string): Promise<T>;
   writeJson(filePath: string, data: unknown): Promise<void>;
   listSubdirectories(directory: string): Promise<string[]>;
@@ -97,6 +99,19 @@ export class FileSystemStorage implements StorageProvider {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  public async openReadStream(target: string): Promise<NodeJS.ReadableStream> {
+    return fs.createReadStream(target);
+  }
+
+  public async getFileInfo(target: string): Promise<{ size?: number } | undefined> {
+    try {
+      const stats = await fsPromises.stat(target);
+      return { size: stats.size };
+    } catch {
+      return undefined;
     }
   }
 

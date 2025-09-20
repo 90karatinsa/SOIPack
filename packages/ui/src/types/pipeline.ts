@@ -63,6 +63,15 @@ export interface ReportJobResult {
   };
 }
 
+export interface PackJobResult {
+  manifestId: string;
+  outputs: {
+    directory: string;
+    manifest: string;
+    archive: string;
+  };
+}
+
 export interface ComplianceRequirementCoverage {
   requirementId: string;
   title?: string;

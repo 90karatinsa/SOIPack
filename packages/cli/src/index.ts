@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
+import http from 'http';
+import https from 'https';
 import path from 'path';
 import { createHash } from 'crypto';
 import process from 'process';
+import { pipeline as streamPipeline } from 'stream/promises';
 
 import {
   importCobertura,
@@ -158,6 +161,106 @@ const normalizeRelativePath = (filePath: string): string => {
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
   return normalized.split(path.sep).join('/');
+};
+
+const parseContentDispositionFileName = (value: string | string[] | undefined): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const header = Array.isArray(value) ? value[0] : value;
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const quotedMatch = header.match(/filename="([^";]+)"/i);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+  const bareMatch = header.match(/filename=([^;]+)/i);
+  if (bareMatch && bareMatch[1]) {
+    return bareMatch[1].replace(/"/g, '');
+  }
+  return undefined;
+};
+
+const sanitizeDownloadFileName = (fileName: string, fallback: string): string => {
+  const base = path.basename(fileName || fallback);
+  const normalized = base.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return normalized || fallback;
+};
+
+interface DownloadPackageOptions {
+  baseUrl: string;
+  token: string;
+  packageId: string;
+  outputDir: string;
+}
+
+interface DownloadResult {
+  archivePath: string;
+  manifestPath: string;
+}
+
+const requestStream = (
+  targetUrl: string,
+  headers: Record<string, string>,
+): Promise<http.IncomingMessage> => {
+  return new Promise((resolve, reject) => {
+    const client = targetUrl.startsWith('https') ? https : http;
+    const request = client.get(targetUrl, { headers }, (response) => {
+      const { statusCode } = response;
+      if (statusCode && statusCode >= 200 && statusCode < 300) {
+        resolve(response);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const message = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : response.statusMessage;
+        reject(new Error(`HTTP ${statusCode ?? 0}: ${message ?? 'Beklenmeyen sunucu hatası'}`));
+      });
+    });
+    request.on('error', reject);
+  });
+};
+
+const writeStreamToFile = async (
+  response: http.IncomingMessage,
+  outputDir: string,
+  fallbackName: string,
+): Promise<string> => {
+  const headerName = response.headers['content-disposition'];
+  const suggested = parseContentDispositionFileName(headerName);
+  const safeName = sanitizeDownloadFileName(suggested ?? fallbackName, fallbackName);
+  const targetPath = path.join(outputDir, safeName);
+  await ensureDirectory(outputDir);
+  const fileStream = fs.createWriteStream(targetPath);
+  await streamPipeline(response, fileStream);
+  return targetPath;
+};
+
+const downloadPackageArtifacts = async ({
+  baseUrl,
+  token,
+  packageId,
+  outputDir,
+}: DownloadPackageOptions): Promise<DownloadResult> => {
+  await ensureDirectory(outputDir);
+  const headers = { Authorization: `Bearer ${token}` };
+  const archiveUrl = new URL(`/v1/packages/${packageId}/archive`, baseUrl).toString();
+  const manifestUrl = new URL(`/v1/packages/${packageId}/manifest`, baseUrl).toString();
+
+  const archiveResponse = await requestStream(archiveUrl, headers);
+  const archivePath = await writeStreamToFile(archiveResponse, outputDir, `soipack-${packageId}.zip`);
+
+  const manifestResponse = await requestStream(manifestUrl, headers);
+  const manifestPath = await writeStreamToFile(manifestResponse, outputDir, `manifest-${packageId}.json`);
+
+  return { archivePath, manifestPath };
 };
 
 const parseCsvLine = (line: string): string[] => {
@@ -1498,6 +1601,67 @@ if (require.main === module) {
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
           process.exitCode = result.exitCode;
+        } catch (error) {
+          logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'download',
+      'Sunucudan paket arşivini ve manifest dosyasını indirir.',
+      (y) =>
+        y
+          .option('api', {
+            describe: 'SOIPack API taban URL\'i.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('token', {
+            describe: 'Bearer yetkilendirme token\'ı.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('package', {
+            alias: 'p',
+            describe: 'Paket iş kimliği.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'İndirilen dosyaların kaydedileceği dizin.',
+            type: 'string',
+            default: '.',
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const apiOption = Array.isArray(argv.api) ? argv.api[0] : argv.api;
+        const tokenOption = Array.isArray(argv.token) ? argv.token[0] : argv.token;
+        const packageOption = Array.isArray(argv.package) ? argv.package[0] : argv.package;
+        const outputOption = Array.isArray(argv.output) ? argv.output[0] : argv.output;
+
+        const baseUrl = String(apiOption);
+        const packageId = String(packageOption);
+        const outputDir = path.resolve(String(outputOption));
+        const context = {
+          command: 'download',
+          api: baseUrl,
+          packageId,
+          outputDir,
+        };
+
+        try {
+          const result = await downloadPackageArtifacts({
+            baseUrl,
+            token: String(tokenOption),
+            packageId,
+            outputDir,
+          });
+          logger.info({ ...context, ...result }, 'Paket artefaktları indirildi.');
+          console.log(`Arşiv indirildi: ${result.archivePath}`);
+          console.log(`Manifest indirildi: ${result.manifestPath}`);
+          process.exitCode = exitCodes.success;
         } catch (error) {
           logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
