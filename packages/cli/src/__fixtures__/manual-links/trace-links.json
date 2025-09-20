@@ -1,0 +1,6 @@
+{
+  "links": [
+    { "from": "REQ-2", "to": "AuthTests#handles lockout", "type": "verifies" },
+    { "from": "REQ-3", "to": "src/auth/login.ts", "type": "implements" }
+  ]
+}

@@ -10,7 +10,11 @@ import {
 
 import { ImportBundle, ObjectiveMapper, TraceEngine, generateComplianceSnapshot } from './index';
 
-const evidence = (type: ObjectiveArtifactType, path: string, source: Evidence['source']): Evidence => ({
+const evidence = (
+  type: ObjectiveArtifactType,
+  path: string,
+  source: Evidence['source'],
+): Evidence => ({
   source,
   path,
   summary: `${type} evidence`,
@@ -139,9 +143,7 @@ const evidenceIndexFixture = () => ({
   coverage: [evidence('coverage', 'reports/lcov.info', 'lcov')],
 });
 
-const traceLinksFixture = (): TraceLink[] => [
-  { from: 'REQ-3', to: 'TC-4', type: 'verifies' },
-];
+const traceLinksFixture = (): TraceLink[] => [{ from: 'REQ-3', to: 'TC-4', type: 'verifies' }];
 
 const bundleFixture = (): ImportBundle => ({
   requirements: requirementFixture(),
@@ -200,6 +202,32 @@ describe('TraceEngine', () => {
     expect(req1?.coverage?.statements?.percentage).toBeCloseTo(83.33, 2);
     expect(req3?.status).toBe('covered');
     expect(req3?.coverage?.statements?.percentage).toBe(100);
+  });
+
+  it('links requirements directly to code paths defined via trace links', () => {
+    const manualRequirement = createRequirement('REQ-Manual', 'Manual coverage mapping', {
+      status: 'draft',
+    });
+
+    const manualBundle: ImportBundle = {
+      ...bundle,
+      requirements: [...bundle.requirements, manualRequirement],
+      traceLinks: [
+        ...(bundle.traceLinks ?? []),
+        { from: 'REQ-Manual', to: 'src/auth/login.ts', type: 'implements' },
+      ],
+    };
+
+    const manualEngine = new TraceEngine(manualBundle);
+    const trace = manualEngine.getRequirementTrace('REQ-Manual');
+
+    expect(trace.tests).toHaveLength(0);
+    expect(trace.code.map((item) => item.path)).toContain('src/auth/login.ts');
+
+    const coverage = manualEngine
+      .getRequirementCoverage()
+      .find((item) => item.requirement.id === 'REQ-Manual');
+    expect(coverage?.status).toBe('partial');
   });
 });
 

@@ -29,6 +29,7 @@ import {
   RequirementStatus,
   TraceLink,
   createRequirement,
+  traceLinkSchema,
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -38,11 +39,7 @@ import {
   TraceEngine,
   generateComplianceSnapshot,
 } from '@soipack/engine';
-import {
-  renderComplianceMatrix,
-  renderGaps,
-  renderTraceMatrix,
-} from '@soipack/report';
+import { renderComplianceMatrix, renderGaps, renderTraceMatrix } from '@soipack/report';
 import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
 import { ZipFile } from 'yazl';
 import YAML from 'yaml';
@@ -65,7 +62,8 @@ import { formatVersion } from './version';
 
 const fixedTimestampSource = process.env.SOIPACK_DEMO_TIMESTAMP;
 const parsedFixedTimestamp = fixedTimestampSource ? new Date(fixedTimestampSource) : undefined;
-const hasFixedTimestamp = parsedFixedTimestamp !== undefined && !Number.isNaN(parsedFixedTimestamp.getTime());
+const hasFixedTimestamp =
+  parsedFixedTimestamp !== undefined && !Number.isNaN(parsedFixedTimestamp.getTime());
 
 const getCurrentDate = (): Date =>
   hasFixedTimestamp ? new Date(parsedFixedTimestamp!.getTime()) : new Date();
@@ -79,6 +77,8 @@ interface ImportPaths {
   lcov?: string;
   cobertura?: string;
   git?: string;
+  traceLinksCsv?: string;
+  traceLinksJson?: string;
 }
 
 export interface ImportOptions extends ImportPaths {
@@ -137,11 +137,192 @@ const readJsonFile = async <T>(filePath: string): Promise<T> => {
   return JSON.parse(content) as T;
 };
 
+const uniqueTraceLinks = (links: TraceLink[]): TraceLink[] => {
+  const seen = new Set<string>();
+  const result: TraceLink[] = [];
+
+  links.forEach((link) => {
+    const key = `${link.from}::${link.to}::${link.type}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    result.push(link);
+  });
+
+  return result;
+};
+
 const normalizeRelativePath = (filePath: string): string => {
   const absolute = path.resolve(filePath);
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
   return normalized.split(path.sep).join('/');
+};
+
+const parseCsvLine = (line: string): string[] => {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      values.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current.trim());
+
+  return values.map((value) => {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+      return trimmed.slice(1, -1).replace(/""/g, '"').trim();
+    }
+    return trimmed;
+  });
+};
+
+interface TraceLinkImportResult {
+  links: TraceLink[];
+  warnings: string[];
+}
+
+const importTraceLinksCsv = async (filePath: string): Promise<TraceLinkImportResult> => {
+  const warnings: string[] = [];
+  const location = path.resolve(filePath);
+  const content = await fsPromises.readFile(location, 'utf8');
+  const rawLines = content.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const nonEmptyLines = rawLines.filter((line) => line.trim().length > 0);
+
+  if (nonEmptyLines.length === 0) {
+    warnings.push(`No rows found while parsing trace links CSV at ${location}.`);
+    return { links: [], warnings };
+  }
+
+  const headerValues = parseCsvLine(nonEmptyLines[0]);
+  const headerCount = headerValues.length;
+  const headerIndex = new Map<string, number>();
+  headerValues.forEach((header, index) => {
+    headerIndex.set(header.trim().toLowerCase(), index);
+  });
+
+  const getCell = (row: string[], ...candidates: string[]): string | undefined => {
+    for (const candidate of candidates) {
+      const normalized = candidate.trim().toLowerCase();
+      const index = headerIndex.get(normalized);
+      if (index !== undefined && index < row.length) {
+        const value = row[index]?.trim();
+        if (value) {
+          return value;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const links: TraceLink[] = [];
+
+  nonEmptyLines.slice(1).forEach((line, rowIndex) => {
+    const parsedRow = parseCsvLine(line);
+    const normalizedRow = Array.from({ length: headerCount }, (_, index) => parsedRow[index] ?? '');
+
+    const from = getCell(normalizedRow, 'from', 'requirement', 'requirementid', 'source');
+    const to = getCell(normalizedRow, 'to', 'target', 'targetid', 'destination', 'test', 'code');
+    const explicitType = getCell(normalizedRow, 'type', 'linktype', 'relation');
+    const targetType = getCell(normalizedRow, 'targettype', 'kind', 'category');
+
+    let resolvedType = explicitType?.toLowerCase() as TraceLink['type'] | undefined;
+    if (!resolvedType && targetType) {
+      const normalizedTargetType = targetType.toLowerCase();
+      if (['code', 'source', 'implementation'].includes(normalizedTargetType)) {
+        resolvedType = 'implements';
+      } else if (['test', 'verification'].includes(normalizedTargetType)) {
+        resolvedType = 'verifies';
+      }
+    }
+    if (!resolvedType) {
+      resolvedType = 'verifies';
+    }
+
+    const candidate = { from, to, type: resolvedType };
+    const validation = traceLinkSchema.safeParse(candidate);
+    if (!validation.success) {
+      const messages = validation.error.issues.map((issue) => issue.message).join('; ');
+      warnings.push(
+        `Trace links CSV row ${rowIndex + 2} ignored (${location}): ${messages || 'invalid link definition.'}`,
+      );
+      return;
+    }
+
+    links.push(validation.data);
+  });
+
+  return { links, warnings };
+};
+
+const importTraceLinksJson = async (filePath: string): Promise<TraceLinkImportResult> => {
+  const warnings: string[] = [];
+  const location = path.resolve(filePath);
+  const content = await fsPromises.readFile(location, 'utf8');
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`Failed to parse trace links JSON at ${location}: ${(error as Error).message}`);
+  }
+
+  const records = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'object' && raw !== null && Array.isArray((raw as { links?: unknown }).links)
+      ? (raw as { links: unknown[] }).links
+      : undefined;
+
+  if (!records) {
+    throw new Error(`Trace links JSON at ${location} must be an array or contain a "links" array.`);
+  }
+
+  const links: TraceLink[] = [];
+  records.forEach((entry, index) => {
+    const validation = traceLinkSchema.safeParse(entry);
+    if (!validation.success) {
+      const messages = validation.error.issues.map((issue) => issue.message).join('; ');
+      warnings.push(
+        `Trace links JSON entry ${index + 1} ignored (${location}): ${messages || 'invalid link definition.'}`,
+      );
+      return;
+    }
+
+    links.push(validation.data);
+  });
+
+  return { links, warnings };
+};
+
+const mergeTraceLinks = (
+  ...groups: TraceLink[][]
+): { links: TraceLink[]; duplicatesRemoved: number } => {
+  const merged: TraceLink[] = [];
+  groups.forEach((group) => {
+    merged.push(...group);
+  });
+  const deduped = uniqueTraceLinks(merged);
+  return { links: deduped, duplicatesRemoved: merged.length - deduped.length };
 };
 
 const tokenize = (value: string): string[] =>
@@ -417,8 +598,15 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     lcov: options.lcov ? normalizeRelativePath(options.lcov) : undefined,
     cobertura: options.cobertura ? normalizeRelativePath(options.cobertura) : undefined,
     git: options.git ? normalizeRelativePath(options.git) : undefined,
+    traceLinksCsv: options.traceLinksCsv ? normalizeRelativePath(options.traceLinksCsv) : undefined,
+    traceLinksJson: options.traceLinksJson
+      ? normalizeRelativePath(options.traceLinksJson)
+      : undefined,
   };
-  const normalizedObjectivesPath = options.objectives ? path.resolve(options.objectives) : undefined;
+  const normalizedObjectivesPath = options.objectives
+    ? path.resolve(options.objectives)
+    : undefined;
+  const manualTraceLinks: TraceLink[] = [];
 
   if (options.jira) {
     const result = await importJiraCsv(options.jira);
@@ -427,7 +615,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       mergeEvidence(
         evidenceIndex,
         'traceability',
-        createEvidence('traceability', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı').evidence,
+        createEvidence('traceability', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı')
+          .evidence,
       );
     }
     requirements.push(result.data.map(toRequirementFromJira));
@@ -486,7 +675,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       mergeEvidence(
         evidenceIndex,
         'coverage',
-        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu').evidence,
+        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
+          .evidence,
       );
     }
   } else if (options.cobertura) {
@@ -499,7 +689,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       mergeEvidence(
         evidenceIndex,
         'coverage',
-        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu').evidence,
+        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
+          .evidence,
       );
     }
   }
@@ -517,8 +708,53 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
   }
 
+  if (options.traceLinksCsv) {
+    const result = await importTraceLinksCsv(options.traceLinksCsv);
+    warnings.push(...result.warnings);
+    if (result.links.length > 0) {
+      manualTraceLinks.push(...result.links);
+      mergeEvidence(
+        evidenceIndex,
+        'traceability',
+        createEvidence(
+          'traceability',
+          'other',
+          options.traceLinksCsv,
+          'Manuel izlenebilirlik eşlemeleri (CSV)',
+        ).evidence,
+      );
+    }
+  }
+
+  if (options.traceLinksJson) {
+    const result = await importTraceLinksJson(options.traceLinksJson);
+    warnings.push(...result.warnings);
+    if (result.links.length > 0) {
+      manualTraceLinks.push(...result.links);
+      mergeEvidence(
+        evidenceIndex,
+        'traceability',
+        createEvidence(
+          'traceability',
+          'other',
+          options.traceLinksJson,
+          'Manuel izlenebilirlik eşlemeleri (JSON)',
+        ).evidence,
+      );
+    }
+  }
+
   const mergedRequirements = mergeRequirements(requirements);
-  const traceLinks = buildTraceLinksFromTests(testResults);
+  const generatedTraceLinks = buildTraceLinksFromTests(testResults);
+  const { links: traceLinks, duplicatesRemoved } = mergeTraceLinks(
+    manualTraceLinks,
+    generatedTraceLinks,
+  );
+  if (duplicatesRemoved > 0) {
+    warnings.push(
+      'Birden fazla kaynaktan gelen yinelenen izlenebilirlik bağlantıları bulundu ve yok sayıldı.',
+    );
+  }
   const testToCodeMap = deriveTestToCodeMap(testResults, coverageMaps);
 
   const workspace: ImportWorkspace = {
@@ -533,10 +769,13 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       generatedAt: getCurrentTimestamp(),
       warnings,
       inputs: normalizedInputs,
-      project: options.projectName || options.projectVersion ? {
-        name: options.projectName,
-        version: options.projectVersion,
-      } : undefined,
+      project:
+        options.projectName || options.projectVersion
+          ? {
+              name: options.projectName,
+              version: options.projectVersion,
+            }
+          : undefined,
       targetLevel: options.level,
       objectivesPath: normalizedObjectivesPath,
     },
@@ -585,16 +824,13 @@ const filterObjectives = (objectives: Objective[], level: CertificationLevel): O
   return objectives.filter((objective) => objective.level[level]);
 };
 
-const buildImportBundle = (
-  workspace: ImportWorkspace,
-  objectives: Objective[],
-): ImportBundle => ({
+const buildImportBundle = (workspace: ImportWorkspace, objectives: Objective[]): ImportBundle => ({
   requirements: workspace.requirements,
   objectives,
   testResults: workspace.testResults,
   coverage: workspace.coverage,
   evidenceIndex: workspace.evidenceIndex,
-  traceLinks: workspace.traceLinks,
+  traceLinks: uniqueTraceLinks(workspace.traceLinks ?? []),
   testToCodeMap: workspace.testToCodeMap,
   generatedAt: workspace.metadata.generatedAt,
 });
@@ -613,7 +849,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
 
   const level = options.level ?? workspace.metadata.targetLevel ?? 'C';
   const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
-  const objectivesPathRaw = options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
+  const objectivesPathRaw =
+    options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
   const objectivesPath = path.resolve(objectivesPathRaw);
   const objectives = await loadObjectives(objectivesPath);
   const filteredObjectives = filterObjectives(objectives, level);
@@ -631,12 +868,13 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const analysisPath = path.join(outputDir, 'analysis.json');
 
   const analysisMetadata: AnalysisMetadata = {
-    project: options.projectName || options.projectVersion || workspace.metadata.project
-      ? {
-          name: options.projectName ?? workspace.metadata.project?.name,
-          version: options.projectVersion ?? workspace.metadata.project?.version,
-        }
-      : undefined,
+    project:
+      options.projectName || options.projectVersion || workspace.metadata.project
+        ? {
+            name: options.projectName ?? workspace.metadata.project?.name,
+            version: options.projectVersion ?? workspace.metadata.project?.version,
+          }
+        : undefined,
     level,
     generatedAt: getCurrentTimestamp(),
   };
@@ -655,7 +893,9 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     warnings: workspace.metadata.warnings,
   });
 
-  const hasMissingEvidence = snapshot.objectives.some((objective) => objective.status !== 'covered');
+  const hasMissingEvidence = snapshot.objectives.some(
+    (objective) => objective.status !== 'covered',
+  );
   const exitCode = hasMissingEvidence ? exitCodes.missingEvidence : exitCodes.success;
 
   return { snapshotPath, tracePath, analysisPath, exitCode };
@@ -810,7 +1050,10 @@ const resolveReportDirectory = async (inputDir: string): Promise<string> => {
   return inputDir;
 };
 
-const resolveEvidenceDirectories = async (inputDir: string, reportDir: string): Promise<string[]> => {
+const resolveEvidenceDirectories = async (
+  inputDir: string,
+  reportDir: string,
+): Promise<string[]> => {
   if (inputDir === reportDir) {
     return [];
   }
@@ -948,7 +1191,9 @@ export const runPipeline = async (
     reqif: config.inputs?.reqif ? path.resolve(baseDir, config.inputs.reqif) : undefined,
     junit: config.inputs?.junit ? path.resolve(baseDir, config.inputs.junit) : undefined,
     lcov: config.inputs?.lcov ? path.resolve(baseDir, config.inputs.lcov) : undefined,
-    cobertura: config.inputs?.cobertura ? path.resolve(baseDir, config.inputs.cobertura) : undefined,
+    cobertura: config.inputs?.cobertura
+      ? path.resolve(baseDir, config.inputs.cobertura)
+      : undefined,
     git: config.inputs?.git ? path.resolve(baseDir, config.inputs.git) : undefined,
     objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
     level,
@@ -994,10 +1239,7 @@ export const runPipeline = async (
     { complianceHtml: reportResult.complianceHtml, command: 'run' },
     'Raporlar üretildi.',
   );
-  logger?.info(
-    { manifestPath: packResult.manifestPath, command: 'run' },
-    'Manifest kaydedildi.',
-  );
+  logger?.info({ manifestPath: packResult.manifestPath, command: 'run' }, 'Manifest kaydedildi.');
   logger?.info(
     {
       archivePath: packResult.archivePath,
@@ -1126,6 +1368,14 @@ if (require.main === module) {
             describe: 'Git deposu kök dizini.',
             type: 'string',
           })
+          .option('trace-links-csv', {
+            describe: 'Manuel gereksinim izlenebilirlik bağlantıları CSV dosyası.',
+            type: 'string',
+          })
+          .option('trace-links-json', {
+            describe: 'Manuel gereksinim izlenebilirlik bağlantıları JSON dosyası.',
+            type: 'string',
+          })
           .option('objectives', {
             describe: 'Uyum hedefleri JSON dosyası.',
             type: 'string',
@@ -1165,6 +1415,8 @@ if (require.main === module) {
             lcov: argv.lcov,
             cobertura: argv.cobertura,
             git: argv.git,
+            traceLinksCsv: argv.traceLinksCsv as string | undefined,
+            traceLinksJson: argv.traceLinksJson as string | undefined,
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,
@@ -1416,11 +1668,17 @@ if (require.main === module) {
           });
 
           if (result.isValid) {
-            logger.info({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulandı.');
+            logger.info(
+              { ...context, manifestId: result.manifestId },
+              'Manifest imzası doğrulandı.',
+            );
             console.log(`Manifest imzası doğrulandı (ID: ${result.manifestId}).`);
             process.exitCode = exitCodes.success;
           } else {
-            logger.warn({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulanamadı.');
+            logger.warn(
+              { ...context, manifestId: result.manifestId },
+              'Manifest imzası doğrulanamadı.',
+            );
             console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
             process.exitCode = exitCodes.verificationFailed;
           }

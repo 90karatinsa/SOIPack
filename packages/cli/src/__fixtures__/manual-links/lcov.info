@@ -1,0 +1,12 @@
+TN:AuthTests#validates login
+SF:src/auth/login.ts
+DA:1,1
+LF:1
+LH:1
+end_of_record
+TN:AuthTests#handles lockout
+SF:src/auth/login.ts
+DA:1,1
+LF:1
+LH:1
+end_of_record
