@@ -1,0 +1,21 @@
+project:
+  name: "SOIPack Demo Avionics"
+  version: "1.0.0"
+level: "C"
+objectives:
+  file: "../../data/objectives/do178c_objectives.min.json"
+inputs:
+  jira: "issues.csv"
+  reqif: "spec.reqif"
+  junit: "results.xml"
+  lcov: "lcov.info"
+  cobertura: "coverage.xml"
+  git: "../.."
+output:
+  work: ".soipack/work"
+  analysis: ".soipack/out"
+  reports: "dist/reports"
+  release: "release"
+pack:
+  name: "soipack-demo.zip"
+  input: "dist"

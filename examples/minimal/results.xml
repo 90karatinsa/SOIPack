@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="DemoSuite" tests="3" failures="0" skipped="1">
+  <testcase classname="DemoSuite" name="verifies requirement 1" time="1.2">
+    <properties>
+      <property name="requirements" value="REQ-1" />
+    </properties>
+  </testcase>
+  <testcase classname="DemoSuite" name="verifies requirements 2 and 3" time="1.5">
+    <properties>
+      <property name="requirements" value="REQ-2 REQ-3" />
+    </properties>
+  </testcase>
+  <testcase classname="DemoSuite" name="pending failure case" time="0.5">
+    <skipped />
+  </testcase>
+</testsuite>

@@ -3,5 +3,12 @@
   "compilerOptions": {
     "composite": true
   },
+  "references": [
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../adapters/tsconfig.build.json" },
+    { "path": "../engine/tsconfig.build.json" },
+    { "path": "../report/tsconfig.build.json" },
+    { "path": "../packager/tsconfig.build.json" }
+  ],
   "exclude": ["src/**/*.test.ts"]
 }
