@@ -385,6 +385,56 @@ describe('@soipack/server REST API', () => {
     const signature = (await fsPromises.readFile(signaturePath, 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
 
+    const packFilter = await request(app)
+      .get('/v1/jobs')
+      .query({ kind: 'pack' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(packFilter.body.jobs.some((job: { id: string }) => job.id === packQueued.body.id)).toBe(true);
+    expect(packFilter.body.jobs.every((job: { kind: string }) => job.kind === 'pack')).toBe(true);
+
+    const completedFilter = await request(app)
+      .get('/v1/jobs')
+      .query({ status: 'completed' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(completedFilter.body.jobs.every((job: { status: string }) => job.status === 'completed')).toBe(true);
+
+    const combinedFilter = await request(app)
+      .get('/v1/jobs')
+      .query({ kind: 'pack', status: 'completed' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(combinedFilter.body.jobs).toHaveLength(1);
+    expect(combinedFilter.body.jobs[0].id).toBe(packQueued.body.id);
+
+    const manifestResponse = await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(manifestResponse.body.manifestId).toBe(packJob.result.manifestId);
+    expect(manifestResponse.body.jobId).toBe(packQueued.body.id);
+    expect(typeof manifestResponse.body.manifest).toBe('object');
+
+    const manifestForbidden = await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(manifestForbidden.body.error.code).toBe('MANIFEST_NOT_FOUND');
+
+    const packageDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect('Content-Type', /zip|octet-stream/)
+      .expect(200);
+    expect(packageDownload.headers['content-disposition']).toContain('.zip');
+
+    const packageForbidden = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(packageForbidden.body.error.code).toBe('PACKAGE_NOT_FOUND');
+
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
       .set('Authorization', `Bearer ${token}`)
@@ -433,6 +483,91 @@ describe('@soipack/server REST API', () => {
     await expect(
       fsPromises.access(path.join(storageDir, 'packages', tenantId, packQueued.body.id), fs.constants.F_OK),
     ).rejects.toThrow();
+
+    await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    await request(app)
+      .get(`/v1/packages/${packQueued.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+  });
+
+  it('supports cancelling queued jobs and deleting finished jobs', async () => {
+    const firstImport = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Queued Project')
+      .field('projectVersion', '1.0.0')
+      .expect(202);
+
+    let firstJobRunning = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const statusResponse = await request(app)
+        .get(`/v1/jobs/${firstImport.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      if (statusResponse.body.status === 'running') {
+        firstJobRunning = true;
+        break;
+      }
+      await delay(50);
+    }
+    expect(firstJobRunning).toBe(true);
+
+    const secondImport = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Queued Project')
+      .field('projectVersion', '2.0.0')
+      .expect(202);
+
+    expect(secondImport.body.status).toBe('queued');
+    expect(secondImport.body.id).not.toBe(firstImport.body.id);
+
+    const cancelResponse = await request(app)
+      .post(`/v1/jobs/${secondImport.body.id}/cancel`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(cancelResponse.body.status).toBe('cancelled');
+
+    await request(app)
+      .get(`/v1/jobs/${secondImport.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    const cancelledWorkspace = path.join(storageDir, 'workspaces', tenantId, secondImport.body.id);
+    await expect(fsPromises.access(cancelledWorkspace, fs.constants.F_OK)).rejects.toThrow();
+    const cancelledUploads = path.join(storageDir, 'uploads', tenantId, secondImport.body.id);
+    await expect(fsPromises.access(cancelledUploads, fs.constants.F_OK)).rejects.toThrow();
+
+    await waitForJobCompletion(app, token, firstImport.body.id);
+
+    const deleteResponse = await request(app)
+      .delete(`/v1/jobs/${firstImport.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(deleteResponse.body.status).toBe('deleted');
+
+    await request(app)
+      .get(`/v1/jobs/${firstImport.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    const deletedWorkspace = path.join(storageDir, 'workspaces', tenantId, firstImport.body.id);
+    await expect(fsPromises.access(deletedWorkspace, fs.constants.F_OK)).rejects.toThrow();
+    const deletedUploads = path.join(storageDir, 'uploads', tenantId, firstImport.body.id);
+    await expect(fsPromises.access(deletedUploads, fs.constants.F_OK)).rejects.toThrow();
   });
 });
 
