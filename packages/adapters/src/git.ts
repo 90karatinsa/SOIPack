@@ -53,6 +53,10 @@ export const importGitMetadata = async (repositoryPath: string): Promise<ParseRe
         author: '',
         date: '',
         message: '',
+        branches: [],
+        tags: [],
+        dirty: false,
+        remoteOrigins: [],
       },
       warnings,
     };

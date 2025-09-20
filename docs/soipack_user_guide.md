@@ -79,6 +79,25 @@ SOIPack API'si, gönderilen her iş isteğinin geçerli bir lisans ile yetkilend
 
 Geçersiz ya da süresi dolmuş lisanslar `402` durum kodu ve `LICENSE_INVALID` hata kodu ile reddedilir; lisans başlığı olmadan gönderilen isteklerde ise `401` durum kodu ve `LICENSE_REQUIRED` mesajı döner.
 
+#### Sunucu API hata kodları
+
+REST API, kimlik doğrulama ve kuyruk/depolama katmanında karşılaşılabilecek durumlar için yapılandırılmış hata gövdeleri döndürür. Sık görülen kodların özeti aşağıdadır:
+
+| HTTP | Kod | Tipik Senaryo |
+| ---- | --- | ------------- |
+| `401` | `UNAUTHORIZED` | `Authorization` başlığı eksik veya JWT imzası/geçerliliği doğrulanamadı. |
+| `401` | `LICENSE_REQUIRED` | `X-SOIPACK-License` başlığı olmadan `import`/`analyze`/`report`/`pack` uç noktalarına istek gönderildi. |
+| `402` | `LICENSE_INVALID` | Lisans imzası bozuk, süresi dolmuş veya beklenen tenant ile eşleşmiyor. |
+| `403` | `INSUFFICIENT_SCOPE` | JWT token gerekli kapsamı (`soipack.api`) içermiyor. |
+| `400` | `NO_INPUT_FILES` | `/v1/import` isteği hiçbir dosya içermiyor; kuyruk işi oluşturulamıyor. |
+| `400` | `INVALID_REQUEST` | Zorunlu alan (`importId`, `analysisId`, `reportId`) eksik veya parametre biçimi hatalı. |
+| `400` | `INVALID_PATH` | Rapor varlığı indirilirken dizin dışına çıkmaya çalışan (ör. `../`) yol kullanıldı. |
+| `404` | `JOB_NOT_FOUND` | İstenen iş kimliği mevcut değil veya başka bir tenant tarafından oluşturuldu. |
+| `413` | `FILE_TOO_LARGE` | Alan bazlı politika (`uploadPolicies`) sınırı aşan dosya tespit edildi. |
+| `500` | `UNEXPECTED_ERROR` | HTTP taşıma limiti (`maxUploadSizeBytes`) aşılırsa yükleyici `File too large` hatasıyla isteği sonlandırır. |
+
+Sunucu yanıtları her durumda `error.code`, `error.message` ve (varsa) `error.details` alanlarını içerir; istemciler bu alanları kullanarak UI bildirimlerini veya otomatik yeniden denemeleri tetikleyebilir.
+
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. `compliance_matrix.html` ve `trace_matrix.html` tarayıcıda açılarak müşteriye canlı demo yapılabilir; `compliance_matrix.pdf` aynı dizinde yer alır ve denetim arşivi için hazırdır.【F:docs/demo_script.md†L18-L25】 Paket arşivi, HTML/PDF raporlarını ve manifest dosyalarını `release/soi-pack-*.zip` içinde taşır.【F:docs/demo_script.md†L26-L31】
 
