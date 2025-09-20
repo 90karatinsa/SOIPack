@@ -22,6 +22,7 @@ import {
   CertificationLevel,
   Evidence,
   EvidenceSource,
+  Manifest,
   Objective,
   ObjectiveArtifactType,
   Requirement,
@@ -42,7 +43,7 @@ import {
   renderGaps,
   renderTraceMatrix,
 } from '@soipack/report';
-import { buildManifest, signManifest } from '@soipack/packager';
+import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
 import { ZipFile } from 'yazl';
 import YAML from 'yaml';
 import yargs from 'yargs';
@@ -118,6 +119,7 @@ const exitCodes = {
   success: 0,
   missingEvidence: 2,
   error: 3,
+  verificationFailed: 4,
 } as const;
 
 const ensureDirectory = async (directory: string): Promise<void> => {
@@ -656,6 +658,55 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   return { manifestPath, archivePath, manifestId };
 };
 
+export interface VerifyOptions {
+  manifestPath: string;
+  signaturePath: string;
+  publicKeyPath: string;
+}
+
+export interface VerifyResult {
+  isValid: boolean;
+  manifestId: string;
+}
+
+const readUtf8File = async (filePath: string, errorMessage: string): Promise<string> => {
+  try {
+    return await fsPromises.readFile(filePath, 'utf8');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${errorMessage}: ${reason}`);
+  }
+};
+
+export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> => {
+  const manifestPath = path.resolve(options.manifestPath);
+  const signaturePath = path.resolve(options.signaturePath);
+  const publicKeyPath = path.resolve(options.publicKeyPath);
+
+  const manifestRaw = await readUtf8File(manifestPath, 'Manifest dosyası okunamadı');
+
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(manifestRaw) as Manifest;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Manifest JSON formatı çözümlenemedi: ${reason}`);
+  }
+
+  const signatureRaw = await readUtf8File(signaturePath, 'Manifest imza dosyası okunamadı');
+  const signature = signatureRaw.trim();
+  if (!signature) {
+    throw new Error('Manifest imza dosyası boş.');
+  }
+
+  const publicKey = await readUtf8File(publicKeyPath, 'Genel anahtar dosyası okunamadı');
+
+  const manifestId = createHash('sha256').update(manifestRaw).digest('hex').slice(0, 12);
+  const isValid = verifyManifestSignature(manifest, signature, publicKey);
+
+  return { isValid, manifestId };
+};
+
 interface RunConfig {
   project?: {
     name?: string;
@@ -1119,6 +1170,67 @@ if (require.main === module) {
           process.exitCode = exitCodes.success;
         } catch (error) {
           logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'verify',
+      'Manifest imzasını doğrular.',
+      (y) =>
+        y
+          .option('manifest', {
+            describe: 'Doğrulanacak manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('signature', {
+            describe: 'Manifest imza dosyası (manifest.sig).',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('public-key', {
+            describe: 'Ed25519 kamu anahtarı PEM dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const manifestOption = Array.isArray(argv.manifest) ? argv.manifest[0] : argv.manifest;
+        const signatureOption = Array.isArray(argv.signature) ? argv.signature[0] : argv.signature;
+        const publicKeyOption = Array.isArray(argv.publicKey) ? argv.publicKey[0] : argv.publicKey;
+
+        const manifestPath = path.resolve(manifestOption as string);
+        const signaturePath = path.resolve(signatureOption as string);
+        const publicKeyPath = path.resolve(publicKeyOption as string);
+
+        const context = {
+          command: 'verify',
+          manifestPath,
+          signaturePath,
+          publicKeyPath,
+        };
+
+        try {
+          const result = await runVerify({
+            manifestPath,
+            signaturePath,
+            publicKeyPath,
+          });
+
+          if (result.isValid) {
+            logger.info({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulandı.');
+            console.log(`Manifest imzası doğrulandı (ID: ${result.manifestId}).`);
+            process.exitCode = exitCodes.success;
+          } else {
+            logger.warn({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulanamadı.');
+            console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
+            process.exitCode = exitCodes.verificationFailed;
+          }
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
       },

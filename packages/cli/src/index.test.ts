@@ -3,9 +3,9 @@ import path from 'path';
 import { promises as fs } from 'fs';
 
 import { Manifest } from '@soipack/core';
-import { verifyManifestSignature } from '@soipack/packager';
+import { signManifest, verifyManifestSignature } from '@soipack/packager';
 
-import { exitCodes, runAnalyze, runImport, runPack, runReport } from './index';
+import { exitCodes, runAnalyze, runImport, runPack, runReport, runVerify } from './index';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
@@ -91,5 +91,89 @@ describe('@soipack/cli pipeline', () => {
     const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+  });
+});
+
+describe('runVerify', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-verify-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const createManifest = (): Manifest => ({
+    files: [
+      { path: 'reports/compliance_matrix.html', sha256: 'abc123def4567890abc123def4567890abc123def4567890abc123def4567890' },
+      { path: 'reports/gaps.html', sha256: 'def123abc4567890def123abc4567890def123abc4567890def123abc4567890' },
+    ],
+    createdAt: '2024-01-01T00:00:00.000Z',
+    toolVersion: '1.0.0-test',
+  });
+
+  const writeVerificationFiles = async (
+    manifest: Manifest,
+    overrides: {
+      manifestJson?: string;
+      signature?: string;
+    } = {},
+  ): Promise<{ manifestPath: string; signaturePath: string; publicKeyPath: string }> => {
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    const signaturePath = path.join(tempDir, 'manifest.sig');
+    const publicKeyPath = path.join(tempDir, 'public.pem');
+
+    const manifestJson =
+      overrides.manifestJson ?? `${JSON.stringify(manifest, null, 2)}\n`;
+    await fs.writeFile(manifestPath, manifestJson, 'utf8');
+
+    const signatureValue = overrides.signature ?? signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
+    await fs.writeFile(signaturePath, `${signatureValue}\n`, 'utf8');
+
+    await fs.writeFile(publicKeyPath, TEST_SIGNING_PUBLIC_KEY, 'utf8');
+
+    return { manifestPath, signaturePath, publicKeyPath };
+  };
+
+  it('returns success for a valid manifest signature', async () => {
+    const manifest = createManifest();
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(manifest);
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.manifestId).toHaveLength(12);
+  });
+
+  it('flags tampered manifests as invalid', async () => {
+    const manifest = createManifest();
+    const originalSignature = signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
+    const tamperedManifest = {
+      ...manifest,
+      files: [...manifest.files, { path: 'evidence/new.txt', sha256: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef' }],
+    } satisfies Manifest;
+
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(tamperedManifest, {
+      signature: originalSignature,
+    });
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath });
+
+    expect(result.isValid).toBe(false);
+    expect(result.manifestId).toHaveLength(12);
+  });
+
+  it('throws on malformed manifest inputs', async () => {
+    const manifest = createManifest();
+    const malformedJson = '{"files": ["broken"]';
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(manifest, {
+      manifestJson: malformedJson,
+    });
+
+    await expect(runVerify({ manifestPath, signaturePath, publicKeyPath })).rejects.toThrow(
+      /Manifest JSON formatı çözümlenemedi/,
+    );
   });
 });

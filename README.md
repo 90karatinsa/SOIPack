@@ -82,6 +82,17 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
 
+6. Manifest imzasını doğrulayın:
+
+   ```bash
+   node packages/cli/dist/index.js verify \
+     --manifest release/manifest.json \
+     --signature release/manifest.sig \
+     --public-key path/to/ed25519_public.pem
+   ```
+
+   Çıktı `Manifest imzası doğrulandı (ID: …)` şeklinde ise paket teslimat için hazırdır.
+
 Tek komutla tüm adımların çalıştığı pipeline için örnek yapılandırmayı kullanabilirsiniz:
 
 ```bash

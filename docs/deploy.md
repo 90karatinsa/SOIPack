@@ -121,6 +121,15 @@ BASE_URL=http://localhost:3000
      -d "{\"reportId\":\"<rapor-id>\"}"
    ```
 
+   Manifest ve imza dosyaları oluşturulduktan sonra teslimattan önce doğrulamak için üretim anahtarınızla aşağıdaki komutu çalıştırabilirsiniz:
+
+   ```bash
+   node packages/cli/dist/index.js verify \
+     --manifest data/packages/<paket-id>/manifest.json \
+     --signature data/packages/<paket-id>/manifest.sig \
+     --public-key path/to/ed25519_public.pem
+   ```
+
 ## 4. Güncelleme ve Bakım
 
 - Yeni bir sürüm yayınlandığında, hazırlık makinesinde `docker build` ve `docker save` adımlarını tekrar ederek yeni imajı içe aktarın.
