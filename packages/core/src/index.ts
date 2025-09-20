@@ -146,3 +146,14 @@ export const traceLinkSchema: z.ZodType<TraceLink> = z.object({
   to: z.string().min(1, 'Trace link target identifier is required.'),
   type: z.enum(traceLinkTypes),
 });
+
+export interface ManifestFileEntry {
+  path: string;
+  sha256: string;
+}
+
+export interface Manifest {
+  files: ManifestFileEntry[];
+  createdAt: string;
+  toolVersion: string;
+}

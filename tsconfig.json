@@ -5,6 +5,7 @@
     { "path": "./packages/core/tsconfig.build.json" },
     { "path": "./packages/adapters/tsconfig.build.json" },
     { "path": "./packages/engine/tsconfig.build.json" },
+    { "path": "./packages/packager/tsconfig.build.json" },
     { "path": "./packages/report/tsconfig.build.json" },
     { "path": "./packages/cli/tsconfig.build.json" },
     { "path": "./packages/server/tsconfig.build.json" }
