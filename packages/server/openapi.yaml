@@ -17,6 +17,15 @@ components:
       type: http
       scheme: bearer
       bearerFormat: Token
+  parameters:
+    LicenseHeader:
+      name: X-SOIPACK-License
+      in: header
+      required: false
+      description: |
+        Base64 kodlanmış lisans anahtarı. Import isteklerinde alternatif olarak `license` dosya alanı kullanılabilir.
+      schema:
+        type: string
   schemas:
     ErrorResponse:
       type: object
@@ -214,6 +223,8 @@ paths:
         Aynı dosya ve seçenek kombinasyonu tekrar gönderildiğinde aynı kimlikte sonuç üretir.
       security:
         - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LicenseHeader'
       requestBody:
         required: true
         content:
@@ -221,6 +232,10 @@ paths:
             schema:
               type: object
               properties:
+                license:
+                  type: string
+                  format: binary
+                  description: Lisans anahtarı dosyası. Başlıkla gönderilirse bu alan boş bırakılabilir.
                 jira:
                   type: string
                   format: binary
@@ -281,6 +296,8 @@ paths:
       summary: Çalışma alanından uyum analizi üretir.
       security:
         - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LicenseHeader'
       requestBody:
         required: true
         content:
@@ -331,6 +348,8 @@ paths:
       summary: Analiz çıktılarından rapor üretir.
       security:
         - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LicenseHeader'
       requestBody:
         required: true
         content:
@@ -376,6 +395,8 @@ paths:
       summary: Rapor çıktılarını arşivler.
       security:
         - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LicenseHeader'
       requestBody:
         required: true
         content:

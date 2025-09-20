@@ -59,6 +59,7 @@ import {
   verifyLicenseFile,
   resolveLicensePath,
   type LicensePayload,
+  type VerifyLicenseOptions,
 } from './license';
 import { formatVersion } from './version';
 
@@ -1481,4 +1482,10 @@ if (require.main === module) {
   cli.parse();
 }
 
-export { exitCodes };
+export {
+  exitCodes,
+  verifyLicenseFile,
+  LicenseError,
+  type LicensePayload,
+  type VerifyLicenseOptions,
+};

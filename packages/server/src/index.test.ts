@@ -19,8 +19,12 @@ MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
 -----END PUBLIC KEY-----
 `;
 
+const LICENSE_PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
+
 const minimalExample = (...segments: string[]): string =>
   path.resolve(__dirname, '../../..', 'examples', 'minimal', ...segments);
+
+const demoLicensePath = path.resolve(__dirname, '../../..', 'data', 'licenses', 'demo-license.key');
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,15 +58,22 @@ describe('@soipack/server REST API', () => {
   let storageDir: string;
   let app: ReturnType<typeof createServer>;
   let signingKeyPath: string;
+  let licensePublicKeyPath: string;
+  let licenseHeader: string;
 
   beforeAll(async () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
     signingKeyPath = path.join(storageDir, 'signing-key.pem');
     await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
+    licensePublicKeyPath = path.join(storageDir, 'license.pub');
+    await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
+    const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
+    licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
     app = createServer({
       token,
       storageDir,
       signingKeyPath,
+      licensePublicKeyPath,
       retention: {
         uploads: { maxAgeMs: 0 },
         analyses: { maxAgeMs: 0 },
@@ -81,10 +92,41 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('requires a license token for import requests', async () => {
+    const response = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .expect(401);
+
+    expect(response.body.error.code).toBe('LICENSE_REQUIRED');
+  });
+
+  it('rejects invalid license tokens', async () => {
+    const licenseJson = JSON.parse(Buffer.from(licenseHeader, 'base64').toString('utf8')) as {
+      payload: string;
+      signature: string;
+    };
+    const signatureBytes = Buffer.from(licenseJson.signature, 'base64');
+    signatureBytes[0] ^= 0xff;
+    licenseJson.signature = Buffer.from(signatureBytes).toString('base64');
+    const tamperedHeader = Buffer.from(JSON.stringify(licenseJson), 'utf8').toString('base64');
+
+    const response = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', tamperedHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .expect(402);
+
+    expect(response.body.error.code).toBe('LICENSE_INVALID');
+  });
+
   it('processes pipeline jobs asynchronously with idempotent reuse', async () => {
     const importResponse = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .attach('reqif', minimalExample('spec.reqif'))
       .attach('junit', minimalExample('results.xml'))
       .attach('lcov', minimalExample('lcov.info'))
@@ -113,6 +155,7 @@ describe('@soipack/server REST API', () => {
     const importReuse = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .attach('reqif', minimalExample('spec.reqif'))
       .attach('junit', minimalExample('results.xml'))
       .attach('lcov', minimalExample('lcov.info'))
@@ -127,6 +170,7 @@ describe('@soipack/server REST API', () => {
     const analyzeQueued = await request(app)
       .post('/v1/analyze')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ importId: importResponse.body.id })
       .expect(202);
 
@@ -140,6 +184,7 @@ describe('@soipack/server REST API', () => {
     const analyzeReuse = await request(app)
       .post('/v1/analyze')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ importId: importResponse.body.id })
       .expect(200);
     expect(analyzeReuse.body.reused).toBe(true);
@@ -148,6 +193,7 @@ describe('@soipack/server REST API', () => {
     const reportQueued = await request(app)
       .post('/v1/report')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ analysisId: analyzeQueued.body.id })
       .expect(202);
 
@@ -157,6 +203,7 @@ describe('@soipack/server REST API', () => {
     const reportReuse = await request(app)
       .post('/v1/report')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ analysisId: analyzeQueued.body.id })
       .expect(200);
     expect(reportReuse.body.reused).toBe(true);
@@ -165,6 +212,7 @@ describe('@soipack/server REST API', () => {
     const packQueued = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ reportId: reportQueued.body.id })
       .expect(202);
 
@@ -175,6 +223,7 @@ describe('@soipack/server REST API', () => {
     const packReuse = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
       .send({ reportId: reportQueued.body.id })
       .expect(200);
     expect(packReuse.body.reused).toBe(true);

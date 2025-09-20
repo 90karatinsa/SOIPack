@@ -25,6 +25,13 @@ if (!signingKeyPathSource) {
   process.exit(1);
 }
 const signingKeyPath = path.resolve(signingKeyPathSource);
+const licensePublicKeyPathSource = process.env.SOIPACK_LICENSE_PUBLIC_KEY_PATH;
+if (!licensePublicKeyPathSource) {
+  // eslint-disable-next-line no-console
+  console.error('SOIPACK_LICENSE_PUBLIC_KEY_PATH ortam değişkeni tanımlanmalıdır.');
+  process.exit(1);
+}
+const licensePublicKeyPath = path.resolve(licensePublicKeyPathSource);
 const portSource = process.env.PORT ?? '3000';
 const port = Number.parseInt(portSource, 10);
 
@@ -75,7 +82,7 @@ if (packagesDays !== undefined) {
   retention.packages = { maxAgeMs: packagesDays };
 }
 
-const app = createServer({ token, storageDir, signingKeyPath, retention });
+const app = createServer({ token, storageDir, signingKeyPath, licensePublicKeyPath, retention });
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console

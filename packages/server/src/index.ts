@@ -1,17 +1,21 @@
 import { createHash } from 'crypto';
-import { promises as fsPromises } from 'fs';
+import fs, { promises as fsPromises } from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
   AnalyzeOptions,
   ImportOptions,
   ImportWorkspace,
+  LicenseError,
   PackOptions,
   ReportOptions,
   runAnalyze,
   runImport,
   runPack,
   runReport,
+  verifyLicenseFile,
+  type LicensePayload,
 } from '@soipack/cli';
 import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
@@ -22,6 +26,15 @@ import { JobDetails, JobQueue, JobSummary } from './queue';
 import { FileSystemStorage, StorageProvider, UploadedFileMap } from './storage';
 
 type FileMap = Record<string, Express.Multer.File[]>;
+
+interface JobLicenseMetadata {
+  hash: string;
+  licenseId: string;
+  issuedTo: string;
+  issuedAt: string;
+  expiresAt?: string | null;
+  features?: string[];
+}
 
 interface HashEntry {
   key: string;
@@ -35,6 +48,7 @@ interface BaseJobMetadata {
   createdAt: string;
   directory: string;
   params: Record<string, unknown>;
+  license: JobLicenseMetadata;
 }
 
 interface ImportJobMetadata extends BaseJobMetadata {
@@ -121,6 +135,8 @@ interface PackJobResult {
 }
 
 const METADATA_FILE = 'job.json';
+const LICENSE_HEADER = 'x-soipack-license';
+const LICENSE_FILE_FIELD = 'license';
 
 const getFieldValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -146,6 +162,11 @@ const computeHash = (entries: HashEntry[]): string => {
 };
 
 const createJobId = (hash: string): string => hash.slice(0, 16);
+
+interface VerifiedLicense {
+  hash: string;
+  payload: LicensePayload;
+}
 
 const asCertificationLevel = (value: string | undefined): CertificationLevel | undefined => {
   if (!value) {
@@ -179,10 +200,71 @@ const convertFileMap = (fileMap: FileMap): UploadedFileMap => {
   return result;
 };
 
+const sanitizeBase64 = (value: string): string => value.replace(/\s+/g, '').trim();
+
+const decodeBase64Strict = (value: string, description: string): Buffer => {
+  const normalized = sanitizeBase64(value);
+  if (!normalized) {
+    throw new HttpError(402, 'LICENSE_INVALID', `${description} boş olamaz.`);
+  }
+  if (!/^[A-Za-z0-9+/=]+$/.test(normalized)) {
+    throw new HttpError(402, 'LICENSE_INVALID', `${description} base64 formatında olmalıdır.`);
+  }
+  const decoded = Buffer.from(normalized, 'base64');
+  if (decoded.length === 0) {
+    throw new HttpError(402, 'LICENSE_INVALID', `${description} çözümlenemedi.`);
+  }
+  return decoded;
+};
+
+const loadLicensePublicKey = (filePath: string): string => {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const withoutPem = raw
+    .replace(/-----BEGIN [^-]+-----/g, '')
+    .replace(/-----END [^-]+-----/g, '')
+    .replace(/\r?\n/g, '')
+    .trim();
+  const normalized = sanitizeBase64(withoutPem);
+  if (!normalized) {
+    throw new Error(`Lisans kamu anahtarı dosyası boş: ${filePath}`);
+  }
+  if (!/^[A-Za-z0-9+/=]+$/.test(normalized)) {
+    throw new Error('Lisans kamu anahtarı base64 formatında olmalıdır.');
+  }
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(normalized, 'base64');
+  } catch (error) {
+    throw new Error('Lisans kamu anahtarı base64 olarak çözülemedi.');
+  }
+  if (decoded.length !== 32) {
+    throw new Error('Lisans kamu anahtarı Ed25519 formatında olmalıdır (32 bayt).');
+  }
+  return normalized;
+};
+
+const toLicenseMetadata = (license: VerifiedLicense): JobLicenseMetadata => ({
+  hash: license.hash,
+  licenseId: license.payload.licenseId,
+  issuedTo: license.payload.issuedTo,
+  issuedAt: license.payload.issuedAt,
+  expiresAt: license.payload.expiresAt ?? null,
+  features: license.payload.features,
+});
+
+const toLicensePayloadFromMetadata = (metadata: JobLicenseMetadata): LicensePayload => ({
+  licenseId: metadata.licenseId,
+  issuedTo: metadata.issuedTo,
+  issuedAt: metadata.issuedAt,
+  expiresAt: metadata.expiresAt ?? undefined,
+  features: metadata.features?.length ? metadata.features : undefined,
+});
+
 export interface ServerConfig {
   token: string;
   storageDir: string;
   signingKeyPath: string;
+  licensePublicKeyPath: string;
   maxUploadSizeBytes?: number;
   storageProvider?: StorageProvider;
   retention?: RetentionConfig;
@@ -361,6 +443,7 @@ const locateJobMetadata = async (
   storage: StorageProvider,
   queue: JobQueue,
   jobId: string,
+  onMetadata?: (metadata: JobMetadata) => void,
 ): Promise<JobDetails<unknown> | undefined> => {
   const locations: Array<{ dir: string; kind: JobMetadata['kind'] }> = [
     { dir: storage.directories.workspaces, kind: 'import' },
@@ -374,6 +457,9 @@ const locateJobMetadata = async (
     const metadataPath = path.join(candidateDir, METADATA_FILE);
     if (await storage.fileExists(metadataPath)) {
       const metadata = await readJobMetadata<JobMetadata>(storage, candidateDir);
+      if (onMetadata) {
+        onMetadata(metadata);
+      }
       return adoptJobFromMetadata(storage, queue, metadata);
     }
   }
@@ -385,6 +471,7 @@ const runRetentionSweep = async (
   storage: StorageProvider,
   queue: JobQueue,
   retention: RetentionConfig,
+  jobLicenses: Map<string, VerifiedLicense>,
   now: Date = new Date(),
 ): Promise<RetentionStats[]> => {
   const descriptors: Array<{
@@ -473,6 +560,7 @@ const runRetentionSweep = async (
 
       try {
         await descriptor.cleanup(id);
+        jobLicenses.delete(id);
         removed += 1;
       } catch {
         skipped += 1;
@@ -517,6 +605,79 @@ export const createServer = (config: ServerConfig): Express => {
     config.storageProvider ?? new FileSystemStorage(path.resolve(config.storageDir));
   const directories = storage.directories;
   const signingKeyPath = path.resolve(config.signingKeyPath);
+  const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
+  const licensePublicKey = loadLicensePublicKey(licensePublicKeyPath);
+  const licenseCache = new Map<string, LicensePayload>();
+  const jobLicenses = new Map<string, VerifiedLicense>();
+
+  const verifyLicenseContent = async (content: Buffer): Promise<VerifiedLicense> => {
+    const hash = createHash('sha256').update(content).digest('hex');
+    const cached = licenseCache.get(hash);
+    if (cached) {
+      return { hash, payload: cached };
+    }
+
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-license-'));
+    const tempPath = path.join(tempDir, 'license.key');
+    try {
+      await fsPromises.writeFile(tempPath, content);
+      const payload = await verifyLicenseFile(tempPath, { publicKey: licensePublicKey });
+      licenseCache.set(hash, payload);
+      return { hash, payload };
+    } catch (error) {
+      if (error instanceof LicenseError) {
+        throw new HttpError(402, 'LICENSE_INVALID', error.message);
+      }
+      const message = error instanceof Error ? error.message : 'Lisans doğrulaması tamamlanamadı.';
+      throw new HttpError(500, 'LICENSE_VERIFY_FAILED', message);
+    } finally {
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
+    }
+  };
+
+  const registerJobLicense = (jobId: string, license: VerifiedLicense): void => {
+    licenseCache.set(license.hash, license.payload);
+    jobLicenses.set(jobId, license);
+  };
+
+  const ensureJobLicense = (jobId: string, license: VerifiedLicense): void => {
+    const existing = jobLicenses.get(jobId);
+    if (existing) {
+      if (existing.hash !== license.hash) {
+        throw new HttpError(401, 'LICENSE_MISMATCH', 'İş mevcut lisansla eşleşmiyor.');
+      }
+      return;
+    }
+    registerJobLicense(jobId, license);
+  };
+
+  const hydrateJobLicense = (metadata: JobMetadata): void => {
+    if (!metadata.license) {
+      throw new HttpError(500, 'LICENSE_METADATA_MISSING', 'İş lisans bilgisi eksik.');
+    }
+    const payload = toLicensePayloadFromMetadata(metadata.license);
+    registerJobLicense(metadata.id, { hash: metadata.license.hash, payload });
+  };
+
+  const requireLicenseToken = async (req: Request, fileMap?: FileMap): Promise<VerifiedLicense> => {
+    const headerValue = req.get(LICENSE_HEADER);
+    if (headerValue) {
+      const decoded = decodeBase64Strict(headerValue, 'Lisans belirteci');
+      return verifyLicenseContent(decoded);
+    }
+
+    if (fileMap) {
+      const licenseFiles = fileMap[LICENSE_FILE_FIELD];
+      if (licenseFiles && licenseFiles[0]) {
+        const buffer = Buffer.from(licenseFiles[0].buffer);
+        delete fileMap[LICENSE_FILE_FIELD];
+        return verifyLicenseContent(buffer);
+      }
+    }
+
+    throw new HttpError(401, 'LICENSE_REQUIRED', 'Geçerli bir lisans anahtarı sağlanmalıdır.');
+  };
+
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -554,7 +715,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
-      const job = queue.get(id) ?? (await locateJobMetadata(storage, queue, id));
+      const job = queue.get(id) ?? (await locateJobMetadata(storage, queue, id, hydrateJobLicense));
       if (!job) {
         throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
       }
@@ -566,12 +727,13 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/admin/cleanup',
     requireAuth,
     createAsyncHandler(async (_req, res) => {
-      const summary = await runRetentionSweep(storage, queue, config.retention ?? {});
+      const summary = await runRetentionSweep(storage, queue, config.retention ?? {}, jobLicenses);
       res.json({ status: 'ok', summary });
     }),
   );
 
   const importFields = upload.fields([
+    { name: LICENSE_FILE_FIELD, maxCount: 1 },
     { name: 'jira', maxCount: 1 },
     { name: 'reqif', maxCount: 1 },
     { name: 'junit', maxCount: 1 },
@@ -587,6 +749,7 @@ export const createServer = (config: ServerConfig): Express => {
     importFields,
     createAsyncHandler(async (req, res) => {
       const fileMap = (req.files as FileMap) ?? {};
+      const license = await requireLicenseToken(req, fileMap);
       const body = req.body as Record<string, unknown>;
 
       const availableFiles = Object.values(fileMap).reduce((sum, files) => sum + files.length, 0);
@@ -620,12 +783,15 @@ export const createServer = (config: ServerConfig): Express => {
 
       const existingJob = queue.get<ImportJobResult>(importId);
       if (existingJob) {
+        ensureJobLicense(importId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
+        hydrateJobLicense(metadata);
+        ensureJobLicense(metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
@@ -672,6 +838,7 @@ export const createServer = (config: ServerConfig): Express => {
                   Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
                 ),
               },
+              license: toLicenseMetadata(license),
               warnings: result.warnings,
               outputs: {
                 workspacePath: path.join(workspaceDir, 'workspace.json'),
@@ -689,6 +856,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
+      registerJobLicense(importId, license);
       respondWithJob(res, job);
     }),
   );
@@ -697,6 +865,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/analyze',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const license = await requireLicenseToken(req);
       const body = req.body as {
         importId?: string;
         level?: string;
@@ -737,12 +906,15 @@ export const createServer = (config: ServerConfig): Express => {
 
       const existingJob = queue.get<AnalyzeJobResult>(analyzeId);
       if (existingJob) {
+        ensureJobLicense(analyzeId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+        hydrateJobLicense(metadata);
+        ensureJobLicense(metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<AnalyzeJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
@@ -778,6 +950,7 @@ export const createServer = (config: ServerConfig): Express => {
                 projectVersion: effectiveProjectVersion ?? null,
                 objectivesPath,
               },
+              license: toLicenseMetadata(license),
               exitCode: result.exitCode,
               outputs: {
                 snapshotPath: path.join(analysisDir, 'snapshot.json'),
@@ -796,6 +969,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
+      registerJobLicense(analyzeId, license);
       respondWithJob(res, job);
     }),
   );
@@ -804,6 +978,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/report',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const license = await requireLicenseToken(req);
       const body = req.body as { analysisId?: string; manifestId?: string };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
@@ -823,12 +998,15 @@ export const createServer = (config: ServerConfig): Express => {
 
       const existingJob = queue.get<ReportJobResult>(reportId);
       if (existingJob) {
+        ensureJobLicense(reportId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
+        hydrateJobLicense(metadata);
+        ensureJobLicense(metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ReportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
@@ -858,6 +1036,7 @@ export const createServer = (config: ServerConfig): Express => {
                 analysisId: body.analysisId,
                 manifestId: body.manifestId ?? null,
               },
+              license: toLicenseMetadata(license),
               outputs: {
                 directory: reportDir,
                 complianceHtml: result.complianceHtml,
@@ -880,6 +1059,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
+      registerJobLicense(reportId, license);
       respondWithJob(res, job);
     }),
   );
@@ -888,6 +1068,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/pack',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      const license = await requireLicenseToken(req);
       const body = req.body as { reportId?: string; packageName?: string };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
@@ -907,12 +1088,15 @@ export const createServer = (config: ServerConfig): Express => {
 
       const existingJob = queue.get<PackJobResult>(packId);
       if (existingJob) {
+        ensureJobLicense(packId, license);
         respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
       if (await storage.fileExists(metadataPath)) {
         const metadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
+        hydrateJobLicense(metadata);
+        ensureJobLicense(metadata.id, license);
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<PackJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
@@ -944,6 +1128,7 @@ export const createServer = (config: ServerConfig): Express => {
                 reportId: body.reportId,
                 packageName: body.packageName ?? null,
               },
+              license: toLicenseMetadata(license),
               outputs: {
                 manifestPath: result.manifestPath,
                 archivePath: result.archivePath,
@@ -961,6 +1146,7 @@ export const createServer = (config: ServerConfig): Express => {
         },
       });
 
+      registerJobLicense(packId, license);
       respondWithJob(res, job);
     }),
   );

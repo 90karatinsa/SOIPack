@@ -14,6 +14,9 @@ MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
 -----END PRIVATE KEY-----
 `;
 
+const LICENSE_PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
+const DEMO_LICENSE_PATH = path.resolve('data', 'licenses', 'demo-license.key');
+
 const example = (...segments: string[]): string => path.resolve('examples', 'minimal', ...segments);
 
 const ensureOk = async <T>(response: Response): Promise<T> => {
@@ -49,13 +52,17 @@ const main = async (): Promise<void> => {
   const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-api-e2e-'));
   const signingKeyPath = path.join(storageDir, 'signing-key.pem');
   await fsPromises.writeFile(signingKeyPath, DEMO_SIGNING_PRIVATE_KEY, 'utf8');
-  const app = createServer({ token, storageDir, signingKeyPath });
+  const licensePublicKeyPath = path.join(storageDir, 'license.pub');
+  await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
+  const licenseContent = await fsPromises.readFile(DEMO_LICENSE_PATH, 'utf8');
+  const licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
+  const app = createServer({ token, storageDir, signingKeyPath, licensePublicKeyPath });
   const server = app.listen(0);
   await once(server, 'listening');
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const authHeaders = { Authorization: `Bearer ${token}` };
+  const baseHeaders = { Authorization: `Bearer ${token}`, 'X-SOIPACK-License': licenseHeader };
 
   try {
     const formData = new FormData();
@@ -67,7 +74,7 @@ const main = async (): Promise<void> => {
 
     const importResponse = await fetch(`${baseUrl}/v1/import`, {
       method: 'POST',
-      headers: authHeaders,
+      headers: baseHeaders,
       body: formData,
     });
     const importResult = await ensureOk<ImportResultBody>(importResponse);
@@ -75,7 +82,7 @@ const main = async (): Promise<void> => {
 
     const analyzeResponse = await fetch(`${baseUrl}/v1/analyze`, {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ importId: importResult.id }),
     });
     const analyzeResult = await ensureOk<AnalyzeResultBody>(analyzeResponse);
@@ -83,7 +90,7 @@ const main = async (): Promise<void> => {
 
     const reportResponse = await fetch(`${baseUrl}/v1/report`, {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ analysisId: analyzeResult.id }),
     });
     const reportResult = await ensureOk<ReportResultBody>(reportResponse);
@@ -91,14 +98,14 @@ const main = async (): Promise<void> => {
 
     const packResponse = await fetch(`${baseUrl}/v1/pack`, {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId: reportResult.id }),
     });
     const packResult = await ensureOk<PackResultBody>(packResponse);
     console.log(`Pack tamamlandı: ${packResult.id} (manifest=${packResult.manifestId})`);
 
     const assetResponse = await fetch(`${baseUrl}/v1/reports/${reportResult.id}/compliance.html`, {
-      headers: authHeaders,
+      headers: baseHeaders,
     });
     if (!assetResponse.ok) {
       throw new Error(`Rapor dosyası okunamadı: ${assetResponse.status}`);
