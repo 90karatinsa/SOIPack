@@ -213,6 +213,25 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('requires authorization for job and artifact endpoints', async () => {
+    const jobList = await request(app).get('/v1/jobs').expect(401);
+    expect(jobList.body.error.code).toBe('UNAUTHORIZED');
+
+    const jobDetail = await request(app).get('/v1/jobs/test-job').expect(401);
+    expect(jobDetail.body.error.code).toBe('UNAUTHORIZED');
+
+    const manifestResponse = await request(app).get('/v1/manifests/abcd1234').expect(401);
+    expect(manifestResponse.body.error.code).toBe('UNAUTHORIZED');
+
+    const packageResponse = await request(app).get('/v1/packages/abcd1234').expect(401);
+    expect(packageResponse.body.error.code).toBe('UNAUTHORIZED');
+
+    const reportAsset = await request(app)
+      .get('/v1/reports/abcd1234/compliance.html')
+      .expect(401);
+    expect(reportAsset.body.error.code).toBe('UNAUTHORIZED');
+  });
+
   it('rejects tokens missing required scopes', async () => {
     const otherScopeToken = await createAccessToken({ scope: 'other.scope' });
     const response = await request(app)
@@ -262,6 +281,29 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('LICENSE_INVALID');
   });
 
+  it('requires a license token for analyze, report, and pack requests', async () => {
+    const analyzeResponse = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ importId: 'missing-import' })
+      .expect(401);
+    expect(analyzeResponse.body.error.code).toBe('LICENSE_REQUIRED');
+
+    const reportResponse = await request(app)
+      .post('/v1/report')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ analysisId: 'missing-analysis' })
+      .expect(401);
+    expect(reportResponse.body.error.code).toBe('LICENSE_REQUIRED');
+
+    const packResponse = await request(app)
+      .post('/v1/pack')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportId: 'missing-report' })
+      .expect(401);
+    expect(packResponse.body.error.code).toBe('LICENSE_REQUIRED');
+  });
+
   it('enforces per-field size limits before queuing import jobs', async () => {
     const limitedStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-limit-test-'));
     const limitedApp = createServer({
@@ -287,6 +329,33 @@ describe('@soipack/server REST API', () => {
 
       expect(response.body.error.code).toBe('FILE_TOO_LARGE');
       expect(response.body.error.details.limit).toBe(32);
+    } finally {
+      await fsPromises.rm(limitedStorageDir, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces the global upload size limit before processing files', async () => {
+    const limitedStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-global-limit-'));
+    const limitedApp = createServer({
+      ...baseConfig,
+      storageDir: limitedStorageDir,
+      maxUploadSizeBytes: 32,
+      metricsRegistry: new Registry(),
+    });
+
+    try {
+      const response = await request(limitedApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', Buffer.from('a'.repeat(128)), {
+          filename: 'spec.reqif',
+          contentType: 'application/xml',
+        })
+        .expect(500);
+
+      expect(response.body.error.code).toBe('UNEXPECTED_ERROR');
+      expect(response.body.error.details?.cause).toBe('File too large');
     } finally {
       await fsPromises.rm(limitedStorageDir, { recursive: true, force: true });
     }
@@ -328,6 +397,128 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('rejects malformed import and pipeline payloads', async () => {
+    const noFilesResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .field('projectName', 'No Files Project')
+      .expect(400);
+    expect(noFilesResponse.body.error.code).toBe('NO_INPUT_FILES');
+
+    const invalidAnalyze = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({})
+      .expect(400);
+    expect(invalidAnalyze.body.error.code).toBe('INVALID_REQUEST');
+
+    const invalidReport = await request(app)
+      .post('/v1/report')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({})
+      .expect(400);
+    expect(invalidReport.body.error.code).toBe('INVALID_REQUEST');
+
+    const invalidPack = await request(app)
+      .post('/v1/pack')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({})
+      .expect(400);
+    expect(invalidPack.body.error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('prevents path traversal when serving report assets', async () => {
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Traversal Project')
+      .field('projectVersion', '1.0.0')
+      .expect(202);
+
+    const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+
+    const analyzeResponse = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ importId: importJob.id })
+      .expect(202);
+    const analyzeJob = await waitForJobCompletion(app, token, analyzeResponse.body.id);
+
+    const reportResponse = await request(app)
+      .post('/v1/report')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ analysisId: analyzeJob.id })
+      .expect(202);
+    await waitForJobCompletion(app, token, reportResponse.body.id);
+
+    const traversalAttempt = await request(app)
+      .get(`/v1/reports/${reportResponse.body.id}/../secrets.txt`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    expect(traversalAttempt.body.error.code).toBe('INVALID_PATH');
+  });
+
+  it('deduplicates concurrent import submissions targeting the same payload', async () => {
+    const projectVersion = `concurrent-${Date.now()}`;
+
+    const submitImport = () =>
+      request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Concurrent Project')
+        .field('projectVersion', projectVersion);
+
+    const [firstResponse, secondResponse, thirdResponse] = await Promise.all([
+      submitImport(),
+      submitImport(),
+      submitImport(),
+    ]);
+
+    expect(firstResponse.body.id).toHaveLength(16);
+    expect([200, 202]).toContain(firstResponse.status);
+    if (firstResponse.status === 200) {
+      expect(firstResponse.body.reused).toBe(false);
+      expect(firstResponse.body.status).toBe('completed');
+    }
+
+    const ids = new Set([firstResponse.body.id, secondResponse.body.id, thirdResponse.body.id]);
+    expect(ids.size).toBe(1);
+
+    [secondResponse, thirdResponse].forEach((response) => {
+      expect([200, 202]).toContain(response.status);
+      if (response.status === 202) {
+        expect(response.body.reused === undefined || response.body.reused === false).toBe(true);
+        expect(response.body.status === 'queued' || response.body.status === 'running').toBe(true);
+      } else {
+        expect(response.body.reused).toBe(true);
+      }
+    });
+
+    const jobId = firstResponse.body.id;
+    const job = await waitForJobCompletion(app, token, jobId);
+    expect(job.status).toBe('completed');
+
+    const reuseResponse = await submitImport().expect(200);
+    expect(reuseResponse.body.id).toBe(jobId);
+    expect(reuseResponse.body.reused).toBe(true);
+    expect(reuseResponse.body.result.outputs.workspace).toBe(job.result.outputs.workspace);
+  });
+
   it('processes pipeline jobs asynchronously with idempotent reuse', async () => {
     const importResponse = await request(app)
       .post('/v1/import')
@@ -346,6 +537,9 @@ describe('@soipack/server REST API', () => {
     expect(importResponse.body.result).toBeUndefined();
 
     const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+    expect(importJob.hash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(new Date(importJob.createdAt).getTime()).not.toBeNaN();
+    expect(new Date(importJob.updatedAt).getTime()).not.toBeNaN();
     expect(importJob.result.outputs.workspace).toMatch(/^workspaces\//);
     expect(Array.isArray(importJob.result.warnings)).toBe(true);
 
@@ -356,7 +550,13 @@ describe('@soipack/server REST API', () => {
       .get('/v1/jobs')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(importList.body.jobs.some((job: { id: string }) => job.id === importResponse.body.id)).toBe(true);
+    const importSummary = importList.body.jobs.find(
+      (job: { id: string }) => job.id === importResponse.body.id,
+    );
+    expect(importSummary).toBeDefined();
+    expect(importSummary.hash).toBe(importJob.hash);
+    expect(new Date(importSummary.createdAt).getTime()).not.toBeNaN();
+    expect(new Date(importSummary.updatedAt).getTime()).not.toBeNaN();
 
     const importReuse = await request(app)
       .post('/v1/import')
@@ -386,6 +586,13 @@ describe('@soipack/server REST API', () => {
     const analyzeJob = await waitForJobCompletion(app, token, analyzeQueued.body.id);
     expect(analyzeJob.result.outputs.snapshot).toMatch(/^analyses\//);
     expect(typeof analyzeJob.result.exitCode).toBe('number');
+
+    const analyzeDetails = await request(app)
+      .get(`/v1/jobs/${analyzeQueued.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(analyzeDetails.body.hash).toBe(analyzeJob.hash);
+    expect(analyzeDetails.body.result.outputs.directory).toBe(analyzeJob.result.outputs.directory);
 
     const analyzeReuse = await request(app)
       .post('/v1/analyze')
@@ -432,6 +639,13 @@ describe('@soipack/server REST API', () => {
     const packJob = await waitForJobCompletion(app, token, packQueued.body.id);
     expect(packJob.result.outputs.archive).toMatch(/^packages\//);
     expect(packJob.result.manifestId).toHaveLength(12);
+
+    const packDetails = await request(app)
+      .get(`/v1/jobs/${packQueued.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(packDetails.body.result.outputs.archive).toBe(packJob.result.outputs.archive);
+    expect(packDetails.body.result.manifestId).toBe(packJob.result.manifestId);
 
     const packReuse = await request(app)
       .post('/v1/pack')
@@ -481,7 +695,7 @@ describe('@soipack/server REST API', () => {
       .expect(200);
     expect(manifestResponse.body.manifestId).toBe(packJob.result.manifestId);
     expect(manifestResponse.body.jobId).toBe(packQueued.body.id);
-    expect(typeof manifestResponse.body.manifest).toBe('object');
+    expect(manifestResponse.body.manifest).toEqual(manifest);
 
     const manifestForbidden = await request(app)
       .get(`/v1/manifests/${packJob.result.manifestId}`)
@@ -492,9 +706,17 @@ describe('@soipack/server REST API', () => {
     const packageDownload = await request(app)
       .get(`/v1/packages/${packQueued.body.id}`)
       .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
       .expect('Content-Type', /zip|octet-stream/)
       .expect(200);
     expect(packageDownload.headers['content-disposition']).toContain('.zip');
+    expect(Buffer.isBuffer(packageDownload.body)).toBe(true);
+    expect((packageDownload.body as Buffer).length).toBeGreaterThan(0);
 
     const packageForbidden = await request(app)
       .get(`/v1/packages/${packQueued.body.id}`)
@@ -505,9 +727,18 @@ describe('@soipack/server REST API', () => {
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
       .set('Authorization', `Bearer ${token}`)
+      .expect('Content-Type', /html/)
       .expect(200);
 
     expect(reportAsset.text).toContain('<html');
+
+    const reportDetails = await request(app)
+      .get(`/v1/jobs/${reportQueued.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(reportDetails.body.result.outputs.complianceHtml).toBe(
+      reportJob.result.outputs.complianceHtml,
+    );
 
     const forbiddenAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
@@ -526,10 +757,14 @@ describe('@soipack/server REST API', () => {
       cleanupResponse.body.summary.map((entry: { target: string }) => [entry.target, entry]),
     );
 
-    expect(summaryByTarget.uploads).toMatchObject({ configured: true, removed: 1, retained: 0 });
-    expect(summaryByTarget.analyses).toMatchObject({ configured: true, removed: 1, retained: 0 });
-    expect(summaryByTarget.reports).toMatchObject({ configured: true, removed: 1, retained: 0 });
-    expect(summaryByTarget.packages).toMatchObject({ configured: true, removed: 1, retained: 0 });
+    (['uploads', 'analyses', 'reports', 'packages'] as const).forEach((target) => {
+      expect(summaryByTarget[target]).toMatchObject({
+        configured: true,
+        retained: 0,
+        skipped: 0,
+      });
+      expect(summaryByTarget[target].removed).toBeGreaterThanOrEqual(1);
+    });
 
     await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).rejects.toThrow();
     await expect(
