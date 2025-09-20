@@ -1,0 +1,456 @@
+openapi: 3.1.0
+info:
+  title: SOIPack REST API
+  version: 0.1.0
+  description: |
+    SOIPack çalışma akışlarını HTTP üzerinden tetikleyen REST arayüzü.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://api.soipack.dev
+security:
+  - BearerAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Token
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              description: Hata ile ilgili ek bilgiler.
+              additionalProperties: true
+    ImportResponse:
+      type: object
+      required:
+        - id
+        - reused
+        - createdAt
+        - warnings
+        - outputs
+      properties:
+        id:
+          type: string
+          description: Import işlemi için belirlenen hash tabanlı kimlik.
+          pattern: '^[a-f0-9]{16}$'
+        reused:
+          type: boolean
+          description: İş daha önce tamamlanmışsa true döner.
+        createdAt:
+          type: string
+          format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
+        outputs:
+          type: object
+          required:
+            - directory
+            - workspace
+          properties:
+            directory:
+              type: string
+              description: Sunucu depolama alanında oluşturulan çalışma dizini.
+            workspace:
+              type: string
+              description: workspace.json dosyasının göreli yolu.
+    AnalyzeResponse:
+      type: object
+      required:
+        - id
+        - reused
+        - createdAt
+        - exitCode
+        - outputs
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        reused:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        exitCode:
+          type: integer
+        outputs:
+          type: object
+          required:
+            - directory
+            - snapshot
+            - traces
+            - analysis
+          properties:
+            directory:
+              type: string
+            snapshot:
+              type: string
+            traces:
+              type: string
+            analysis:
+              type: string
+    ReportResponse:
+      type: object
+      required:
+        - id
+        - reused
+        - createdAt
+        - outputs
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        reused:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        outputs:
+          type: object
+          required:
+            - directory
+            - complianceHtml
+            - complianceJson
+            - traceHtml
+            - gapsHtml
+            - analysis
+            - snapshot
+            - traces
+          properties:
+            directory:
+              type: string
+            complianceHtml:
+              type: string
+            complianceJson:
+              type: string
+            traceHtml:
+              type: string
+            gapsHtml:
+              type: string
+            analysis:
+              type: string
+            snapshot:
+              type: string
+            traces:
+              type: string
+    PackResponse:
+      type: object
+      required:
+        - id
+        - reused
+        - createdAt
+        - manifestId
+        - outputs
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        reused:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        manifestId:
+          type: string
+          description: Paketlenmiş manifestin ilk 12 karakterlik SHA-256 özeti.
+        outputs:
+          type: object
+          required:
+            - directory
+            - manifest
+            - archive
+          properties:
+            directory:
+              type: string
+            manifest:
+              type: string
+            archive:
+              type: string
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Sunucu sağlık durumu.
+      security: []
+      responses:
+        '200':
+          description: Sunucu çalışıyor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        '400':
+          description: Geçersiz istek.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/import:
+    post:
+      operationId: createImportJob
+      summary: Kanıt dosyalarını çalışma alanına aktarır.
+      description: |
+        Aynı dosya ve seçenek kombinasyonu tekrar gönderildiğinde aynı kimlikte sonuç üretir.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                jira:
+                  type: string
+                  format: binary
+                  description: Jira CSV dışa aktarımı.
+                reqif:
+                  type: string
+                  format: binary
+                  description: ReqIF gereksinim paketi.
+                junit:
+                  type: string
+                  format: binary
+                  description: JUnit XML test sonuçları.
+                lcov:
+                  type: string
+                  format: binary
+                  description: LCOV kapsam raporu.
+                cobertura:
+                  type: string
+                  format: binary
+                  description: Cobertura kapsam raporu.
+                git:
+                  type: string
+                  format: binary
+                  description: Git meta verisi (opsiyonel).
+                objectives:
+                  type: string
+                  format: binary
+                  description: Uyumluluk hedefleri JSON dosyası.
+                projectName:
+                  type: string
+                projectVersion:
+                  type: string
+                level:
+                  type: string
+                  description: Sertifikasyon seviyesi (A-E).
+      responses:
+        '200':
+          description: Import işlemi tamamlandı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/analyze:
+    post:
+      operationId: createAnalyzeJob
+      summary: Çalışma alanından uyum analizi üretir.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - importId
+              properties:
+                importId:
+                  type: string
+                  description: Import işlemi kimliği.
+                level:
+                  type: string
+                  description: Sertifikasyon seviyesi (A-E).
+                projectName:
+                  type: string
+                projectVersion:
+                  type: string
+      responses:
+        '200':
+          description: Analiz tamamlandı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyzeResponse'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Kaynak bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/report:
+    post:
+      operationId: createReportJob
+      summary: Analiz çıktılarından rapor üretir.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - analysisId
+              properties:
+                analysisId:
+                  type: string
+                manifestId:
+                  type: string
+                  description: Rapor başlıklarında kullanılacak manifest kimliği.
+      responses:
+        '200':
+          description: Rapor üretildi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportResponse'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Analiz bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/pack:
+    post:
+      operationId: createPackJob
+      summary: Rapor çıktılarını arşivler.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reportId
+              properties:
+                reportId:
+                  type: string
+                packageName:
+                  type: string
+                  description: Oluşturulacak zip dosyası adı.
+      responses:
+        '200':
+          description: Paket başarıyla oluşturuldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackResponse'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Rapor bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/reports/{id}/{asset}:
+    get:
+      operationId: getReportAsset
+      summary: Üretilen rapor dosyalarını döner.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+        - in: path
+          name: asset
+          required: true
+          schema:
+            type: string
+          description: Rapor dizini altındaki dosya adı.
+      responses:
+        '200':
+          description: İstenen rapor dosyası.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Rapor veya dosya bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
