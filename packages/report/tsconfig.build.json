@@ -5,8 +5,8 @@
   },
   "exclude": ["src/**/*.test.ts"],
   "references": [
-    { "path": "../core" },
-    { "path": "../engine" },
-    { "path": "../adapters" }
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../engine/tsconfig.build.json" },
+    { "path": "../adapters/tsconfig.build.json" }
   ]
 }

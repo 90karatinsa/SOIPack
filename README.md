@@ -29,6 +29,65 @@ npm install
 | `npm run format`       | Prettier ile biçimlendirme uygular.        |
 | `npm run format:check` | Prettier biçimlendirmesini kontrol eder.   |
 
+## 5 dakikada demo
+
+CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak için aşağıdaki adımları izleyin. Tüm komutlar depo kök dizininden çalıştırılmalıdır.
+
+1. CLI derlemesini hazırlayın:
+
+   ```bash
+   npm run --workspace @soipack/cli build
+   ```
+
+2. Örnek artefaktları çalışma alanına aktarın:
+
+   ```bash
+   node packages/cli/dist/index.js import \
+     --jira examples/minimal/issues.csv \
+     --reqif examples/minimal/spec.reqif \
+     --junit examples/minimal/results.xml \
+     --lcov examples/minimal/lcov.info \
+     --cobertura examples/minimal/coverage.xml \
+     --git . \
+     --project-name "SOIPack Demo Avionics" \
+     --project-version "1.0.0" \
+     --level C \
+     --objectives data/objectives/do178c_objectives.min.json \
+     -o .soipack/work
+   ```
+
+3. Uyum analizini üretin:
+
+   ```bash
+   node packages/cli/dist/index.js analyze \
+     -i .soipack/work \
+     -o .soipack/out \
+     --level C \
+     --objectives data/objectives/do178c_objectives.min.json \
+     --project-name "SOIPack Demo Avionics" \
+     --project-version "1.0.0"
+   ```
+
+4. Raporları oluşturun:
+
+   ```bash
+   node packages/cli/dist/index.js report -i .soipack/out -o dist/reports
+   ```
+
+5. Dağıtım paketini hazırlayın:
+
+   ```bash
+   node packages/cli/dist/index.js pack -i dist -o release --name soipack-demo.zip
+   ```
+
+Tek komutla tüm adımların çalıştığı pipeline için örnek yapılandırmayı kullanabilirsiniz:
+
+```bash
+node packages/cli/dist/index.js run --config examples/minimal/soipack.config.yaml
+```
+
+Bu adımlar `examples/minimal` altındaki örnek verilerle birlikte çalışır. Aynı dizindeki `demo.sh` betiği, CLI derlemesini kontrol ederek pipeline komutunu otomatik olarak çalıştırır.
+
 ### Ed25519 Anahtar Üretimi
 
 Paket manifestlerini imzalamak için bir Ed25519 anahtar çifti oluşturun:

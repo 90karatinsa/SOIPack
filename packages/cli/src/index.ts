@@ -1,100 +1,962 @@
 #!/usr/bin/env node
-import type { AdapterMetadata } from '@soipack/adapters';
-import { registerAdapter } from '@soipack/adapters';
-import { createRequirement, Requirement, RequirementStatus, TestCase } from '@soipack/core';
-import { buildTraceMatrix, createTraceLink } from '@soipack/engine';
-import { renderHtmlReport, renderJsonReport } from '@soipack/report';
+import fs from 'fs';
+import { promises as fsPromises } from 'fs';
+import path from 'path';
+import { createHash } from 'crypto';
+import process from 'process';
 
-export type CliCommand = 'list-adapters' | 'generate-report';
+import {
+  importCobertura,
+  importGitMetadata,
+  importJiraCsv,
+  importJUnitXml,
+  importLcov,
+  importReqIF,
+  BuildInfo,
+  CoverageSummary,
+  JiraRequirement,
+  ReqIFRequirement,
+  TestResult,
+} from '@soipack/adapters';
+import {
+  CertificationLevel,
+  Evidence,
+  EvidenceSource,
+  Objective,
+  ObjectiveArtifactType,
+  Requirement,
+  RequirementStatus,
+  TraceLink,
+  createRequirement,
+} from '@soipack/core';
+import {
+  ComplianceSnapshot,
+  EvidenceIndex,
+  ImportBundle,
+  RequirementTrace,
+  TraceEngine,
+  generateComplianceSnapshot,
+} from '@soipack/engine';
+import {
+  renderComplianceMatrix,
+  renderGaps,
+  renderTraceMatrix,
+} from '@soipack/report';
+import { ZipFile } from 'yazl';
+import YAML from 'yaml';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
 
-export interface RequirementInput {
-  id: string;
-  title: string;
-  description?: string;
-  status?: RequirementStatus;
-  tags?: string[];
+import packageInfo from '../package.json';
+
+interface ImportPaths {
+  jira?: string;
+  reqif?: string;
+  junit?: string;
+  lcov?: string;
+  cobertura?: string;
+  git?: string;
 }
 
-export interface TestCaseInput {
-  id: string;
-  requirementId: string;
-  name: string;
-  status?: TestCase['status'];
+export interface ImportOptions extends ImportPaths {
+  output: string;
+  objectives?: string;
+  level?: CertificationLevel;
+  projectName?: string;
+  projectVersion?: string;
 }
 
-export interface CliContext {
-  adapters: AdapterMetadata[];
-  requirements: RequirementInput[];
-  testCases: TestCaseInput[];
-}
-
-const buildDomainObjects = (
-  context: CliContext,
-): {
-  adapters: AdapterMetadata[];
+export interface ImportWorkspace {
   requirements: Requirement[];
-  testCases: TestCase[];
-} => {
-  const adapters = context.adapters.map(registerAdapter);
-  const requirements = context.requirements.map((requirement) =>
-    createRequirement(requirement.id, requirement.title, {
-      description: requirement.description,
-      status: requirement.status,
-      tags: requirement.tags,
-    }),
-  );
-  const testCases = context.testCases.map((test) => ({
-    id: test.id,
-    requirementId: test.requirementId,
-    name: test.name,
-    status: test.status ?? 'pending',
-  }));
+  testResults: TestResult[];
+  coverage?: CoverageSummary;
+  traceLinks: TraceLink[];
+  testToCodeMap: Record<string, string[]>;
+  evidenceIndex: EvidenceIndex;
+  git?: BuildInfo | null;
+  metadata: {
+    generatedAt: string;
+    warnings: string[];
+    inputs: ImportPaths;
+    project?: {
+      name?: string;
+      version?: string;
+    };
+    targetLevel?: CertificationLevel;
+    objectivesPath?: string;
+  };
+}
 
-  return { adapters, requirements, testCases };
+export interface ImportResult {
+  workspace: ImportWorkspace;
+  workspacePath: string;
+  warnings: string[];
+}
+
+const exitCodes = {
+  success: 0,
+  missingEvidence: 2,
+  error: 3,
+} as const;
+
+const ensureDirectory = async (directory: string): Promise<void> => {
+  await fsPromises.mkdir(directory, { recursive: true });
 };
 
-export const runCli = async (command: CliCommand, context: CliContext): Promise<string> => {
-  const { adapters, requirements, testCases } = buildDomainObjects(context);
+const writeJsonFile = async (filePath: string, data: unknown): Promise<void> => {
+  const serialized = `${JSON.stringify(data, null, 2)}\n`;
+  await fsPromises.writeFile(filePath, serialized, 'utf8');
+};
 
-  switch (command) {
-    case 'list-adapters': {
-      return adapters
-        .map((adapter) => `${adapter.name}: ${adapter.supportedArtifacts.join(', ')}`)
-        .join('\n');
+const readJsonFile = async <T>(filePath: string): Promise<T> => {
+  const content = await fsPromises.readFile(filePath, 'utf8');
+  return JSON.parse(content) as T;
+};
+
+const normalizeRelativePath = (filePath: string): string => {
+  const absolute = path.resolve(filePath);
+  const relative = path.relative(process.cwd(), absolute);
+  const normalized = relative.length > 0 ? relative : '.';
+  return normalized.split(path.sep).join('/');
+};
+
+const createEvidence = (
+  artifact: ObjectiveArtifactType,
+  source: EvidenceSource,
+  filePath: string,
+  summary: string,
+): { artifact: ObjectiveArtifactType; evidence: Evidence } => ({
+  artifact,
+  evidence: {
+    source,
+    path: normalizeRelativePath(filePath),
+    summary,
+    timestamp: new Date().toISOString(),
+  },
+});
+
+const mergeEvidence = (
+  index: EvidenceIndex,
+  artifact: ObjectiveArtifactType,
+  evidence: Evidence,
+): void => {
+  const existing = index[artifact] ?? [];
+  index[artifact] = [...existing, evidence];
+};
+
+const requirementStatusFromJira = (status: string): RequirementStatus => {
+  const normalized = status.trim().toLowerCase();
+  if (!normalized) {
+    return 'draft';
+  }
+  if (/(verify|validated|done|closed|accepted)/.test(normalized)) {
+    return 'verified';
+  }
+  if (/(implement|in progress|coding|development)/.test(normalized)) {
+    return 'implemented';
+  }
+  if (/(review|approved|ready)/.test(normalized)) {
+    return 'approved';
+  }
+  return 'draft';
+};
+
+const toRequirementFromJira = (entry: JiraRequirement): Requirement => {
+  const requirement = createRequirement(entry.id, entry.summary || entry.id, {
+    description: entry.summary,
+    status: requirementStatusFromJira(entry.status),
+    tags: entry.priority ? [`priority:${entry.priority.toLowerCase()}`] : [],
+  });
+  return requirement;
+};
+
+const toRequirementFromReqif = (entry: ReqIFRequirement): Requirement =>
+  createRequirement(entry.id, entry.text || entry.id, {
+    description: entry.text,
+    status: 'draft',
+  });
+
+const mergeRequirements = (sources: Requirement[][]): Requirement[] => {
+  const merged = new Map<string, Requirement>();
+  sources.forEach((list) => {
+    list.forEach((requirement) => {
+      merged.set(requirement.id, requirement);
+    });
+  });
+  return Array.from(merged.values()).sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const buildTraceLinksFromTests = (tests: TestResult[]): TraceLink[] => {
+  const links: TraceLink[] = [];
+  tests.forEach((test) => {
+    const requirementRefs = test.requirementsRefs ?? [];
+    requirementRefs.forEach((requirementId) => {
+      links.push({ from: requirementId, to: test.testId, type: 'verifies' });
+    });
+  });
+  return links;
+};
+
+export const runImport = async (options: ImportOptions): Promise<ImportResult> => {
+  const warnings: string[] = [];
+  const requirements: Requirement[][] = [];
+  const evidenceIndex: EvidenceIndex = {};
+  let coverage: CoverageSummary | undefined;
+  let gitMetadata: BuildInfo | null | undefined;
+  const testResults: TestResult[] = [];
+  const normalizedInputs: ImportPaths = {
+    jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
+    reqif: options.reqif ? normalizeRelativePath(options.reqif) : undefined,
+    junit: options.junit ? normalizeRelativePath(options.junit) : undefined,
+    lcov: options.lcov ? normalizeRelativePath(options.lcov) : undefined,
+    cobertura: options.cobertura ? normalizeRelativePath(options.cobertura) : undefined,
+    git: options.git ? normalizeRelativePath(options.git) : undefined,
+  };
+  const normalizedObjectivesPath = options.objectives ? path.resolve(options.objectives) : undefined;
+
+  if (options.jira) {
+    const result = await importJiraCsv(options.jira);
+    warnings.push(...result.warnings);
+    if (result.data.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'traceability',
+        createEvidence('traceability', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı').evidence,
+      );
     }
-    case 'generate-report': {
-      const requirementMap = new Map(requirements.map((item) => [item.id, item]));
-      const links = testCases
-        .map((test) => {
-          const requirement = requirementMap.get(test.requirementId);
-          return requirement ? createTraceLink(requirement, test, 1) : undefined;
-        })
-        .filter((value): value is ReturnType<typeof createTraceLink> => Boolean(value));
+    requirements.push(result.data.map(toRequirementFromJira));
+  }
 
-      const matrix = buildTraceMatrix(links);
-      const html = renderHtmlReport(matrix, requirements, testCases);
-      const json = renderJsonReport(matrix, requirements, testCases);
-
-      return [html, JSON.stringify(json, null, 2)].join('\n');
+  if (options.reqif) {
+    const result = await importReqIF(options.reqif);
+    warnings.push(...result.warnings);
+    if (result.data.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'traceability',
+        createEvidence('traceability', 'reqif', options.reqif, 'ReqIF gereksinim paketi').evidence,
+      );
     }
-    default: {
-      throw new Error(`Unknown command: ${command}`);
+    requirements.push(result.data.map(toRequirementFromReqif));
+  }
+
+  if (options.junit) {
+    const result = await importJUnitXml(options.junit);
+    warnings.push(...result.warnings);
+    testResults.push(...result.data);
+    if (result.data.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'testResults',
+        createEvidence('testResults', 'junit', options.junit, 'JUnit test sonuçları').evidence,
+      );
     }
   }
+
+  if (options.lcov) {
+    const result = await importLcov(options.lcov);
+    warnings.push(...result.warnings);
+    coverage = result.data;
+    if (result.data.files.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'coverage',
+        createEvidence('coverage', 'lcov', options.lcov, 'LCOV kapsam raporu').evidence,
+      );
+    }
+  }
+
+  if (!coverage && options.cobertura) {
+    const result = await importCobertura(options.cobertura);
+    warnings.push(...result.warnings);
+    coverage = result.data;
+    if (result.data.files.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'coverage',
+        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu').evidence,
+      );
+    }
+  } else if (options.cobertura) {
+    const result = await importCobertura(options.cobertura);
+    warnings.push(...result.warnings);
+    if (result.data.files.length > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'coverage',
+        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu').evidence,
+      );
+    }
+  }
+
+  if (options.git) {
+    const result = await importGitMetadata(options.git);
+    warnings.push(...result.warnings);
+    gitMetadata = result.data;
+    if (result.data) {
+      mergeEvidence(
+        evidenceIndex,
+        'git',
+        createEvidence('git', 'git', options.git, 'Git depo başlığı').evidence,
+      );
+    }
+  }
+
+  const mergedRequirements = mergeRequirements(requirements);
+  const traceLinks = buildTraceLinksFromTests(testResults);
+
+  const workspace: ImportWorkspace = {
+    requirements: mergedRequirements,
+    testResults,
+    coverage,
+    traceLinks,
+    testToCodeMap: {},
+    evidenceIndex,
+    git: gitMetadata,
+    metadata: {
+      generatedAt: new Date().toISOString(),
+      warnings,
+      inputs: normalizedInputs,
+      project: options.projectName || options.projectVersion ? {
+        name: options.projectName,
+        version: options.projectVersion,
+      } : undefined,
+      targetLevel: options.level,
+      objectivesPath: normalizedObjectivesPath,
+    },
+  };
+
+  const outputDir = path.resolve(options.output);
+  await ensureDirectory(outputDir);
+  const workspacePath = path.join(outputDir, 'workspace.json');
+  await writeJsonFile(workspacePath, workspace);
+
+  return { workspace, workspacePath, warnings };
+};
+
+export interface AnalyzeOptions {
+  input: string;
+  output: string;
+  objectives?: string;
+  level?: CertificationLevel;
+  projectName?: string;
+  projectVersion?: string;
+}
+
+export interface AnalyzeResult {
+  snapshotPath: string;
+  tracePath: string;
+  analysisPath: string;
+  exitCode: number;
+}
+
+interface AnalysisMetadata {
+  project?: {
+    name?: string;
+    version?: string;
+  };
+  level: CertificationLevel;
+  generatedAt: string;
+}
+
+const loadObjectives = async (filePath: string): Promise<Objective[]> => {
+  const content = await fsPromises.readFile(path.resolve(filePath), 'utf8');
+  const data = JSON.parse(content) as Objective[];
+  return data;
+};
+
+const filterObjectives = (objectives: Objective[], level: CertificationLevel): Objective[] => {
+  return objectives.filter((objective) => objective.level[level]);
+};
+
+const buildImportBundle = (
+  workspace: ImportWorkspace,
+  objectives: Objective[],
+): ImportBundle => ({
+  requirements: workspace.requirements,
+  objectives,
+  testResults: workspace.testResults,
+  coverage: workspace.coverage,
+  evidenceIndex: workspace.evidenceIndex,
+  traceLinks: workspace.traceLinks,
+  testToCodeMap: workspace.testToCodeMap,
+  generatedAt: workspace.metadata.generatedAt,
+});
+
+const collectRequirementTraces = (
+  engine: TraceEngine,
+  requirements: Requirement[],
+): RequirementTrace[] => {
+  return requirements.map((requirement) => engine.getRequirementTrace(requirement.id));
+};
+
+export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult> => {
+  const inputDir = path.resolve(options.input);
+  const workspacePath = path.join(inputDir, 'workspace.json');
+  const workspace = await readJsonFile<ImportWorkspace>(workspacePath);
+
+  const level = options.level ?? workspace.metadata.targetLevel ?? 'C';
+  const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
+  const objectivesPathRaw = options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
+  const objectivesPath = path.resolve(objectivesPathRaw);
+  const objectives = await loadObjectives(objectivesPath);
+  const filteredObjectives = filterObjectives(objectives, level);
+
+  const bundle = buildImportBundle(workspace, filteredObjectives);
+  const snapshot = generateComplianceSnapshot(bundle);
+  const engine = new TraceEngine(bundle);
+  const traces = collectRequirementTraces(engine, workspace.requirements);
+
+  const outputDir = path.resolve(options.output);
+  await ensureDirectory(outputDir);
+
+  const snapshotPath = path.join(outputDir, 'snapshot.json');
+  const tracePath = path.join(outputDir, 'traces.json');
+  const analysisPath = path.join(outputDir, 'analysis.json');
+
+  const analysisMetadata: AnalysisMetadata = {
+    project: options.projectName || options.projectVersion || workspace.metadata.project
+      ? {
+          name: options.projectName ?? workspace.metadata.project?.name,
+          version: options.projectVersion ?? workspace.metadata.project?.version,
+        }
+      : undefined,
+    level,
+    generatedAt: new Date().toISOString(),
+  };
+
+  await writeJsonFile(snapshotPath, snapshot);
+  await writeJsonFile(tracePath, traces);
+  await writeJsonFile(analysisPath, {
+    metadata: analysisMetadata,
+    objectives: filteredObjectives,
+    requirements: workspace.requirements,
+    tests: workspace.testResults,
+    coverage: workspace.coverage,
+    evidenceIndex: workspace.evidenceIndex,
+    git: workspace.git,
+    inputs: workspace.metadata.inputs,
+    warnings: workspace.metadata.warnings,
+  });
+
+  const hasMissingEvidence = snapshot.objectives.some((objective) => objective.status !== 'covered');
+  const exitCode = hasMissingEvidence ? exitCodes.missingEvidence : exitCodes.success;
+
+  return { snapshotPath, tracePath, analysisPath, exitCode };
+};
+
+export interface ReportOptions {
+  input: string;
+  output: string;
+  manifestId?: string;
+}
+
+export interface ReportResult {
+  complianceHtml: string;
+  complianceJson: string;
+  traceHtml: string;
+  gapsHtml: string;
+}
+
+export const runReport = async (options: ReportOptions): Promise<ReportResult> => {
+  const inputDir = path.resolve(options.input);
+  const analysisPath = path.join(inputDir, 'analysis.json');
+  const snapshotPath = path.join(inputDir, 'snapshot.json');
+  const tracePath = path.join(inputDir, 'traces.json');
+
+  const analysis = await readJsonFile<{
+    metadata: AnalysisMetadata;
+    objectives: Objective[];
+    requirements: Requirement[];
+    tests: TestResult[];
+    coverage?: CoverageSummary;
+    evidenceIndex: EvidenceIndex;
+    git?: BuildInfo | null;
+    inputs: ImportPaths;
+    warnings: string[];
+  }>(analysisPath);
+  const snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
+  const traces = await readJsonFile<RequirementTrace[]>(tracePath);
+
+  const compliance = renderComplianceMatrix(snapshot, {
+    objectivesMetadata: analysis.objectives,
+    manifestId: options.manifestId,
+    generatedAt: analysis.metadata.generatedAt,
+    title: analysis.metadata.project?.name
+      ? `${analysis.metadata.project.name} Uyum Matrisi`
+      : 'SOIPack Uyum Matrisi',
+  });
+  const traceHtml = renderTraceMatrix(traces, {
+    generatedAt: analysis.metadata.generatedAt,
+    title: analysis.metadata.project?.name
+      ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
+      : 'SOIPack İzlenebilirlik Matrisi',
+  });
+  const gapsHtml = renderGaps(snapshot, {
+    objectivesMetadata: analysis.objectives,
+    manifestId: options.manifestId,
+    generatedAt: analysis.metadata.generatedAt,
+    title: analysis.metadata.project?.name
+      ? `${analysis.metadata.project.name} Kanıt Boşlukları`
+      : 'SOIPack Uyumluluk Boşlukları',
+  });
+
+  const outputDir = path.resolve(options.output);
+  await ensureDirectory(outputDir);
+
+  const complianceHtmlPath = path.join(outputDir, 'compliance.html');
+  const complianceJsonPath = path.join(outputDir, 'compliance.json');
+  const traceHtmlPath = path.join(outputDir, 'trace.html');
+  const gapsHtmlPath = path.join(outputDir, 'gaps.html');
+
+  await fsPromises.copyFile(snapshotPath, path.join(outputDir, 'snapshot.json'));
+  await fsPromises.copyFile(tracePath, path.join(outputDir, 'traces.json'));
+
+  await fsPromises.writeFile(complianceHtmlPath, compliance.html, 'utf8');
+  await writeJsonFile(complianceJsonPath, compliance.json);
+  await fsPromises.writeFile(traceHtmlPath, traceHtml, 'utf8');
+  await fsPromises.writeFile(gapsHtmlPath, gapsHtml, 'utf8');
+  await writeJsonFile(path.join(outputDir, 'analysis.json'), analysis);
+
+  return {
+    complianceHtml: complianceHtmlPath,
+    complianceJson: complianceJsonPath,
+    traceHtml: traceHtmlPath,
+    gapsHtml: gapsHtmlPath,
+  };
+};
+
+export interface PackOptions {
+  input: string;
+  output: string;
+  packageName?: string;
+}
+
+export interface PackResult {
+  manifestPath: string;
+  archivePath: string;
+  manifestId: string;
+}
+
+interface ManifestFileEntry {
+  path: string;
+  sha256: string;
+}
+
+interface ManifestData {
+  files: ManifestFileEntry[];
+  createdAt: string;
+  toolVersion: string;
+}
+
+const listFilesRecursively = async (directory: string, base: string): Promise<ManifestFileEntry[]> => {
+  const entries = await fsPromises.readdir(directory, { withFileTypes: true });
+  const files: ManifestFileEntry[] = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await listFilesRecursively(fullPath, base);
+      files.push(...nested);
+    } else if (entry.isFile()) {
+      const relative = path.relative(base, fullPath).split(path.sep).join('/');
+      const buffer = await fsPromises.readFile(fullPath);
+      const hash = createHash('sha256').update(buffer).digest('hex');
+      files.push({ path: relative, sha256: hash });
+    }
+  }
+
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return files;
+};
+
+const createArchive = async (
+  inputDir: string,
+  manifest: ManifestData,
+  outputPath: string,
+): Promise<void> => {
+  await ensureDirectory(path.dirname(outputPath));
+  const zip = new ZipFile();
+  const output = fs.createWriteStream(outputPath);
+
+  const completion = new Promise<void>((resolve, reject) => {
+    output.on('close', () => resolve());
+    output.on('error', (error) => reject(error));
+    zip.outputStream.on('error', (error) => reject(error));
+  });
+
+  zip.outputStream.pipe(output);
+
+  for (const file of manifest.files) {
+    zip.addFile(path.resolve(inputDir, file.path), file.path);
+  }
+
+  zip.addBuffer(Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'), 'manifest.json');
+  zip.end();
+
+  await completion;
+};
+
+export const runPack = async (options: PackOptions): Promise<PackResult> => {
+  const inputDir = path.resolve(options.input);
+  const outputDir = path.resolve(options.output);
+  await ensureDirectory(outputDir);
+
+  const files = await listFilesRecursively(inputDir, inputDir);
+  const manifest: ManifestData = {
+    files,
+    createdAt: new Date().toISOString(),
+    toolVersion: packageInfo.version,
+  };
+
+  const manifestContent = JSON.stringify(manifest);
+  const manifestId = createHash('sha256').update(manifestContent).digest('hex').slice(0, 12);
+
+  const manifestPath = path.join(outputDir, 'manifest.json');
+  await writeJsonFile(manifestPath, manifest);
+
+  const archiveName = options.packageName ?? `soipack-${manifestId}.zip`;
+  const archivePath = path.join(outputDir, archiveName);
+  await createArchive(inputDir, manifest, archivePath);
+
+  return { manifestPath, archivePath, manifestId };
+};
+
+interface RunConfig {
+  project?: {
+    name?: string;
+    version?: string;
+  };
+  level?: CertificationLevel;
+  objectives?: {
+    file?: string;
+  };
+  inputs?: ImportPaths;
+  output?: {
+    work?: string;
+    analysis?: string;
+    reports?: string;
+    release?: string;
+  };
+  pack?: {
+    name?: string;
+    input?: string;
+  };
+}
+
+export const runPipeline = async (configPath: string): Promise<number> => {
+  const absoluteConfig = path.resolve(configPath);
+  const raw = await fsPromises.readFile(absoluteConfig, 'utf8');
+  const config = YAML.parse(raw) as RunConfig;
+  const baseDir = path.dirname(absoluteConfig);
+
+  const level = config.level ?? 'C';
+  const workDir = path.resolve(baseDir, config.output?.work ?? '.soipack/work');
+  const analysisDir = path.resolve(baseDir, config.output?.analysis ?? '.soipack/out');
+  const reportDir = path.resolve(baseDir, config.output?.reports ?? 'dist/reports');
+  const releaseDir = path.resolve(baseDir, config.output?.release ?? 'release');
+
+  const importResult = await runImport({
+    output: workDir,
+    jira: config.inputs?.jira ? path.resolve(baseDir, config.inputs.jira) : undefined,
+    reqif: config.inputs?.reqif ? path.resolve(baseDir, config.inputs.reqif) : undefined,
+    junit: config.inputs?.junit ? path.resolve(baseDir, config.inputs.junit) : undefined,
+    lcov: config.inputs?.lcov ? path.resolve(baseDir, config.inputs.lcov) : undefined,
+    cobertura: config.inputs?.cobertura ? path.resolve(baseDir, config.inputs.cobertura) : undefined,
+    git: config.inputs?.git ? path.resolve(baseDir, config.inputs.git) : undefined,
+    objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
+    level,
+    projectName: config.project?.name,
+    projectVersion: config.project?.version,
+  });
+
+  if (importResult.warnings.length > 0) {
+    importResult.warnings.forEach((warning) => {
+      // eslint-disable-next-line no-console
+      console.warn(`Uyarı: ${warning}`);
+    });
+  }
+  // eslint-disable-next-line no-console
+  console.log(`Çalışma alanı ${importResult.workspacePath} olarak hazırlandı.`);
+
+  const analyzeResult = await runAnalyze({
+    input: workDir,
+    output: analysisDir,
+    level,
+    objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
+    projectName: config.project?.name,
+    projectVersion: config.project?.version,
+  });
+
+  const reportResult = await runReport({
+    input: analysisDir,
+    output: reportDir,
+  });
+
+  const packInput = config.pack?.input
+    ? path.resolve(baseDir, config.pack.input)
+    : path.resolve(baseDir, 'dist');
+  const packResult = await runPack({
+    input: packInput,
+    output: releaseDir,
+    packageName: config.pack?.name,
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`Raporlar ${reportResult.complianceHtml} konumuna üretildi.`);
+  // eslint-disable-next-line no-console
+  console.log(`Manifest ${packResult.manifestPath} konumuna yazıldı.`);
+  // eslint-disable-next-line no-console
+  console.log(`Paket ${packResult.archivePath} olarak hazırlandı (ID: ${packResult.manifestId}).`);
+
+  if (analyzeResult.exitCode === exitCodes.missingEvidence) {
+    // eslint-disable-next-line no-console
+    console.warn('Analiz hedefleri için eksik kanıt bulundu. Paket uyarı ile tamamlandı.');
+    return exitCodes.missingEvidence;
+  }
+  // eslint-disable-next-line no-console
+  console.log('Tüm hedef kanıtlar başarıyla toplandı.');
+  return exitCodes.success;
+};
+
+const showError = (error: unknown): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  // eslint-disable-next-line no-console
+  console.error(message);
 };
 
 if (require.main === module) {
-  const [, , command = 'list-adapters'] = process.argv;
-  runCli(command as CliCommand, { adapters: [], requirements: [], testCases: [] })
-    .then((output) => {
-      if (output) {
-        // eslint-disable-next-line no-console
-        console.log(output);
-      }
-    })
-    .catch((error) => {
-      // eslint-disable-next-line no-console
-      console.error(error);
-      process.exitCode = 1;
-    });
+  const cli = yargs(hideBin(process.argv))
+    .scriptName('soipack')
+    .usage('$0 <command> [options]')
+    .command(
+      'import',
+      'Gereksinim, test ve kapsam kanıtlarını çalışma alanına aktarır.',
+      (y) =>
+        y
+          .option('jira', {
+            describe: 'Jira CSV dışa aktarımının yolu.',
+            type: 'string',
+          })
+          .option('reqif', {
+            describe: 'ReqIF gereksinim paketi yolu.',
+            type: 'string',
+          })
+          .option('junit', {
+            describe: 'JUnit XML test sonuç dosyası.',
+            type: 'string',
+          })
+          .option('lcov', {
+            describe: 'LCOV kapsam raporu.',
+            type: 'string',
+          })
+          .option('cobertura', {
+            describe: 'Cobertura kapsam raporu.',
+            type: 'string',
+          })
+          .option('git', {
+            describe: 'Git deposu kök dizini.',
+            type: 'string',
+          })
+          .option('objectives', {
+            describe: 'Uyum hedefleri JSON dosyası.',
+            type: 'string',
+          })
+          .option('level', {
+            describe: 'Hedef seviye (A-E).',
+            type: 'string',
+          })
+          .option('project-name', {
+            describe: 'Proje adı.',
+            type: 'string',
+          })
+          .option('project-version', {
+            describe: 'Proje sürümü.',
+            type: 'string',
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Çıktı çalışma dizini.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        try {
+          const result = await runImport({
+            output: argv.output,
+            jira: argv.jira,
+            reqif: argv.reqif,
+            junit: argv.junit,
+            lcov: argv.lcov,
+            cobertura: argv.cobertura,
+            git: argv.git,
+            objectives: argv.objectives,
+            level: argv.level as CertificationLevel | undefined,
+            projectName: argv.projectName as string | undefined,
+            projectVersion: argv.projectVersion as string | undefined,
+          });
+          if (result.warnings.length > 0) {
+            result.warnings.forEach((warning) => {
+              // eslint-disable-next-line no-console
+              console.warn(warning);
+            });
+          }
+          // eslint-disable-next-line no-console
+          console.log(`Çalışma alanı ${result.workspacePath} olarak kaydedildi.`);
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          showError(error);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'analyze',
+      'Çalışma alanını kullanarak uyum analizi üretir.',
+      (y) =>
+        y
+          .option('input', {
+            alias: 'i',
+            describe: 'Import çıktısının bulunduğu dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Analiz çıktılarının yazılacağı dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('objectives', {
+            describe: 'Uyum hedefleri JSON dosyası.',
+            type: 'string',
+          })
+          .option('level', {
+            describe: 'Hedef seviye (A-E).',
+            type: 'string',
+          })
+          .option('project-name', {
+            describe: 'Proje adı.',
+            type: 'string',
+          })
+          .option('project-version', {
+            describe: 'Proje sürümü.',
+            type: 'string',
+          }),
+      async (argv) => {
+        try {
+          const result = await runAnalyze({
+            input: argv.input,
+            output: argv.output,
+            objectives: argv.objectives,
+            level: argv.level as CertificationLevel | undefined,
+            projectName: argv.projectName as string | undefined,
+            projectVersion: argv.projectVersion as string | undefined,
+          });
+          // eslint-disable-next-line no-console
+          console.log(`Analiz çıktıları ${argv.output} dizinine yazıldı.`);
+          process.exitCode = result.exitCode;
+        } catch (error) {
+          showError(error);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'report',
+      'Analiz sonuçlarından HTML/JSON raporları üretir.',
+      (y) =>
+        y
+          .option('input', {
+            alias: 'i',
+            describe: 'Analiz çıktısı dizini.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Raporların yazılacağı dizin.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        try {
+          const result = await runReport({
+            input: argv.input,
+            output: argv.output,
+          });
+          // eslint-disable-next-line no-console
+          console.log(`Uyum raporu ${result.complianceHtml} olarak oluşturuldu.`);
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          showError(error);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'pack',
+      'Rapor klasörünü zip paketine dönüştürür.',
+      (y) =>
+        y
+          .option('input', {
+            alias: 'i',
+            describe: 'Paketlenecek kök dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Paketin yazılacağı dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('name', {
+            describe: 'Çıktı paketi dosya adı.',
+            type: 'string',
+          }),
+      async (argv) => {
+        try {
+          const result = await runPack({
+            input: argv.input,
+            output: argv.output,
+            packageName: argv.name,
+          });
+          // eslint-disable-next-line no-console
+          console.log(`Paket ${result.archivePath} olarak oluşturuldu.`);
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          showError(error);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'run',
+      'YAML konfigürasyonu ile uçtan uca içe aktarım → analiz → rapor → paket akışını çalıştırır.',
+      (y) =>
+        y.option('config', {
+          alias: 'c',
+          describe: 'soipack.config.yaml yolu.',
+          type: 'string',
+          demandOption: true,
+        }),
+      async (argv) => {
+        try {
+          const exitCode = await runPipeline(argv.config);
+          process.exitCode = exitCode;
+        } catch (error) {
+          showError(error);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .demandCommand(1, 'Bir komut seçmelisiniz.')
+    .strict()
+    .help()
+    .wrap(100);
+
+  cli.parse();
 }
+
+export { exitCodes };

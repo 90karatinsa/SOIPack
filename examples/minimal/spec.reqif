@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<REQ-IF>
+  <CORE-CONTENT>
+    <SPEC-OBJECTS>
+      <SPEC-OBJECT IDENTIFIER="REQ-3">
+        <VALUES>
+          <ATTRIBUTE-VALUE-XHTML>
+            <THE-VALUE>Log flight faults for post-flight review.</THE-VALUE>
+          </ATTRIBUTE-VALUE-XHTML>
+        </VALUES>
+      </SPEC-OBJECT>
+    </SPEC-OBJECTS>
+  </CORE-CONTENT>
+</REQ-IF>

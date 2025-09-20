@@ -3,5 +3,9 @@
   "compilerOptions": {
     "composite": true
   },
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts"],
+  "references": [
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../adapters/tsconfig.build.json" }
+  ]
 }

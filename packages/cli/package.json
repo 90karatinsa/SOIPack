@@ -12,10 +12,17 @@
     "@soipack/adapters": "0.1.0",
     "@soipack/core": "0.1.0",
     "@soipack/engine": "0.1.0",
-    "@soipack/report": "0.1.0"
+    "@soipack/packager": "0.1.0",
+    "@soipack/report": "0.1.0",
+    "yaml": "^2.4.2",
+    "yargs": "^17.7.2",
+    "yazl": "^2.5.1"
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
     "test": "jest --config ./jest.config.cjs"
+  },
+  "devDependencies": {
+    "@types/yazl": "^2.4.4"
   }
 }
