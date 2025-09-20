@@ -52,10 +52,18 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker load < soipack-server.tar.gz
    ```
-3. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. `SOIPACK_API_TOKEN` zorunludur. Aynı klasörde bir `.env` dosyası oluşturun:
+3. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
    ```bash
    cat <<'ENV' > .env
-   SOIPACK_API_TOKEN=degiştir-beni
+   SOIPACK_AUTH_ISSUER=https://kimlik.example.com/
+   SOIPACK_AUTH_AUDIENCE=soipack-api
+   SOIPACK_AUTH_JWKS_URI=https://kimlik.example.com/.well-known/jwks.json
+   # İsteğe bağlı claim eşlemesi ve kapsam gereksinimleri
+   SOIPACK_AUTH_TENANT_CLAIM=tenant
+   SOIPACK_AUTH_USER_CLAIM=sub
+   SOIPACK_AUTH_REQUIRED_SCOPES=soipack.api
+   # Sağlık kontrolü için uzun ömürlü bir JWT sağlayın (opsiyonel)
+   SOIPACK_HEALTHCHECK_TOKEN=
    PORT=3000
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
@@ -70,20 +78,21 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker compose up -d
    ```
-5. Sağlık kontrolünü doğrulayın:
+5. Sağlık kontrolünü doğrulayın (geçerli bir JWT üretmek için OIDC sağlayıcınızı kullanın):
    ```bash
    docker compose ps
-   curl -H "Authorization: Bearer $SOIPACK_API_TOKEN" http://localhost:3000/health
+   TOKEN=$(./jwt-olustur.sh) # örnek: kendi betiğiniz veya sağlayıcı SDK'sı
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/health
    ```
 
 Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
 ## 3. Örnek Pipeline Çağrısı
 
-Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak uçtan uca PDF raporu oluşturur. Komutları çalıştırmadan önce `TOKEN` değişkenini ayarlayın:
+Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak uçtan uca PDF raporu oluşturur. Komutları çalıştırmadan önce geçerli bir JWT üretip `TOKEN` değişkenini ayarlayın:
 
 ```bash
-TOKEN=$SOIPACK_API_TOKEN
+TOKEN=$(./jwt-olustur.sh)
 BASE_URL=http://localhost:3000
 ```
 

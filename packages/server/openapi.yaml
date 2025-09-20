@@ -16,7 +16,8 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: Token
+      bearerFormat: JWT
+      description: OIDC sağlayıcısı tarafından imzalanmış, tenant kimliği içeren erişim belirteci.
   parameters:
     LicenseHeader:
       name: X-SOIPACK-License

@@ -7,7 +7,12 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      SOIPACK_API_TOKEN: ${SOIPACK_API_TOKEN:?SOIPACK_API_TOKEN tanımlanmalıdır}
+      SOIPACK_AUTH_ISSUER: ${SOIPACK_AUTH_ISSUER:?SOIPACK_AUTH_ISSUER tanımlanmalıdır}
+      SOIPACK_AUTH_AUDIENCE: ${SOIPACK_AUTH_AUDIENCE:?SOIPACK_AUTH_AUDIENCE tanımlanmalıdır}
+      SOIPACK_AUTH_JWKS_URI: ${SOIPACK_AUTH_JWKS_URI:?SOIPACK_AUTH_JWKS_URI tanımlanmalıdır}
+      SOIPACK_AUTH_TENANT_CLAIM: ${SOIPACK_AUTH_TENANT_CLAIM:-tenant}
+      SOIPACK_AUTH_USER_CLAIM: ${SOIPACK_AUTH_USER_CLAIM:-sub}
+      SOIPACK_AUTH_REQUIRED_SCOPES: ${SOIPACK_AUTH_REQUIRED_SCOPES:-soipack.api}
       SOIPACK_STORAGE_DIR: /app/data
       PORT: ${PORT:-3000}
     ports:
@@ -20,7 +25,7 @@ services:
         - CMD
         - node
         - -e
-        - "fetch('http://localhost:3000/health',{headers:{Authorization:'Bearer '+process.env.SOIPACK_API_TOKEN}}).then(res=>{if(!res.ok)process.exit(1);}).catch(()=>process.exit(1));"
+        - "const token=process.env.SOIPACK_HEALTHCHECK_TOKEN;if(!token){process.exit(1);}fetch('http://localhost:3000/health',{headers:{Authorization:'Bearer '+token}}).then(res=>{if(!res.ok)process.exit(1);}).catch(()=>process.exit(1));"
       interval: 30s
       timeout: 10s
       retries: 5

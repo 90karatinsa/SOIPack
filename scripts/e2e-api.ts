@@ -7,6 +7,8 @@ import process from 'process';
 import { once } from 'events';
 import { AddressInfo } from 'net';
 
+import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet } from 'jose';
+
 import { createServer } from '../packages/server/src/index';
 
 const DEMO_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -48,7 +50,6 @@ interface PackResultBody {
 }
 
 const main = async (): Promise<void> => {
-  const token = process.env.SOIPACK_E2E_TOKEN ?? 'demo-token';
   const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-api-e2e-'));
   const signingKeyPath = path.join(storageDir, 'signing-key.pem');
   await fsPromises.writeFile(signingKeyPath, DEMO_SIGNING_PRIVATE_KEY, 'utf8');
@@ -56,11 +57,43 @@ const main = async (): Promise<void> => {
   await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
   const licenseContent = await fsPromises.readFile(DEMO_LICENSE_PATH, 'utf8');
   const licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
-  const app = createServer({ token, storageDir, signingKeyPath, licensePublicKeyPath });
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const publicJwk = (await exportJWK(publicKey)) as JWK;
+  publicJwk.use = 'sig';
+  publicJwk.alg = 'RS256';
+  publicJwk.kid = 'e2e-key';
+
+  const issuer = 'https://demo-auth.soipack';
+  const audience = 'soipack-api';
+  const tenantId = process.env.SOIPACK_E2E_TENANT ?? 'demo-tenant';
+
+  const jwks: JSONWebKeySet = { keys: [publicJwk] };
+
+  const app = createServer({
+    auth: {
+      issuer,
+      audience,
+      tenantClaim: 'tenant',
+      jwks,
+      requiredScopes: ['soipack.api'],
+    },
+    storageDir,
+    signingKeyPath,
+    licensePublicKeyPath,
+  });
   const server = app.listen(0);
   await once(server, 'listening');
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const token = await new SignJWT({ tenant: tenantId, scope: 'soipack.api' })
+    .setProtectedHeader({ alg: 'RS256', kid: publicJwk.kid })
+    .setIssuer(issuer)
+    .setAudience(audience)
+    .setSubject('e2e-user')
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .sign(privateKey);
 
   const baseHeaders = { Authorization: `Bearer ${token}`, 'X-SOIPACK-License': licenseHeader };
 
