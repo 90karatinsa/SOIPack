@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<coverage lines-covered="11" lines-valid="14" branches-covered="5" branches-valid="6" timestamp="1712345678" version="0">
+  <packages>
+    <package name="app" line-rate="0.78" branch-rate="0.83">
+      <classes>
+        <class name="Example" filename="src/example.ts" line-rate="0.75" branch-rate="0.5">
+          <methods>
+            <method name="doThing" hits="1">
+              <lines>
+                <line number="10" hits="1" />
+                <line number="11" hits="0" />
+              </lines>
+            </method>
+          </methods>
+          <lines>
+            <line number="10" hits="1" branch="false" />
+            <line number="11" hits="0" branch="true" condition-coverage="50% (1/2)" />
+          </lines>
+        </class>
+        <class name="Other" filename="src/other.ts" line-rate="1" branch-rate="1">
+          <methods>
+            <method name="helper" hits="1">
+              <lines>
+                <line number="5" hits="1" />
+              </lines>
+            </method>
+          </methods>
+          <lines>
+            <line number="5" hits="1" branch="false" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
