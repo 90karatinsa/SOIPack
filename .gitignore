@@ -1,6 +1,7 @@
 node_modules
 *.log
 coverage
+.env
 .dist
 packages/*/dist
 examples/minimal/.soipack
