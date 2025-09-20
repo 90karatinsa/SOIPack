@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  server:
+    image: soipack/server:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SOIPACK_API_TOKEN: ${SOIPACK_API_TOKEN:?SOIPACK_API_TOKEN tanımlanmalıdır}
+      SOIPACK_STORAGE_DIR: /app/data
+      PORT: ${PORT:-3000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3000/health',{headers:{Authorization:'Bearer '+process.env.SOIPACK_API_TOKEN}}).then(res=>{if(!res.ok)process.exit(1);}).catch(()=>process.exit(1));"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
