@@ -2,6 +2,7 @@ import { Requirement } from '@soipack/core';
 
 export * from './types';
 export { importJiraCsv } from './jiraCsv';
+export type { JiraCsvOptions } from './jiraCsv';
 export { importReqIF } from './reqif';
 export { importJUnitXml } from './junitXml';
 export { importLcov } from './lcov';
