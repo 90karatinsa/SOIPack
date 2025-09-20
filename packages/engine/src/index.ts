@@ -1,42 +1,478 @@
-import { Requirement, TestCase } from '@soipack/core';
+import { CoverageSummary, FileCoverageSummary, TestResult } from '@soipack/adapters';
+import {
+  Evidence,
+  Objective,
+  ObjectiveArtifactType,
+  Requirement,
+  TraceLink,
+} from '@soipack/core';
 
-export interface TraceLink {
-  source: Requirement;
-  target: TestCase;
-  confidence: number;
+export type TraceNodeType = 'requirement' | 'test' | 'code';
+
+export interface CodePath {
+  path: string;
+  coverage?: FileCoverageSummary;
 }
 
-export interface TraceMatrix {
-  requirementId: string;
-  testCaseIds: string[];
+export type EvidenceIndex = Partial<Record<ObjectiveArtifactType, Evidence[]>>;
+
+export interface ImportBundle {
+  requirements: Requirement[];
+  objectives: Objective[];
+  testResults: TestResult[];
+  coverage?: CoverageSummary;
+  evidenceIndex: EvidenceIndex;
+  traceLinks?: TraceLink[];
+  testToCodeMap?: Record<string, string[]>;
+  generatedAt?: string;
 }
 
-export const createTraceLink = (
-  source: Requirement,
-  target: TestCase,
-  confidence: number,
-): TraceLink => {
-  if (confidence < 0 || confidence > 1) {
-    throw new Error('Confidence must be within 0 and 1.');
+interface InternalNodeBase {
+  key: string;
+  id: string;
+  links: Set<string>;
+}
+
+interface RequirementNode extends InternalNodeBase {
+  type: 'requirement';
+  data: Requirement;
+}
+
+interface TestNode extends InternalNodeBase {
+  type: 'test';
+  data: TestResult;
+}
+
+interface CodeNode extends InternalNodeBase {
+  type: 'code';
+  data: CodePath;
+}
+
+type InternalNode = RequirementNode | TestNode | CodeNode;
+
+interface TraceGraphNodeBase {
+  key: string;
+  id: string;
+  links: string[];
+}
+
+export type TraceGraphNode =
+  | (TraceGraphNodeBase & { type: 'requirement'; data: Requirement })
+  | (TraceGraphNodeBase & { type: 'test'; data: TestResult })
+  | (TraceGraphNodeBase & { type: 'code'; data: CodePath });
+
+export interface TraceGraph {
+  nodes: TraceGraphNode[];
+}
+
+export interface RequirementTrace {
+  requirement: Requirement;
+  tests: TestResult[];
+  code: CodePath[];
+}
+
+const createNodeKey = (type: TraceNodeType, id: string): string => `${type}:${id}`;
+
+const normalizePath = (value: string): string => value.replace(/\\/g, '/');
+
+const isRequirementNode = (node: InternalNode): node is RequirementNode => node.type === 'requirement';
+const isTestNode = (node: InternalNode): node is TestNode => node.type === 'test';
+const isCodeNode = (node: InternalNode): node is CodeNode => node.type === 'code';
+
+export class TraceEngine {
+  private readonly nodes = new Map<string, InternalNode>();
+  private readonly requirementIds = new Set<string>();
+  private readonly testIds = new Set<string>();
+  private readonly testToRequirements = new Map<string, Set<string>>();
+  private readonly coverageByFile = new Map<string, FileCoverageSummary>();
+
+  constructor(private readonly bundle: ImportBundle) {
+    this.requirementIds = new Set(bundle.requirements.map((requirement) => requirement.id));
+    this.testIds = new Set(bundle.testResults.map((result) => result.testId));
+    this.indexCoverage(bundle.coverage);
+    this.indexTraceLinks(bundle.traceLinks ?? []);
+    this.buildRequirementNodes(bundle.requirements);
+    this.buildTestNodes(bundle.testResults, bundle.testToCodeMap ?? {});
   }
 
+  private indexCoverage(summary?: CoverageSummary): void {
+    if (!summary) {
+      return;
+    }
+
+    summary.files.forEach((fileSummary) => {
+      const normalized = normalizePath(fileSummary.file);
+      this.coverageByFile.set(normalized, fileSummary);
+      this.coverageByFile.set(fileSummary.file, fileSummary);
+    });
+  }
+
+  private indexTraceLinks(links: TraceLink[]): void {
+    links.forEach((link) => {
+      const fromIsRequirement = this.requirementIds.has(link.from);
+      const toIsRequirement = this.requirementIds.has(link.to);
+      const fromIsTest = this.testIds.has(link.from);
+      const toIsTest = this.testIds.has(link.to);
+
+      if (fromIsRequirement && toIsTest) {
+        this.ensureTestRequirementLink(link.to, link.from);
+      } else if (toIsRequirement && fromIsTest) {
+        this.ensureTestRequirementLink(link.from, link.to);
+      }
+    });
+  }
+
+  private ensureTestRequirementLink(testId: string, requirementId: string): void {
+    const existing = this.testToRequirements.get(testId) ?? new Set<string>();
+    existing.add(requirementId);
+    this.testToRequirements.set(testId, existing);
+  }
+
+  private buildRequirementNodes(requirements: Requirement[]): void {
+    requirements.forEach((requirement) => {
+      const key = createNodeKey('requirement', requirement.id);
+      this.nodes.set(key, {
+        key,
+        id: requirement.id,
+        type: 'requirement',
+        data: requirement,
+        links: new Set(),
+      });
+    });
+  }
+
+  private buildTestNodes(testResults: TestResult[], testToCodeMap: Record<string, string[]>): void {
+    testResults.forEach((test) => {
+      const key = createNodeKey('test', test.testId);
+      const node: TestNode = {
+        key,
+        id: test.testId,
+        type: 'test',
+        data: test,
+        links: new Set(),
+      };
+
+      this.nodes.set(key, node);
+
+      const requirementRefs = new Set<string>(test.requirementsRefs ?? []);
+      const tracedRequirements = this.testToRequirements.get(test.testId);
+      tracedRequirements?.forEach((requirementId) => requirementRefs.add(requirementId));
+
+      requirementRefs.forEach((requirementId) => {
+        const requirementKey = createNodeKey('requirement', requirementId);
+        const requirementNode = this.nodes.get(requirementKey);
+        if (requirementNode && isRequirementNode(requirementNode)) {
+          this.linkNodes(node.key, requirementNode.key);
+        }
+      });
+
+      const codePaths = testToCodeMap[test.testId] ?? [];
+      codePaths.forEach((path) => {
+        const normalized = normalizePath(path);
+        const coverage = this.coverageByFile.get(normalized) ?? this.coverageByFile.get(path);
+        const codeKey = createNodeKey('code', normalized);
+        const existing = this.nodes.get(codeKey);
+        if (existing && isCodeNode(existing)) {
+          this.linkNodes(node.key, existing.key);
+          return;
+        }
+
+        const codeNode: CodeNode = {
+          key: codeKey,
+          id: normalized,
+          type: 'code',
+          data: {
+            path: normalized,
+            coverage,
+          },
+          links: new Set(),
+        };
+
+        this.nodes.set(codeKey, codeNode);
+        this.linkNodes(node.key, codeNode.key);
+      });
+    });
+  }
+
+  private linkNodes(sourceKey: string, targetKey: string): void {
+    if (sourceKey === targetKey) {
+      return;
+    }
+
+    const source = this.nodes.get(sourceKey);
+    const target = this.nodes.get(targetKey);
+    if (!source || !target) {
+      return;
+    }
+
+    source.links.add(targetKey);
+    target.links.add(sourceKey);
+  }
+
+  public getGraph(): TraceGraph {
+    const nodes: TraceGraphNode[] = [];
+    this.nodes.forEach((node) => {
+      const links = Array.from(node.links.values());
+      if (isRequirementNode(node)) {
+        nodes.push({
+          key: node.key,
+          id: node.id,
+          type: 'requirement',
+          data: node.data,
+          links,
+        });
+      } else if (isTestNode(node)) {
+        nodes.push({
+          key: node.key,
+          id: node.id,
+          type: 'test',
+          data: node.data,
+          links,
+        });
+      } else if (isCodeNode(node)) {
+        nodes.push({
+          key: node.key,
+          id: node.id,
+          type: 'code',
+          data: node.data,
+          links,
+        });
+      }
+    });
+
+    return { nodes };
+  }
+
+  public getRequirementTrace(requirementId: string): RequirementTrace {
+    const requirementKey = createNodeKey('requirement', requirementId);
+    const requirementNode = this.nodes.get(requirementKey);
+
+    if (!requirementNode || !isRequirementNode(requirementNode)) {
+      throw new Error(`Requirement ${requirementId} not found in trace graph.`);
+    }
+
+    const tests: TestResult[] = [];
+    const code = new Map<string, CodePath>();
+
+    requirementNode.links.forEach((neighborKey) => {
+      const neighbor = this.nodes.get(neighborKey);
+      if (!neighbor || !isTestNode(neighbor)) {
+        return;
+      }
+
+      tests.push(neighbor.data);
+      neighbor.links.forEach((codeKey) => {
+        const codeNode = this.nodes.get(codeKey);
+        if (!codeNode || !isCodeNode(codeNode)) {
+          return;
+        }
+
+        code.set(codeKey, codeNode.data);
+      });
+    });
+
+    return {
+      requirement: requirementNode.data,
+      tests,
+      code: Array.from(code.values()),
+    };
+  }
+}
+
+export type ObjectiveCoverageStatus = 'covered' | 'partial' | 'missing';
+
+export interface ObjectiveCoverage {
+  objectiveId: string;
+  status: ObjectiveCoverageStatus;
+  evidenceRefs: string[];
+  satisfiedArtifacts: ObjectiveArtifactType[];
+  missingArtifacts: ObjectiveArtifactType[];
+}
+
+export class ObjectiveMapper {
+  constructor(
+    private readonly objectives: Objective[],
+    private readonly evidenceIndex: EvidenceIndex,
+  ) {}
+
+  public mapObjectives(): ObjectiveCoverage[] {
+    return this.objectives.map((objective) => this.evaluateObjective(objective));
+  }
+
+  private evaluateObjective(objective: Objective): ObjectiveCoverage {
+    const satisfiedArtifacts: ObjectiveArtifactType[] = [];
+    const missingArtifacts: ObjectiveArtifactType[] = [];
+    const evidenceRefs: string[] = [];
+
+    objective.artifacts.forEach((artifactType) => {
+      const evidenceItems = this.evidenceIndex[artifactType] ?? [];
+      if (evidenceItems.length > 0) {
+        satisfiedArtifacts.push(artifactType);
+        evidenceItems.forEach((evidence) => {
+          evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
+        });
+      } else {
+        missingArtifacts.push(artifactType);
+      }
+    });
+
+    let status: ObjectiveCoverageStatus;
+    if (missingArtifacts.length === 0) {
+      status = 'covered';
+    } else if (satisfiedArtifacts.length === 0) {
+      status = 'missing';
+    } else {
+      status = 'partial';
+    }
+
+    return {
+      objectiveId: objective.id,
+      status,
+      evidenceRefs,
+      satisfiedArtifacts,
+      missingArtifacts,
+    };
+  }
+
+  private createEvidenceRef(type: ObjectiveArtifactType, evidence: Evidence): string {
+    return `${type}:${evidence.path}`;
+  }
+}
+
+export interface GapItem {
+  objectiveId: string;
+  missingArtifacts: ObjectiveArtifactType[];
+}
+
+export interface GapAnalysis {
+  plans: GapItem[];
+  standards: GapItem[];
+  tests: GapItem[];
+  coverage: GapItem[];
+}
+
+const artifactCategoryMap: Record<ObjectiveArtifactType, keyof GapAnalysis> = {
+  psac: 'plans',
+  sdp: 'plans',
+  svr: 'standards',
+  testResults: 'tests',
+  coverage: 'coverage',
+  traceability: 'tests',
+  analysisReport: 'standards',
+  configurationIndex: 'standards',
+  git: 'standards',
+  other: 'standards',
+};
+
+export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAnalysis => {
+  const categoryBuckets: Record<keyof GapAnalysis, Map<string, Set<ObjectiveArtifactType>>> = {
+    plans: new Map(),
+    standards: new Map(),
+    tests: new Map(),
+    coverage: new Map(),
+  };
+
+  objectiveCoverage.forEach((coverage) => {
+    coverage.missingArtifacts.forEach((artifact) => {
+      const category = artifactCategoryMap[artifact];
+      const bucket = categoryBuckets[category];
+      const entry = bucket.get(coverage.objectiveId) ?? new Set<ObjectiveArtifactType>();
+      entry.add(artifact);
+      bucket.set(coverage.objectiveId, entry);
+    });
+  });
+
+  const toGapItems = (bucket: Map<string, Set<ObjectiveArtifactType>>): GapItem[] =>
+    Array.from(bucket.entries()).map(([objectiveId, artifacts]) => ({
+      objectiveId,
+      missingArtifacts: Array.from(artifacts.values()),
+    }));
+
   return {
-    source,
-    target,
-    confidence: Number(confidence.toFixed(2)),
+    plans: toGapItems(categoryBuckets.plans),
+    standards: toGapItems(categoryBuckets.standards),
+    tests: toGapItems(categoryBuckets.tests),
+    coverage: toGapItems(categoryBuckets.coverage),
   };
 };
 
-export const buildTraceMatrix = (links: TraceLink[]): TraceMatrix[] => {
-  const grouped = new Map<string, string[]>();
+export interface ObjectiveStatistics {
+  total: number;
+  covered: number;
+  partial: number;
+  missing: number;
+}
 
-  links.forEach((link) => {
-    const existing = grouped.get(link.source.id) ?? [];
-    grouped.set(link.source.id, Array.from(new Set([...existing, link.target.id])));
-  });
+export interface TestStatistics {
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
 
-  return Array.from(grouped.entries()).map(([requirementId, testCaseIds]) => ({
-    requirementId,
-    testCaseIds,
-  }));
+export interface ComplianceStatistics {
+  objectives: ObjectiveStatistics;
+  requirements: { total: number };
+  tests: TestStatistics;
+  codePaths: { total: number };
+}
+
+export interface ComplianceSnapshot {
+  generatedAt: string;
+  objectives: ObjectiveCoverage[];
+  stats: ComplianceStatistics;
+  gaps: GapAnalysis;
+  traceGraph: TraceGraph;
+}
+
+const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
+  return coverage.reduce(
+    (acc, item) => {
+      acc.total += 1;
+      acc[item.status] += 1;
+      return acc;
+    },
+    { total: 0, covered: 0, partial: 0, missing: 0 },
+  );
+};
+
+const summarizeTests = (tests: TestResult[]): TestStatistics => {
+  return tests.reduce(
+    (acc, test) => {
+      acc.total += 1;
+      if (test.status === 'passed') {
+        acc.passed += 1;
+      } else if (test.status === 'failed') {
+        acc.failed += 1;
+      } else {
+        acc.skipped += 1;
+      }
+      return acc;
+    },
+    { total: 0, passed: 0, failed: 0, skipped: 0 },
+  );
+};
+
+export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnapshot => {
+  const engine = new TraceEngine(bundle);
+  const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex);
+  const objectiveCoverage = mapper.mapObjectives();
+  const traceGraph = engine.getGraph();
+  const objectiveStats = summarizeObjectives(objectiveCoverage);
+  const testStats = summarizeTests(bundle.testResults);
+  const gapAnalysis = buildGapAnalysis(objectiveCoverage);
+  const codePathCount = traceGraph.nodes.filter((node) => node.type === 'code').length;
+
+  return {
+    generatedAt: bundle.generatedAt ?? new Date().toISOString(),
+    objectives: objectiveCoverage,
+    stats: {
+      objectives: objectiveStats,
+      requirements: { total: bundle.requirements.length },
+      tests: testStats,
+      codePaths: { total: codePathCount },
+    },
+    gaps: gapAnalysis,
+    traceGraph,
+  };
 };
