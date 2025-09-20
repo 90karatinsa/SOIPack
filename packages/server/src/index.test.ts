@@ -8,7 +8,8 @@ import request from 'supertest';
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
 
-import { createServer } from './index';
+import { createServer, type ServerConfig } from './index';
+import type { FileScanner } from './scanner';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
@@ -68,6 +69,7 @@ describe('@soipack/server REST API', () => {
   let licenseHeader: string;
   let privateKey: KeyLike;
   let jwks: JSONWebKeySet;
+  let baseConfig: ServerConfig;
 
   const createAccessToken = async ({
     tenant = tenantId,
@@ -112,7 +114,7 @@ describe('@soipack/server REST API', () => {
     publicJwk.kid = 'test-key';
     jwks = { keys: [publicJwk] };
 
-    app = createServer({
+    baseConfig = {
       auth: {
         issuer,
         audience,
@@ -130,7 +132,9 @@ describe('@soipack/server REST API', () => {
         reports: { maxAgeMs: 0 },
         packages: { maxAgeMs: 0 },
       },
-    });
+    };
+
+    app = createServer(baseConfig);
 
     token = await createAccessToken();
   });
@@ -191,6 +195,70 @@ describe('@soipack/server REST API', () => {
       .expect(402);
 
     expect(response.body.error.code).toBe('LICENSE_INVALID');
+  });
+
+  it('enforces per-field size limits before queuing import jobs', async () => {
+    const limitedStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-limit-test-'));
+    const limitedApp = createServer({
+      ...baseConfig,
+      storageDir: limitedStorageDir,
+      maxUploadSizeBytes: 1024,
+      uploadPolicies: {
+        jira: { maxSizeBytes: 32, allowedMimeTypes: ['application/json'] },
+      },
+    });
+
+    try {
+      const response = await request(limitedApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('jira', Buffer.from('a'.repeat(64)), {
+          filename: 'jira.json',
+          contentType: 'application/json',
+        })
+        .expect(413);
+
+      expect(response.body.error.code).toBe('FILE_TOO_LARGE');
+      expect(response.body.error.details.limit).toBe(32);
+    } finally {
+      await fsPromises.rm(limitedStorageDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malicious uploads flagged by the scanning service', async () => {
+    const scanningStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-scan-test-'));
+    const scanningScanner: FileScanner = {
+      async scan(target) {
+        if (target.field === 'jira') {
+          return { clean: false, threat: 'EICAR-Test-File', engine: 'ClamAV' };
+        }
+        return { clean: true };
+      },
+    };
+    const scanningApp = createServer({
+      ...baseConfig,
+      storageDir: scanningStorageDir,
+      scanner: scanningScanner,
+    });
+
+    try {
+      const response = await request(scanningApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('jira', Buffer.from('dummy content'), {
+          filename: 'bad.zip',
+          contentType: 'application/zip',
+        })
+        .expect(422);
+
+      expect(response.body.error.code).toBe('FILE_SCAN_FAILED');
+      expect(response.body.error.details.threat).toBe('EICAR-Test-File');
+      expect(response.body.error.details.field).toBe('jira');
+    } finally {
+      await fsPromises.rm(scanningStorageDir, { recursive: true, force: true });
+    }
   });
 
   it('processes pipeline jobs asynchronously with idempotent reuse', async () => {

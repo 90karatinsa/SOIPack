@@ -26,8 +26,15 @@ import type { JSONWebKeySet } from 'jose';
 import { HttpError } from './errors';
 import { JobDetails, JobQueue, JobSummary } from './queue';
 import { FileSystemStorage, StorageProvider, UploadedFileMap } from './storage';
+import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 
 type FileMap = Record<string, Express.Multer.File[]>;
+
+const sanitizeUploadFileName = (fileName: string): string => {
+  const baseName = path.basename(fileName || 'upload');
+  const normalized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return normalized || 'upload';
+};
 
 interface AuthContext {
   token: string;
@@ -220,10 +227,202 @@ const convertFileMap = (fileMap: FileMap): UploadedFileMap => {
   Object.entries(fileMap).forEach(([field, files]) => {
     result[field] = files.map((file) => ({
       originalname: file.originalname,
-      buffer: Buffer.from(file.buffer),
+      path: file.path,
     }));
   });
   return result;
+};
+
+export interface UploadFieldPolicy {
+  maxSizeBytes: number;
+  allowedMimeTypes: string[];
+}
+
+type UploadPolicyMap = Record<string, UploadFieldPolicy>;
+
+export type UploadPolicyOverrides = Partial<Record<string, Partial<UploadFieldPolicy>>>;
+
+const matchesMimeType = (value: string, pattern: string): boolean => {
+  if (pattern === '*') {
+    return true;
+  }
+  if (pattern.endsWith('/*')) {
+    const [type] = pattern.split('/', 1);
+    return value.startsWith(`${type}/`);
+  }
+  return value === pattern;
+};
+
+const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => ({
+  [LICENSE_FILE_FIELD]: {
+    maxSizeBytes: Math.min(maxUploadSize, 512 * 1024),
+    allowedMimeTypes: ['application/octet-stream', 'text/plain'],
+  },
+  jira: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/json',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+      'text/*',
+    ],
+  },
+  reqif: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['application/xml', 'text/xml', 'application/zip', 'application/x-zip-compressed', 'application/octet-stream'],
+  },
+  junit: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['application/xml', 'text/xml', 'application/octet-stream'],
+  },
+  lcov: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['text/*', 'application/octet-stream'],
+  },
+  cobertura: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['application/xml', 'text/xml', 'application/octet-stream'],
+  },
+  git: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/x-tar',
+      'application/gzip',
+      'application/x-gzip',
+      'application/octet-stream',
+    ],
+  },
+  objectives: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['application/json', 'text/*', 'application/zip', 'application/x-zip-compressed'],
+  },
+});
+
+const mergeUploadPolicies = (
+  maxUploadSize: number,
+  overrides?: UploadPolicyOverrides,
+): UploadPolicyMap => {
+  const base = createDefaultUploadPolicies(maxUploadSize);
+  if (!overrides) {
+    return base;
+  }
+
+  Object.entries(overrides).forEach(([field, override]) => {
+    if (!override) {
+      return;
+    }
+    if (!base[field]) {
+      base[field] = {
+        maxSizeBytes: override.maxSizeBytes ?? maxUploadSize,
+        allowedMimeTypes: override.allowedMimeTypes ?? ['*'],
+      };
+      return;
+    }
+    if (override.maxSizeBytes !== undefined) {
+      base[field].maxSizeBytes = Math.min(override.maxSizeBytes, maxUploadSize);
+    }
+    if (override.allowedMimeTypes !== undefined) {
+      base[field].allowedMimeTypes = override.allowedMimeTypes;
+    }
+  });
+
+  return base;
+};
+
+const ensureFileWithinPolicy = (field: string, file: Express.Multer.File, policy: UploadFieldPolicy): void => {
+  if (file.size > policy.maxSizeBytes) {
+    throw new HttpError(
+      413,
+      'FILE_TOO_LARGE',
+      `${field} alanı için dosya boyutu sınırı aşıldı. Maksimum: ${policy.maxSizeBytes} bayt.`,
+      { field, limit: policy.maxSizeBytes, size: file.size },
+    );
+  }
+
+  if (policy.allowedMimeTypes.length > 0) {
+    const allowed = policy.allowedMimeTypes.some((pattern) => matchesMimeType(file.mimetype, pattern));
+    if (!allowed) {
+      throw new HttpError(
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+        `${field} alanı için içerik türü kabul edilmiyor: ${file.mimetype || 'bilinmiyor'}.`,
+        { field, mimetype: file.mimetype },
+      );
+    }
+  }
+};
+
+const cleanupUploadedFiles = async (fileMap: FileMap): Promise<void> => {
+  const tasks: Promise<unknown>[] = [];
+  Object.values(fileMap).forEach((files) => {
+    files.forEach((file) => {
+      tasks.push(fsPromises.rm(file.path, { force: true }));
+    });
+  });
+  await Promise.allSettled(tasks);
+};
+
+const hashFileAtPath = (filePath: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => {
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      hash.update(buffer);
+    });
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+
+const scanUploadedFiles = async (scanner: FileScanner, fileMap: FileMap): Promise<void> => {
+  for (const [field, files] of Object.entries(fileMap)) {
+    for (const file of files) {
+      let result: FileScanResult;
+      try {
+        result = await scanner.scan({
+          field,
+          path: file.path,
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Dosya tarama servisine ulaşılamadı veya hata verdi.';
+        throw new HttpError(
+          502,
+          'FILE_SCAN_ERROR',
+          `${file.originalname} taranamadı: ${message}`,
+          {
+            field,
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            error: message,
+          },
+        );
+      }
+
+      if (!result.clean) {
+        const threat = result.threat ?? 'Belirsiz tehdit';
+        throw new HttpError(
+          422,
+          'FILE_SCAN_FAILED',
+          `${file.originalname} yüklemesi reddedildi: ${threat}.`,
+          {
+            field,
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            threat,
+            engine: result.engine,
+            details: result.details,
+          },
+        );
+      }
+    }
+  }
 };
 
 const sanitizeBase64 = (value: string): string => value.replace(/\s+/g, '').trim();
@@ -306,6 +505,8 @@ export interface ServerConfig {
   maxUploadSizeBytes?: number;
   storageProvider?: StorageProvider;
   retention?: RetentionConfig;
+  uploadPolicies?: UploadPolicyOverrides;
+  scanner?: FileScanner;
 }
 
 type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
@@ -816,19 +1017,38 @@ export const createServer = (config: ServerConfig): Express => {
     if (fileMap) {
       const licenseFiles = fileMap[LICENSE_FILE_FIELD];
       if (licenseFiles && licenseFiles[0]) {
-        const buffer = Buffer.from(licenseFiles[0].buffer);
+        const [licenseFile] = licenseFiles;
         delete fileMap[LICENSE_FILE_FIELD];
-        return verifyLicenseContent(buffer);
+        try {
+          const buffer = await fsPromises.readFile(licenseFile.path);
+          return await verifyLicenseContent(buffer);
+        } finally {
+          await fsPromises.rm(licenseFile.path, { force: true }).catch(() => undefined);
+        }
       }
     }
 
     throw new HttpError(401, 'LICENSE_REQUIRED', 'Geçerli bir lisans anahtarı sağlanmalıdır.');
   };
 
+  const maxUploadSize = config.maxUploadSizeBytes ?? 25 * 1024 * 1024;
+  const uploadPolicies = mergeUploadPolicies(maxUploadSize, config.uploadPolicies);
+  const scanner = config.scanner ?? createNoopScanner();
+  const uploadTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soipack-upload-'));
+
   const upload = multer({
-    storage: multer.memoryStorage(),
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => {
+        cb(null, uploadTempDir);
+      },
+      filename: (_req, file, cb) => {
+        const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1_000_000_000)}`;
+        const safeName = sanitizeUploadFileName(file.originalname);
+        cb(null, `${uniqueSuffix}-${safeName}`);
+      },
+    }),
     limits: {
-      fileSize: config.maxUploadSizeBytes ?? 25 * 1024 * 1024,
+      fileSize: maxUploadSize,
     },
   });
 
@@ -902,117 +1122,139 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
       const fileMap = (req.files as FileMap) ?? {};
-      const license = await requireLicenseToken(req, fileMap);
-      const body = req.body as Record<string, unknown>;
-
-      const availableFiles = Object.values(fileMap).reduce((sum, files) => sum + files.length, 0);
-      if (availableFiles === 0) {
-        throw new HttpError(400, 'NO_INPUT_FILES', 'En az bir veri dosyası yüklenmelidir.');
-      }
-
-      const stringFields: Record<string, string> = {};
-      ['projectName', 'projectVersion', 'level'].forEach((field) => {
-        const value = getFieldValue(body[field]);
-        if (value !== undefined) {
-          stringFields[field] = value;
+      let cleaned = false;
+      const ensureCleanup = async () => {
+        if (!cleaned) {
+          cleaned = true;
+          await cleanupUploadedFiles(fileMap);
         }
-      });
+      };
 
-      const hashEntries: HashEntry[] = [];
-      Object.entries(stringFields).forEach(([key, value]) => {
-        hashEntries.push({ key: `field:${key}`, value });
-      });
-      Object.entries(fileMap).forEach(([field, files]) => {
-        files.forEach((file, index) => {
-          const fileHash = createHash('sha256').update(file.buffer).digest('hex');
-          hashEntries.push({ key: `file:${field}:${index}`, value: fileHash });
+      try {
+        Object.entries(fileMap).forEach(([field, files]) => {
+          const policy = uploadPolicies[field] ?? { maxSizeBytes: maxUploadSize, allowedMimeTypes: ['*'] };
+          files.forEach((file) => ensureFileWithinPolicy(field, file, policy));
         });
-      });
 
-      const hash = computeHash(hashEntries);
-      const importId = createJobId(hash);
-      const workspaceDir = path.join(directories.workspaces, tenantId, importId);
-      const metadataPath = path.join(workspaceDir, METADATA_FILE);
+        await scanUploadedFiles(scanner, fileMap);
 
-      const existingJob = queue.get<ImportJobResult>(tenantId, importId);
-      if (existingJob) {
-        ensureJobLicense(tenantId, importId, license);
-        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
-        return;
-      }
+        const license = await requireLicenseToken(req, fileMap);
+        const body = req.body as Record<string, unknown>;
 
-      if (await storage.fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
-        hydrateJobLicense(metadata, tenantId);
-        ensureJobLicense(tenantId, metadata.id, license);
-        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
-        respondWithJob(res, adopted, { reused: true });
-        return;
-      }
+        const availableFiles = Object.values(fileMap).reduce((sum, files) => sum + files.length, 0);
+        if (availableFiles === 0) {
+          throw new HttpError(400, 'NO_INPUT_FILES', 'En az bir veri dosyası yüklenmelidir.');
+        }
 
-      const uploadedFiles = convertFileMap(fileMap);
-      const level = asCertificationLevel(stringFields.level);
-
-      const job = queue.enqueue<ImportJobResult>({
-        tenantId,
-        id: importId,
-        kind: 'import',
-        hash,
-        run: async () => {
-          await storage.ensureDirectory(workspaceDir);
-
-          try {
-            const persisted = await storage.persistUploads(path.join(tenantId, importId), uploadedFiles);
-            const importOptions: ImportOptions = {
-              output: workspaceDir,
-              jira: persisted.jira?.[0],
-              reqif: persisted.reqif?.[0],
-              junit: persisted.junit?.[0],
-              lcov: persisted.lcov?.[0],
-              cobertura: persisted.cobertura?.[0],
-              git: persisted.git?.[0],
-              objectives: persisted.objectives?.[0],
-              level,
-              projectName: stringFields.projectName,
-              projectVersion: stringFields.projectVersion,
-            };
-
-            const result = await runImport(importOptions);
-            const metadata: ImportJobMetadata = {
-              tenantId,
-              id: importId,
-              hash,
-              kind: 'import',
-              createdAt: new Date().toISOString(),
-              directory: workspaceDir,
-              params: {
-                level: level ?? null,
-                projectName: stringFields.projectName ?? null,
-                projectVersion: stringFields.projectVersion ?? null,
-                files: Object.fromEntries(
-                  Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
-                ),
-              },
-              license: toLicenseMetadata(license),
-              warnings: result.warnings,
-              outputs: {
-                workspacePath: path.join(workspaceDir, 'workspace.json'),
-              },
-            };
-
-            await writeJobMetadata(storage, workspaceDir, metadata);
-
-            return toImportResult(storage, metadata);
-          } catch (error) {
-            await storage.removeDirectory(workspaceDir);
-            await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
-            throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
+        const stringFields: Record<string, string> = {};
+        ['projectName', 'projectVersion', 'level'].forEach((field) => {
+          const value = getFieldValue(body[field]);
+          if (value !== undefined) {
+            stringFields[field] = value;
           }
-        },
-      });
+        });
 
-      registerJobLicense(tenantId, importId, license);
-      respondWithJob(res, job);
+        const hashEntries: HashEntry[] = [];
+        Object.entries(stringFields).forEach(([key, value]) => {
+          hashEntries.push({ key: `field:${key}`, value });
+        });
+        for (const [field, files] of Object.entries(fileMap)) {
+          for (const [index, file] of files.entries()) {
+            const fileHash = await hashFileAtPath(file.path);
+            hashEntries.push({ key: `file:${field}:${index}`, value: fileHash });
+          }
+        }
+
+        const hash = computeHash(hashEntries);
+        const importId = createJobId(hash);
+        const workspaceDir = path.join(directories.workspaces, tenantId, importId);
+        const metadataPath = path.join(workspaceDir, METADATA_FILE);
+
+        const existingJob = queue.get<ImportJobResult>(tenantId, importId);
+        if (existingJob) {
+          ensureJobLicense(tenantId, importId, license);
+          await ensureCleanup();
+          respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
+          return;
+        }
+
+        if (await storage.fileExists(metadataPath)) {
+          const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
+          hydrateJobLicense(metadata, tenantId);
+          ensureJobLicense(tenantId, metadata.id, license);
+          const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
+          await ensureCleanup();
+          respondWithJob(res, adopted, { reused: true });
+          return;
+        }
+
+        const uploadedFiles = convertFileMap(fileMap);
+        const level = asCertificationLevel(stringFields.level);
+
+        const job = queue.enqueue<ImportJobResult>({
+          tenantId,
+          id: importId,
+          kind: 'import',
+          hash,
+          run: async () => {
+            await storage.ensureDirectory(workspaceDir);
+
+            try {
+              const persisted = await storage.persistUploads(path.join(tenantId, importId), uploadedFiles);
+              const importOptions: ImportOptions = {
+                output: workspaceDir,
+                jira: persisted.jira?.[0],
+                reqif: persisted.reqif?.[0],
+                junit: persisted.junit?.[0],
+                lcov: persisted.lcov?.[0],
+                cobertura: persisted.cobertura?.[0],
+                git: persisted.git?.[0],
+                objectives: persisted.objectives?.[0],
+                level,
+                projectName: stringFields.projectName,
+                projectVersion: stringFields.projectVersion,
+              };
+
+              const result = await runImport(importOptions);
+              const metadata: ImportJobMetadata = {
+                tenantId,
+                id: importId,
+                hash,
+                kind: 'import',
+                createdAt: new Date().toISOString(),
+                directory: workspaceDir,
+                params: {
+                  level: level ?? null,
+                  projectName: stringFields.projectName ?? null,
+                  projectVersion: stringFields.projectVersion ?? null,
+                  files: Object.fromEntries(
+                    Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
+                  ),
+                },
+                license: toLicenseMetadata(license),
+                warnings: result.warnings,
+                outputs: {
+                  workspacePath: path.join(workspaceDir, 'workspace.json'),
+                },
+              };
+
+              await writeJobMetadata(storage, workspaceDir, metadata);
+
+              return toImportResult(storage, metadata);
+            } catch (error) {
+              await storage.removeDirectory(workspaceDir);
+              await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
+              throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
+            }
+          },
+        });
+
+        registerJobLicense(tenantId, importId, license);
+        respondWithJob(res, job);
+      } catch (error) {
+        await ensureCleanup();
+        throw error;
+      }
     }),
   );
 
@@ -1043,9 +1285,20 @@ export const createServer = (config: ServerConfig): Express => {
       const effectiveProjectName = body.projectName ?? workspace.metadata.project?.name;
       const effectiveProjectVersion = body.projectVersion ?? workspace.metadata.project?.version;
 
-      const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
+      const fallbackObjectivesPath = path.resolve(
+        __dirname,
+        '../../../data/objectives/do178c_objectives.min.json',
+      );
       const objectivesPathRaw = workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
-      const objectivesPath = path.resolve(objectivesPathRaw);
+      const repositoryRoot = path.resolve(__dirname, '../../../');
+      let objectivesPath = path.isAbsolute(objectivesPathRaw)
+        ? objectivesPathRaw
+        : path.resolve(repositoryRoot, objectivesPathRaw);
+      try {
+        await fsPromises.access(objectivesPath, fs.constants.R_OK);
+      } catch {
+        objectivesPath = fallbackObjectivesPath;
+      }
 
       const hash = computeHash(
         [
@@ -1088,7 +1341,7 @@ export const createServer = (config: ServerConfig): Express => {
               input: workspaceDir,
               output: analysisDir,
               level: effectiveLevel,
-              objectives: workspace.metadata.objectivesPath ?? undefined,
+              objectives: objectivesPath,
               projectName: effectiveProjectName,
               projectVersion: effectiveProjectVersion,
             };

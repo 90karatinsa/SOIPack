@@ -14,7 +14,7 @@ export interface PipelineDirectories {
 
 export interface PersistableFile {
   originalname: string;
-  buffer: Buffer;
+  path: string;
 }
 
 export type UploadedFileMap = Record<string, PersistableFile[]>;
@@ -71,7 +71,8 @@ export class FileSystemStorage implements StorageProvider {
         await this.ensureDirectory(targetDir);
         const safeName = sanitizeFileName(file.originalname, `${field}-${index}`);
         const targetPath = path.join(targetDir, safeName);
-        await fsPromises.writeFile(targetPath, file.buffer);
+        await fsPromises.copyFile(file.path, targetPath);
+        await fsPromises.rm(file.path, { force: true });
         if (!result[field]) {
           result[field] = [];
         }
