@@ -368,7 +368,7 @@ const requirementStatusFromJira = (status: string): RequirementStatus => {
 
 const toRequirementFromJira = (entry: JiraRequirement): Requirement => {
   const requirement = createRequirement(entry.id, entry.summary || entry.id, {
-    description: entry.summary,
+    description: entry.description ?? entry.summary,
     status: requirementStatusFromJira(entry.status),
     tags: entry.priority ? [`priority:${entry.priority.toLowerCase()}`] : [],
   });

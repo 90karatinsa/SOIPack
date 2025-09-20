@@ -8,7 +8,15 @@ export interface JiraRequirement {
   summary: string;
   status: string;
   priority?: string;
+  description?: string;
+  components?: string[];
+  labels?: string[];
+  epicLink?: string;
   links: string[];
+  attachments?: string[];
+  parentId?: string;
+  children?: string[];
+  customFields?: Record<string, string | string[] | undefined>;
 }
 
 export interface ReqIFRequirement {

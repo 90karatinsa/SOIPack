@@ -39,19 +39,66 @@ describe('@soipack/adapters', () => {
   });
 
   it('imports requirements from Jira CSV', async () => {
-    const { data, warnings } = await importJiraCsv(
-      path.resolve(__dirname, '../fixtures/jira/issues.sample.csv'),
-    );
+    const filePath = path.resolve(__dirname, '../fixtures/jira/issues.sample.csv');
+    const { data, warnings } = await importJiraCsv(filePath);
 
     expect(warnings).toHaveLength(0);
     expect(data).toHaveLength(3);
-    expect(data[0]).toEqual({
+
+    const [epic, story, subTask] = data;
+
+    expect(epic).toEqual({
       id: 'PROJ-1',
       summary: 'Implement login',
       status: 'In Progress',
       priority: 'High',
+      description: 'Authentication epic covering login',
+      components: ['Authentication'],
+      labels: ['backend', 'critical'],
       links: ['PROJ-2', 'PROJ-3'],
+      attachments: ['LoginSpec.docx', 'Sequence.png'],
     });
+
+    expect(story).toEqual({
+      id: 'PROJ-2',
+      summary: 'Write API tests',
+      status: 'Done',
+      priority: 'Medium',
+      description: 'API coverage for login flows',
+      components: ['API'],
+      labels: ['backend', 'testing'],
+      epicLink: 'PROJ-1',
+      links: ['PROJ-1'],
+      children: ['PROJ-3'],
+    });
+
+    expect(subTask).toEqual({
+      id: 'PROJ-3',
+      summary: 'Design UI',
+      status: 'To Do',
+      priority: 'Low',
+      description: 'Design the login user interface',
+      labels: ['ui'],
+      epicLink: 'PROJ-1',
+      links: ['PROJ-1'],
+      attachments: ['Wireframe.png'],
+      parentId: 'PROJ-2',
+    });
+  });
+
+  it('maps custom fields from Jira CSV when configured', async () => {
+    const filePath = path.resolve(__dirname, '../fixtures/jira/issues.sample.csv');
+    const { data, warnings } = await importJiraCsv(filePath, {
+      customFieldMappings: {
+        storyPoints: 'Story Points',
+        qaOwner: ['QA Owner'],
+      },
+    });
+
+    expect(warnings).toHaveLength(0);
+    expect(data[0].customFields).toEqual({ storyPoints: '8', qaOwner: 'qa@example.com' });
+    expect(data[1].customFields).toEqual({ storyPoints: '5', qaOwner: 'qa.lead@example.com' });
+    expect(data[2].customFields).toEqual({ storyPoints: '3', qaOwner: 'designer@example.com' });
   });
 
   it('imports requirements from ReqIF', async () => {
