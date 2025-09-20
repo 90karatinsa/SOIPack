@@ -17,7 +17,14 @@ import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import multer from 'multer';
 
+import { HttpError } from './errors';
+import { JobDetails, JobQueue, JobSummary } from './queue';
+
 type FileMap = Record<string, Express.Multer.File[]>;
+
+type PersistableFile = Pick<Express.Multer.File, 'originalname' | 'buffer'>;
+
+type UploadedFileMap = Record<string, PersistableFile[]>;
 
 interface HashEntry {
   key: string;
@@ -76,19 +83,44 @@ interface PackJobMetadata extends BaseJobMetadata {
 
 type JobMetadata = ImportJobMetadata | AnalyzeJobMetadata | ReportJobMetadata | PackJobMetadata;
 
-class HttpError extends Error {
-  public readonly statusCode: number;
+interface ImportJobResult {
+  warnings: string[];
+  outputs: {
+    directory: string;
+    workspace: string;
+  };
+}
 
-  public readonly code: string;
+interface AnalyzeJobResult {
+  exitCode: number;
+  outputs: {
+    directory: string;
+    snapshot: string;
+    traces: string;
+    analysis: string;
+  };
+}
 
-  public readonly details?: unknown;
+interface ReportJobResult {
+  outputs: {
+    directory: string;
+    complianceHtml: string;
+    complianceJson: string;
+    traceHtml: string;
+    gapsHtml: string;
+    analysis: string;
+    snapshot: string;
+    traces: string;
+  };
+}
 
-  constructor(statusCode: number, code: string, message: string, details?: unknown) {
-    super(message);
-    this.statusCode = statusCode;
-    this.code = code;
-    this.details = details;
-  }
+interface PackJobResult {
+  manifestId: string;
+  outputs: {
+    directory: string;
+    manifest: string;
+    archive: string;
+  };
 }
 
 const METADATA_FILE = 'job.json';
@@ -162,7 +194,10 @@ const asCertificationLevel = (value: string | undefined): CertificationLevel | u
   throw new HttpError(400, 'INVALID_LEVEL', 'Geçersiz seviye değeri. Geçerli değerler A-E aralığındadır.');
 };
 
-const persistUploadedFiles = async (fileMap: FileMap, baseDir: string): Promise<Record<string, string[]>> => {
+const persistUploadedFiles = async (
+  fileMap: UploadedFileMap,
+  baseDir: string,
+): Promise<Record<string, string[]>> => {
   const entries = Object.entries(fileMap);
   const result: Record<string, string[]> = {};
 
@@ -183,33 +218,6 @@ const persistUploadedFiles = async (fileMap: FileMap, baseDir: string): Promise<
   return result;
 };
 
-const createAsyncHandler = <T extends Request>(
-  handler: (req: T, res: Response) => Promise<void>,
-) =>
-  async (req: T, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      await handler(req, res);
-    } catch (error) {
-      next(error);
-    }
-  };
-
-const createAuthMiddleware = (token: string) => {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    const header = req.get('authorization');
-    if (!header || !header.startsWith('Bearer ')) {
-      next(new HttpError(401, 'UNAUTHORIZED', 'Bearer kimlik doğrulaması gerekiyor.'));
-      return;
-    }
-    const provided = header.slice('Bearer '.length).trim();
-    if (provided !== token) {
-      next(new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.'));
-      return;
-    }
-    next();
-  };
-};
-
 const toRelativePath = (baseDir: string, target: string): string => {
   const resolvedBase = path.resolve(baseDir);
   const resolvedTarget = path.resolve(target);
@@ -224,6 +232,17 @@ const assertDirectoryExists = async (directory: string, kind: string): Promise<v
   if (!(await fileExists(directory))) {
     throw new HttpError(404, 'NOT_FOUND', `${kind} bulunamadı.`);
   }
+};
+
+const convertFileMap = (fileMap: FileMap): UploadedFileMap => {
+  const result: UploadedFileMap = {};
+  Object.entries(fileMap).forEach(([field, files]) => {
+    result[field] = files.map((file) => ({
+      originalname: file.originalname,
+      buffer: Buffer.from(file.buffer),
+    }));
+  });
+  return result;
 };
 
 export interface ServerConfig {
@@ -275,6 +294,185 @@ const createPipelineError = (error: unknown, message: string): HttpError => {
   return new HttpError(500, 'PIPELINE_ERROR', message, { cause: description });
 };
 
+const toImportResult = (
+  directories: PipelineDirectories,
+  metadata: ImportJobMetadata,
+): ImportJobResult => ({
+  warnings: metadata.warnings,
+  outputs: {
+    directory: toRelativePath(directories.base, metadata.directory),
+    workspace: toRelativePath(directories.base, metadata.outputs.workspacePath),
+  },
+});
+
+const toAnalyzeResult = (
+  directories: PipelineDirectories,
+  metadata: AnalyzeJobMetadata,
+): AnalyzeJobResult => ({
+  exitCode: metadata.exitCode,
+  outputs: {
+    directory: toRelativePath(directories.base, metadata.directory),
+    snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
+    traces: toRelativePath(directories.base, metadata.outputs.tracePath),
+    analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
+  },
+});
+
+const toReportResult = (
+  directories: PipelineDirectories,
+  metadata: ReportJobMetadata,
+): ReportJobResult => ({
+  outputs: {
+    directory: toRelativePath(directories.base, metadata.directory),
+    complianceHtml: toRelativePath(directories.base, metadata.outputs.complianceHtml),
+    complianceJson: toRelativePath(directories.base, metadata.outputs.complianceJson),
+    traceHtml: toRelativePath(directories.base, metadata.outputs.traceHtml),
+    gapsHtml: toRelativePath(directories.base, metadata.outputs.gapsHtml),
+    analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
+    snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
+    traces: toRelativePath(directories.base, metadata.outputs.tracesPath),
+  },
+});
+
+const toPackResult = (
+  directories: PipelineDirectories,
+  metadata: PackJobMetadata,
+): PackJobResult => ({
+  manifestId: metadata.outputs.manifestId,
+  outputs: {
+    directory: toRelativePath(directories.base, metadata.directory),
+    manifest: toRelativePath(directories.base, metadata.outputs.manifestPath),
+    archive: toRelativePath(directories.base, metadata.outputs.archivePath),
+  },
+});
+
+const serializeJobSummary = (summary: JobSummary) => ({
+  id: summary.id,
+  kind: summary.kind,
+  hash: summary.hash,
+  status: summary.status,
+  createdAt: summary.createdAt.toISOString(),
+  updatedAt: summary.updatedAt.toISOString(),
+});
+
+const serializeJobDetails = <T>(job: JobDetails<T>) => ({
+  ...serializeJobSummary(job),
+  result: job.result ?? undefined,
+  error: job.error ?? undefined,
+});
+
+const respondWithJob = <T>(res: Response, job: JobDetails<T>, options?: { reused?: boolean }): void => {
+  const payload = {
+    ...serializeJobDetails(job),
+    ...(options?.reused !== undefined ? { reused: options.reused } : {}),
+  };
+  const statusCode =
+    job.status === 'completed'
+      ? 200
+      : job.status === 'failed'
+      ? job.error?.statusCode ?? 500
+      : 202;
+  res.status(statusCode).json(payload);
+};
+
+const adoptJobFromMetadata = (
+  directories: PipelineDirectories,
+  queue: JobQueue,
+  metadata: JobMetadata,
+): JobDetails<unknown> => {
+  switch (metadata.kind) {
+    case 'import':
+      return queue.adoptCompleted<ImportJobResult>({
+        id: metadata.id,
+        kind: metadata.kind,
+        hash: metadata.hash,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.createdAt,
+        result: toImportResult(directories, metadata),
+      });
+    case 'analyze':
+      return queue.adoptCompleted<AnalyzeJobResult>({
+        id: metadata.id,
+        kind: metadata.kind,
+        hash: metadata.hash,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.createdAt,
+        result: toAnalyzeResult(directories, metadata),
+      });
+    case 'report':
+      return queue.adoptCompleted<ReportJobResult>({
+        id: metadata.id,
+        kind: metadata.kind,
+        hash: metadata.hash,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.createdAt,
+        result: toReportResult(directories, metadata),
+      });
+    case 'pack':
+      return queue.adoptCompleted<PackJobResult>({
+        id: metadata.id,
+        kind: metadata.kind,
+        hash: metadata.hash,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.createdAt,
+        result: toPackResult(directories, metadata),
+      });
+    default:
+      throw new HttpError(500, 'UNKNOWN_JOB_KIND', `Bilinmeyen iş türü: ${(metadata as JobMetadata).kind}`);
+  }
+};
+
+const locateJobMetadata = async (
+  directories: PipelineDirectories,
+  queue: JobQueue,
+  jobId: string,
+): Promise<JobDetails<unknown> | undefined> => {
+  const locations: Array<{ dir: string; kind: JobMetadata['kind'] }> = [
+    { dir: directories.workspaces, kind: 'import' },
+    { dir: directories.analyses, kind: 'analyze' },
+    { dir: directories.reports, kind: 'report' },
+    { dir: directories.packages, kind: 'pack' },
+  ];
+
+  for (const location of locations) {
+    const candidateDir = path.join(location.dir, jobId);
+    const metadataPath = path.join(candidateDir, METADATA_FILE);
+    if (await fileExists(metadataPath)) {
+      const metadata = await readJobMetadata<JobMetadata>(candidateDir);
+      return adoptJobFromMetadata(directories, queue, metadata);
+    }
+  }
+
+  return undefined;
+};
+
+const createAsyncHandler = <T extends Request>(
+  handler: (req: T, res: Response) => Promise<void>,
+) =>
+  async (req: T, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await handler(req, res);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+const createAuthMiddleware = (token: string) => {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    const header = req.get('authorization');
+    if (!header || !header.startsWith('Bearer ')) {
+      next(new HttpError(401, 'UNAUTHORIZED', 'Bearer kimlik doğrulaması gerekiyor.'));
+      return;
+    }
+    const provided = header.slice('Bearer '.length).trim();
+    if (provided !== token) {
+      next(new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.'));
+      return;
+    }
+    next();
+  };
+};
+
 export const createServer = (config: ServerConfig): Express => {
   const directories = createDirectories(path.resolve(config.storageDir));
   const signingKeyPath = path.resolve(config.signingKeyPath);
@@ -289,11 +487,37 @@ export const createServer = (config: ServerConfig): Express => {
   app.use(express.json());
 
   const requireAuth = createAuthMiddleware(config.token);
+  const queue = new JobQueue();
 
   app.get(
     '/health',
     createAsyncHandler(async (_req, res) => {
       res.json({ status: 'ok' });
+    }),
+  );
+
+  app.get(
+    '/v1/jobs',
+    requireAuth,
+    createAsyncHandler(async (_req, res) => {
+      const jobs = queue.list().map(serializeJobSummary);
+      res.json({ jobs });
+    }),
+  );
+
+  app.get(
+    '/v1/jobs/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
+      }
+      const job = queue.get(id) ?? (await locateJobMetadata(directories, queue, id));
+      if (!job) {
+        throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
+      }
+      res.json(serializeJobDetails(job));
     }),
   );
 
@@ -344,78 +568,79 @@ export const createServer = (config: ServerConfig): Express => {
       const workspaceDir = path.join(directories.workspaces, importId);
       const metadataPath = path.join(workspaceDir, METADATA_FILE);
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<ImportJobMetadata>(workspaceDir);
-        res.json({
-          id: metadata.id,
-          reused: true,
-          createdAt: metadata.createdAt,
-          warnings: metadata.warnings,
-          outputs: {
-            directory: toRelativePath(directories.base, workspaceDir),
-            workspace: toRelativePath(directories.base, metadata.outputs.workspacePath),
-          },
-        });
+      const existingJob = queue.get<ImportJobResult>(importId);
+      if (existingJob) {
+        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
-      await ensureDirectory(workspaceDir);
-      const uploadsDir = path.join(workspaceDir, 'inputs');
-      await ensureDirectory(uploadsDir);
-
-      try {
-        const persisted = await persistUploadedFiles(fileMap, uploadsDir);
-        const level = asCertificationLevel(stringFields.level);
-        const importOptions: ImportOptions = {
-          output: workspaceDir,
-          jira: persisted.jira?.[0],
-          reqif: persisted.reqif?.[0],
-          junit: persisted.junit?.[0],
-          lcov: persisted.lcov?.[0],
-          cobertura: persisted.cobertura?.[0],
-          git: persisted.git?.[0],
-          objectives: persisted.objectives?.[0],
-          level,
-          projectName: stringFields.projectName,
-          projectVersion: stringFields.projectVersion,
-        };
-
-        const result = await runImport(importOptions);
-        const metadata: ImportJobMetadata = {
-          id: importId,
-          hash,
-          kind: 'import',
-          createdAt: new Date().toISOString(),
-          directory: workspaceDir,
-          params: {
-            level: level ?? null,
-            projectName: stringFields.projectName ?? null,
-            projectVersion: stringFields.projectVersion ?? null,
-            files: Object.fromEntries(
-              Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
-            ),
-          },
-          warnings: result.warnings,
-          outputs: {
-            workspacePath: path.join(workspaceDir, 'workspace.json'),
-          },
-        };
-        await writeJobMetadata(workspaceDir, metadata);
-
-        res.json({
-          id: importId,
-          reused: false,
-          createdAt: metadata.createdAt,
-          warnings: result.warnings,
-          outputs: {
-            directory: toRelativePath(directories.base, workspaceDir),
-            workspace: toRelativePath(directories.base, metadata.outputs.workspacePath),
-          },
-        });
-      } catch (error) {
-        await removeDirectory(workspaceDir);
-        throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
+      if (await fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<ImportJobMetadata>(workspaceDir);
+        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<ImportJobResult>;
+        respondWithJob(res, adopted, { reused: true });
+        return;
       }
+
+      const uploadsDir = path.join(workspaceDir, 'inputs');
+      const uploadedFiles = convertFileMap(fileMap);
+      const level = asCertificationLevel(stringFields.level);
+
+      const job = queue.enqueue<ImportJobResult>({
+        id: importId,
+        kind: 'import',
+        hash,
+        run: async () => {
+          await ensureDirectory(workspaceDir);
+          await ensureDirectory(uploadsDir);
+
+          try {
+            const persisted = await persistUploadedFiles(uploadedFiles, uploadsDir);
+            const importOptions: ImportOptions = {
+              output: workspaceDir,
+              jira: persisted.jira?.[0],
+              reqif: persisted.reqif?.[0],
+              junit: persisted.junit?.[0],
+              lcov: persisted.lcov?.[0],
+              cobertura: persisted.cobertura?.[0],
+              git: persisted.git?.[0],
+              objectives: persisted.objectives?.[0],
+              level,
+              projectName: stringFields.projectName,
+              projectVersion: stringFields.projectVersion,
+            };
+
+            const result = await runImport(importOptions);
+            const metadata: ImportJobMetadata = {
+              id: importId,
+              hash,
+              kind: 'import',
+              createdAt: new Date().toISOString(),
+              directory: workspaceDir,
+              params: {
+                level: level ?? null,
+                projectName: stringFields.projectName ?? null,
+                projectVersion: stringFields.projectVersion ?? null,
+                files: Object.fromEntries(
+                  Object.entries(persisted).map(([key, values]) => [key, values.map((value) => path.basename(value))]),
+                ),
+              },
+              warnings: result.warnings,
+              outputs: {
+                workspacePath: path.join(workspaceDir, 'workspace.json'),
+              },
+            };
+
+            await writeJobMetadata(workspaceDir, metadata);
+
+            return toImportResult(directories, metadata);
+          } catch (error) {
+            await removeDirectory(workspaceDir);
+            throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
+          }
+        },
+      });
+
+      respondWithJob(res, job);
     }),
   );
 
@@ -459,75 +684,68 @@ export const createServer = (config: ServerConfig): Express => {
       const analysisDir = path.join(directories.analyses, analyzeId);
       const metadataPath = path.join(analysisDir, METADATA_FILE);
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<AnalyzeJobMetadata>(analysisDir);
-        res.json({
-          id: metadata.id,
-          reused: true,
-          createdAt: metadata.createdAt,
-          exitCode: metadata.exitCode,
-          outputs: {
-            directory: toRelativePath(directories.base, analysisDir),
-            snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-            traces: toRelativePath(directories.base, metadata.outputs.tracePath),
-            analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
-          },
-        });
+      const existingJob = queue.get<AnalyzeJobResult>(analyzeId);
+      if (existingJob) {
+        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
-      await ensureDirectory(analysisDir);
-
-      try {
-        const analyzeOptions: AnalyzeOptions = {
-          input: workspaceDir,
-          output: analysisDir,
-          level: effectiveLevel,
-          objectives: workspace.metadata.objectivesPath ?? undefined,
-          projectName: effectiveProjectName,
-          projectVersion: effectiveProjectVersion,
-        };
-        const result = await runAnalyze(analyzeOptions);
-
-        const metadata: AnalyzeJobMetadata = {
-          id: analyzeId,
-          hash,
-          kind: 'analyze',
-          createdAt: new Date().toISOString(),
-          directory: analysisDir,
-          params: {
-            importId: body.importId,
-            level: effectiveLevel,
-            projectName: effectiveProjectName ?? null,
-            projectVersion: effectiveProjectVersion ?? null,
-            objectivesPath,
-          },
-          exitCode: result.exitCode,
-          outputs: {
-            snapshotPath: path.join(analysisDir, 'snapshot.json'),
-            tracePath: path.join(analysisDir, 'traces.json'),
-            analysisPath: path.join(analysisDir, 'analysis.json'),
-          },
-        };
-
-        await writeJobMetadata(analysisDir, metadata);
-
-        res.json({
-          id: analyzeId,
-          reused: false,
-          createdAt: metadata.createdAt,
-          exitCode: metadata.exitCode,
-          outputs: {
-            directory: toRelativePath(directories.base, analysisDir),
-            snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-            traces: toRelativePath(directories.base, metadata.outputs.tracePath),
-            analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
-          },
-        });
-      } catch (error) {
-        await removeDirectory(analysisDir);
-        throw createPipelineError(error, 'Analiz işlemi başarısız oldu.');
+      if (await fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<AnalyzeJobMetadata>(analysisDir);
+        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<AnalyzeJobResult>;
+        respondWithJob(res, adopted, { reused: true });
+        return;
       }
+
+      const job = queue.enqueue<AnalyzeJobResult>({
+        id: analyzeId,
+        kind: 'analyze',
+        hash,
+        run: async () => {
+          await ensureDirectory(analysisDir);
+          try {
+            const analyzeOptions: AnalyzeOptions = {
+              input: workspaceDir,
+              output: analysisDir,
+              level: effectiveLevel,
+              objectives: workspace.metadata.objectivesPath ?? undefined,
+              projectName: effectiveProjectName,
+              projectVersion: effectiveProjectVersion,
+            };
+            const result = await runAnalyze(analyzeOptions);
+
+            const metadata: AnalyzeJobMetadata = {
+              id: analyzeId,
+              hash,
+              kind: 'analyze',
+              createdAt: new Date().toISOString(),
+              directory: analysisDir,
+              params: {
+                importId: body.importId,
+                level: effectiveLevel,
+                projectName: effectiveProjectName ?? null,
+                projectVersion: effectiveProjectVersion ?? null,
+                objectivesPath,
+              },
+              exitCode: result.exitCode,
+              outputs: {
+                snapshotPath: path.join(analysisDir, 'snapshot.json'),
+                tracePath: path.join(analysisDir, 'traces.json'),
+                analysisPath: path.join(analysisDir, 'analysis.json'),
+              },
+            };
+
+            await writeJobMetadata(analysisDir, metadata);
+
+            return toAnalyzeResult(directories, metadata);
+          } catch (error) {
+            await removeDirectory(analysisDir);
+            throw createPipelineError(error, 'Analiz işlemi başarısız oldu.');
+          }
+        },
+      });
+
+      respondWithJob(res, job);
     }),
   );
 
@@ -552,79 +770,66 @@ export const createServer = (config: ServerConfig): Express => {
       const reportDir = path.join(directories.reports, reportId);
       const metadataPath = path.join(reportDir, METADATA_FILE);
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<ReportJobMetadata>(reportDir);
-        res.json({
-          id: metadata.id,
-          reused: true,
-          createdAt: metadata.createdAt,
-          outputs: {
-            directory: toRelativePath(directories.base, reportDir),
-            complianceHtml: toRelativePath(directories.base, metadata.outputs.complianceHtml),
-            complianceJson: toRelativePath(directories.base, metadata.outputs.complianceJson),
-            traceHtml: toRelativePath(directories.base, metadata.outputs.traceHtml),
-            gapsHtml: toRelativePath(directories.base, metadata.outputs.gapsHtml),
-            analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
-            snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-            traces: toRelativePath(directories.base, metadata.outputs.tracesPath),
-          },
-        });
+      const existingJob = queue.get<ReportJobResult>(reportId);
+      if (existingJob) {
+        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
-      await ensureDirectory(reportDir);
-
-      try {
-        const reportOptions: ReportOptions = {
-          input: analysisDir,
-          output: reportDir,
-          manifestId: body.manifestId,
-        };
-        const result = await runReport(reportOptions);
-
-        const metadata: ReportJobMetadata = {
-          id: reportId,
-          hash,
-          kind: 'report',
-          createdAt: new Date().toISOString(),
-          directory: reportDir,
-          params: {
-            analysisId: body.analysisId,
-            manifestId: body.manifestId ?? null,
-          },
-          outputs: {
-            directory: reportDir,
-            complianceHtml: result.complianceHtml,
-            complianceJson: result.complianceJson,
-            traceHtml: result.traceHtml,
-            gapsHtml: result.gapsHtml,
-            analysisPath: path.join(reportDir, 'analysis.json'),
-            snapshotPath: path.join(reportDir, 'snapshot.json'),
-            tracesPath: path.join(reportDir, 'traces.json'),
-          },
-        };
-
-        await writeJobMetadata(reportDir, metadata);
-
-        res.json({
-          id: reportId,
-          reused: false,
-          createdAt: metadata.createdAt,
-          outputs: {
-            directory: toRelativePath(directories.base, reportDir),
-            complianceHtml: toRelativePath(directories.base, metadata.outputs.complianceHtml),
-            complianceJson: toRelativePath(directories.base, metadata.outputs.complianceJson),
-            traceHtml: toRelativePath(directories.base, metadata.outputs.traceHtml),
-            gapsHtml: toRelativePath(directories.base, metadata.outputs.gapsHtml),
-            analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
-            snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-            traces: toRelativePath(directories.base, metadata.outputs.tracesPath),
-          },
-        });
-      } catch (error) {
-        await removeDirectory(reportDir);
-        throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
+      if (await fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<ReportJobMetadata>(reportDir);
+        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<ReportJobResult>;
+        respondWithJob(res, adopted, { reused: true });
+        return;
       }
+
+      const job = queue.enqueue<ReportJobResult>({
+        id: reportId,
+        kind: 'report',
+        hash,
+        run: async () => {
+          await ensureDirectory(reportDir);
+          try {
+            const reportOptions: ReportOptions = {
+              input: analysisDir,
+              output: reportDir,
+              manifestId: body.manifestId,
+            };
+            const result = await runReport(reportOptions);
+
+            const metadata: ReportJobMetadata = {
+              id: reportId,
+              hash,
+              kind: 'report',
+              createdAt: new Date().toISOString(),
+              directory: reportDir,
+              params: {
+                analysisId: body.analysisId,
+                manifestId: body.manifestId ?? null,
+              },
+              outputs: {
+                directory: reportDir,
+                complianceHtml: result.complianceHtml,
+                complianceJson: result.complianceJson,
+                traceHtml: result.traceHtml,
+                gapsHtml: result.gapsHtml,
+                analysisPath: path.join(reportDir, 'analysis.json'),
+                snapshotPath: path.join(reportDir, 'snapshot.json'),
+                tracesPath: path.join(reportDir, 'traces.json'),
+              },
+            };
+
+            await writeJobMetadata(reportDir, metadata);
+
+            return toReportResult(directories, metadata);
+          } catch (error) {
+            await removeDirectory(reportDir);
+            throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
+          }
+        },
+      });
+
+      respondWithJob(res, job);
     }),
   );
 
@@ -640,82 +845,72 @@ export const createServer = (config: ServerConfig): Express => {
       const reportDir = path.join(directories.reports, body.reportId);
       await assertDirectoryExists(reportDir, 'Rapor çıktısı');
 
-      const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
-      const signingKeyHash = createHash('sha256').update(signingKey).digest('hex');
-
       const hashEntries: HashEntry[] = [
         { key: 'reportId', value: body.reportId },
-        { key: 'signingKey', value: signingKeyHash },
+        { key: 'packageName', value: body.packageName ?? '' },
       ];
-      if (body.packageName) {
-        hashEntries.push({ key: 'packageName', value: body.packageName });
-      }
       const hash = computeHash(hashEntries);
       const packId = createJobId(hash);
       const packageDir = path.join(directories.packages, packId);
       const metadataPath = path.join(packageDir, METADATA_FILE);
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<PackJobMetadata>(packageDir);
-        res.json({
-          id: metadata.id,
-          reused: true,
-          createdAt: metadata.createdAt,
-          manifestId: metadata.outputs.manifestId,
-          outputs: {
-            directory: toRelativePath(directories.base, packageDir),
-            manifest: toRelativePath(directories.base, metadata.outputs.manifestPath),
-            archive: toRelativePath(directories.base, metadata.outputs.archivePath),
-          },
-        });
+      const existingJob = queue.get<PackJobResult>(packId);
+      if (existingJob) {
+        respondWithJob(res, existingJob, { reused: existingJob.status === 'completed' });
         return;
       }
 
-      await ensureDirectory(packageDir);
-
-      try {
-        const packOptions: PackOptions = {
-          input: reportDir,
-          output: packageDir,
-          packageName: body.packageName,
-          signingKey,
-        };
-        const result = await runPack(packOptions);
-
-        const metadata: PackJobMetadata = {
-          id: packId,
-          hash,
-          kind: 'pack',
-          createdAt: new Date().toISOString(),
-          directory: packageDir,
-          params: {
-            reportId: body.reportId,
-            packageName: body.packageName ?? null,
-          },
-          outputs: {
-            manifestPath: result.manifestPath,
-            archivePath: result.archivePath,
-            manifestId: result.manifestId,
-          },
-        };
-
-        await writeJobMetadata(packageDir, metadata);
-
-        res.json({
-          id: packId,
-          reused: false,
-          createdAt: metadata.createdAt,
-          manifestId: metadata.outputs.manifestId,
-          outputs: {
-            directory: toRelativePath(directories.base, packageDir),
-            manifest: toRelativePath(directories.base, metadata.outputs.manifestPath),
-            archive: toRelativePath(directories.base, metadata.outputs.archivePath),
-          },
-        });
-      } catch (error) {
-        await removeDirectory(packageDir);
-        throw createPipelineError(error, 'Paket oluşturma işlemi başarısız oldu.');
+      if (await fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<PackJobMetadata>(packageDir);
+        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<PackJobResult>;
+        respondWithJob(res, adopted, { reused: true });
+        return;
       }
+
+      const job = queue.enqueue<PackJobResult>({
+        id: packId,
+        kind: 'pack',
+        hash,
+        run: async () => {
+          await ensureDirectory(packageDir);
+          try {
+            const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+            const packOptions: PackOptions = {
+              input: reportDir,
+              output: packageDir,
+              packageName: body.packageName,
+              signingKey,
+            };
+            const result = await runPack(packOptions);
+
+            const metadata: PackJobMetadata = {
+              id: packId,
+              hash,
+              kind: 'pack',
+              createdAt: new Date().toISOString(),
+              directory: packageDir,
+              params: {
+                reportId: body.reportId,
+                packageName: body.packageName ?? null,
+              },
+              outputs: {
+                manifestPath: result.manifestPath,
+                archivePath: result.archivePath,
+                manifestId: result.manifestId,
+              },
+            };
+
+            await writeJobMetadata(packageDir, metadata);
+
+            return toPackResult(directories, metadata);
+          } catch (error) {
+            await removeDirectory(packageDir);
+            throw createPipelineError(error, 'Paket oluşturma işlemi başarısız oldu.');
+          }
+        },
+      });
+
+      respondWithJob(res, job);
     }),
   );
 

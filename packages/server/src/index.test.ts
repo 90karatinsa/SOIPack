@@ -22,7 +22,32 @@ MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
 const minimalExample = (...segments: string[]): string =>
   path.resolve(__dirname, '../../..', 'examples', 'minimal', ...segments);
 
-jest.setTimeout(30000);
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForJobCompletion = async (
+  app: ReturnType<typeof createServer>,
+  token: string,
+  jobId: string,
+) => {
+  let lastResponse: request.Response | undefined;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const response = await request(app)
+      .get(`/v1/jobs/${jobId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    lastResponse = response;
+    if (response.body.status === 'completed') {
+      return response.body;
+    }
+    if (response.body.status === 'failed') {
+      throw new Error(`Job ${jobId} failed: ${JSON.stringify(response.body.error)}`);
+    }
+    await delay(250);
+  }
+  throw new Error(`Job ${jobId} did not complete in time: ${JSON.stringify(lastResponse?.body)}`);
+};
+
+jest.setTimeout(60000);
 
 describe('@soipack/server REST API', () => {
   const token = 'test-token';
@@ -46,8 +71,33 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
-  it('executes pipeline end-to-end with idempotent stages', async () => {
-    const firstImport = await request(app)
+  it('processes pipeline jobs asynchronously with idempotent reuse', async () => {
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Minimal Project')
+      .field('projectVersion', '1.0.0')
+      .expect(202);
+
+    expect(importResponse.body.id).toHaveLength(16);
+    expect(importResponse.body.kind).toBe('import');
+    expect(['queued', 'running']).toContain(importResponse.body.status);
+    expect(importResponse.body.result).toBeUndefined();
+
+    const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+    expect(importJob.result.outputs.workspace).toMatch(/^workspaces\//);
+    expect(Array.isArray(importJob.result.warnings)).toBe(true);
+
+    const importList = await request(app)
+      .get('/v1/jobs')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(importList.body.jobs.some((job: { id: string }) => job.id === importResponse.body.id)).toBe(true);
+
+    const importReuse = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
       .attach('reqif', minimalExample('spec.reqif'))
@@ -57,73 +107,70 @@ describe('@soipack/server REST API', () => {
       .field('projectVersion', '1.0.0')
       .expect(200);
 
-    expect(firstImport.body.id).toHaveLength(16);
-    expect(firstImport.body.reused).toBe(false);
-    expect(Array.isArray(firstImport.body.warnings)).toBe(true);
+    expect(importReuse.body.id).toBe(importResponse.body.id);
+    expect(importReuse.body.reused).toBe(true);
+    expect(importReuse.body.result.outputs.workspace).toBe(importJob.result.outputs.workspace);
 
-    const secondImport = await request(app)
-      .post('/v1/import')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('reqif', minimalExample('spec.reqif'))
-      .attach('junit', minimalExample('results.xml'))
-      .attach('lcov', minimalExample('lcov.info'))
-      .field('projectName', 'Minimal Project')
-      .field('projectVersion', '1.0.0')
-      .expect(200);
-
-    expect(secondImport.body.id).toBe(firstImport.body.id);
-    expect(secondImport.body.reused).toBe(true);
-
-    const analyzeResponse = await request(app)
+    const analyzeQueued = await request(app)
       .post('/v1/analyze')
       .set('Authorization', `Bearer ${token}`)
-      .send({ importId: firstImport.body.id })
-      .expect(200);
+      .send({ importId: importResponse.body.id })
+      .expect(202);
 
-    expect(analyzeResponse.body.id).toHaveLength(16);
-    expect(analyzeResponse.body.reused).toBe(false);
-    expect(typeof analyzeResponse.body.exitCode).toBe('number');
+    expect(analyzeQueued.body.kind).toBe('analyze');
+    expect(analyzeQueued.body.result).toBeUndefined();
 
-    const analyzeReused = await request(app)
+    const analyzeJob = await waitForJobCompletion(app, token, analyzeQueued.body.id);
+    expect(analyzeJob.result.outputs.snapshot).toMatch(/^analyses\//);
+    expect(typeof analyzeJob.result.exitCode).toBe('number');
+
+    const analyzeReuse = await request(app)
       .post('/v1/analyze')
       .set('Authorization', `Bearer ${token}`)
-      .send({ importId: firstImport.body.id })
+      .send({ importId: importResponse.body.id })
       .expect(200);
+    expect(analyzeReuse.body.reused).toBe(true);
+    expect(analyzeReuse.body.id).toBe(analyzeQueued.body.id);
 
-    expect(analyzeReused.body.id).toBe(analyzeResponse.body.id);
-    expect(analyzeReused.body.reused).toBe(true);
-
-    const reportResponse = await request(app)
+    const reportQueued = await request(app)
       .post('/v1/report')
       .set('Authorization', `Bearer ${token}`)
-      .send({ analysisId: analyzeResponse.body.id })
-      .expect(200);
+      .send({ analysisId: analyzeQueued.body.id })
+      .expect(202);
 
-    expect(reportResponse.body.reused).toBe(false);
-    expect(reportResponse.body.outputs.complianceHtml).toMatch(/^reports\//);
+    const reportJob = await waitForJobCompletion(app, token, reportQueued.body.id);
+    expect(reportJob.result.outputs.complianceHtml).toMatch(/^reports\//);
 
-    const reportReused = await request(app)
+    const reportReuse = await request(app)
       .post('/v1/report')
       .set('Authorization', `Bearer ${token}`)
-      .send({ analysisId: analyzeResponse.body.id })
+      .send({ analysisId: analyzeQueued.body.id })
       .expect(200);
+    expect(reportReuse.body.reused).toBe(true);
+    expect(reportReuse.body.id).toBe(reportQueued.body.id);
 
-    expect(reportReused.body.id).toBe(reportResponse.body.id);
-    expect(reportReused.body.reused).toBe(true);
-
-    const packResponse = await request(app)
+    const packQueued = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
-      .send({ reportId: reportResponse.body.id })
+      .send({ reportId: reportQueued.body.id })
+      .expect(202);
+
+    const packJob = await waitForJobCompletion(app, token, packQueued.body.id);
+    expect(packJob.result.outputs.archive).toMatch(/^packages\//);
+    expect(packJob.result.manifestId).toHaveLength(12);
+
+    const packReuse = await request(app)
+      .post('/v1/pack')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportId: reportQueued.body.id })
       .expect(200);
+    expect(packReuse.body.reused).toBe(true);
+    expect(packReuse.body.id).toBe(packQueued.body.id);
 
-    expect(packResponse.body.manifestId).toHaveLength(12);
-    expect(packResponse.body.outputs.archive).toMatch(/^packages\//);
-
-    const archivePath = path.resolve(storageDir, packResponse.body.outputs.archive);
+    const archivePath = path.resolve(storageDir, packJob.result.outputs.archive);
     await expect(fsPromises.access(archivePath, fs.constants.F_OK)).resolves.toBeUndefined();
 
-    const manifestPath = path.resolve(storageDir, packResponse.body.outputs.manifest);
+    const manifestPath = path.resolve(storageDir, packJob.result.outputs.manifest);
     const manifestDir = path.dirname(manifestPath);
     const signaturePath = path.join(manifestDir, 'manifest.sig');
     const manifest = JSON.parse(await fsPromises.readFile(manifestPath, 'utf8')) as Manifest;
@@ -131,7 +178,7 @@ describe('@soipack/server REST API', () => {
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
 
     const reportAsset = await request(app)
-      .get(`/v1/reports/${reportResponse.body.id}/compliance.html`)
+      .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
