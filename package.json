@@ -19,7 +19,8 @@
     "format": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --write",
     "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check",
     "demo": "bash examples/minimal/demo.sh",
-    "demo:test": "node examples/minimal/verify-demo.js"
+    "demo:test": "node examples/minimal/verify-demo.js",
+    "ui": "npm run dev --workspace @soipack/ui"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^6.19.0",
