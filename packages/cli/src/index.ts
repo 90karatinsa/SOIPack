@@ -49,6 +49,17 @@ import { hideBin } from 'yargs/helpers';
 
 import packageInfo from '../package.json';
 
+import { createLogger } from './logging';
+import type { Logger } from './logging';
+import {
+  DEFAULT_LICENSE_FILE,
+  LicenseError,
+  verifyLicenseFile,
+  resolveLicensePath,
+  type LicensePayload,
+} from './license';
+import { formatVersion } from './version';
+
 const fixedTimestampSource = process.env.SOIPACK_DEMO_TIMESTAMP;
 const parsedFixedTimestamp = fixedTimestampSource ? new Date(fixedTimestampSource) : undefined;
 const hasFixedTimestamp = parsedFixedTimestamp !== undefined && !Number.isNaN(parsedFixedTimestamp.getTime());
@@ -665,7 +676,7 @@ interface RunConfig {
   };
 }
 
-export const runPipeline = async (configPath: string): Promise<number> => {
+export const runPipeline = async (configPath: string, logger?: Logger): Promise<number> => {
   const absoluteConfig = path.resolve(configPath);
   const raw = await fsPromises.readFile(absoluteConfig, 'utf8');
   const config = YAML.parse(raw) as RunConfig;
@@ -693,12 +704,13 @@ export const runPipeline = async (configPath: string): Promise<number> => {
 
   if (importResult.warnings.length > 0) {
     importResult.warnings.forEach((warning) => {
-      // eslint-disable-next-line no-console
-      console.warn(`Uyarı: ${warning}`);
+      logger?.warn({ warning, command: 'run' }, 'İçe aktarma uyarısı alındı.');
     });
   }
-  // eslint-disable-next-line no-console
-  console.log(`Çalışma alanı ${importResult.workspacePath} olarak hazırlandı.`);
+  logger?.info(
+    { workspacePath: importResult.workspacePath, command: 'run' },
+    'Çalışma alanı hazırlandı.',
+  );
 
   const analyzeResult = await runAnalyze({
     input: workDir,
@@ -723,33 +735,113 @@ export const runPipeline = async (configPath: string): Promise<number> => {
     packageName: config.pack?.name,
   });
 
-  // eslint-disable-next-line no-console
-  console.log(`Raporlar ${reportResult.complianceHtml} konumuna üretildi.`);
-  // eslint-disable-next-line no-console
-  console.log(`Manifest ${packResult.manifestPath} konumuna yazıldı.`);
-  // eslint-disable-next-line no-console
-  console.log(`Paket ${packResult.archivePath} olarak hazırlandı (ID: ${packResult.manifestId}).`);
+  logger?.info(
+    { complianceHtml: reportResult.complianceHtml, command: 'run' },
+    'Raporlar üretildi.',
+  );
+  logger?.info(
+    { manifestPath: packResult.manifestPath, command: 'run' },
+    'Manifest kaydedildi.',
+  );
+  logger?.info(
+    {
+      archivePath: packResult.archivePath,
+      manifestId: packResult.manifestId,
+      command: 'run',
+    },
+    'Paket hazırlandı.',
+  );
 
   if (analyzeResult.exitCode === exitCodes.missingEvidence) {
-    // eslint-disable-next-line no-console
-    console.warn('Analiz hedefleri için eksik kanıt bulundu. Paket uyarı ile tamamlandı.');
+    logger?.warn(
+      { command: 'run' },
+      'Analiz hedefleri için eksik kanıt bulundu. Paket uyarı ile tamamlandı.',
+    );
     return exitCodes.missingEvidence;
   }
-  // eslint-disable-next-line no-console
-  console.log('Tüm hedef kanıtlar başarıyla toplandı.');
+  logger?.info({ command: 'run' }, 'Tüm hedef kanıtlar başarıyla toplandı.');
   return exitCodes.success;
 };
 
-const showError = (error: unknown): void => {
-  const message = error instanceof Error ? error.message : String(error);
-  // eslint-disable-next-line no-console
-  console.error(message);
+interface GlobalArguments {
+  verbose?: boolean;
+  license?: string;
+}
+
+let sharedLogger: Logger | undefined;
+
+const getLogger = (argv: yargs.ArgumentsCamelCase<unknown>): Logger => {
+  if (!sharedLogger) {
+    const { verbose } = argv as yargs.ArgumentsCamelCase<GlobalArguments>;
+    sharedLogger = createLogger({ verbose: Boolean(verbose) });
+  }
+  return sharedLogger;
+};
+
+const getLicensePath = (argv: yargs.ArgumentsCamelCase<unknown>): string => {
+  const { license } = argv as yargs.ArgumentsCamelCase<GlobalArguments>;
+  const value = Array.isArray(license) ? license[0] : license;
+  return resolveLicensePath(value as string | undefined);
+};
+
+const logLicenseValidated = (
+  logger: Logger,
+  license: LicensePayload,
+  context: Record<string, unknown>,
+): void => {
+  logger.debug(
+    {
+      ...context,
+      licenseId: license.licenseId,
+      issuedTo: license.issuedTo,
+      expiresAt: license.expiresAt,
+    },
+    'Lisans doğrulandı.',
+  );
+};
+
+const logCliError = (
+  logger: Logger,
+  error: unknown,
+  context: Record<string, unknown> = {},
+): void => {
+  if (error instanceof LicenseError) {
+    logger.error({ ...context, err: error }, error.message);
+    return;
+  }
+
+  if (error instanceof Error) {
+    logger.error({ ...context, err: error }, error.message);
+    return;
+  }
+
+  logger.error(
+    {
+      ...context,
+      error: { message: String(error) },
+    },
+    'Beklenmeyen bir hata oluştu.',
+  );
 };
 
 if (require.main === module) {
   const cli = yargs(hideBin(process.argv))
     .scriptName('soipack')
     .usage('$0 <command> [options]')
+    .option('verbose', {
+      describe: 'Ayrıntılı JSON log çıktısı.',
+      type: 'boolean',
+      global: true,
+      default: false,
+    })
+    .option('license', {
+      describe: 'Lisans anahtarı dosyasının yolu.',
+      type: 'string',
+      global: true,
+      default: DEFAULT_LICENSE_FILE,
+    })
+    .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
+    .alias('version', 'V')
     .command(
       'import',
       'Gereksinim, test ve kapsam kanıtlarını çalışma alanına aktarır.',
@@ -802,7 +894,14 @@ if (require.main === module) {
             demandOption: true,
           }),
       async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = { command: 'import', licensePath, output: argv.output };
+
         try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
           const result = await runImport({
             output: argv.output,
             jira: argv.jira,
@@ -816,17 +915,20 @@ if (require.main === module) {
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
           });
+
           if (result.warnings.length > 0) {
             result.warnings.forEach((warning) => {
-              // eslint-disable-next-line no-console
-              console.warn(warning);
+              logger.warn({ ...context, warning }, 'İçe aktarma uyarısı alındı.');
             });
           }
-          // eslint-disable-next-line no-console
-          console.log(`Çalışma alanı ${result.workspacePath} olarak kaydedildi.`);
+
+          logger.info(
+            { ...context, workspacePath: result.workspacePath },
+            'Çalışma alanı kaydedildi.',
+          );
           process.exitCode = exitCodes.success;
         } catch (error) {
-          showError(error);
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },
@@ -865,7 +967,19 @@ if (require.main === module) {
             type: 'string',
           }),
       async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = {
+          command: 'analyze',
+          licensePath,
+          input: argv.input,
+          output: argv.output,
+        };
+
         try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
           const result = await runAnalyze({
             input: argv.input,
             output: argv.output,
@@ -874,11 +988,11 @@ if (require.main === module) {
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
           });
-          // eslint-disable-next-line no-console
-          console.log(`Analiz çıktıları ${argv.output} dizinine yazıldı.`);
+
+          logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
           process.exitCode = result.exitCode;
         } catch (error) {
-          showError(error);
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },
@@ -901,16 +1015,31 @@ if (require.main === module) {
             demandOption: true,
           }),
       async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = {
+          command: 'report',
+          licensePath,
+          input: argv.input,
+          output: argv.output,
+        };
+
         try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
           const result = await runReport({
             input: argv.input,
             output: argv.output,
           });
-          // eslint-disable-next-line no-console
-          console.log(`Uyum raporu ${result.complianceHtml} olarak oluşturuldu.`);
+
+          logger.info(
+            { ...context, complianceHtml: result.complianceHtml },
+            'Uyum raporu oluşturuldu.',
+          );
           process.exitCode = exitCodes.success;
         } catch (error) {
-          showError(error);
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },
@@ -937,17 +1066,38 @@ if (require.main === module) {
             type: 'string',
           }),
       async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = {
+          command: 'pack',
+          licensePath,
+          input: argv.input,
+          output: argv.output,
+          name: argv.name,
+        };
+
         try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
             packageName: argv.name,
           });
-          // eslint-disable-next-line no-console
-          console.log(`Paket ${result.archivePath} olarak oluşturuldu.`);
+
+          logger.info(
+            {
+              ...context,
+              archivePath: result.archivePath,
+              manifestPath: result.manifestPath,
+              manifestId: result.manifestId,
+            },
+            'Paket oluşturuldu.',
+          );
           process.exitCode = exitCodes.success;
         } catch (error) {
-          showError(error);
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },
@@ -963,11 +1113,18 @@ if (require.main === module) {
           demandOption: true,
         }),
       async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = { command: 'run', licensePath, config: argv.config };
+
         try {
-          const exitCode = await runPipeline(argv.config);
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
+          const exitCode = await runPipeline(argv.config, logger);
           process.exitCode = exitCode;
         } catch (error) {
-          showError(error);
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },
