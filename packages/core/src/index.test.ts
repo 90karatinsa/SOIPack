@@ -1,4 +1,7 @@
-import { createRequirement, normalizeTag } from './index';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+import { createRequirement, normalizeTag, objectiveListSchema } from './index';
 
 describe('@soipack/core', () => {
   it('creates a requirement with defaults', () => {
@@ -14,5 +17,16 @@ describe('@soipack/core', () => {
 
   it('normalizes tags', () => {
     expect(normalizeTag('  Critical ')).toBe('critical');
+  });
+
+  it('validates the DO-178C objective sample data', () => {
+    const samplePath = resolve(
+      __dirname,
+      '../../../data/objectives/do178c_objectives.min.json',
+    );
+    const raw = readFileSync(samplePath, 'utf-8');
+    const objectives = JSON.parse(raw);
+
+    expect(() => objectiveListSchema.parse(objectives)).not.toThrow();
   });
 });
