@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEMO_DIR="$ROOT_DIR/examples/minimal"
 CONFIG="$DEMO_DIR/soipack.config.yaml"
 CLI_DIST="$ROOT_DIR/packages/cli/dist/index.js"
+LICENSE_PATH="$ROOT_DIR/data/licenses/demo-license.key"
 WORK_DIR="$DEMO_DIR/.soipack"
 DIST_DIR="$DEMO_DIR/dist"
 RELEASE_DIR="$DEMO_DIR/release"
@@ -14,6 +15,11 @@ EXPECTED_DIR="$DEMO_DIR/EXPECTED"
 echo "Cleaning previous demo artifacts..."
 rm -rf "$WORK_DIR" "$DIST_DIR" "$RELEASE_DIR"
 
+if [ ! -f "$LICENSE_PATH" ]; then
+  echo "Demo lisans dosyası bulunamadı: $LICENSE_PATH" >&2
+  exit 1
+fi
+
 if [ ! -f "$CLI_DIST" ]; then
   echo "Building SOIPack CLI..."
   npm run --workspace @soipack/cli build >/dev/null
@@ -21,7 +27,7 @@ fi
 
 echo "Running pipeline with $CONFIG"
 SOIPACK_DEMO_TIMESTAMP="2024-03-01T10:00:00.000Z" \
-  node "$CLI_DIST" run --config "$CONFIG" || status=$?
+  node "$CLI_DIST" --license "$LICENSE_PATH" run --config "$CONFIG" || status=$?
 
 if [ "${status:-0}" -ne 0 ] && [ "${status:-0}" -ne 2 ]; then
   exit "${status:-1}"
@@ -116,7 +122,6 @@ if [ -d "$EXPECTED_DIR" ]; then
   cp "$REPORT_DIR/gaps.html" "$EXPECTED_DIR/gaps.html"
   cp "$RELEASE_DIR/manifest.json" "$EXPECTED_DIR/manifest.json"
   cp "$RELEASE_DIR/manifest.sig" "$EXPECTED_DIR/manifest.sig"
-  find "$RELEASE_DIR" -maxdepth 1 -type f -name 'soi-pack-*.zip' -exec cp {} "$EXPECTED_DIR" \;
 fi
 
 echo "Demo artifacts prepared under $DIST_DIR and $RELEASE_DIR"

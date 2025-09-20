@@ -44,6 +44,7 @@ describe('@soipack/report', () => {
     const html = renderTraceMatrix(fixture.traces, {
       manifestId: fixture.manifestId,
       title: 'Kurumsal İzlenebilirlik Matrisi',
+      generatedAt: fixture.snapshot.generatedAt,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');
