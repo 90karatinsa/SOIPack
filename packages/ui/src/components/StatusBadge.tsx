@@ -1,4 +1,4 @@
-import type { CoverageStatus } from '../demoData';
+import type { CoverageStatus } from '../types/pipeline';
 
 const styles: Record<CoverageStatus, string> = {
   covered:

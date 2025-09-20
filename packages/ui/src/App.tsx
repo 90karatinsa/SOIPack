@@ -1,65 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-import {
-  complianceMatrix,
-  complianceSummary,
-  demoPackageFiles,
-  traceabilityMatrix,
-  uploadLogs,
-  type CoverageStatus,
-  type UploadLogEntry
-} from './demoData';
+import { useMemo, useState } from 'react';
+import type { CoverageStatus } from './types/pipeline';
 import { TokenInput } from './components/TokenInput';
 import { NavigationTabs, type View } from './components/NavigationTabs';
 import { UploadAndRun } from './components/UploadAndRun';
 import { ComplianceMatrix } from './components/ComplianceMatrix';
 import { TraceabilityMatrix } from './components/TraceabilityMatrix';
 import { DownloadPackageButton } from './components/DownloadPackageButton';
+import { usePipeline } from './hooks/usePipeline';
 
 export default function App() {
   const [token, setToken] = useState('');
   const [activeView, setActiveView] = useState<View>('upload');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [displayedLogs, setDisplayedLogs] = useState<UploadLogEntry[]>(uploadLogs);
   const [activeStatuses, setActiveStatuses] = useState<CoverageStatus[]>([
     'covered',
     'partial',
     'missing'
   ]);
-  const [isRunning, setIsRunning] = useState(false);
-  const [isPreparingDownload, setIsPreparingDownload] = useState(false);
-  const timeoutsRef = useRef<number[]>([]);
 
   const isTokenActive = token.trim().length > 0;
+  const { runPipeline, downloadArtifacts, state, reset } = usePipeline(token);
 
-  const complianceData = useMemo(() => complianceMatrix, []);
-  const traceabilityData = useMemo(() => traceabilityMatrix, []);
+  const { logs, isRunning, isDownloading, jobs, reportData, reportAssets, error, lastCompletedAt } = state;
 
-  useEffect(() => {
-    return () => {
-      timeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-    };
-  }, []);
+  const canRunPipeline = selectedFiles.length > 0;
 
   const handleRun = () => {
-    if (!isTokenActive || isRunning) return;
-
-    timeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-    timeoutsRef.current = [];
-
-    setDisplayedLogs([]);
-    setIsRunning(true);
-
-    uploadLogs.forEach((log, index) => {
-      const timeoutId = window.setTimeout(() => {
-        setDisplayedLogs((previous) => [...previous, log]);
-        if (index === uploadLogs.length - 1) {
-          setIsRunning(false);
-        }
-      }, index * 650);
-      timeoutsRef.current.push(timeoutId);
-    });
+    if (!isTokenActive || !canRunPipeline || isRunning) return;
+    void runPipeline(selectedFiles);
   };
 
   const handleToggleStatus = (status: CoverageStatus) => {
@@ -70,23 +38,32 @@ export default function App() {
     );
   };
 
-  const handleDownload = async () => {
-    if (!isTokenActive || isPreparingDownload) return;
+  const jobStates = useMemo(
+    () =>
+      (['import', 'analyze', 'report'] as const)
+        .map((kind) => {
+          const job = jobs[kind];
+          if (!job) {
+            return null;
+          }
+          return {
+            kind,
+            status: job.status,
+            reused: job.reused,
+            updatedAt: job.updatedAt
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null),
+    [jobs]
+  );
 
-    setIsPreparingDownload(true);
-    try {
-      const zip = new JSZip();
-      zip.file('compliance.json', JSON.stringify(complianceData, null, 2));
-      zip.file('traceability.json', JSON.stringify(traceabilityData, null, 2));
-      zip.file('logs.json', JSON.stringify(uploadLogs, null, 2));
-      Object.entries(demoPackageFiles).forEach(([path, content]) => {
-        zip.file(path, content);
-      });
-      const blob = await zip.generateAsync({ type: 'blob' });
-      saveAs(blob, 'soipack-ui-demo.zip');
-    } finally {
-      setIsPreparingDownload(false);
-    }
+  const complianceRows = reportData?.requirements ?? [];
+  const complianceSummary = reportData?.summary ?? { total: 0, covered: 0, partial: 0, missing: 0 };
+
+  const handleTokenClear = () => {
+    setToken('');
+    setSelectedFiles([]);
+    reset();
   };
 
   return (
@@ -99,18 +76,18 @@ export default function App() {
             </span>
             <h1 className="text-3xl font-bold text-white sm:text-4xl">Uyumluluk & İzlenebilirlik Panosu</h1>
             <p className="max-w-2xl text-sm text-slate-400">
-              REST token girdiğinizde demo verileriyle yükleme, uyum ve izlenebilirlik matrislerini
-              inceleyebilir, ayrıca zip paketini indirebilirsiniz.
+              Geçerli bir REST token ile import, analyze ve report işlerinizin durumunu takip edip
+              oluşan uyum ve izlenebilirlik çıktılarının özetini görüntüleyebilir, rapor artefaktlarını indirebilirsiniz.
             </p>
           </div>
           <DownloadPackageButton
-            onDownload={handleDownload}
-            disabled={!isTokenActive}
-            isBusy={isPreparingDownload}
+            onDownload={() => downloadArtifacts()}
+            disabled={!isTokenActive || !reportAssets}
+            isBusy={isDownloading}
           />
         </header>
 
-        <TokenInput token={token} onTokenChange={setToken} onClear={() => setToken('')} />
+        <TokenInput token={token} onTokenChange={setToken} onClear={handleTokenClear} />
 
         <NavigationTabs activeView={activeView} onChange={setActiveView} disabled={!isTokenActive} />
 
@@ -130,25 +107,35 @@ export default function App() {
             <UploadAndRun
               files={selectedFiles}
               onFilesChange={setSelectedFiles}
-              logs={displayedLogs}
+              logs={logs}
               isEnabled={isTokenActive}
               onRun={handleRun}
               isRunning={isRunning}
+              canRun={canRunPipeline}
+              jobStates={jobStates}
+              error={error}
+              lastCompletedAt={lastCompletedAt}
             />
           )}
 
           {activeView === 'compliance' && (
             <ComplianceMatrix
-              rows={complianceData}
+              rows={complianceRows}
               activeStatuses={activeStatuses}
               onToggleStatus={handleToggleStatus}
               summary={complianceSummary}
-              isEnabled={isTokenActive}
+              isEnabled={Boolean(reportData)}
+              generatedAt={reportData?.generatedAt}
+              version={reportData?.version}
             />
           )}
 
           {activeView === 'traceability' && (
-            <TraceabilityMatrix rows={traceabilityData} isEnabled={isTokenActive} />
+            <TraceabilityMatrix
+              rows={complianceRows}
+              isEnabled={Boolean(reportData)}
+              generatedAt={reportData?.generatedAt}
+            />
           )}
         </main>
       </div>
