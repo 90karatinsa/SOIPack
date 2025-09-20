@@ -57,6 +57,44 @@ const finalizeMetric = (metric: CoverageMetric | undefined): CoverageMetric | un
   };
 };
 
+const toTestNames = (value: unknown): string[] => {
+  if (!value) {
+    return [];
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[,;\s]+/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => toTestNames(entry));
+  }
+  if (typeof value === 'object') {
+    const record = value as UnknownRecord;
+    if (typeof record.name === 'string') {
+      return [record.name.trim()].filter((entry) => entry.length > 0);
+    }
+    return Object.values(record).flatMap((entry) => toTestNames(entry));
+  }
+  return [];
+};
+
+const registerTestFile = (
+  map: Map<string, Set<string>>,
+  testName: string,
+  fileName: string,
+): void => {
+  const normalizedTest = testName.trim();
+  const normalizedFile = fileName.trim();
+  if (!normalizedTest || !normalizedFile) {
+    return;
+  }
+  const existing = map.get(normalizedTest) ?? new Set<string>();
+  existing.add(normalizedFile);
+  map.set(normalizedTest, existing);
+};
+
 export const importCobertura = async (filePath: string): Promise<ParseResult<CoverageSummary>> => {
   const warnings: string[] = [];
   const location = path.resolve(filePath);
@@ -84,6 +122,7 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
   }
 
   const files: FileCoverageSummary[] = [];
+  const testFiles = new Map<string, Set<string>>();
 
   packages.forEach((pkg) => {
     const classes = toArray((pkg.classes as UnknownRecord | undefined)?.class as UnknownRecord | UnknownRecord[] | undefined);
@@ -103,6 +142,10 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
         if (hits > 0) {
           statementCovered += 1;
         }
+        const testAttributes = [line.tests, line.test, line['covered-by'], line['coveredby'], line['test-name']];
+        testAttributes.forEach((attribute) => {
+          toTestNames(attribute).forEach((testName) => registerTestFile(testFiles, testName, fileName));
+        });
         const branchAttribute = line.branch;
         const hasBranchFlag =
           (typeof branchAttribute === 'string' && branchAttribute.toLowerCase() === 'true') ||
@@ -167,6 +210,8 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
     branches: finalizeMetric(totals.branches),
     functions: finalizeMetric(totals.functions),
   };
+  const testMapEntries = Array.from(testFiles.entries()).map(([test, filesForTest]) => [test, Array.from(filesForTest)]);
+  const testMap = testMapEntries.length > 0 ? Object.fromEntries(testMapEntries) : undefined;
 
-  return { data: { totals: finalizedTotals, files }, warnings };
+  return { data: { totals: finalizedTotals, files, testMap }, warnings };
 };

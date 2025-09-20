@@ -1,4 +1,4 @@
-import { CoverageSummary, FileCoverageSummary, TestResult } from '@soipack/adapters';
+import { CoverageMetric, CoverageSummary, FileCoverageSummary, TestResult } from '@soipack/adapters';
 import {
   Evidence,
   Objective,
@@ -12,6 +12,19 @@ export type TraceNodeType = 'requirement' | 'test' | 'code';
 export interface CodePath {
   path: string;
   coverage?: FileCoverageSummary;
+}
+
+export type CoverageStatus = 'covered' | 'partial' | 'missing';
+
+export interface RequirementCoverageStatus {
+  requirement: Requirement;
+  status: CoverageStatus;
+  coverage?: {
+    statements?: CoverageMetric;
+    branches?: CoverageMetric;
+    functions?: CoverageMetric;
+  };
+  codePaths: CodePath[];
 }
 
 export type EvidenceIndex = Partial<Record<ObjectiveArtifactType, Evidence[]>>;
@@ -93,6 +106,71 @@ export class TraceEngine {
     this.indexTraceLinks(bundle.traceLinks ?? []);
     this.buildRequirementNodes(bundle.requirements);
     this.buildTestNodes(bundle.testResults, bundle.testToCodeMap ?? {});
+  }
+
+  private aggregateCoverageMetrics(codePaths: CodePath[]): {
+    statements?: CoverageMetric;
+    branches?: CoverageMetric;
+    functions?: CoverageMetric;
+  } {
+    const totals = {
+      statements: { covered: 0, total: 0 },
+      branches: { covered: 0, total: 0 },
+      functions: { covered: 0, total: 0 },
+    };
+
+    codePaths.forEach((code) => {
+      const coverage = code.coverage;
+      if (!coverage) {
+        return;
+      }
+      if (coverage.statements) {
+        totals.statements.covered += coverage.statements.covered;
+        totals.statements.total += coverage.statements.total;
+      }
+      if (coverage.branches) {
+        totals.branches.covered += coverage.branches.covered;
+        totals.branches.total += coverage.branches.total;
+      }
+      if (coverage.functions) {
+        totals.functions.covered += coverage.functions.covered;
+        totals.functions.total += coverage.functions.total;
+      }
+    });
+
+    const finalize = ({ covered, total }: { covered: number; total: number }): CoverageMetric | undefined => {
+      if (total === 0) {
+        return undefined;
+      }
+      return {
+        covered,
+        total,
+        percentage: Number(((covered / total) * 100).toFixed(2)),
+      };
+    };
+
+    return {
+      statements: finalize(totals.statements),
+      branches: finalize(totals.branches),
+      functions: finalize(totals.functions),
+    };
+  }
+
+  private determineCoverageStatus(
+    codePaths: CodePath[],
+    coverage: ReturnType<TraceEngine['aggregateCoverageMetrics']>,
+  ): CoverageStatus {
+    if (codePaths.length === 0) {
+      return 'missing';
+    }
+    const statements = coverage.statements;
+    if (!statements || statements.total === 0) {
+      return 'missing';
+    }
+    if (statements.covered >= statements.total) {
+      return 'covered';
+    }
+    return 'partial';
   }
 
   private indexCoverage(summary?: CoverageSummary): void {
@@ -277,6 +355,21 @@ export class TraceEngine {
       code: Array.from(code.values()),
     };
   }
+
+  public getRequirementCoverage(): RequirementCoverageStatus[] {
+    return this.bundle.requirements.map((requirement) => {
+      const trace = this.getRequirementTrace(requirement.id);
+      const coverage = this.aggregateCoverageMetrics(trace.code);
+      const status = this.determineCoverageStatus(trace.code, coverage);
+
+      return {
+        requirement,
+        status,
+        coverage,
+        codePaths: trace.code,
+      };
+    });
+  }
 }
 
 export type ObjectiveCoverageStatus = 'covered' | 'partial' | 'missing';
@@ -423,6 +516,7 @@ export interface ComplianceSnapshot {
   stats: ComplianceStatistics;
   gaps: GapAnalysis;
   traceGraph: TraceGraph;
+  requirementCoverage: RequirementCoverageStatus[];
 }
 
 const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
@@ -458,6 +552,7 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
   const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex);
   const objectiveCoverage = mapper.mapObjectives();
   const traceGraph = engine.getGraph();
+  const requirementCoverage = engine.getRequirementCoverage();
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
   const gapAnalysis = buildGapAnalysis(objectiveCoverage);
@@ -474,5 +569,6 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
     },
     gaps: gapAnalysis,
     traceGraph,
+    requirementCoverage,
   };
 };

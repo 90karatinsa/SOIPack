@@ -26,6 +26,41 @@ export class LicenseError extends Error {
 const PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
 const PUBLIC_KEY = Buffer.from(PUBLIC_KEY_BASE64, 'base64');
 
+export interface VerifyLicenseOptions {
+  publicKey?: Uint8Array | string;
+}
+
+const resolvePublicKey = (publicKey?: Uint8Array | string): Uint8Array => {
+  if (!publicKey) {
+    return PUBLIC_KEY;
+  }
+
+  if (publicKey instanceof Uint8Array) {
+    if (publicKey.length !== 32) {
+      throw new LicenseError('Lisans kamu anahtarı 32 bayt uzunluğunda olmalıdır.');
+    }
+    return Buffer.from(publicKey);
+  }
+
+  const normalized = publicKey.replace(/\s+/g, '');
+  if (!normalized) {
+    throw new LicenseError('Lisans kamu anahtarı boş olamaz.');
+  }
+
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(normalized, 'base64');
+  } catch (error) {
+    throw new LicenseError('Lisans kamu anahtarı base64 formatında olmalıdır.');
+  }
+
+  if (decoded.length !== 32) {
+    throw new LicenseError('Lisans kamu anahtarı Ed25519 formatında olmalıdır (32 bayt).');
+  }
+
+  return decoded;
+};
+
 export const DEFAULT_LICENSE_FILE = 'license.key';
 
 export const resolveLicensePath = (inputPath?: string): string =>
@@ -74,11 +109,15 @@ const decodeBase64 = (value: string, description: string): Uint8Array => {
   }
 };
 
-const verifySignature = (content: LicenseFileContent): { payload: Uint8Array } => {
+const verifySignature = (
+  content: LicenseFileContent,
+  options?: VerifyLicenseOptions,
+): { payload: Uint8Array } => {
   const payloadBuffer = decodeBase64(content.payload, 'Lisans payload\'ı');
   const signatureBuffer = decodeBase64(content.signature, 'Lisans imzası');
 
-  if (!nacl.sign.detached.verify(payloadBuffer, signatureBuffer, PUBLIC_KEY)) {
+  const publicKey = resolvePublicKey(options?.publicKey);
+  if (!nacl.sign.detached.verify(payloadBuffer, signatureBuffer, publicKey)) {
     throw new LicenseError('Lisans imzası doğrulanamadı.');
   }
 
@@ -134,10 +173,13 @@ const parsePayload = (payloadBytes: Uint8Array): LicensePayload => {
   };
 };
 
-export const verifyLicenseFile = async (inputPath: string): Promise<LicensePayload> => {
+export const verifyLicenseFile = async (
+  inputPath: string,
+  options?: VerifyLicenseOptions,
+): Promise<LicensePayload> => {
   const filePath = resolveLicensePath(inputPath);
   const raw = await readLicenseFile(filePath);
   const content = parseLicenseContent(raw);
-  const { payload } = verifySignature(content);
+  const { payload } = verifySignature(content, options);
   return parsePayload(payload);
 };

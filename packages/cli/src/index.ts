@@ -22,6 +22,7 @@ import {
   CertificationLevel,
   Evidence,
   EvidenceSource,
+  Manifest,
   Objective,
   ObjectiveArtifactType,
   Requirement,
@@ -42,6 +43,7 @@ import {
   renderGaps,
   renderTraceMatrix,
 } from '@soipack/report';
+import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
 import { ZipFile } from 'yazl';
 import YAML from 'yaml';
 import yargs from 'yargs';
@@ -57,6 +59,7 @@ import {
   verifyLicenseFile,
   resolveLicensePath,
   type LicensePayload,
+  type VerifyLicenseOptions,
 } from './license';
 import { formatVersion } from './version';
 
@@ -117,6 +120,7 @@ const exitCodes = {
   success: 0,
   missingEvidence: 2,
   error: 3,
+  verificationFailed: 4,
 } as const;
 
 const ensureDirectory = async (directory: string): Promise<void> => {
@@ -138,6 +142,187 @@ const normalizeRelativePath = (filePath: string): string => {
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
   return normalized.split(path.sep).join('/');
+};
+
+const tokenize = (value: string): string[] =>
+  value
+    .split(/[^A-Za-z0-9_/.-]+/)
+    .flatMap((segment) => segment.split(/[\\/]/))
+    .map((segment) => segment.trim().toLowerCase())
+    .filter((segment) => segment.length >= 2);
+
+const createTestLookup = (tests: TestResult[]) => {
+  const direct = new Map<string, string>();
+  const lower = new Map<string, string>();
+  const tokenIndex = new Map<string, Set<string>>();
+  const visited = new Set<string>();
+
+  const registerToken = (token: string, testId: string) => {
+    if (!token) {
+      return;
+    }
+    const existing = tokenIndex.get(token) ?? new Set<string>();
+    existing.add(testId);
+    tokenIndex.set(token, existing);
+  };
+
+  const registerCandidate = (raw: string | undefined, testId: string): void => {
+    if (!raw) {
+      return;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return;
+    }
+    const key = `${testId}::${trimmed}`;
+    if (visited.has(key)) {
+      return;
+    }
+    visited.add(key);
+
+    if (!direct.has(trimmed)) {
+      direct.set(trimmed, testId);
+    }
+    const lowerTrimmed = trimmed.toLowerCase();
+    if (!lower.has(lowerTrimmed)) {
+      lower.set(lowerTrimmed, testId);
+    }
+
+    tokenize(trimmed).forEach((token) => registerToken(token, testId));
+
+    const whitespaceToken = trimmed.split(/\s+/)[0];
+    if (whitespaceToken && whitespaceToken !== trimmed) {
+      registerCandidate(whitespaceToken, testId);
+    }
+
+    const hashIndex = trimmed.indexOf('#');
+    if (hashIndex > 0) {
+      registerCandidate(trimmed.slice(0, hashIndex), testId);
+    }
+
+    const colonIndex = trimmed.indexOf(':');
+    if (colonIndex > 0) {
+      registerCandidate(trimmed.slice(0, colonIndex), testId);
+    }
+
+    if (trimmed.includes('/')) {
+      const base = trimmed.substring(trimmed.lastIndexOf('/') + 1);
+      if (base && base !== trimmed) {
+        registerCandidate(base, testId);
+      }
+    }
+  };
+
+  tests.forEach((test) => {
+    registerCandidate(test.testId, test.testId);
+    registerCandidate(test.className, test.testId);
+    registerCandidate(test.name, test.testId);
+  });
+
+  const resolve = (testName: string): string | undefined => {
+    const trimmed = testName.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const directMatch = direct.get(trimmed) ?? direct.get(trimmed.replace(/^['"]|['"]$/g, ''));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    const lowerTrimmed = trimmed.toLowerCase();
+    const lowerMatch =
+      lower.get(lowerTrimmed) ?? lower.get(lowerTrimmed.replace(/^['"]|['"]$/g, ''));
+    if (lowerMatch) {
+      return lowerMatch;
+    }
+
+    const tokens = tokenize(trimmed);
+    if (tokens.length === 0) {
+      return undefined;
+    }
+
+    const scores = new Map<string, number>();
+    tokens.forEach((token) => {
+      const ids = tokenIndex.get(token);
+      if (!ids) {
+        return;
+      }
+      ids.forEach((id) => {
+        scores.set(id, (scores.get(id) ?? 0) + 1);
+      });
+    });
+
+    if (scores.size === 0) {
+      return undefined;
+    }
+
+    const sorted = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 1 || sorted[0][1] > sorted[1][1]) {
+      return sorted[0][0];
+    }
+
+    return undefined;
+  };
+
+  return { resolve };
+};
+
+const normalizeCoveragePath = (filePath: string, origin: string): string | undefined => {
+  const trimmed = filePath.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (path.isAbsolute(trimmed)) {
+    return normalizeRelativePath(trimmed);
+  }
+
+  const cwdResolved = path.resolve(trimmed);
+  const originResolved = path.resolve(path.dirname(origin), trimmed);
+
+  const cwdRelative = path.relative(process.cwd(), cwdResolved);
+  const originRelative = path.relative(process.cwd(), originResolved);
+
+  const normalized =
+    originRelative.length > 0 && originRelative.length < cwdRelative.length
+      ? originResolved
+      : cwdResolved;
+
+  return normalizeRelativePath(normalized);
+};
+
+const deriveTestToCodeMap = (
+  tests: TestResult[],
+  coverageMaps: Array<{ map: Record<string, string[]>; origin: string }>,
+): Record<string, string[]> => {
+  if (tests.length === 0 || coverageMaps.length === 0) {
+    return {};
+  }
+
+  const lookup = createTestLookup(tests);
+  const combined = new Map<string, Set<string>>();
+
+  coverageMaps.forEach(({ map, origin }) => {
+    Object.entries(map).forEach(([testName, files]) => {
+      const resolvedTestId = lookup.resolve(testName);
+      if (!resolvedTestId) {
+        return;
+      }
+      files.forEach((file) => {
+        const normalized = normalizeCoveragePath(file, origin);
+        if (!normalized) {
+          return;
+        }
+        const existing = combined.get(resolvedTestId) ?? new Set<string>();
+        existing.add(normalized);
+        combined.set(resolvedTestId, existing);
+      });
+    });
+  });
+
+  return Object.fromEntries(
+    Array.from(combined.entries()).map(([testId, files]) => [testId, Array.from(files).sort()]),
+  );
 };
 
 const createEvidence = (
@@ -224,6 +409,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   let coverage: CoverageSummary | undefined;
   let gitMetadata: BuildInfo | null | undefined;
   const testResults: TestResult[] = [];
+  const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
     reqif: options.reqif ? normalizeRelativePath(options.reqif) : undefined,
@@ -277,6 +463,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const result = await importLcov(options.lcov);
     warnings.push(...result.warnings);
     coverage = result.data;
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.lcov) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -290,6 +479,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const result = await importCobertura(options.cobertura);
     warnings.push(...result.warnings);
     coverage = result.data;
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -300,6 +492,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   } else if (options.cobertura) {
     const result = await importCobertura(options.cobertura);
     warnings.push(...result.warnings);
+    if (result.data.testMap) {
+      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
+    }
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
@@ -324,13 +519,14 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
 
   const mergedRequirements = mergeRequirements(requirements);
   const traceLinks = buildTraceLinksFromTests(testResults);
+  const testToCodeMap = deriveTestToCodeMap(testResults, coverageMaps);
 
   const workspace: ImportWorkspace = {
     requirements: mergedRequirements,
     testResults,
     coverage,
     traceLinks,
-    testToCodeMap: {},
+    testToCodeMap,
     evidenceIndex,
     git: gitMetadata,
     metadata: {
@@ -511,6 +707,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     title: analysis.metadata.project?.name
       ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
       : 'SOIPack İzlenebilirlik Matrisi',
+    coverage: snapshot.requirementCoverage,
   });
   const gapsHtml = renderGaps(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -549,6 +746,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
 export interface PackOptions {
   input: string;
   output: string;
+  signingKey: string;
   packageName?: string;
 }
 
@@ -558,41 +756,8 @@ export interface PackResult {
   manifestId: string;
 }
 
-interface ManifestFileEntry {
-  path: string;
-  sha256: string;
-}
-
-interface ManifestData {
-  files: ManifestFileEntry[];
-  createdAt: string;
-  toolVersion: string;
-}
-
-const listFilesRecursively = async (directory: string, base: string): Promise<ManifestFileEntry[]> => {
-  const entries = await fsPromises.readdir(directory, { withFileTypes: true });
-  const files: ManifestFileEntry[] = [];
-
-  for (const entry of entries) {
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFilesRecursively(fullPath, base);
-      files.push(...nested);
-    } else if (entry.isFile()) {
-      const relative = path.relative(base, fullPath).split(path.sep).join('/');
-      const buffer = await fsPromises.readFile(fullPath);
-      const hash = createHash('sha256').update(buffer).digest('hex');
-      files.push({ path: relative, sha256: hash });
-    }
-  }
-
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return files;
-};
-
 const createArchive = async (
-  inputDir: string,
-  manifest: ManifestData,
+  files: Array<{ absolutePath: string; manifestPath: string }>,
   outputPath: string,
   manifestContent: string,
   signature?: string,
@@ -609,9 +774,9 @@ const createArchive = async (
 
   zip.outputStream.pipe(output);
 
-  for (const file of manifest.files) {
+  for (const file of files) {
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addFile(path.resolve(inputDir, file.path), file.path, options);
+    zip.addFile(file.absolutePath, file.manifestPath, options);
   }
 
   zip.addBuffer(Buffer.from(manifestContent, 'utf8'), 'manifest.json');
@@ -625,33 +790,115 @@ const createArchive = async (
   await completion;
 };
 
+const directoryExists = async (target: string): Promise<boolean> => {
+  try {
+    const stats = await fsPromises.stat(target);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const resolveReportDirectory = async (inputDir: string): Promise<string> => {
+  const candidate = path.join(inputDir, 'reports');
+  if (await directoryExists(candidate)) {
+    return candidate;
+  }
+  return inputDir;
+};
+
+const resolveEvidenceDirectories = async (inputDir: string, reportDir: string): Promise<string[]> => {
+  if (inputDir === reportDir) {
+    return [];
+  }
+
+  const entries = await fsPromises.readdir(inputDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(inputDir, entry.name))
+    .filter((dir) => path.resolve(dir) !== path.resolve(reportDir));
+};
+
 export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const inputDir = path.resolve(options.input);
   const outputDir = path.resolve(options.output);
   await ensureDirectory(outputDir);
 
-  const files = await listFilesRecursively(inputDir, inputDir);
-  const manifest: ManifestData = {
-    files,
-    createdAt: getCurrentTimestamp(),
+  const reportDir = await resolveReportDirectory(inputDir);
+  const evidenceDirs = await resolveEvidenceDirectories(inputDir, reportDir);
+  const now = getCurrentDate();
+
+  const { manifest, files } = await buildManifest({
+    reportDir,
+    evidenceDirs,
     toolVersion: packageInfo.version,
-  };
+    now,
+  });
 
   const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
+  const signature = signManifest(manifest, options.signingKey);
   const manifestHash = createHash('sha256').update(manifestSerialized).digest('hex');
   const manifestId = manifestHash.slice(0, 12);
-  const manifestSignature = manifestHash;
 
   const manifestPath = path.join(outputDir, 'manifest.json');
   await fsPromises.writeFile(manifestPath, manifestSerialized, 'utf8');
   const signaturePath = path.join(outputDir, 'manifest.sig');
-  await fsPromises.writeFile(signaturePath, `${manifestSignature}\n`, 'utf8');
+  await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
   const archiveName = options.packageName ?? `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
-  await createArchive(inputDir, manifest, archivePath, manifestSerialized, `${manifestSignature}\n`);
+  await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
 
   return { manifestPath, archivePath, manifestId };
+};
+
+export interface VerifyOptions {
+  manifestPath: string;
+  signaturePath: string;
+  publicKeyPath: string;
+}
+
+export interface VerifyResult {
+  isValid: boolean;
+  manifestId: string;
+}
+
+const readUtf8File = async (filePath: string, errorMessage: string): Promise<string> => {
+  try {
+    return await fsPromises.readFile(filePath, 'utf8');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${errorMessage}: ${reason}`);
+  }
+};
+
+export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> => {
+  const manifestPath = path.resolve(options.manifestPath);
+  const signaturePath = path.resolve(options.signaturePath);
+  const publicKeyPath = path.resolve(options.publicKeyPath);
+
+  const manifestRaw = await readUtf8File(manifestPath, 'Manifest dosyası okunamadı');
+
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(manifestRaw) as Manifest;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Manifest JSON formatı çözümlenemedi: ${reason}`);
+  }
+
+  const signatureRaw = await readUtf8File(signaturePath, 'Manifest imza dosyası okunamadı');
+  const signature = signatureRaw.trim();
+  if (!signature) {
+    throw new Error('Manifest imza dosyası boş.');
+  }
+
+  const publicKey = await readUtf8File(publicKeyPath, 'Genel anahtar dosyası okunamadı');
+
+  const manifestId = createHash('sha256').update(manifestRaw).digest('hex').slice(0, 12);
+  const isValid = verifyManifestSignature(manifest, signature, publicKey);
+
+  return { isValid, manifestId };
 };
 
 interface RunConfig {
@@ -676,7 +923,11 @@ interface RunConfig {
   };
 }
 
-export const runPipeline = async (configPath: string, logger?: Logger): Promise<number> => {
+export const runPipeline = async (
+  configPath: string,
+  options: { signingKey: string },
+  logger?: Logger,
+): Promise<number> => {
   const absoluteConfig = path.resolve(configPath);
   const raw = await fsPromises.readFile(absoluteConfig, 'utf8');
   const config = YAML.parse(raw) as RunConfig;
@@ -733,6 +984,7 @@ export const runPipeline = async (configPath: string, logger?: Logger): Promise<
     input: packInput,
     output: releaseDir,
     packageName: config.pack?.name,
+    signingKey: options.signingKey,
   });
 
   logger?.info(
@@ -1064,6 +1316,11 @@ if (require.main === module) {
           .option('name', {
             describe: 'Çıktı paketi dosya adı.',
             type: 'string',
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+            demandOption: true,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -1074,16 +1331,25 @@ if (require.main === module) {
           input: argv.input,
           output: argv.output,
           name: argv.name,
+          signingKeyPath: argv.signingKey,
         };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
+          const signingKeyOption = Array.isArray(argv.signingKey)
+            ? argv.signingKey[0]
+            : argv.signingKey;
+          const signingKeyPath = path.resolve(signingKeyOption as string);
+          context.signingKeyPath = signingKeyPath;
+          const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
             packageName: argv.name,
+            signingKey,
           });
 
           logger.info(
@@ -1103,25 +1369,104 @@ if (require.main === module) {
       },
     )
     .command(
+      'verify',
+      'Manifest imzasını doğrular.',
+      (y) =>
+        y
+          .option('manifest', {
+            describe: 'Doğrulanacak manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('signature', {
+            describe: 'Manifest imza dosyası (manifest.sig).',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('public-key', {
+            describe: 'Ed25519 kamu anahtarı PEM dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const manifestOption = Array.isArray(argv.manifest) ? argv.manifest[0] : argv.manifest;
+        const signatureOption = Array.isArray(argv.signature) ? argv.signature[0] : argv.signature;
+        const publicKeyOption = Array.isArray(argv.publicKey) ? argv.publicKey[0] : argv.publicKey;
+
+        const manifestPath = path.resolve(manifestOption as string);
+        const signaturePath = path.resolve(signatureOption as string);
+        const publicKeyPath = path.resolve(publicKeyOption as string);
+
+        const context = {
+          command: 'verify',
+          manifestPath,
+          signaturePath,
+          publicKeyPath,
+        };
+
+        try {
+          const result = await runVerify({
+            manifestPath,
+            signaturePath,
+            publicKeyPath,
+          });
+
+          if (result.isValid) {
+            logger.info({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulandı.');
+            console.log(`Manifest imzası doğrulandı (ID: ${result.manifestId}).`);
+            process.exitCode = exitCodes.success;
+          } else {
+            logger.warn({ ...context, manifestId: result.manifestId }, 'Manifest imzası doğrulanamadı.');
+            console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
+            process.exitCode = exitCodes.verificationFailed;
+          }
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
       'run',
       'YAML konfigürasyonu ile uçtan uca içe aktarım → analiz → rapor → paket akışını çalıştırır.',
       (y) =>
-        y.option('config', {
-          alias: 'c',
-          describe: 'soipack.config.yaml yolu.',
-          type: 'string',
-          demandOption: true,
-        }),
+        y
+          .option('config', {
+            alias: 'c',
+            describe: 'soipack.config.yaml yolu.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
-        const context = { command: 'run', licensePath, config: argv.config };
+        const context = {
+          command: 'run',
+          licensePath,
+          config: argv.config,
+          signingKeyPath: argv.signingKey,
+        };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
-          const exitCode = await runPipeline(argv.config, logger);
+          const signingKeyOption = Array.isArray(argv.signingKey)
+            ? argv.signingKey[0]
+            : argv.signingKey;
+          const signingKeyPath = path.resolve(signingKeyOption as string);
+          context.signingKeyPath = signingKeyPath;
+          const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+
+          const exitCode = await runPipeline(argv.config, { signingKey }, logger);
           process.exitCode = exitCode;
         } catch (error) {
           logCliError(logger, error, context);
@@ -1137,4 +1482,10 @@ if (require.main === module) {
   cli.parse();
 }
 
-export { exitCodes };
+export {
+  exitCodes,
+  verifyLicenseFile,
+  LicenseError,
+  type LicensePayload,
+  type VerifyLicenseOptions,
+};

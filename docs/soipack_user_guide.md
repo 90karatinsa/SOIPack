@@ -71,6 +71,14 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
 
 Pipeline'ın YAML sürümü için `node packages/cli/dist/index.js --license data/licenses/demo-license.key run --config examples/minimal/soipack.config.yaml` komutunu çalıştırabilirsiniz; bu komut demo betiğinin tetiklediği konfigürasyonla aynıdır.【F:README.md†L36-L73】
 
+### Sunucu lisans doğrulaması
+SOIPack API'si, gönderilen her iş isteğinin geçerli bir lisans ile yetkilendirilmesini bekler. Uygulama başlatılırken `SOIPACK_LICENSE_PUBLIC_KEY_PATH` ortam değişkeni üzerinden Ed25519 kamu anahtarının base64 kodlu dosyası belirtilmelidir. İstemciler aşağıdaki yöntemlerden biriyle lisans anahtarını iletmelidir:
+
+- JSON tabanlı lisans dosyasını base64'e çevirip `X-SOIPACK-License` HTTP başlığına ekleyin. Örnek: ``cat license.key | base64`` çıktısını başlık değeri olarak kullanın.
+- `/v1/import` uç noktasına çok parçalı form gönderirken `license` alanına lisans dosyasını ekleyin; diğer uç noktalar yalnızca başlık yöntemini kabul eder.
+
+Geçersiz ya da süresi dolmuş lisanslar `402` durum kodu ve `LICENSE_INVALID` hata kodu ile reddedilir; lisans başlığı olmadan gönderilen isteklerde ise `401` durum kodu ve `LICENSE_REQUIRED` mesajı döner.
+
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. `compliance_matrix.html` ve `trace_matrix.html` tarayıcıda açılarak müşteriye canlı demo yapılabilir; `compliance_matrix.pdf` aynı dizinde yer alır ve denetim arşivi için hazırdır.【F:docs/demo_script.md†L18-L25】 Paket arşivi, HTML/PDF raporlarını ve manifest dosyalarını `release/soi-pack-*.zip` içinde taşır.【F:docs/demo_script.md†L26-L31】
 

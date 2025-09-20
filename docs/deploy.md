@@ -57,6 +57,13 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    cat <<'ENV' > .env
    SOIPACK_API_TOKEN=degiştir-beni
    PORT=3000
+   SOIPACK_STORAGE_DIR=/data/soipack
+   SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
+   # Eski çıktıları otomatik temizlemek için gün bazında saklama süreleri (opsiyonel)
+   SOIPACK_RETENTION_UPLOADS_DAYS=14
+   SOIPACK_RETENTION_ANALYSES_DAYS=30
+   SOIPACK_RETENTION_REPORTS_DAYS=30
+   SOIPACK_RETENTION_PACKAGES_DAYS=60
    ENV
    ```
 4. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
@@ -69,7 +76,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    curl -H "Authorization: Bearer $SOIPACK_API_TOKEN" http://localhost:3000/health
    ```
 
-Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur.
+Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
 ## 3. Örnek Pipeline Çağrısı
 
@@ -121,10 +128,20 @@ BASE_URL=http://localhost:3000
      -d "{\"reportId\":\"<rapor-id>\"}"
    ```
 
+   Manifest ve imza dosyaları oluşturulduktan sonra teslimattan önce doğrulamak için üretim anahtarınızla aşağıdaki komutu çalıştırabilirsiniz:
+
+   ```bash
+   node packages/cli/dist/index.js verify \
+     --manifest data/packages/<paket-id>/manifest.json \
+     --signature data/packages/<paket-id>/manifest.sig \
+     --public-key path/to/ed25519_public.pem
+   ```
+
 ## 4. Güncelleme ve Bakım
 
 - Yeni bir sürüm yayınlandığında, hazırlık makinesinde `docker build` ve `docker save` adımlarını tekrar ederek yeni imajı içe aktarın.
 - Kalıcı `data/` klasörünü düzenli olarak yedekleyin.
 - `docker compose logs -f server` komutu ile hata ayıklama günlüklerini takip edebilirsiniz.
+- Saklama politikaları ayarlıysa (örn. `SOIPACK_RETENTION_*_DAYS`), eski iş çıktıları `POST /v1/admin/cleanup` çağrısıyla temizlenir. JSON yanıtı hangi dizinlerden kaç kaydın silindiğini gösterir.
 
 Bu adımlar tamamlandığında air-gapped ortamda `docker compose up -d` komutuyla SOIPack API'si PDF/rapor üretecek şekilde hazır olacaktır.

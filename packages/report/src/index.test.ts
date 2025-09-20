@@ -33,6 +33,9 @@ describe('@soipack/report', () => {
     expect(result.json.manifestId).toBe(fixture.manifestId);
     expect(result.json.stats).toEqual(fixture.snapshot.stats);
     expect(result.json.objectives).toHaveLength(fixture.snapshot.objectives.length);
+    expect(result.json.requirementCoverage).toHaveLength(
+      fixture.snapshot.requirementCoverage.length,
+    );
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
     expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
@@ -45,6 +48,7 @@ describe('@soipack/report', () => {
       manifestId: fixture.manifestId,
       title: 'Kurumsal İzlenebilirlik Matrisi',
       generatedAt: fixture.snapshot.generatedAt,
+      coverage: fixture.snapshot.requirementCoverage,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');

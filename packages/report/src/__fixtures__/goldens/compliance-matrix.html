@@ -266,6 +266,16 @@
             <strong>2</strong>
           </div>
         
+          <div class="summary-card">
+            <span>Kapsamlı Gereksinimler</span>
+            <strong>0/3</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Eksik/Kısmi Kapsam</span>
+            <strong>2/1</strong>
+          </div>
+        
       </div>
     </header>
     <main>
@@ -431,6 +441,90 @@
       </tbody>
     </table>
   </section>
+  
+    <section class="section">
+      <h2>Gereksinim Kapsamı</h2>
+      <p class="section-lead">
+        Testler ve kod izleri ile ilişkilendirilen gereksinimlerin kapsam durumunu gösterir. Yetersiz kapsama sahip alanları hızla tespit etmeyi sağlar.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gereksinim</th>
+            <th>Kapsam Durumu</th>
+            <th>Kod Dosyaları</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-1</div>
+                <div class="cell-description">Çok faktörlü giriş sağlamalı</div>
+              </td>
+              <td>
+                <span class="badge status-partial">Kısmen Kaplandı</span>
+                
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
+                
+              </td>
+              <td>
+                
+                  <ul class="list">
+                    
+                      <li><code class="code-pill">src/auth/login.ts</code></li>
+                    
+                      <li><code class="code-pill">src/security/audit.ts</code></li>
+                    
+                  </ul>
+                
+              </td>
+            </tr>
+          
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-2</div>
+                <div class="cell-description">Başarısız girişler kaydedilmeli</div>
+              </td>
+              <td>
+                <span class="badge status-partial">Kısmen Kaplandı</span>
+                
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
+                
+              </td>
+              <td>
+                
+                  <ul class="list">
+                    
+                      <li><code class="code-pill">src/auth/login.ts</code></li>
+                    
+                      <li><code class="code-pill">src/security/audit.ts</code></li>
+                    
+                  </ul>
+                
+              </td>
+            </tr>
+          
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-3</div>
+                <div class="cell-description">Giriş ihlallerinde uyarı gönderilmeli</div>
+              </td>
+              <td>
+                <span class="badge status-missing">Kapsam Yok</span>
+                
+              </td>
+              <td>
+                
+                  <span class="muted">Kod bağlantısı yok</span>
+                
+              </td>
+            </tr>
+          
+        </tbody>
+      </table>
+    </section>
+  
     </main>
     <footer>
       <span>SOIPack Sürüm 0.1.0</span>
