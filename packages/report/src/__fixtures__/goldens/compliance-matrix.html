@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kurumsal Uyum Matrisi</title>
+    <style>
+      
+  :root {
+    color-scheme: light;
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    background: #f3f5f9;
+    color: #0f172a;
+  }
+
+  .report-header {
+    background: linear-gradient(135deg, #0f172a, #1d2b64);
+    color: #f8fafc;
+    padding: 32px 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .report-header h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 600;
+  }
+
+  .report-meta {
+    margin: 0;
+    font-size: 14px;
+    opacity: 0.9;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .summary-card {
+    background: rgba(15, 23, 42, 0.35);
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .summary-card strong {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  main {
+    padding: 32px 48px 48px;
+  }
+
+  .section {
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+    padding: 24px 28px;
+    margin-bottom: 32px;
+  }
+
+  .section h2 {
+    margin-top: 0;
+    font-size: 20px;
+    color: #1e293b;
+  }
+
+  .section-lead {
+    color: #475569;
+    margin-bottom: 16px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-bottom: 2px solid #e2e8f0;
+    padding: 12px;
+  }
+
+  td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 14px 12px;
+    vertical-align: top;
+  }
+
+  .cell-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .cell-subtitle {
+    font-size: 13px;
+    color: #334155;
+    margin-top: 4px;
+  }
+
+  .cell-description {
+    color: #475569;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #e2e8f0;
+    color: #0f172a;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .badge-soft {
+    background: rgba(15, 23, 42, 0.08);
+  }
+
+  .badge-critical {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .status-covered {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .status-partial {
+    background: #fef9c3;
+    color: #854d0e;
+  }
+
+  .status-missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .muted {
+    color: #64748b;
+    font-size: 13px;
+  }
+
+  .list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+    display: grid;
+    gap: 12px;
+  }
+
+  .code-pill {
+    display: inline-block;
+    padding: 4px 10px;
+    background: #eef2ff;
+    color: #312e81;
+    border-radius: 8px;
+    font-size: 12px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+  }
+
+  .gap-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .gap-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    min-height: 180px;
+  }
+
+  .gap-card h3 {
+    margin-top: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  footer {
+    padding: 0 48px 32px;
+    color: #475569;
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  @media print {
+    body {
+      background: #ffffff;
+    }
+
+    footer {
+      display: none;
+    }
+  }
+
+      @page {
+        margin: 25mm 20mm;
+        size: A4;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="report-header">
+      <div>
+        <h1>Kurumsal Uyum Matrisi</h1>
+        
+          <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
+        
+        <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
+        <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
+      </div>
+      <div class="summary-grid">
+        
+          <div class="summary-card">
+            <span>Hedefler</span>
+            <strong>4</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Tamamlanan</span>
+            <strong>1</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Kısmi</span>
+            <strong>3</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Eksik</span>
+            <strong>0</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Testler</span>
+            <strong>4</strong>
+          </div>
+        
+          <div class="summary-card">
+            <span>Kod Yolları</span>
+            <strong>2</strong>
+          </div>
+        
+      </div>
+    </header>
+    <main>
+      <section class="section">
+    <h2>Uyum Matrisi</h2>
+    <p class="section-lead">
+      Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Hedef</th>
+          <th>Durum</th>
+          <th>Sağlanan Kanıtlar</th>
+          <th>Eksik Kanıtlar</th>
+          <th>Kanıt Referansları</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+          <tr>
+            <td>
+              <div class="cell-title">OBJ-PLAN-1</div>
+              
+                <div class="cell-subtitle">Plans</div>
+              
+              
+                <div class="cell-description">PSAC ve SDP tutarlılığı doğrulanmalı.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">PSAC</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">SDP</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">psac:docs/psac-v1.pdf</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">OBJ-VER-1</div>
+              
+                <div class="cell-subtitle">Verification</div>
+              
+              
+                <div class="cell-description">Test sonuçları ve izlenebilirlik kanıtlanmalı.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Test Sonuçları</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">İzlenebilirlik</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">testResults:reports/junit.xml</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">OBJ-VER-2</div>
+              
+                <div class="cell-subtitle">Verification</div>
+              
+              
+                <div class="cell-description">Kod kapsamı düzenli olarak izlenmeli.</div>
+              
+            </td>
+            <td><span class="badge status-covered">Tam Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Kod Kapsamı</span>
+                
+              
+            </td>
+            <td>
+              
+                <span class="muted">Eksik kanıt yok</span>
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">coverage:reports/coverage-summary.json</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+          <tr>
+            <td>
+              <div class="cell-title">OBJ-STND-1</div>
+              
+                <div class="cell-subtitle">Standards</div>
+              
+              
+                <div class="cell-description">Konfigürasyon indeksinin güncelliği izlenmeli.</div>
+              
+            </td>
+            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td>
+              
+                
+                  <span class="badge badge-soft">Sürüm Kontrol</span>
+                
+              
+            </td>
+            <td>
+              
+                
+                  <span class="badge badge-critical">Konfigürasyon İndeksi</span>
+                
+              
+            </td>
+            <td>
+              
+                <ul class="list">
+                  
+                    <li class="muted">git:git://repo#main</li>
+                  
+                </ul>
+              
+            </td>
+          </tr>
+        
+      </tbody>
+    </table>
+  </section>
+    </main>
+    <footer>
+      <span>SOIPack Sürüm 0.1.0</span>
+      <span>Sayfa numarası PDF çıktısında görüntülenecektir.</span>
+    </footer>
+  </body>
+</html>
