@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import fs, { promises as fsPromises } from 'fs';
+import { promises as fsPromises } from 'fs';
 import path from 'path';
 
 import {
@@ -19,12 +19,9 @@ import multer from 'multer';
 
 import { HttpError } from './errors';
 import { JobDetails, JobQueue, JobSummary } from './queue';
+import { FileSystemStorage, StorageProvider, UploadedFileMap } from './storage';
 
 type FileMap = Record<string, Express.Multer.File[]>;
-
-type PersistableFile = Pick<Express.Multer.File, 'originalname' | 'buffer'>;
-
-type UploadedFileMap = Record<string, PersistableFile[]>;
 
 interface HashEntry {
   key: string;
@@ -125,39 +122,6 @@ interface PackJobResult {
 
 const METADATA_FILE = 'job.json';
 
-const ensureDirectory = async (target: string): Promise<void> => {
-  await fsPromises.mkdir(target, { recursive: true });
-};
-
-const removeDirectory = async (target: string): Promise<void> => {
-  await fsPromises.rm(target, { recursive: true, force: true });
-};
-
-const fileExists = async (target: string): Promise<boolean> => {
-  try {
-    await fsPromises.access(target, fs.constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const readJsonFile = async <T>(filePath: string): Promise<T> => {
-  const content = await fsPromises.readFile(filePath, 'utf8');
-  return JSON.parse(content) as T;
-};
-
-const writeJsonFile = async (filePath: string, data: unknown): Promise<void> => {
-  const serialized = `${JSON.stringify(data, null, 2)}\n`;
-  await fsPromises.writeFile(filePath, serialized, 'utf8');
-};
-
-const sanitizeFileName = (fileName: string, fallback: string): string => {
-  const baseName = path.basename(fileName || fallback);
-  const normalized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return normalized || fallback;
-};
-
 const getFieldValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
     const [first] = value;
@@ -194,42 +158,12 @@ const asCertificationLevel = (value: string | undefined): CertificationLevel | u
   throw new HttpError(400, 'INVALID_LEVEL', 'Geçersiz seviye değeri. Geçerli değerler A-E aralığındadır.');
 };
 
-const persistUploadedFiles = async (
-  fileMap: UploadedFileMap,
-  baseDir: string,
-): Promise<Record<string, string[]>> => {
-  const entries = Object.entries(fileMap);
-  const result: Record<string, string[]> = {};
-
-  for (const [field, files] of entries) {
-    for (const [index, file] of files.entries()) {
-      const targetDir = path.join(baseDir, field);
-      await ensureDirectory(targetDir);
-      const safeName = sanitizeFileName(file.originalname, `${field}-${index}`);
-      const targetPath = path.join(targetDir, safeName);
-      await fsPromises.writeFile(targetPath, file.buffer);
-      if (!result[field]) {
-        result[field] = [];
-      }
-      result[field].push(targetPath);
-    }
-  }
-
-  return result;
-};
-
-const toRelativePath = (baseDir: string, target: string): string => {
-  const resolvedBase = path.resolve(baseDir);
-  const resolvedTarget = path.resolve(target);
-  const relative = path.relative(resolvedBase, resolvedTarget);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new HttpError(500, 'PATH_OUT_OF_ROOT', 'Dosya yolu sunucu depolama alanının dışında.');
-  }
-  return relative.split(path.sep).join('/');
-};
-
-const assertDirectoryExists = async (directory: string, kind: string): Promise<void> => {
-  if (!(await fileExists(directory))) {
+const assertDirectoryExists = async (
+  storage: StorageProvider,
+  directory: string,
+  kind: string,
+): Promise<void> => {
+  if (!(await storage.fileExists(directory))) {
     throw new HttpError(404, 'NOT_FOUND', `${kind} bulunamadı.`);
   }
 };
@@ -250,40 +184,41 @@ export interface ServerConfig {
   storageDir: string;
   signingKeyPath: string;
   maxUploadSizeBytes?: number;
+  storageProvider?: StorageProvider;
+  retention?: RetentionConfig;
 }
 
-interface PipelineDirectories {
-  base: string;
-  uploads: string;
-  workspaces: string;
-  analyses: string;
-  reports: string;
-  packages: string;
+type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
+
+export interface RetentionPolicy {
+  maxAgeMs: number;
 }
 
-const createDirectories = (baseDir: string): PipelineDirectories => {
-  const directories: PipelineDirectories = {
-    base: baseDir,
-    uploads: path.join(baseDir, 'uploads'),
-    workspaces: path.join(baseDir, 'workspaces'),
-    analyses: path.join(baseDir, 'analyses'),
-    reports: path.join(baseDir, 'reports'),
-    packages: path.join(baseDir, 'packages'),
-  };
-  Object.values(directories).forEach((directory) => {
-    fs.mkdirSync(directory, { recursive: true });
-  });
-  return directories;
+export type RetentionConfig = Partial<Record<RetentionTarget, RetentionPolicy>>;
+
+interface RetentionStats {
+  target: RetentionTarget;
+  removed: number;
+  retained: number;
+  skipped: number;
+  configured: boolean;
+}
+
+const readJobMetadata = async <T extends JobMetadata>(
+  storage: StorageProvider,
+  directory: string,
+): Promise<T> => {
+  const metadataPath = path.join(directory, METADATA_FILE);
+  return storage.readJson<T>(metadataPath);
 };
 
-const readJobMetadata = async <T extends JobMetadata>(directory: string): Promise<T> => {
+const writeJobMetadata = async (
+  storage: StorageProvider,
+  directory: string,
+  metadata: JobMetadata,
+): Promise<void> => {
   const metadataPath = path.join(directory, METADATA_FILE);
-  return readJsonFile<T>(metadataPath);
-};
-
-const writeJobMetadata = async (directory: string, metadata: JobMetadata): Promise<void> => {
-  const metadataPath = path.join(directory, METADATA_FILE);
-  await writeJsonFile(metadataPath, metadata);
+  await storage.writeJson(metadataPath, metadata);
 };
 
 const createPipelineError = (error: unknown, message: string): HttpError => {
@@ -295,54 +230,54 @@ const createPipelineError = (error: unknown, message: string): HttpError => {
 };
 
 const toImportResult = (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   metadata: ImportJobMetadata,
 ): ImportJobResult => ({
   warnings: metadata.warnings,
   outputs: {
-    directory: toRelativePath(directories.base, metadata.directory),
-    workspace: toRelativePath(directories.base, metadata.outputs.workspacePath),
+    directory: storage.toRelativePath(metadata.directory),
+    workspace: storage.toRelativePath(metadata.outputs.workspacePath),
   },
 });
 
 const toAnalyzeResult = (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   metadata: AnalyzeJobMetadata,
 ): AnalyzeJobResult => ({
   exitCode: metadata.exitCode,
   outputs: {
-    directory: toRelativePath(directories.base, metadata.directory),
-    snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-    traces: toRelativePath(directories.base, metadata.outputs.tracePath),
-    analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
+    directory: storage.toRelativePath(metadata.directory),
+    snapshot: storage.toRelativePath(metadata.outputs.snapshotPath),
+    traces: storage.toRelativePath(metadata.outputs.tracePath),
+    analysis: storage.toRelativePath(metadata.outputs.analysisPath),
   },
 });
 
 const toReportResult = (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   metadata: ReportJobMetadata,
 ): ReportJobResult => ({
   outputs: {
-    directory: toRelativePath(directories.base, metadata.directory),
-    complianceHtml: toRelativePath(directories.base, metadata.outputs.complianceHtml),
-    complianceJson: toRelativePath(directories.base, metadata.outputs.complianceJson),
-    traceHtml: toRelativePath(directories.base, metadata.outputs.traceHtml),
-    gapsHtml: toRelativePath(directories.base, metadata.outputs.gapsHtml),
-    analysis: toRelativePath(directories.base, metadata.outputs.analysisPath),
-    snapshot: toRelativePath(directories.base, metadata.outputs.snapshotPath),
-    traces: toRelativePath(directories.base, metadata.outputs.tracesPath),
+    directory: storage.toRelativePath(metadata.directory),
+    complianceHtml: storage.toRelativePath(metadata.outputs.complianceHtml),
+    complianceJson: storage.toRelativePath(metadata.outputs.complianceJson),
+    traceHtml: storage.toRelativePath(metadata.outputs.traceHtml),
+    gapsHtml: storage.toRelativePath(metadata.outputs.gapsHtml),
+    analysis: storage.toRelativePath(metadata.outputs.analysisPath),
+    snapshot: storage.toRelativePath(metadata.outputs.snapshotPath),
+    traces: storage.toRelativePath(metadata.outputs.tracesPath),
   },
 });
 
 const toPackResult = (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   metadata: PackJobMetadata,
 ): PackJobResult => ({
   manifestId: metadata.outputs.manifestId,
   outputs: {
-    directory: toRelativePath(directories.base, metadata.directory),
-    manifest: toRelativePath(directories.base, metadata.outputs.manifestPath),
-    archive: toRelativePath(directories.base, metadata.outputs.archivePath),
+    directory: storage.toRelativePath(metadata.directory),
+    manifest: storage.toRelativePath(metadata.outputs.manifestPath),
+    archive: storage.toRelativePath(metadata.outputs.archivePath),
   },
 });
 
@@ -376,7 +311,7 @@ const respondWithJob = <T>(res: Response, job: JobDetails<T>, options?: { reused
 };
 
 const adoptJobFromMetadata = (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   queue: JobQueue,
   metadata: JobMetadata,
 ): JobDetails<unknown> => {
@@ -388,7 +323,7 @@ const adoptJobFromMetadata = (
         hash: metadata.hash,
         createdAt: metadata.createdAt,
         updatedAt: metadata.createdAt,
-        result: toImportResult(directories, metadata),
+        result: toImportResult(storage, metadata),
       });
     case 'analyze':
       return queue.adoptCompleted<AnalyzeJobResult>({
@@ -397,7 +332,7 @@ const adoptJobFromMetadata = (
         hash: metadata.hash,
         createdAt: metadata.createdAt,
         updatedAt: metadata.createdAt,
-        result: toAnalyzeResult(directories, metadata),
+        result: toAnalyzeResult(storage, metadata),
       });
     case 'report':
       return queue.adoptCompleted<ReportJobResult>({
@@ -406,7 +341,7 @@ const adoptJobFromMetadata = (
         hash: metadata.hash,
         createdAt: metadata.createdAt,
         updatedAt: metadata.createdAt,
-        result: toReportResult(directories, metadata),
+        result: toReportResult(storage, metadata),
       });
     case 'pack':
       return queue.adoptCompleted<PackJobResult>({
@@ -415,7 +350,7 @@ const adoptJobFromMetadata = (
         hash: metadata.hash,
         createdAt: metadata.createdAt,
         updatedAt: metadata.createdAt,
-        result: toPackResult(directories, metadata),
+        result: toPackResult(storage, metadata),
       });
     default:
       throw new HttpError(500, 'UNKNOWN_JOB_KIND', `Bilinmeyen iş türü: ${(metadata as JobMetadata).kind}`);
@@ -423,27 +358,131 @@ const adoptJobFromMetadata = (
 };
 
 const locateJobMetadata = async (
-  directories: PipelineDirectories,
+  storage: StorageProvider,
   queue: JobQueue,
   jobId: string,
 ): Promise<JobDetails<unknown> | undefined> => {
   const locations: Array<{ dir: string; kind: JobMetadata['kind'] }> = [
-    { dir: directories.workspaces, kind: 'import' },
-    { dir: directories.analyses, kind: 'analyze' },
-    { dir: directories.reports, kind: 'report' },
-    { dir: directories.packages, kind: 'pack' },
+    { dir: storage.directories.workspaces, kind: 'import' },
+    { dir: storage.directories.analyses, kind: 'analyze' },
+    { dir: storage.directories.reports, kind: 'report' },
+    { dir: storage.directories.packages, kind: 'pack' },
   ];
 
   for (const location of locations) {
     const candidateDir = path.join(location.dir, jobId);
     const metadataPath = path.join(candidateDir, METADATA_FILE);
-    if (await fileExists(metadataPath)) {
-      const metadata = await readJobMetadata<JobMetadata>(candidateDir);
-      return adoptJobFromMetadata(directories, queue, metadata);
+    if (await storage.fileExists(metadataPath)) {
+      const metadata = await readJobMetadata<JobMetadata>(storage, candidateDir);
+      return adoptJobFromMetadata(storage, queue, metadata);
     }
   }
 
   return undefined;
+};
+
+const runRetentionSweep = async (
+  storage: StorageProvider,
+  queue: JobQueue,
+  retention: RetentionConfig,
+  now: Date = new Date(),
+): Promise<RetentionStats[]> => {
+  const descriptors: Array<{
+    target: RetentionTarget;
+    directory: string;
+    cleanup: (id: string) => Promise<void>;
+  }> = [
+    {
+      target: 'uploads',
+      directory: storage.directories.workspaces,
+      cleanup: async (id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.workspaces, id));
+        await storage.removeDirectory(path.join(storage.directories.uploads, id));
+      },
+    },
+    {
+      target: 'analyses',
+      directory: storage.directories.analyses,
+      cleanup: async (id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.analyses, id));
+      },
+    },
+    {
+      target: 'reports',
+      directory: storage.directories.reports,
+      cleanup: async (id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.reports, id));
+      },
+    },
+    {
+      target: 'packages',
+      directory: storage.directories.packages,
+      cleanup: async (id: string) => {
+        await storage.removeDirectory(path.join(storage.directories.packages, id));
+      },
+    },
+  ];
+
+  const results: RetentionStats[] = [];
+
+  for (const descriptor of descriptors) {
+    const policy = retention[descriptor.target];
+    if (!policy || policy.maxAgeMs === undefined || policy.maxAgeMs < 0) {
+      results.push({ target: descriptor.target, removed: 0, retained: 0, skipped: 0, configured: false });
+      continue;
+    }
+
+    const ids = await storage.listSubdirectories(descriptor.directory);
+    let removed = 0;
+    let retained = 0;
+    let skipped = 0;
+
+    for (const id of ids) {
+      const job = queue.get(id);
+      if (job && (job.status === 'queued' || job.status === 'running')) {
+        skipped += 1;
+        continue;
+      }
+
+      const jobDir = path.join(descriptor.directory, id);
+      const metadataPath = path.join(jobDir, METADATA_FILE);
+      if (!(await storage.fileExists(metadataPath))) {
+        skipped += 1;
+        continue;
+      }
+
+      let metadata: JobMetadata;
+      try {
+        metadata = await storage.readJson<JobMetadata>(metadataPath);
+      } catch {
+        skipped += 1;
+        continue;
+      }
+
+      const createdAt = new Date(metadata.createdAt);
+      if (Number.isNaN(createdAt.getTime())) {
+        skipped += 1;
+        continue;
+      }
+
+      const ageMs = now.getTime() - createdAt.getTime();
+      if (ageMs < policy.maxAgeMs) {
+        retained += 1;
+        continue;
+      }
+
+      try {
+        await descriptor.cleanup(id);
+        removed += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+
+    results.push({ target: descriptor.target, removed, retained, skipped, configured: true });
+  }
+
+  return results;
 };
 
 const createAsyncHandler = <T extends Request>(
@@ -474,7 +513,9 @@ const createAuthMiddleware = (token: string) => {
 };
 
 export const createServer = (config: ServerConfig): Express => {
-  const directories = createDirectories(path.resolve(config.storageDir));
+  const storage =
+    config.storageProvider ?? new FileSystemStorage(path.resolve(config.storageDir));
+  const directories = storage.directories;
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -513,11 +554,20 @@ export const createServer = (config: ServerConfig): Express => {
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
-      const job = queue.get(id) ?? (await locateJobMetadata(directories, queue, id));
+      const job = queue.get(id) ?? (await locateJobMetadata(storage, queue, id));
       if (!job) {
         throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
       }
       res.json(serializeJobDetails(job));
+    }),
+  );
+
+  app.post(
+    '/v1/admin/cleanup',
+    requireAuth,
+    createAsyncHandler(async (_req, res) => {
+      const summary = await runRetentionSweep(storage, queue, config.retention ?? {});
+      res.json({ status: 'ok', summary });
     }),
   );
 
@@ -574,14 +624,13 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<ImportJobMetadata>(workspaceDir);
-        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<ImportJobResult>;
+      if (await storage.fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
+        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ImportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
 
-      const uploadsDir = path.join(workspaceDir, 'inputs');
       const uploadedFiles = convertFileMap(fileMap);
       const level = asCertificationLevel(stringFields.level);
 
@@ -590,11 +639,10 @@ export const createServer = (config: ServerConfig): Express => {
         kind: 'import',
         hash,
         run: async () => {
-          await ensureDirectory(workspaceDir);
-          await ensureDirectory(uploadsDir);
+          await storage.ensureDirectory(workspaceDir);
 
           try {
-            const persisted = await persistUploadedFiles(uploadedFiles, uploadsDir);
+            const persisted = await storage.persistUploads(importId, uploadedFiles);
             const importOptions: ImportOptions = {
               output: workspaceDir,
               jira: persisted.jira?.[0],
@@ -630,11 +678,12 @@ export const createServer = (config: ServerConfig): Express => {
               },
             };
 
-            await writeJobMetadata(workspaceDir, metadata);
+            await writeJobMetadata(storage, workspaceDir, metadata);
 
-            return toImportResult(directories, metadata);
+            return toImportResult(storage, metadata);
           } catch (error) {
-            await removeDirectory(workspaceDir);
+            await storage.removeDirectory(workspaceDir);
+            await storage.removeDirectory(path.join(directories.uploads, importId));
             throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
           }
         },
@@ -660,9 +709,11 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const workspaceDir = path.join(directories.workspaces, body.importId);
-      await assertDirectoryExists(workspaceDir, 'Çalışma alanı');
+      await assertDirectoryExists(storage, workspaceDir, 'Çalışma alanı');
 
-      const workspace = await readJsonFile<ImportWorkspace>(path.join(workspaceDir, 'workspace.json'));
+      const workspace = await storage.readJson<ImportWorkspace>(
+        path.join(workspaceDir, 'workspace.json'),
+      );
       const effectiveLevel = asCertificationLevel(body.level) ?? workspace.metadata.targetLevel ?? 'C';
       const effectiveProjectName = body.projectName ?? workspace.metadata.project?.name;
       const effectiveProjectVersion = body.projectVersion ?? workspace.metadata.project?.version;
@@ -690,9 +741,9 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<AnalyzeJobMetadata>(analysisDir);
-        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<AnalyzeJobResult>;
+      if (await storage.fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<AnalyzeJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
@@ -702,7 +753,7 @@ export const createServer = (config: ServerConfig): Express => {
         kind: 'analyze',
         hash,
         run: async () => {
-          await ensureDirectory(analysisDir);
+          await storage.ensureDirectory(analysisDir);
           try {
             const analyzeOptions: AnalyzeOptions = {
               input: workspaceDir,
@@ -735,11 +786,11 @@ export const createServer = (config: ServerConfig): Express => {
               },
             };
 
-            await writeJobMetadata(analysisDir, metadata);
+            await writeJobMetadata(storage, analysisDir, metadata);
 
-            return toAnalyzeResult(directories, metadata);
+            return toAnalyzeResult(storage, metadata);
           } catch (error) {
-            await removeDirectory(analysisDir);
+            await storage.removeDirectory(analysisDir);
             throw createPipelineError(error, 'Analiz işlemi başarısız oldu.');
           }
         },
@@ -759,7 +810,7 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const analysisDir = path.join(directories.analyses, body.analysisId);
-      await assertDirectoryExists(analysisDir, 'Analiz çıktısı');
+      await assertDirectoryExists(storage, analysisDir, 'Analiz çıktısı');
 
       const hashEntries: HashEntry[] = [{ key: 'analysisId', value: body.analysisId }];
       if (body.manifestId) {
@@ -776,9 +827,9 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<ReportJobMetadata>(reportDir);
-        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<ReportJobResult>;
+      if (await storage.fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
+        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<ReportJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
@@ -788,7 +839,7 @@ export const createServer = (config: ServerConfig): Express => {
         kind: 'report',
         hash,
         run: async () => {
-          await ensureDirectory(reportDir);
+          await storage.ensureDirectory(reportDir);
           try {
             const reportOptions: ReportOptions = {
               input: analysisDir,
@@ -819,11 +870,11 @@ export const createServer = (config: ServerConfig): Express => {
               },
             };
 
-            await writeJobMetadata(reportDir, metadata);
+            await writeJobMetadata(storage, reportDir, metadata);
 
-            return toReportResult(directories, metadata);
+            return toReportResult(storage, metadata);
           } catch (error) {
-            await removeDirectory(reportDir);
+            await storage.removeDirectory(reportDir);
             throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
           }
         },
@@ -843,7 +894,7 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const reportDir = path.join(directories.reports, body.reportId);
-      await assertDirectoryExists(reportDir, 'Rapor çıktısı');
+      await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
 
       const hashEntries: HashEntry[] = [
         { key: 'reportId', value: body.reportId },
@@ -860,9 +911,9 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      if (await fileExists(metadataPath)) {
-        const metadata = await readJobMetadata<PackJobMetadata>(packageDir);
-        const adopted = adoptJobFromMetadata(directories, queue, metadata) as JobDetails<PackJobResult>;
+      if (await storage.fileExists(metadataPath)) {
+        const metadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
+        const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<PackJobResult>;
         respondWithJob(res, adopted, { reused: true });
         return;
       }
@@ -872,7 +923,7 @@ export const createServer = (config: ServerConfig): Express => {
         kind: 'pack',
         hash,
         run: async () => {
-          await ensureDirectory(packageDir);
+          await storage.ensureDirectory(packageDir);
           try {
             const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
             const packOptions: PackOptions = {
@@ -900,11 +951,11 @@ export const createServer = (config: ServerConfig): Express => {
               },
             };
 
-            await writeJobMetadata(packageDir, metadata);
+            await writeJobMetadata(storage, packageDir, metadata);
 
-            return toPackResult(directories, metadata);
+            return toPackResult(storage, metadata);
           } catch (error) {
-            await removeDirectory(packageDir);
+            await storage.removeDirectory(packageDir);
             throw createPipelineError(error, 'Paket oluşturma işlemi başarısız oldu.');
           }
         },
@@ -924,10 +975,10 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const reportDir = path.join(directories.reports, id);
-      await assertDirectoryExists(reportDir, 'Rapor çıktısı');
+      await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
 
       const metadataPath = path.join(reportDir, METADATA_FILE);
-      if (!(await fileExists(metadataPath))) {
+      if (!(await storage.fileExists(metadataPath))) {
         throw new HttpError(404, 'NOT_FOUND', 'İstenen rapor bulunamadı.');
       }
 
@@ -938,7 +989,7 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_PATH', 'İstenen dosya yolu izin verilen dizin dışında.');
       }
 
-      if (!(await fileExists(targetPath))) {
+      if (!(await storage.fileExists(targetPath))) {
         throw new HttpError(404, 'NOT_FOUND', 'Rapor dosyası bulunamadı.');
       }
 

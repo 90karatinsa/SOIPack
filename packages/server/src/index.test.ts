@@ -59,7 +59,17 @@ describe('@soipack/server REST API', () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
     signingKeyPath = path.join(storageDir, 'signing-key.pem');
     await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
-    app = createServer({ token, storageDir, signingKeyPath });
+    app = createServer({
+      token,
+      storageDir,
+      signingKeyPath,
+      retention: {
+        uploads: { maxAgeMs: 0 },
+        analyses: { maxAgeMs: 0 },
+        reports: { maxAgeMs: 0 },
+        packages: { maxAgeMs: 0 },
+      },
+    });
   });
 
   afterAll(async () => {
@@ -90,6 +100,9 @@ describe('@soipack/server REST API', () => {
     const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
     expect(importJob.result.outputs.workspace).toMatch(/^workspaces\//);
     expect(Array.isArray(importJob.result.warnings)).toBe(true);
+
+    const uploadDir = path.join(storageDir, 'uploads', importResponse.body.id);
+    await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).resolves.toBeUndefined();
 
     const importList = await request(app)
       .get('/v1/jobs')
@@ -183,6 +196,36 @@ describe('@soipack/server REST API', () => {
       .expect(200);
 
     expect(reportAsset.text).toContain('<html');
+
+    const cleanupResponse = await request(app)
+      .post('/v1/admin/cleanup')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(cleanupResponse.body.status).toBe('ok');
+    expect(Array.isArray(cleanupResponse.body.summary)).toBe(true);
+    const summaryByTarget = Object.fromEntries(
+      cleanupResponse.body.summary.map((entry: { target: string }) => [entry.target, entry]),
+    );
+
+    expect(summaryByTarget.uploads).toMatchObject({ configured: true, removed: 1, retained: 0 });
+    expect(summaryByTarget.analyses).toMatchObject({ configured: true, removed: 1, retained: 0 });
+    expect(summaryByTarget.reports).toMatchObject({ configured: true, removed: 1, retained: 0 });
+    expect(summaryByTarget.packages).toMatchObject({ configured: true, removed: 1, retained: 0 });
+
+    await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).rejects.toThrow();
+    await expect(
+      fsPromises.access(path.join(storageDir, 'workspaces', importResponse.body.id), fs.constants.F_OK),
+    ).rejects.toThrow();
+    await expect(
+      fsPromises.access(path.join(storageDir, 'analyses', analyzeQueued.body.id), fs.constants.F_OK),
+    ).rejects.toThrow();
+    await expect(
+      fsPromises.access(path.join(storageDir, 'reports', reportQueued.body.id), fs.constants.F_OK),
+    ).rejects.toThrow();
+    await expect(
+      fsPromises.access(path.join(storageDir, 'packages', packQueued.body.id), fs.constants.F_OK),
+    ).rejects.toThrow();
   });
 });
 

@@ -3,7 +3,7 @@ import process from 'process';
 
 import dotenv from 'dotenv';
 
-import { createServer } from './index';
+import { RetentionConfig, createServer } from './index';
 
 dotenv.config();
 
@@ -34,7 +34,48 @@ if (Number.isNaN(port) || port <= 0) {
   process.exit(1);
 }
 
-const app = createServer({ token, storageDir, signingKeyPath });
+const parseRetentionDays = (value: string | undefined, label: string): number | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error(`${label} değeri sıfır veya pozitif bir sayı olmalıdır.`);
+    process.exit(1);
+  }
+  return parsed * 24 * 60 * 60 * 1000;
+};
+
+const retention: RetentionConfig = {};
+
+const uploadsDays = parseRetentionDays(process.env.SOIPACK_RETENTION_UPLOADS_DAYS, 'SOIPACK_RETENTION_UPLOADS_DAYS');
+if (uploadsDays !== undefined) {
+  retention.uploads = { maxAgeMs: uploadsDays };
+}
+
+const analysesDays = parseRetentionDays(
+  process.env.SOIPACK_RETENTION_ANALYSES_DAYS,
+  'SOIPACK_RETENTION_ANALYSES_DAYS',
+);
+if (analysesDays !== undefined) {
+  retention.analyses = { maxAgeMs: analysesDays };
+}
+
+const reportsDays = parseRetentionDays(process.env.SOIPACK_RETENTION_REPORTS_DAYS, 'SOIPACK_RETENTION_REPORTS_DAYS');
+if (reportsDays !== undefined) {
+  retention.reports = { maxAgeMs: reportsDays };
+}
+
+const packagesDays = parseRetentionDays(
+  process.env.SOIPACK_RETENTION_PACKAGES_DAYS,
+  'SOIPACK_RETENTION_PACKAGES_DAYS',
+);
+if (packagesDays !== undefined) {
+  retention.packages = { maxAgeMs: packagesDays };
+}
+
+const app = createServer({ token, storageDir, signingKeyPath, retention });
 
 app.listen(port, () => {
   // eslint-disable-next-line no-console
