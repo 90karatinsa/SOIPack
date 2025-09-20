@@ -704,7 +704,7 @@ describe('@soipack/server REST API', () => {
     expect(manifestForbidden.body.error.code).toBe('MANIFEST_NOT_FOUND');
 
     const packageDownload = await request(app)
-      .get(`/v1/packages/${packQueued.body.id}`)
+      .get(`/v1/packages/${packQueued.body.id}/archive`)
       .set('Authorization', `Bearer ${token}`)
       .buffer(true)
       .parse((res, callback) => {
@@ -718,11 +718,32 @@ describe('@soipack/server REST API', () => {
     expect(Buffer.isBuffer(packageDownload.body)).toBe(true);
     expect((packageDownload.body as Buffer).length).toBeGreaterThan(0);
 
+    const manifestDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/manifest`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect('Content-Type', /application\/json/)
+      .expect(200);
+    expect(manifestDownload.headers['content-disposition']).toContain('.json');
+    const downloadedManifest = JSON.parse((manifestDownload.body as Buffer).toString('utf8')) as Manifest;
+    expect(downloadedManifest).toEqual(manifest);
+
     const packageForbidden = await request(app)
-      .get(`/v1/packages/${packQueued.body.id}`)
+      .get(`/v1/packages/${packQueued.body.id}/archive`)
       .set('Authorization', `Bearer ${otherTenantToken}`)
       .expect(404);
     expect(packageForbidden.body.error.code).toBe('PACKAGE_NOT_FOUND');
+
+    const manifestForbiddenDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/manifest`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(manifestForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
 
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
@@ -792,7 +813,12 @@ describe('@soipack/server REST API', () => {
       .expect(404);
 
     await request(app)
-      .get(`/v1/packages/${packQueued.body.id}`)
+      .get(`/v1/packages/${packQueued.body.id}/archive`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/manifest`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
   });

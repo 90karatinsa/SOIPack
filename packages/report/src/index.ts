@@ -136,7 +136,11 @@ export interface PrintToPdfOptions extends BaseReportOptions {
   };
 }
 
-const env = new nunjucks.Environment(undefined, { autoescape: true });
+const env = new nunjucks.Environment(undefined, {
+  autoescape: true,
+  trimBlocks: true,
+  lstripBlocks: true,
+});
 
 const statusLabels: Record<ComplianceSnapshot['objectives'][number]['status'], string> = {
   covered: 'Tam Karşılandı',
@@ -555,12 +559,7 @@ const layoutTemplate = nunjucks.compile(
               <p class="report-meta">Origin: {{ git.remoteOrigins | join(', ') }}</p>
             {% endif %}
             {% if git.author or git.formattedDate %}
-              <p class="report-meta">
-                {% if git.author %}Yazar: {{ git.author }}{% endif %}
-                {% if git.formattedDate %}
-                  {% if git.author %} • {% endif %}{{ git.formattedDate }}
-                {% endif %}
-              </p>
+              <p class="report-meta">{% if git.author %}Yazar: {{ git.author }}{% if git.formattedDate %} • {% endif %}{% endif %}{% if git.formattedDate %}{{ git.formattedDate }}{% endif %}</p>
             {% endif %}
             {% if git.message %}
               <p class="report-meta">Mesaj: {{ git.message }}</p>

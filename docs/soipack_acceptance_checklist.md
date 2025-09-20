@@ -16,6 +16,8 @@ Bu kontrol listesi, SOIPack demo paketinin müşteri veya denetçi tesliminden �
 ## Paket ve Güvenlik
 - [ ] `release/manifest.json` ve `manifest.sig` dosyaları saklandı; hash doğrulaması bağımsız olarak tekrarlandı.【F:docs/demo_script.md†L26-L31】
 - [ ] `release/soi-pack-*.zip` arşivi açılarak raporların ve manifestlerin paket içinde bulunduğu teyit edildi.【F:docs/demo_script.md†L26-L31】
+- [ ] `/v1/packages/<paket-id>/archive` ve `/v1/packages/<paket-id>/manifest` uç noktaları yetkili token ile test edildi; farklı tenant token'ı erişim sağlayamadı.【F:packages/server/src/index.ts†L1462-L1493】【F:packages/server/src/index.test.ts†L706-L744】
+- [ ] `node packages/cli/dist/index.js download --api <URL> --token <TOKEN> --package <paket-id>` komutu ile arşiv ve manifest indirildi; çıktılar teslimat paketine eklendi.【F:packages/cli/src/index.ts†L1437-L1564】
 - [ ] Anahtar yönetimi prosedürleri `docs/soipack_security.md` ile uyumlu şekilde belgelenmiş ve müşteriye iletilmiştir.【F:docs/soipack_security.md†L1-L64】
 
 ## Teslimat

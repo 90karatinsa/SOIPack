@@ -6,6 +6,7 @@ import {
   type ReportAssetMap,
   type ReportJobResult,
   type RequirementTracePayload,
+  type PackJobResult,
 } from '../types/pipeline';
 
 // eslint-disable-next-line @typescript-eslint/no-implied-eval
@@ -236,6 +237,32 @@ export const reportArtifacts = async ({
   return readJson<ApiJob<ReportJobResult>>(response);
 };
 
+interface PackOptions {
+  token: string;
+  reportId: string;
+  packageName?: string;
+  signal?: AbortSignal;
+}
+
+export const packArtifacts = async ({
+  token,
+  reportId,
+  packageName,
+  signal,
+}: PackOptions): Promise<ApiJob<PackJobResult>> => {
+  const response = await fetch(joinUrl('/v1/pack'), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ reportId, packageName }),
+    signal,
+  });
+
+  return readJson<ApiJob<PackJobResult>>(response);
+};
+
 interface GetJobOptions {
   token: string;
   jobId: string;
@@ -358,6 +385,42 @@ export const fetchReportAsset = async ({
   signal,
 }: FetchAssetOptions): Promise<Response> => {
   const response = await fetch(joinUrl(`/v1/reports/${reportId}/${asset}`), {
+    method: 'GET',
+    headers: buildAuthHeaders(token),
+    signal,
+  });
+
+  await ensureOk(response);
+  return response;
+};
+
+interface FetchPackageOptions {
+  token: string;
+  packageId: string;
+  signal?: AbortSignal;
+}
+
+export const fetchPackageArchive = async ({
+  token,
+  packageId,
+  signal,
+}: FetchPackageOptions): Promise<Response> => {
+  const response = await fetch(joinUrl(`/v1/packages/${packageId}/archive`), {
+    method: 'GET',
+    headers: buildAuthHeaders(token),
+    signal,
+  });
+
+  await ensureOk(response);
+  return response;
+};
+
+export const fetchPackageManifest = async ({
+  token,
+  packageId,
+  signal,
+}: FetchPackageOptions): Promise<Response> => {
+  const response = await fetch(joinUrl(`/v1/packages/${packageId}/manifest`), {
     method: 'GET',
     headers: buildAuthHeaders(token),
     signal,

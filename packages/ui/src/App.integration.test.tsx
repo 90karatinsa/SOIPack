@@ -2,7 +2,6 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
-import JSZip from 'jszip';
 
 import App from './App';
 
@@ -16,7 +15,7 @@ jest.setTimeout(15000);
 
 type JobStatus = 'queued' | 'running' | 'completed';
 
-type JobKind = 'import' | 'analyze' | 'report';
+type JobKind = 'import' | 'analyze' | 'report' | 'pack';
 
 interface JobState {
   id: string;
@@ -122,6 +121,15 @@ const reportAssets: Record<string, string> = {
   'gaps.html': '<html><body>gaps</body></html>'
 };
 
+const packResult = {
+  manifestId: 'MANIFEST-1234',
+  outputs: {
+    directory: 'packages/demo/job-pack',
+    manifest: 'packages/demo/job-pack/manifest.json',
+    archive: 'packages/demo/job-pack/archive.zip'
+  }
+};
+
 const jobStore = new Map<string, JobState>();
 
 const server = setupServer(
@@ -206,6 +214,25 @@ const server = setupServer(
       })
     );
   }),
+  rest.post('/v1/pack', async (req, res, ctx) => {
+    const body = await req.json();
+    if (!body.reportId) {
+      return res(ctx.status(400));
+    }
+    const jobId = 'job-pack';
+    jobStore.set(jobId, buildJob(jobId, 'pack', packResult));
+    return res(
+      ctx.status(202),
+      ctx.json({
+        id: jobId,
+        kind: 'pack',
+        hash: 'hash-pack',
+        status: 'queued',
+        createdAt: jobStore.get(jobId)!.createdAt,
+        updatedAt: jobStore.get(jobId)!.createdAt
+      })
+    );
+  }),
   rest.get('/v1/jobs/:id', (req, res, ctx) => {
     const { id } = req.params as { id: string };
     const job = jobStore.get(id);
@@ -243,6 +270,22 @@ const server = setupServer(
     }
     const isJson = asset.endsWith('.json');
     return isJson ? res(ctx.status(200), ctx.json(JSON.parse(content))) : res(ctx.status(200), ctx.text(content));
+  }),
+  rest.get('/v1/packages/:id/archive', (_req, res, ctx) => {
+    return res(
+      ctx.status(200),
+      ctx.set('Content-Type', 'application/zip'),
+      ctx.set('Content-Disposition', 'attachment; filename="soipack-demo.zip"'),
+      ctx.body('FAKEZIP')
+    );
+  }),
+  rest.get('/v1/packages/:id/manifest', (_req, res, ctx) => {
+    return res(
+      ctx.status(200),
+      ctx.set('Content-Type', 'application/json'),
+      ctx.set('Content-Disposition', 'attachment; filename="manifest.json"'),
+      ctx.json({ manifest: 'demo' })
+    );
   })
 );
 
@@ -302,19 +345,9 @@ describe('App integration', () => {
 
     await waitFor(() => expect(saveAsMock).toHaveBeenCalledTimes(1));
     const blob = saveAsMock.mock.calls[0][0] as Blob;
-    const zip = await JSZip.loadAsync(blob);
-    expect(Object.keys(zip.files)).toEqual(
-      expect.arrayContaining([
-        'analysis.json',
-        'snapshot.json',
-        'traces.json',
-        'compliance.json',
-        'compliance.html',
-        'trace.html',
-        'gaps.html'
-      ])
-    );
-    const complianceText = await zip.file('compliance.json')!.async('string');
-    expect(complianceText).toContain('REQ-1');
+    const downloadedName = saveAsMock.mock.calls[0][1];
+    expect(downloadedName).toBe('soipack-demo.zip');
+    const content = await blob.text();
+    expect(content).toBe('FAKEZIP');
   });
 });

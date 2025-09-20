@@ -243,9 +243,10 @@ components:
         - type: object
           properties:
             result:
-              type: object
-              nullable: true
-              additionalProperties: true
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                - type: 'null'
             error:
               oneOf:
                 - $ref: '#/components/schemas/JobError'
@@ -759,6 +760,7 @@ paths:
     get:
       operationId: downloadPackage
       summary: Oluşturulmuş paket arşivini indirir.
+      deprecated: true
       security:
         - BearerAuth: []
       parameters:
@@ -784,6 +786,82 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Paket bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/packages/{id}/archive:
+    get:
+      operationId: downloadPackageArchive
+      summary: Paket arşiv dosyasını doğrudan indirir.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: Paket arşiv dosyası.
+          headers:
+            Content-Disposition:
+              description: İndirilen dosya adı.
+              schema:
+                type: string
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Paket bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/packages/{id}/manifest:
+    get:
+      operationId: downloadPackageManifest
+      summary: Paket manifest dosyasını indirir.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: Manifest dosyası.
+          headers:
+            Content-Disposition:
+              description: Manifest dosya adı.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Manifest bulunamadı.
           content:
             application/json:
               schema:

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
 import {
@@ -7,10 +6,11 @@ import {
   ApiError,
   buildReportAssets,
   fetchComplianceMatrix,
-  fetchReportAsset,
   fetchRequirementTraces,
   importArtifacts,
   JobFailedError,
+  packArtifacts,
+  fetchPackageArchive,
   pollJob,
   reportArtifacts,
 } from '../services/api';
@@ -19,6 +19,7 @@ import type {
   AnalyzeJobResult,
   ApiJob,
   ImportJobResult,
+  PackJobResult,
   PipelineLogEntry,
   ReportAssetMap,
   ReportDataset,
@@ -44,6 +45,7 @@ type PipelineJobs = {
   import?: ApiJob<ImportJobResult>;
   analyze?: ApiJob<AnalyzeJobResult>;
   report?: ApiJob<ReportJobResult>;
+  pack?: ApiJob<PackJobResult>;
 };
 
 type PipelineJobKey = keyof PipelineJobs;
@@ -52,6 +54,7 @@ const jobKindLabel: Record<PipelineJobKey, string> = {
   import: 'Import',
   analyze: 'Analyze',
   report: 'Report',
+  pack: 'Pack',
 };
 
 export interface PipelineState {
@@ -62,6 +65,7 @@ export interface PipelineState {
   jobs: PipelineJobs;
   reportData: ReportDataset | null;
   reportAssets: ReportAssetMap | null;
+  packageJob: ApiJob<PackJobResult> | null;
   lastCompletedAt: string | null;
 }
 
@@ -74,6 +78,35 @@ export interface UsePipelineResult {
 
 const appendJobLabel = (kind: PipelineJobKey, message: string): string => `${jobKindLabel[kind]} · ${message}`;
 
+const parseDispositionFileName = (value: string | null): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const quotedMatch = value.match(/filename="([^";]+)"/i);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+  const bareMatch = value.match(/filename=([^;]+)/i);
+  if (bareMatch && bareMatch[1]) {
+    return bareMatch[1].replace(/"/g, '');
+  }
+  return undefined;
+};
+
+const sanitizeDownloadName = (name: string, fallback: string): string => {
+  const trimmed = name.trim();
+  const normalized = trimmed.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return normalized || fallback;
+};
+
 export const usePipeline = (token: string): UsePipelineResult => {
   const abortRef = useRef<AbortController | null>(null);
   const [logs, setLogs] = useState<PipelineLogEntry[]>([]);
@@ -81,6 +114,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
   const [jobs, setJobs] = useState<PipelineJobs>({});
   const [reportData, setReportData] = useState<ReportDataset | null>(null);
   const [reportAssets, setReportAssets] = useState<ReportAssetMap | null>(null);
+  const [packageJob, setPackageJob] = useState<ApiJob<PackJobResult> | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [lastCompletedAt, setLastCompletedAt] = useState<string | null>(null);
@@ -113,6 +147,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
     setJobs({});
     setReportData(null);
     setReportAssets(null);
+    setPackageJob(null);
     setError(null);
     setLastCompletedAt(null);
     setIsRunning(false);
@@ -172,6 +207,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
       setError(null);
       setReportData(null);
       setReportAssets(null);
+      setPackageJob(null);
       setLastCompletedAt(null);
       setJobs({});
       setLogs([]);
@@ -250,6 +286,29 @@ export const usePipeline = (token: string): UsePipelineResult => {
         setLastCompletedAt(reportJob.updatedAt);
         setReportAssets(buildReportAssets(reportJob));
 
+        appendLog('info', 'Pack isteği gönderiliyor...');
+        const packInitial = await packArtifacts({
+          token: trimmedToken,
+          reportId: reportJob.id,
+          signal: controller.signal,
+        });
+        updateJob('pack', packInitial, packInitial.reused);
+
+        const packJobResult = await pollJob<PackJobResult>({
+          token: trimmedToken,
+          jobId: packInitial.id,
+          initial: packInitial,
+          signal: controller.signal,
+          onUpdate: (job) => updateJob('pack', job, packInitial.reused),
+          pollIntervalMs: 600,
+        });
+        updateJob('pack', packJobResult, packInitial.reused);
+        setPackageJob(packJobResult);
+        appendLog(
+          'success',
+          appendJobLabel('pack', packInitial.reused ? 'Önceki paket yeniden kullanıldı.' : 'Paket oluşturuldu.'),
+        );
+
         appendLog('info', 'Rapor çıktıları yükleniyor...');
         const [compliance, traces] = await Promise.all([
           fetchComplianceMatrix({ token: trimmedToken, reportId: reportJob.id, signal: controller.signal }),
@@ -265,7 +324,14 @@ export const usePipeline = (token: string): UsePipelineResult => {
         const failure = caught as Error;
         if (failure instanceof JobFailedError || failure instanceof ApiError) {
           const job = failure instanceof JobFailedError ? failure.job : undefined;
-          const kind: PipelineJobKey = job?.kind === 'analyze' ? 'analyze' : job?.kind === 'report' ? 'report' : 'import';
+          const kind =
+            job?.kind === 'analyze'
+              ? 'analyze'
+              : job?.kind === 'report'
+                ? 'report'
+                : job?.kind === 'pack'
+                  ? 'pack'
+                  : 'import';
           handleJobFailure(kind, failure);
         } else {
           appendLog('error', failure.message);
@@ -290,52 +356,25 @@ export const usePipeline = (token: string): UsePipelineResult => {
       setError('Dosya indirebilmek için token gereklidir.');
       return;
     }
-    if (!reportAssets) {
-      setError('Rapor paketini indirmek için önce bir rapor oluşturun.');
+    if (!packageJob || packageJob.status !== 'completed') {
+      setError('Rapor paketini indirmek için önce paket oluşturulmalıdır.');
       return;
     }
 
     setIsDownloading(true);
-    appendLog('info', 'Rapor artefaktları paketleniyor...');
+    appendLog('info', 'Paket arşivi indiriliyor...');
     try {
-      const zip = new JSZip();
-      const entries: Array<{ key: keyof ReportAssetMap['assets']; type: 'json' | 'text' } > = [
-        { key: 'analysis', type: 'json' },
-        { key: 'snapshot', type: 'json' },
-        { key: 'traces', type: 'json' },
-        { key: 'complianceJson', type: 'json' },
-        { key: 'complianceHtml', type: 'text' },
-        { key: 'traceHtml', type: 'text' },
-        { key: 'gapsHtml', type: 'text' },
-      ];
-
-      for (const entry of entries) {
-        const assetPath = reportAssets.assets[entry.key];
-        if (!assetPath) {
-          continue;
-        }
-        const response = await fetchReportAsset({
-          token: trimmedToken,
-          reportId: reportAssets.reportId,
-          asset: assetPath,
-        });
-        if (entry.type === 'json') {
-          const text = await response.text();
-          try {
-            const parsed = JSON.parse(text);
-            zip.file(assetPath, `${JSON.stringify(parsed, null, 2)}\n`);
-          } catch {
-            zip.file(assetPath, text);
-          }
-        } else {
-          const content = await response.text();
-          zip.file(assetPath, content);
-        }
-      }
-
-      const blob = await zip.generateAsync({ type: 'blob' });
-      saveAs(blob, `soipack-report-${reportAssets.reportId}.zip`);
-      appendLog('success', 'Rapor paket arşivi hazırlandı.');
+      const response = await fetchPackageArchive({
+        token: trimmedToken,
+        packageId: packageJob.id,
+      });
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition');
+      const suggestedName = parseDispositionFileName(disposition);
+      const fallback = `soipack-package-${packageJob.id}.zip`;
+      const fileName = sanitizeDownloadName(suggestedName ?? fallback, fallback);
+      saveAs(blob, fileName);
+      appendLog('success', 'Paket arşivi indirildi.');
     } catch (caught) {
       const failure = caught as Error;
       appendLog('error', formatMessage('Paket indirme başarısız', failure.message));
@@ -343,7 +382,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
     } finally {
       setIsDownloading(false);
     }
-  }, [appendLog, reportAssets, token]);
+  }, [appendLog, packageJob, token]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -360,9 +399,10 @@ export const usePipeline = (token: string): UsePipelineResult => {
       jobs,
       reportData,
       reportAssets,
+      packageJob,
       lastCompletedAt,
     }),
-    [logs, error, isRunning, isDownloading, jobs, reportData, reportAssets, lastCompletedAt],
+    [logs, error, isRunning, isDownloading, jobs, reportData, reportAssets, packageJob, lastCompletedAt],
   );
 
   return {
