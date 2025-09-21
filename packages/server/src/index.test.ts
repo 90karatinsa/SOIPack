@@ -584,6 +584,63 @@ describe('@soipack/server REST API', () => {
     expect(invalidPack.body.error.code).toBe('INVALID_REQUEST');
   });
 
+  it('rejects invalid job identifiers provided by clients', async () => {
+    const invalidParamIds = ['../evil', '..%2Fevil', 'abc%2Fdef'];
+    for (const invalidId of invalidParamIds) {
+      const response = await request(app)
+        .get(`/v1/jobs/${invalidId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(400);
+      expect(response.body.error.code).toBe('INVALID_REQUEST');
+    }
+
+    const cancelResponse = await request(app)
+      .post('/v1/jobs/..%2Fevil/cancel')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+    expect(cancelResponse.body.error.code).toBe('INVALID_REQUEST');
+
+    const deleteResponse = await request(app)
+      .delete('/v1/jobs/abc%2Fdef')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+    expect(deleteResponse.body.error.code).toBe('INVALID_REQUEST');
+
+    for (const invalidId of ['../evil', 'abc/def', '..%2Fevil', 'abc%2Fdef']) {
+      const analyzeResponse = await request(app)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId: invalidId })
+        .expect(400);
+      expect(analyzeResponse.body.error.code).toBe('INVALID_REQUEST');
+
+      const reportResponse = await request(app)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ analysisId: invalidId })
+        .expect(400);
+      expect(reportResponse.body.error.code).toBe('INVALID_REQUEST');
+
+      const packResponse = await request(app)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ reportId: invalidId })
+        .expect(400);
+      expect(packResponse.body.error.code).toBe('INVALID_REQUEST');
+    }
+
+    for (const invalidId of ['../evil', 'abc%2Fdef']) {
+      const packageResponse = await request(app)
+        .get(`/v1/packages/${invalidId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(400);
+      expect(packageResponse.body.error.code).toBe('INVALID_REQUEST');
+    }
+  });
+
   it('prevents path traversal when serving report assets', async () => {
     const importResponse = await request(app)
       .post('/v1/import')

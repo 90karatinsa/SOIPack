@@ -51,6 +51,14 @@ const sanitizeDownloadFileName = (fileName: string, fallback: string): string =>
   return normalized || fallback;
 };
 
+const JOB_ID_PATTERN = /^[a-f0-9]{16}$/;
+
+const assertJobId = (id: string): void => {
+  if (!JOB_ID_PATTERN.test(id)) {
+    throw new HttpError(400, 'INVALID_REQUEST', 'Kimlik değeri geçerli değil.');
+  }
+};
+
 const buildContentDisposition = (fileName: string): string => {
   const fallback = fileName.replace(/"/g, "'");
   const encoded = encodeURIComponent(fileName);
@@ -796,6 +804,7 @@ const locateJobMetadata = async (
   jobId: string,
   onMetadata?: (metadata: JobMetadata) => void,
 ): Promise<JobDetails<unknown> | undefined> => {
+  assertJobId(jobId);
   const locations: Array<{ dir: string; kind: JobMetadata['kind'] }> = [
     { dir: storage.directories.workspaces, kind: 'import' },
     { dir: storage.directories.analyses, kind: 'analyze' },
@@ -897,6 +906,8 @@ const resolvePackageMetadata = async (
   if (!packageId) {
     throw new HttpError(400, 'INVALID_REQUEST', 'Paket kimliği belirtilmelidir.');
   }
+
+  assertJobId(packageId);
 
   const packageDir = path.join(directories.packages, tenantId, packageId);
   const metadataPath = path.join(packageDir, METADATA_FILE);
@@ -1518,7 +1529,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
-    '/v1/jobs/:id',
+    '/v1/jobs/:id(*)',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
@@ -1526,6 +1537,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
+      assertJobId(id);
       const job =
         queue.get(tenantId, id) ??
         (await locateJobMetadata(storage, queue, tenantId, id, (metadata) =>
@@ -1589,15 +1601,8 @@ export const createServer = (config: ServerConfig): Express => {
       await streamPackageArtifact(res, storage, selector(metadata), notFoundCode, notFoundMessage, options);
     });
 
-  app.get('/v1/packages/:id', requireAuth, createPackageStreamHandler(
-    (metadata) => metadata.outputs?.archivePath,
-    'PACKAGE_NOT_FOUND',
-    'Paket arşiv dosyası bulunamadı.',
-    { contentType: 'application/zip', fallbackName: 'package.zip' },
-  ));
-
   app.get(
-    '/v1/packages/:id/archive',
+    '/v1/packages/:id(*)/archive',
     requireAuth,
     createPackageStreamHandler(
       (metadata) => metadata.outputs?.archivePath,
@@ -1608,7 +1613,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
-    '/v1/packages/:id/manifest',
+    '/v1/packages/:id(*)/manifest',
     requireAuth,
     createPackageStreamHandler(
       (metadata) => metadata.outputs?.manifestPath,
@@ -1617,6 +1622,13 @@ export const createServer = (config: ServerConfig): Express => {
       { contentType: 'application/json; charset=utf-8', fallbackName: 'manifest.json' },
     ),
   );
+
+  app.get('/v1/packages/:id(*)', requireAuth, createPackageStreamHandler(
+    (metadata) => metadata.outputs?.archivePath,
+    'PACKAGE_NOT_FOUND',
+    'Paket arşiv dosyası bulunamadı.',
+    { contentType: 'application/zip', fallbackName: 'package.zip' },
+  ));
 
   app.post(
     '/v1/admin/cleanup',
@@ -1635,7 +1647,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.post(
-    '/v1/jobs/:id/cancel',
+    '/v1/jobs/:id(*)/cancel',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
@@ -1643,6 +1655,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
+      assertJobId(id);
 
       const job = queue.get(tenantId, id);
       if (!job) {
@@ -1669,7 +1682,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.delete(
-    '/v1/jobs/:id',
+    '/v1/jobs/:id(*)',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
@@ -1677,6 +1690,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
+      assertJobId(id);
 
       let job = queue.get(tenantId, id);
       if (!job) {
@@ -1893,6 +1907,8 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'importId alanı zorunludur.');
       }
 
+      assertJobId(body.importId);
+
       const workspaceDir = path.join(directories.workspaces, tenantId, body.importId);
       await assertDirectoryExists(storage, workspaceDir, 'Çalışma alanı');
 
@@ -2021,6 +2037,8 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
       }
 
+      assertJobId(body.analysisId);
+
       const analysisDir = path.join(directories.analyses, tenantId, body.analysisId);
       await assertDirectoryExists(storage, analysisDir, 'Analiz çıktısı');
 
@@ -2119,6 +2137,8 @@ export const createServer = (config: ServerConfig): Express => {
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
       }
+
+      assertJobId(body.reportId);
 
       const reportDir = path.join(directories.reports, tenantId, body.reportId);
       await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
