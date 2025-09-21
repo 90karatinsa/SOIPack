@@ -1,4 +1,5 @@
 import type { CoverageStatus, RequirementViewModel } from '../types/pipeline';
+
 import { StatusBadge } from './StatusBadge';
 
 interface TraceabilityMatrixProps {

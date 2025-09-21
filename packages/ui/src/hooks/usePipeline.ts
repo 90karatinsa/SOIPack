@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   analyzeArtifacts,
@@ -41,14 +41,16 @@ const projectVersionForNow = (): string => {
   return now.toISOString().slice(0, 10);
 };
 
-type PipelineJobs = {
-  import?: ApiJob<ImportJobResult>;
-  analyze?: ApiJob<AnalyzeJobResult>;
-  report?: ApiJob<ReportJobResult>;
-  pack?: ApiJob<PackJobResult>;
+type PipelineJobMap = {
+  import: ApiJob<ImportJobResult>;
+  analyze: ApiJob<AnalyzeJobResult>;
+  report: ApiJob<ReportJobResult>;
+  pack: ApiJob<PackJobResult>;
 };
 
-type PipelineJobKey = keyof PipelineJobs;
+type PipelineJobs = Partial<PipelineJobMap>;
+
+type PipelineJobKey = keyof PipelineJobMap;
 
 const jobKindLabel: Record<PipelineJobKey, string> = {
   import: 'Import',
@@ -135,7 +137,7 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
   }, []);
 
   const updateJob = useCallback(
-    (kind: PipelineJobKey, job: ApiJob<any>, reused?: boolean) => {
+    <K extends PipelineJobKey>(kind: K, job: PipelineJobMap[K], reused?: boolean) => {
       setJobs((previous) => ({
         ...previous,
         [kind]: {

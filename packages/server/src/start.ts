@@ -5,6 +5,9 @@ import process from 'process';
 import dotenv from 'dotenv';
 import type { JSONWebKeySet } from 'jose';
 
+import { createCommandScanner } from './scanner';
+import type { FileScanner } from './scanner';
+
 import {
   JwtAuthConfig,
   LicenseCacheConfig,
@@ -16,8 +19,6 @@ import {
   createServer,
   getServerLifecycle,
 } from './index';
-import { createCommandScanner } from './scanner';
-import type { FileScanner } from './scanner';
 
 dotenv.config();
 
@@ -324,6 +325,24 @@ export const start = async (): Promise<void> => {
     maxQueuedJobsPerTenant = parsed;
   }
 
+  const maxQueuedJobsTotalSource = process.env.SOIPACK_MAX_QUEUED_JOBS_TOTAL;
+  let maxQueuedJobsTotal: number | undefined;
+  if (maxQueuedJobsTotalSource !== undefined) {
+    maxQueuedJobsTotal = parsePositiveInteger(
+      maxQueuedJobsTotalSource,
+      'SOIPACK_MAX_QUEUED_JOBS_TOTAL',
+    );
+  }
+
+  const workerConcurrencySource = process.env.SOIPACK_WORKER_CONCURRENCY;
+  let workerConcurrency: number | undefined;
+  if (workerConcurrencySource !== undefined) {
+    workerConcurrency = parsePositiveInteger(
+      workerConcurrencySource,
+      'SOIPACK_WORKER_CONCURRENCY',
+    );
+  }
+
   const retention: RetentionConfig = {};
 
   const uploadsDays = parseRetentionDays(
@@ -532,6 +551,8 @@ export const start = async (): Promise<void> => {
     signingKeyPath,
     licensePublicKeyPath,
     maxQueuedJobsPerTenant,
+    maxQueuedJobsTotal,
+    workerConcurrency,
     retention,
     scanner,
     healthcheckToken,

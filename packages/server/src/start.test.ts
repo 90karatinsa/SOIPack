@@ -1,4 +1,5 @@
 import fs from 'fs';
+import type { Server as HttpsServer } from 'https';
 import os from 'os';
 import path from 'path';
 
@@ -157,6 +158,8 @@ describe('start', () => {
     process.env.SOIPACK_HTTP_REQUEST_TIMEOUT_MS = '10000';
     process.env.SOIPACK_HTTP_HEADERS_TIMEOUT_MS = '5000';
     process.env.SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS = '2000';
+    process.env.SOIPACK_MAX_QUEUED_JOBS_TOTAL = '9';
+    process.env.SOIPACK_WORKER_CONCURRENCY = '3';
     process.env.SOIPACK_SHUTDOWN_TIMEOUT_MS = '15000';
 
     const mockApp = {};
@@ -228,6 +231,8 @@ describe('start', () => {
           headerMaxBytes: Math.ceil((131072 * 4) / 3),
         },
         licenseCache: { maxEntries: 10, maxAgeMs: 60000 },
+        maxQueuedJobsTotal: 9,
+        workerConcurrency: 3,
       }),
     );
     expect(createHttpsServerMock).toHaveBeenCalledWith(
@@ -270,13 +275,17 @@ describe('start', () => {
     const closeSpy = jest.fn<void, [(callback?: (error?: Error) => void) => void]>((callback) => {
       callback?.();
     });
-    const mockHttpsServer = {
-      listen: listenSpy,
-      close: closeSpy,
+    const mockHttpsServer: Pick<HttpsServer, 'listen' | 'close'> & {
+      requestTimeout: number;
+      headersTimeout: number;
+      keepAliveTimeout: number;
+    } = {
+      listen: listenSpy as unknown as HttpsServer['listen'],
+      close: closeSpy as unknown as HttpsServer['close'],
       requestTimeout: 0,
       headersTimeout: 0,
       keepAliveTimeout: 0,
-    } as unknown as any;
+    };
     const createServerMock = jest.fn(() => mockApp);
     const createHttpsServerMock = jest.fn(() => mockHttpsServer);
     const lifecycleMock = {
@@ -308,9 +317,10 @@ describe('start', () => {
       return process;
     }) as unknown as typeof process.on);
 
-    const exitSpy = jest
-      .spyOn(process, 'exit')
-      .mockImplementation(((code?: number) => undefined) as never);
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      void code;
+      return undefined as never;
+    }) as never);
 
     const { start } = await import('./start');
     await start();

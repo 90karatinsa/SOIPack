@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
-import type { CoverageStatus } from './types/pipeline';
-import { TokenInput } from './components/TokenInput';
+
+import { ComplianceMatrix } from './components/ComplianceMatrix';
+import { DownloadPackageButton } from './components/DownloadPackageButton';
 import { LicenseInput } from './components/LicenseInput';
 import { NavigationTabs, type View } from './components/NavigationTabs';
-import { UploadAndRun } from './components/UploadAndRun';
-import { ComplianceMatrix } from './components/ComplianceMatrix';
+import { TokenInput } from './components/TokenInput';
 import { TraceabilityMatrix } from './components/TraceabilityMatrix';
-import { DownloadPackageButton } from './components/DownloadPackageButton';
+import { UploadAndRun } from './components/UploadAndRun';
 import { usePipeline } from './hooks/usePipeline';
+import type { CoverageStatus } from './types/pipeline';
 
 export default function App() {
   const [token, setToken] = useState('');

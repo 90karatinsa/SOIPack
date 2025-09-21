@@ -4,6 +4,7 @@ import https from 'https';
 import os from 'os';
 import path from 'path';
 import { pipeline as streamPipeline } from 'stream/promises';
+import { TLSSocket } from 'tls';
 
 import {
   AnalyzeOptions,
@@ -22,24 +23,22 @@ import {
 } from '@soipack/cli';
 import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
-import multer from 'multer';
 import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JSONWebKeySet } from 'jose';
-
+import multer from 'multer';
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
-import { TLSSocket } from 'tls';
 
 import { HttpError, toHttpError } from './errors';
 import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
+import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 import {
   FileSystemStorage,
   PipelineDirectories,
   StorageProvider,
   UploadedFileMap,
 } from './storage';
-import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 
 type FileMap = Record<string, Express.Multer.File[]>;
 
@@ -862,6 +861,8 @@ export interface ServerConfig {
   maxUploadSizeBytes?: number;
   jsonBodyLimitBytes?: number;
   maxQueuedJobsPerTenant?: number;
+  maxQueuedJobsTotal?: number;
+  workerConcurrency?: number;
   storageProvider?: StorageProvider;
   retention?: RetentionConfig;
   uploadPolicies?: UploadPolicyOverrides;
@@ -1752,6 +1753,13 @@ export const createServer = (config: ServerConfig): Express => {
     registers: [metricsRegistry],
   });
 
+  const jobQueueTotalGauge = new Gauge({
+    name: 'soipack_job_queue_total',
+    help: 'Sunucu genelinde kuyruğa alınmış veya çalışan işlerin sayısı.',
+    registers: [metricsRegistry],
+  });
+  jobQueueTotalGauge.set(0);
+
   const httpRequestCounter = new Counter({
     name: 'soipack_http_requests_total',
     help: 'HTTP isteklerinin toplam sayısı.',
@@ -2018,15 +2026,15 @@ export const createServer = (config: ServerConfig): Express => {
 
   const jsonBodyLimit = Math.max(1, config.jsonBodyLimitBytes ?? DEFAULT_JSON_BODY_LIMIT_BYTES);
   const app = express();
-  app.listen = (((..._args: Parameters<typeof app.listen>) => {
+  app.listen = (((...args: Parameters<typeof app.listen>) => {
+    void args;
     throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);
   }) as unknown as typeof app.listen);
 
   app.use((req, res, next) => {
-    const requestId = randomUUID();
-    const startedAtNs = process.hrtime.bigint();
-    setRequestContext(req, { id: requestId, startedAtNs });
-    res.setHeader('X-Request-Id', requestId);
+    const requestContext = { id: randomUUID(), startedAtNs: process.hrtime.bigint() };
+    setRequestContext(req, requestContext);
+    res.setHeader('X-Request-Id', requestContext.id);
 
     let completed = false;
     const finalize = (result: 'finish' | 'close') => {
@@ -2035,6 +2043,9 @@ export const createServer = (config: ServerConfig): Express => {
       }
       completed = true;
 
+      const storedContext = getRequestContext(req);
+      const startedAtNs = storedContext?.startedAtNs ?? requestContext.startedAtNs;
+      const requestId = storedContext?.id ?? requestContext.id;
       const durationSeconds = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000_000;
       const method = req.method?.toUpperCase() ?? 'UNKNOWN';
       const status = res.statusCode;
@@ -2123,16 +2134,28 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
   const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
-  const queue = new JobQueue();
+  const maxQueuedJobsTotal =
+    config.maxQueuedJobsTotal !== undefined ? Math.max(1, config.maxQueuedJobsTotal) : undefined;
+  const workerConcurrency = Math.max(1, config.workerConcurrency ?? 1);
+  const queue = new JobQueue(workerConcurrency);
 
   const getActiveJobCount = (tenantId: string): number =>
     queue
       .list(tenantId)
       .filter((job) => job.status === 'queued' || job.status === 'running').length;
 
+  const getTotalActiveJobCount = (): number => {
+    let total = 0;
+    for (const tenant of knownTenants) {
+      total += getActiveJobCount(tenant);
+    }
+    return total;
+  };
+
   const updateQueueDepth = (tenantId: string): void => {
     const activeJobs = getActiveJobCount(tenantId);
     jobQueueDepthGauge.set({ tenantId }, activeJobs);
+    jobQueueTotalGauge.set(getTotalActiveJobCount());
   };
 
   const ensureQueueWithinLimit = (tenantId: string): void => {
@@ -2142,8 +2165,19 @@ export const createServer = (config: ServerConfig): Express => {
         429,
         'QUEUE_LIMIT_EXCEEDED',
         'Kiracı için kuyrukta bekleyen iş limiti aşıldı.',
-        { limit: maxQueuedJobsPerTenant },
+        { limit: maxQueuedJobsPerTenant, scope: 'tenant' },
       );
+    }
+    if (maxQueuedJobsTotal !== undefined) {
+      const totalActiveJobs = getTotalActiveJobCount();
+      if (totalActiveJobs >= maxQueuedJobsTotal) {
+        throw new HttpError(
+          429,
+          'QUEUE_LIMIT_EXCEEDED',
+          'Sunucu genelinde kuyrukta bekleyen iş limiti aşıldı.',
+          { limit: maxQueuedJobsTotal, scope: 'global' },
+        );
+      }
     }
   };
 

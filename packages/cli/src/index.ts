@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import fs from 'fs';
-import { promises as fsPromises } from 'fs';
+import { createHash } from 'crypto';
+import fs, { promises as fsPromises } from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
-import { createHash } from 'crypto';
 import process from 'process';
 import { pipeline as streamPipeline } from 'stream/promises';
 
@@ -42,17 +41,15 @@ import {
   TraceEngine,
   generateComplianceSnapshot,
 } from '@soipack/engine';
-import { renderComplianceMatrix, renderGaps, renderTraceMatrix } from '@soipack/report';
 import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
-import { ZipFile } from 'yazl';
+import { renderComplianceMatrix, renderGaps, renderTraceMatrix } from '@soipack/report';
 import YAML from 'yaml';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { ZipFile } from 'yazl';
 
 import packageInfo from '../package.json';
 
-import { createLogger } from './logging';
-import type { Logger } from './logging';
 import {
   DEFAULT_LICENSE_FILE,
   LicenseError,
@@ -61,6 +58,8 @@ import {
   type LicensePayload,
   type VerifyLicenseOptions,
 } from './license';
+import { createLogger } from './logging';
+import type { Logger } from './logging';
 import { formatVersion } from './version';
 
 const fixedTimestampSource = process.env.SOIPACK_DEMO_TIMESTAMP;

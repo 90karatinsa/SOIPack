@@ -9,6 +9,7 @@ import {
 } from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
+
 import packageInfo from '../package.json';
 
 type PlaywrightModule = typeof import('playwright');

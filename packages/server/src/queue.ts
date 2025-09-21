@@ -59,11 +59,11 @@ interface AdoptOptions<T> {
 export class JobQueue {
   private readonly concurrency: number;
 
-  private readonly jobs = new Map<string, InternalJob<any>>();
+  private readonly jobs = new Map<string, InternalJob<unknown>>();
 
-  private readonly order: InternalJob<any>[] = [];
+  private readonly order: InternalJob<unknown>[] = [];
 
-  private readonly pending: InternalJob<any>[] = [];
+  private readonly pending: InternalJob<unknown>[] = [];
 
   private active = 0;
 
@@ -79,7 +79,7 @@ export class JobQueue {
 
   public enqueue<T>({ tenantId, id, kind, hash, run }: EnqueueOptions<T>): JobDetails<T> {
     const key = this.getKey(tenantId, id);
-    const existing = this.jobs.get(key);
+    const existing = this.jobs.get(key) as InternalJob<T> | undefined;
     if (existing) {
       return this.toDetails(existing);
     }
@@ -106,7 +106,7 @@ export class JobQueue {
 
   public adoptCompleted<T>({ tenantId, id, kind, hash, createdAt, updatedAt, result }: AdoptOptions<T>): JobDetails<T> {
     const key = this.getKey(tenantId, id);
-    const existing = this.jobs.get(key);
+    const existing = this.jobs.get(key) as InternalJob<T> | undefined;
     if (existing) {
       if (existing.status === 'completed' && existing.result === undefined) {
         existing.result = result;
@@ -137,16 +137,16 @@ export class JobQueue {
   }
 
   public get<T = unknown>(tenantId: string, id: string): JobDetails<T> | undefined {
-    const job = this.jobs.get(this.getKey(tenantId, id));
+    const job = this.jobs.get(this.getKey(tenantId, id)) as InternalJob<T> | undefined;
     if (!job) {
       return undefined;
     }
-    return this.toDetails(job) as JobDetails<T>;
+    return this.toDetails(job);
   }
 
   public remove<T = unknown>(tenantId: string, id: string): JobDetails<T> | undefined {
     const key = this.getKey(tenantId, id);
-    const job = this.jobs.get(key);
+    const job = this.jobs.get(key) as InternalJob<T> | undefined;
     if (!job) {
       return undefined;
     }
@@ -159,7 +159,7 @@ export class JobQueue {
     this.removeFromOrder(job);
     this.removeFromPending(job);
 
-    const details = this.toDetails(job) as JobDetails<T>;
+    const details = this.toDetails(job);
     this.notifyIdleIfNeeded();
     return details;
   }
@@ -174,14 +174,14 @@ export class JobQueue {
     });
   }
 
-  private removeFromOrder(job: InternalJob<any>): void {
+  private removeFromOrder(job: InternalJob<unknown>): void {
     const index = this.order.indexOf(job);
     if (index >= 0) {
       this.order.splice(index, 1);
     }
   }
 
-  private removeFromPending(job: InternalJob<any>): void {
+  private removeFromPending(job: InternalJob<unknown>): void {
     const index = this.pending.indexOf(job);
     if (index >= 0) {
       this.pending.splice(index, 1);
@@ -238,7 +238,7 @@ export class JobQueue {
     };
   }
 
-  private toSummary(job: InternalJob<any>): JobSummary {
+  private toSummary(job: InternalJob<unknown>): JobSummary {
     return {
       id: job.id,
       kind: job.kind,

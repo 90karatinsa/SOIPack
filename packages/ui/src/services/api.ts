@@ -9,15 +9,22 @@ import {
   type PackJobResult,
 } from '../types/pipeline';
 
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const getImportMetaEnv = (): Record<string, string> | undefined => {
-  try {
-    return new Function('return typeof import.meta !== "undefined" ? import.meta.env : undefined;')() as
-      | Record<string, string>
-      | undefined;
-  } catch {
-    return undefined;
+type ImportMetaEnv = Record<string, string>;
+
+const IMPORT_META_ENV_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
+
+declare const __VITE_ENV__: ImportMetaEnv | undefined;
+const getImportMetaEnv = (): ImportMetaEnv | undefined => {
+  const globalObject = globalThis as typeof globalThis & {
+    __SOIPACK_IMPORT_META_ENV__?: ImportMetaEnv;
+  };
+  if (globalObject.__SOIPACK_IMPORT_META_ENV__ && typeof globalObject.__SOIPACK_IMPORT_META_ENV__ === 'object') {
+    return globalObject.__SOIPACK_IMPORT_META_ENV__;
   }
+  if (typeof __VITE_ENV__ !== 'undefined') {
+    return __VITE_ENV__;
+  }
+  return undefined;
 };
 
 const resolveBaseUrl = (): string => {
@@ -39,6 +46,13 @@ const resolveBaseUrl = (): string => {
 };
 
 const API_BASE_URL = resolveBaseUrl();
+
+export const __test__ = {
+  resolveBaseUrl,
+  getConfiguredBaseUrl: (): string => API_BASE_URL,
+  importMetaOverrideKey: IMPORT_META_ENV_OVERRIDE_KEY,
+  getImportMetaEnv,
+};
 
 const joinUrl = (path: string): string => {
   if (!API_BASE_URL) {
@@ -361,7 +375,7 @@ export const pollJob = async <T>({
     throw new JobFailedError(current);
   }
 
-  while (true) {
+  while (current.status === 'queued' || current.status === 'running') {
     await wait(pollIntervalMs, signal);
     current = await getJob<T>({ token, license, jobId, signal });
     onUpdate?.(current);
@@ -373,6 +387,8 @@ export const pollJob = async <T>({
       throw new JobFailedError(current);
     }
   }
+
+  throw new Error(`Bilinmeyen iş durumu: ${current.status}`);
 };
 
 interface FetchReportDataOptions {

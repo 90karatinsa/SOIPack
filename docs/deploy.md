@@ -95,8 +95,12 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS=300
    SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS=60000
    SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS=150
-   # Kiracı başına kuyrukta bekleyen/çalışan iş limiti (opsiyonel, varsayılan 5)
+   # Kiracı başına kuyruğa alınan/çalışan iş limiti (opsiyonel, varsayılan 5)
    SOIPACK_MAX_QUEUED_JOBS=5
+   # Tüm kiracılar için global kuyruğa alınan iş limiti (opsiyonel)
+   SOIPACK_MAX_QUEUED_JOBS_TOTAL=20
+   # Aynı anda çalıştırılabilecek iş sayısı (opsiyonel, varsayılan 1)
+   SOIPACK_WORKER_CONCURRENCY=2
    # Antivirüs komut satırı entegrasyonu (örn. ClamAV)
    SOIPACK_SCAN_COMMAND=/usr/bin/clamdscan
    SOIPACK_SCAN_ARGS=--fdpass,--no-summary
@@ -130,7 +134,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
   JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir.
 
-  Kuyruk limiti her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler. Varsayılan değer 5'tir; daha yüksek değerler daha yoğun iş yüklerine izin verirken, aynı anda yürütülen import/analiz işlemlerinin CPU ve disk üzerindeki etkilerini de artırır. Limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve ilgili kiracı için yeni işler kuyruğa alınmaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
+  Kuyruk limitleri iki seviyede yapılandırılabilir. `SOIPACK_MAX_QUEUED_JOBS`, her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler (varsayılan 5). `SOIPACK_MAX_QUEUED_JOBS_TOTAL` tanımlandığında aynı zamanda tüm kiracılar için global bir üst sınır uygulanır; toplam limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve hata detaylarında `scope: "global"` bilgisi yer alır. `SOIPACK_WORKER_CONCURRENCY` ise arka planda aynı anda kaç işin çalıştırılacağını belirler. Bu değeri CPU çekirdek sayınıza göre ayarlayarak paralel import/analiz yürütmelerini hızlandırabilir, ancak disk ve bellek tüketimini yakından izlemelisiniz. Limitlerden herhangi biri aşıldığında sunucu yeni işleri kuyruğa almaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
 
 ### Zarif kapatma ve zaman aşımı kontrolleri
 

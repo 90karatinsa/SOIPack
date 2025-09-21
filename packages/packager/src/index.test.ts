@@ -1,8 +1,9 @@
-import { Manifest } from '@soipack/core';
 import { createHash, generateKeyPairSync } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
-import path from 'path';
 import { tmpdir } from 'os';
+import path from 'path';
+
+import { Manifest } from '@soipack/core';
 
 import {
   buildManifest,

@@ -1,9 +1,9 @@
-import os from 'os';
-import path from 'path';
+import { EventEmitter } from 'events';
 import { promises as fs } from 'fs';
 import http from 'http';
+import os from 'os';
+import path from 'path';
 import { PassThrough } from 'stream';
-import { EventEmitter } from 'events';
 
 import { Manifest } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
@@ -442,7 +442,8 @@ describe('downloadPackageArtifacts', () => {
     const requests: MockClientRequest[] = [];
     const getMock = createHttpGetMock();
 
-    getMock.mockImplementation(((url: unknown, _options: unknown, _callback?: (res: http.IncomingMessage) => void) => {
+    getMock.mockImplementation(((...args: Parameters<typeof http.get>) => {
+        void args;
         const request = new MockClientRequest();
         requests.push(request);
         return request as unknown as http.ClientRequest;

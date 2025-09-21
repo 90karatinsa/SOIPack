@@ -1,26 +1,26 @@
 import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
+import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
 import { Writable } from 'stream';
-import type { AddressInfo } from 'net';
-
-import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
-import request from 'supertest';
-import pino from 'pino';
-import { Agent, setGlobalDispatcher } from 'undici';
-
-import { Registry } from 'prom-client';
-
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 import * as cli from '@soipack/cli';
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
+import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
+import pino from 'pino';
+import { Registry } from 'prom-client';
+import request from 'supertest';
+import { Agent, setGlobalDispatcher } from 'undici';
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+
+import type { FileScanner } from './scanner';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
-import type { FileScanner } from './scanner';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
@@ -175,6 +175,17 @@ const createDeferred = <T = void>() => {
     resolve: resolve!,
     reject: reject!,
   };
+};
+
+const waitForCondition = async (predicate: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error('Condition was not met within the allotted time.');
 };
 
 const createLogCapture = () => {
@@ -957,6 +968,7 @@ describe('@soipack/server REST API', () => {
 
       expect(secondResponse.body.error.code).toBe('QUEUE_LIMIT_EXCEEDED');
       expect(secondResponse.body.error.details.limit).toBe(1);
+      expect(secondResponse.body.error.details.scope).toBe('tenant');
       expect(runImportSpy).toHaveBeenCalledTimes(1);
 
       allowImportToFinish.resolve();
@@ -967,6 +979,172 @@ describe('@soipack/server REST API', () => {
       expect(metricSnapshot).toContain(`soipack_job_queue_depth{tenantId="${tenantId}"} 0`);
     } finally {
       allowImportToFinish.resolve();
+      runImportSpy.mockRestore();
+    }
+  });
+
+  it('runs jobs in parallel up to the configured worker concurrency and enforces the global queue limit', async () => {
+    const concurrencyRegistry = new Registry();
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    const releaseDeferreds: Array<ReturnType<typeof createDeferred<void>>> = [];
+    let running = 0;
+    let maxRunning = 0;
+
+    const buildImportResult = () => {
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+        },
+      };
+      return {
+        workspace,
+        workspacePath: 'workspace.json',
+        warnings: [],
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    };
+
+    runImportSpy.mockImplementation(() => {
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      const deferred = createDeferred<void>();
+      releaseDeferreds.push(deferred);
+      return deferred.promise
+        .then(() => buildImportResult())
+        .finally(() => {
+          running -= 1;
+        });
+    });
+
+    const concurrencyApp = createServer({
+      ...baseConfig,
+      metricsRegistry: concurrencyRegistry,
+      workerConcurrency: 2,
+      maxQueuedJobsPerTenant: 5,
+      maxQueuedJobsTotal: 3,
+    });
+
+    const projectVersion = `global-limit-${Date.now()}`;
+
+    const firstRequest = request(concurrencyApp)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Concurrency Demo')
+      .field('projectVersion', `${projectVersion}-1`)
+      .expect(202);
+
+    const secondRequest = request(concurrencyApp)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Concurrency Demo')
+      .field('projectVersion', `${projectVersion}-2`)
+      .expect(202);
+
+    const thirdRequest = request(concurrencyApp)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Concurrency Demo')
+      .field('projectVersion', `${projectVersion}-3`)
+      .expect(202);
+
+    const [firstQueued, secondQueued, thirdQueued] = await Promise.all([
+      firstRequest,
+      secondRequest,
+      thirdRequest,
+    ]);
+
+    try {
+      await waitForCondition(async () => {
+        const response = await request(concurrencyApp)
+          .get('/v1/jobs')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+        const jobs = response.body.jobs as Array<{ status: string }>;
+        const running = jobs.filter((job) => job.status === 'running').length;
+        return jobs.length === 3 && running >= 2;
+      });
+      await waitForCondition(() => releaseDeferreds.length >= 2);
+      expect(runImportSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(releaseDeferreds.length).toBeGreaterThanOrEqual(2);
+
+      let metricSnapshot = await concurrencyRegistry.getSingleMetricAsString('soipack_job_queue_total');
+      expect(metricSnapshot).toContain('soipack_job_queue_total 3');
+
+      const overflowResponse = await request(concurrencyApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Concurrency Demo')
+        .field('projectVersion', `${projectVersion}-overflow`)
+        .expect(429);
+
+      expect(overflowResponse.body.error.code).toBe('QUEUE_LIMIT_EXCEEDED');
+      expect(overflowResponse.body.error.details.limit).toBe(3);
+      expect(overflowResponse.body.error.details.scope).toBe('global');
+
+      const releaseNext = async () => {
+        const next = releaseDeferreds.shift();
+        if (next) {
+          next.resolve();
+          await delay(0);
+        }
+      };
+
+      await releaseNext();
+      await waitForCondition(async () => {
+        const response = await request(concurrencyApp)
+          .get('/v1/jobs')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+        const jobs = response.body.jobs as Array<{ status: string }>;
+        const running = jobs.filter((job) => job.status === 'running').length;
+        const completed = jobs.filter((job) => job.status === 'completed').length;
+        return running >= 2 && completed >= 1;
+      });
+      await waitForCondition(() => releaseDeferreds.length >= 2);
+      await releaseNext();
+      await waitForCondition(() => releaseDeferreds.length === 1);
+      await releaseNext();
+
+      await Promise.all([
+        waitForJobCompletion(concurrencyApp, token, firstQueued.body.id),
+        waitForJobCompletion(concurrencyApp, token, secondQueued.body.id),
+        waitForJobCompletion(concurrencyApp, token, thirdQueued.body.id),
+      ]);
+
+      expect(maxRunning).toBe(2);
+      expect(running).toBe(0);
+
+      metricSnapshot = await concurrencyRegistry.getSingleMetricAsString('soipack_job_queue_total');
+      expect(metricSnapshot).toContain('soipack_job_queue_total 0');
+    } finally {
+      while (releaseDeferreds.length > 0) {
+        const deferred = releaseDeferreds.shift();
+        deferred?.resolve();
+      }
       runImportSpy.mockRestore();
     }
   });
