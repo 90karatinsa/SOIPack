@@ -25,6 +25,8 @@ components:
       required: false
       description: |
         Base64 kodlanmış lisans anahtarı. Import isteklerinde alternatif olarak `license` dosya alanı kullanılabilir.
+        İçerik `SOIPACK_LICENSE_MAX_BYTES`/`SOIPACK_LICENSE_HEADER_MAX_BYTES` sınırlarını aşarsa
+        istek `413 LICENSE_TOO_LARGE` yanıtıyla reddedilir.
       schema:
         type: string
   schemas:
@@ -874,6 +876,9 @@ paths:
       description: |-
         Yalnızca yönetici kapsamına sahip belirteçlerle çağrılabilir. `SOIPACK_AUTH_ADMIN_SCOPES`
         listesinde tanımlanan kapsamların en az birine sahip erişim belirteci gerektirir.
+        Zamanlanmış temizlik `SOIPACK_RETENTION_SWEEP_INTERVAL_MS` ayarlandığında
+        arka planda otomatik olarak yürütülür; bu uç nokta aynı işi manuel olarak
+        tetiklemek için kullanılabilir.
       security:
         - BearerAuth: []
       responses:

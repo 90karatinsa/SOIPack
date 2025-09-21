@@ -151,23 +151,64 @@ describe('start', () => {
     process.env.SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS = '5';
     process.env.SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS = '1000';
     process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS = '3';
+    process.env.SOIPACK_LICENSE_MAX_BYTES = '131072';
+    process.env.SOIPACK_LICENSE_CACHE_MAX_ENTRIES = '10';
+    process.env.SOIPACK_LICENSE_CACHE_MAX_AGE_MS = '60000';
+    process.env.SOIPACK_HTTP_REQUEST_TIMEOUT_MS = '10000';
+    process.env.SOIPACK_HTTP_HEADERS_TIMEOUT_MS = '5000';
+    process.env.SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS = '2000';
+    process.env.SOIPACK_SHUTDOWN_TIMEOUT_MS = '15000';
 
     const mockApp = {};
     const listenSpy = jest.fn<void, [number, (() => void)?]>((_port, callback) => {
       callback?.();
     });
-    const mockHttpsServer = { listen: listenSpy } as const;
+    const closeSpy = jest.fn<void, [(callback?: (error?: Error) => void) => void]>((callback) => {
+      callback?.();
+    });
+    const mockHttpsServer: {
+      listen: typeof listenSpy;
+      close: typeof closeSpy;
+      requestTimeout: number;
+      headersTimeout: number;
+      keepAliveTimeout: number;
+    } = {
+      listen: listenSpy,
+      close: closeSpy,
+      requestTimeout: 0,
+      headersTimeout: 0,
+      keepAliveTimeout: 0,
+    };
     const createServerMock = jest.fn(() => mockApp);
     const createHttpsServerMock = jest.fn(() => mockHttpsServer);
+    const lifecycleMock = {
+      waitForIdle: jest.fn().mockResolvedValue(undefined),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      runTenantRetention: jest.fn(),
+      runAllTenantRetention: jest.fn(),
+      logger: {
+        info: jest.fn(),
+        error: jest.fn(),
+        warn: jest.fn(),
+      },
+    };
+    const getServerLifecycleMock = jest.fn(() => lifecycleMock);
+    const registeredHandlers: Partial<Record<NodeJS.Signals, () => void>> = {};
 
     jest.doMock('./index', () => ({
       __esModule: true,
       createServer: createServerMock,
       createHttpsServer: createHttpsServerMock,
+      getServerLifecycle: getServerLifecycleMock,
       JwtAuthConfig: {} as never,
       RateLimitConfig: {} as never,
       RetentionConfig: {} as never,
     }));
+
+    jest.spyOn(process, 'on').mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      registeredHandlers[event] = handler;
+      return process;
+    }) as unknown as typeof process.on);
 
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -182,6 +223,11 @@ describe('start', () => {
           tenant: { windowMs: 1000, max: 3 },
         },
         requireAdminClientCertificate: true,
+        licenseLimits: {
+          maxBytes: 131072,
+          headerMaxBytes: Math.ceil((131072 * 4) / 3),
+        },
+        licenseCache: { maxEntries: 10, maxAgeMs: 60000 },
       }),
     );
     expect(createHttpsServerMock).toHaveBeenCalledWith(
@@ -192,8 +238,97 @@ describe('start', () => {
         clientCa: 'client-ca',
       }),
     );
+    expect(getServerLifecycleMock).toHaveBeenCalledWith(mockApp);
+    expect(mockHttpsServer.requestTimeout).toBe(10000);
+    expect(mockHttpsServer.headersTimeout).toBe(5000);
+    expect(mockHttpsServer.keepAliveTimeout).toBe(2000);
     expect(listenSpy).toHaveBeenCalledWith(3443, expect.any(Function));
     expect(logSpy).toHaveBeenCalledWith('SOIPack API HTTPS olarak 3443 portunda dinliyor.');
+    expect(lifecycleMock.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'server_listening',
+        port: 3443,
+        requestTimeoutMs: 10000,
+        headersTimeoutMs: 5000,
+        keepAliveTimeoutMs: 2000,
+      }),
+      'SOIPack API HTTPS dinleyicisi başlatıldı.',
+    );
+    expect(registeredHandlers).toHaveProperty('SIGTERM');
+    expect(registeredHandlers).toHaveProperty('SIGINT');
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('drains queues and exits cleanly on termination signals', async () => {
+    const { tmpDir } = await prepareBaseEnv();
+
+    const mockApp = {};
+    const listenSpy = jest.fn<void, [number, (() => void)?]>((_port, callback) => {
+      callback?.();
+    });
+    const closeSpy = jest.fn<void, [(callback?: (error?: Error) => void) => void]>((callback) => {
+      callback?.();
+    });
+    const mockHttpsServer = {
+      listen: listenSpy,
+      close: closeSpy,
+      requestTimeout: 0,
+      headersTimeout: 0,
+      keepAliveTimeout: 0,
+    } as unknown as any;
+    const createServerMock = jest.fn(() => mockApp);
+    const createHttpsServerMock = jest.fn(() => mockHttpsServer);
+    const lifecycleMock = {
+      waitForIdle: jest.fn().mockResolvedValue(undefined),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      runTenantRetention: jest.fn(),
+      runAllTenantRetention: jest.fn(),
+      logger: {
+        info: jest.fn(),
+        error: jest.fn(),
+        warn: jest.fn(),
+      },
+    };
+    const getServerLifecycleMock = jest.fn(() => lifecycleMock);
+    const registeredHandlers: Partial<Record<NodeJS.Signals, () => void>> = {};
+
+    jest.doMock('./index', () => ({
+      __esModule: true,
+      createServer: createServerMock,
+      createHttpsServer: createHttpsServerMock,
+      getServerLifecycle: getServerLifecycleMock,
+      JwtAuthConfig: {} as never,
+      RateLimitConfig: {} as never,
+      RetentionConfig: {} as never,
+    }));
+
+    jest.spyOn(process, 'on').mockImplementation(((event: NodeJS.Signals, handler: () => void) => {
+      registeredHandlers[event] = handler;
+      return process;
+    }) as unknown as typeof process.on);
+
+    const exitSpy = jest
+      .spyOn(process, 'exit')
+      .mockImplementation(((code?: number) => undefined) as never);
+
+    const { start } = await import('./start');
+    await start();
+
+    const handler = registeredHandlers.SIGTERM;
+    expect(handler).toBeDefined();
+    handler?.();
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.shutdown).toHaveBeenCalledTimes(1);
+    expect(lifecycleMock.logger.info).toHaveBeenCalledWith(
+      { event: 'shutdown_signal', signal: 'SIGTERM' },
+      'Kapatma sinyali alındı.',
+    );
+    expect(exitSpy).toHaveBeenCalledWith(0);
 
     await fs.promises.rm(tmpDir, { recursive: true, force: true });
   });

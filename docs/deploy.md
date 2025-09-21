@@ -82,6 +82,10 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
    SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/soipack-license.pub
+   SOIPACK_LICENSE_MAX_BYTES=524288
+   SOIPACK_LICENSE_HEADER_MAX_BYTES=699051
+   SOIPACK_LICENSE_CACHE_MAX_ENTRIES=1024
+   SOIPACK_LICENSE_CACHE_MAX_AGE_MS=3600000
    SOIPACK_TLS_KEY_PATH=/run/secrets/soipack-tls.key
    SOIPACK_TLS_CERT_PATH=/run/secrets/soipack-tls.crt
    # İsteğe bağlı: yönetici uçları için istemci CA sertifikası
@@ -98,11 +102,17 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_SCAN_ARGS=--fdpass,--no-summary
    SOIPACK_SCAN_TIMEOUT_MS=60000
    SOIPACK_SCAN_INFECTED_EXIT_CODES=1
+   SOIPACK_HTTP_REQUEST_TIMEOUT_MS=300000
+   SOIPACK_HTTP_HEADERS_TIMEOUT_MS=60000
+   SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS=5000
+   SOIPACK_SHUTDOWN_TIMEOUT_MS=30000
    # Eski çıktıları otomatik temizlemek için gün bazında saklama süreleri (opsiyonel)
    SOIPACK_RETENTION_UPLOADS_DAYS=14
    SOIPACK_RETENTION_ANALYSES_DAYS=30
    SOIPACK_RETENTION_REPORTS_DAYS=30
    SOIPACK_RETENTION_PACKAGES_DAYS=60
+   # Saklama temizliğini otomatik tetiklemek için periyot (ms)
+   SOIPACK_RETENTION_SWEEP_INTERVAL_MS=900000
    ENV
    ```
 
@@ -114,11 +124,23 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
    Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
 
-   Tüm HTTPS istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
+  Tüm HTTPS istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir. Lisans içeriği `SOIPACK_LICENSE_MAX_BYTES` ile sınırlıdır; başlıkta gönderilen base64 verisi `SOIPACK_LICENSE_HEADER_MAX_BYTES` üstüne çıkarsa veya çözülmüş hali sınırı aşarsa sunucu `413 LICENSE_TOO_LARGE` döndürür. Büyük `license` form alanları belleğe yüklenmez, sınır aşıldığında akış diske taşınmadan önce kesilir ve aynı hata kodu döner. Bu değerleri yükseltmeniz gerekiyorsa sınırlarınızı eş zamanlı olarak güncelleyin.
 
-   JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir.
+  Lisans doğrulama yanıtları, tekrar eden istemcilerin gecikmesini azaltmak için `SOIPACK_LICENSE_CACHE_MAX_ENTRIES` ve `SOIPACK_LICENSE_CACHE_MAX_AGE_MS` ile sınırlı bellek önbelleğinde tutulur. Varsayılanlar sırasıyla 1024 kayıt ve 1 saat olup, yeni kiracılar eklendikçe önbellek en eski girişleri otomatik temizler. Bellek tüketimini yakından izliyorsanız, cache büyüklüğünü ortamınızın kullanıcı sayısına göre ayarlayın.
 
-   Kuyruk limiti her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler. Varsayılan değer 5'tir; daha yüksek değerler daha yoğun iş yüklerine izin verirken, aynı anda yürütülen import/analiz işlemlerinin CPU ve disk üzerindeki etkilerini de artırır. Limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve ilgili kiracı için yeni işler kuyruğa alınmaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
+  JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir.
+
+  Kuyruk limiti her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler. Varsayılan değer 5'tir; daha yüksek değerler daha yoğun iş yüklerine izin verirken, aynı anda yürütülen import/analiz işlemlerinin CPU ve disk üzerindeki etkilerini de artırır. Limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve ilgili kiracı için yeni işler kuyruğa alınmaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
+
+### Zarif kapatma ve zaman aşımı kontrolleri
+
+Sunucu `SIGTERM` veya `SIGINT` aldığında yeni bağlantıları durdurur, bekleyen HTTP isteklerinin `server.close()` ile tamamlanmasını bekler ve kuyruktaki işler için `SOIPACK_SHUTDOWN_TIMEOUT_MS` süresi boyunca `waitForIdle` çağrılarıyla boşalmayı bekler. Kuyruklar bu süre içinde tamamlanmazsa kalan işler iptal edilir ve süreç temiz şekilde sonlandırılır. Bu davranışın sorunsuz işlemesi için orkestrasyon aracınız (Docker, systemd vb.) yeterli kapanış süresi tanımalıdır.
+
+`SOIPACK_HTTP_REQUEST_TIMEOUT_MS`, `SOIPACK_HTTP_HEADERS_TIMEOUT_MS` ve `SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS` değerleri sırasıyla HTTP isteklerinin, başlık müzakeresinin ve keep-alive bağlantılarının kapanma zamanlarını kontrol eder. Varsayılanlar çoğu kurulum için uygundur; uzun süre çalışan import yüklemeleri veya yavaş istemci ağları için değerleri artırabilirsiniz.
+
+### Planlı saklama temizliği
+
+`SOIPACK_RETENTION_*_DAYS` değişkenleri ile saklama pencereleri tanımlandığında, `SOIPACK_RETENTION_SWEEP_INTERVAL_MS` periyodu otomatik temizliği tetikler. Zamanlayıcı yalnızca en az bir hedef için saklama sınırı ayarlandığında devreye girer ve her turda tüm kiracılar için `POST /v1/admin/cleanup` ile aynı temizliği yürütür. Manuel çağrılar hâlâ desteklenir; ancak düzenli temizlik için konteynerin arka planda çalıştığından ve zamanlayıcıyı durduracak uyku modları olmadığından emin olun.
 5. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
    ```bash
    docker compose up -d

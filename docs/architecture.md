@@ -20,3 +20,7 @@ SOIPack monoreposu altı temel paketten oluşur:
 6. **Server** – Express tabanlı REST API ile izlenebilirlik yeteneklerini uzak uygulamalara taşır. OpenAPI dokümantasyonu üretmek için motor ve rapor paketlerini kullanır.
 
 Veri akışı adaptörlerden başlar, core şemalarına uygun hale getirilen kayıtlar engine paketine iletilir. Motor, ilişkileri hesapladıktan sonra sonuçlar rapor ve server paketleri tarafından kullanıcı arayüzlerine veya otomasyonlara sunulur. CLI katmanı adaptör, motor ve rapor işlemlerini komut satırı üzerinden orkestre eder.
+
+## Gözlemlenebilirlik ve HTTP günlükleri
+
+Server paketi Express üzerine kuruludur ve tüm HTTP istekleri için benzersiz bir `X-Request-Id` üretir. Her yanıt tamamlandığında Pino logger'a tek satırlık yapılandırılmış bir kayıt (`event: http_request`) gönderilir; kayıtta yöntem, yönlendirilen rota, durum kodu, milisaniye cinsinden süre, tenant kimliği (varsa) ve istemci IP'si bulunur. Aynı kimlik Prometheus sayaç ve histogram metrikleri (`soipack_http_requests_total`, `soipack_http_request_duration_seconds`) ile etiketlenerek gözlemlenebilirlik araçlarına aktarılır. Bu sayede dağıtık ortamlarda log ve metrik korelasyonu sağlanır ve sorunlu istekler hem merkezi log yönetiminde hem de metrik panellerinde aynı kimlikle incelenebilir.

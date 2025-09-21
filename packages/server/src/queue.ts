@@ -67,6 +67,8 @@ export class JobQueue {
 
   private active = 0;
 
+  private idleResolvers: Array<() => void> = [];
+
   constructor(concurrency = 1) {
     this.concurrency = Math.max(1, concurrency);
   }
@@ -157,7 +159,19 @@ export class JobQueue {
     this.removeFromOrder(job);
     this.removeFromPending(job);
 
-    return this.toDetails(job) as JobDetails<T>;
+    const details = this.toDetails(job) as JobDetails<T>;
+    this.notifyIdleIfNeeded();
+    return details;
+  }
+
+  public async waitForIdle(): Promise<void> {
+    if (this.active === 0 && this.pending.length === 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      this.idleResolvers.push(resolve);
+    });
   }
 
   private removeFromOrder(job: InternalJob<any>): void {
@@ -204,8 +218,10 @@ export class JobQueue {
         .finally(() => {
           this.active -= 1;
           this.process();
+          this.notifyIdleIfNeeded();
         });
     }
+    this.notifyIdleIfNeeded();
   }
 
   private normalizeError(error: unknown): JobErrorInfo {
@@ -239,5 +255,21 @@ export class JobQueue {
       result: job.result,
       error: job.error,
     };
+  }
+
+  private notifyIdleIfNeeded(): void {
+    if (this.active !== 0 || this.pending.length !== 0 || this.idleResolvers.length === 0) {
+      return;
+    }
+
+    const resolvers = this.idleResolvers;
+    this.idleResolvers = [];
+    resolvers.forEach((resolve) => {
+      try {
+        resolve();
+      } catch {
+        // Ignore resolver errors.
+      }
+    });
   }
 }

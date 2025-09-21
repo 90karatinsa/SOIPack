@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
 import os from 'os';
@@ -18,7 +19,7 @@ import * as cli from '@soipack/cli';
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
 
-import { createHttpsServer, createServer, type ServerConfig } from './index';
+import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
 import type { FileScanner } from './scanner';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -558,6 +559,41 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('LICENSE_INVALID');
   });
 
+  it('rejects oversized license headers before decoding', async () => {
+    const limitedApp = createServer({
+      ...baseConfig,
+      licenseLimits: { maxBytes: 64, headerMaxBytes: 32 },
+      metricsRegistry: new Registry(),
+    });
+
+    const oversizedHeader = Buffer.alloc(48, 1).toString('base64');
+    const response = await request(limitedApp)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', oversizedHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .expect(413);
+
+    expect(response.body.error.code).toBe('LICENSE_TOO_LARGE');
+  });
+
+  it('rejects oversized uploaded license files', async () => {
+    const limitedApp = createServer({
+      ...baseConfig,
+      licenseLimits: { maxBytes: 32 },
+      metricsRegistry: new Registry(),
+    });
+
+    const response = await request(limitedApp)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('license', Buffer.alloc(128, 2), { filename: 'license.key' })
+      .attach('reqif', minimalExample('spec.reqif'))
+      .expect(413);
+
+    expect(response.body.error.code).toBe('LICENSE_TOO_LARGE');
+  });
+
   it('throttles repeated requests from the same IP', async () => {
     const throttledApp = createServer({
       ...baseConfig,
@@ -658,6 +694,71 @@ describe('@soipack/server REST API', () => {
       expect(expiredResponse.body.error.message).toBe('Lisans süresi dolmuş.');
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  it('evicts least recently used licenses when cache bounds are exceeded', async () => {
+    const verifySpy = jest.spyOn(cli, 'verifyLicenseFile');
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    verifySpy.mockImplementation(async (filePath) => {
+      const content = await fsPromises.readFile(filePath);
+      const hash = createHash('sha256').update(content).digest('hex');
+      return {
+        licenseId: hash,
+        issuedTo: 'test-suite',
+        issuedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        features: [],
+      } as cli.LicensePayload;
+    });
+    runImportSpy.mockResolvedValue({
+      warnings: [],
+      workspacePath: path.join('out', 'workspace.json'),
+      workspace: {} as cli.ImportWorkspace,
+    });
+
+    const cachingApp = createServer({
+      ...baseConfig,
+      licenseCache: { maxEntries: 2, maxAgeMs: 60_000 },
+      metricsRegistry: new Registry(),
+    });
+
+    const submitImport = async (licenseValue: string, suffix: string) => {
+      const response = await request(cachingApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', Buffer.from(licenseValue).toString('base64'))
+        .attach('reqif', minimalExample('spec.reqif'))
+        .field('projectName', `Project-${suffix}`)
+        .field('projectVersion', suffix)
+        .expect((res) => {
+          if (![200, 202].includes(res.status)) {
+            throw new Error(`Unexpected status ${res.status}`);
+          }
+        });
+      if (response.status === 202) {
+        await waitForJobCompletion(cachingApp, token, response.body.id);
+      }
+    };
+
+    try {
+      await submitImport('license-a', 'one');
+      expect(verifySpy).toHaveBeenCalledTimes(1);
+
+      await submitImport('license-a', 'two');
+      expect(verifySpy).toHaveBeenCalledTimes(1);
+
+      await submitImport('license-b', 'three');
+      expect(verifySpy).toHaveBeenCalledTimes(2);
+
+      await submitImport('license-c', 'four');
+      expect(verifySpy).toHaveBeenCalledTimes(3);
+
+      await submitImport('license-a', 'five');
+      expect(verifySpy).toHaveBeenCalledTimes(4);
+    } finally {
+      verifySpy.mockRestore();
+      runImportSpy.mockRestore();
     }
   });
 
@@ -1695,6 +1796,82 @@ describe('@soipack/server REST API', () => {
     } finally {
       await fsPromises.rm(failingStorageDir, { recursive: true, force: true });
     }
+  });
+  it('runs retention sweeps on a schedule', async () => {
+    const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-retention-'));
+    let retentionApp: ReturnType<typeof createServer> | undefined;
+    try {
+      retentionApp = createServer({
+        ...baseConfig,
+        storageDir,
+        retention: { uploads: { maxAgeMs: 0 } },
+        retentionScheduler: { intervalMs: 50 },
+        metricsRegistry: new Registry(),
+      });
+
+      const tenantId = 'ret-scheduler';
+      const jobId = 'aaaaaaaaaaaaaaaa';
+      const workspaceDir = path.join(storageDir, 'workspaces', tenantId, jobId);
+      const uploadDir = path.join(storageDir, 'uploads', tenantId, jobId);
+      await fsPromises.mkdir(workspaceDir, { recursive: true });
+      await fsPromises.mkdir(uploadDir, { recursive: true });
+      const metadata = {
+        tenantId,
+        id: jobId,
+        hash: 'hash',
+        kind: 'import' as const,
+        createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+        directory: workspaceDir,
+        params: {},
+        license: {
+          hash: 'license-hash',
+          licenseId: 'scheduled',
+          issuedTo: 'tenant',
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          features: [],
+        },
+        warnings: [],
+        outputs: { workspacePath: path.join(workspaceDir, 'workspace.json') },
+      };
+      await fsPromises.writeFile(path.join(workspaceDir, 'job.json'), JSON.stringify(metadata));
+
+      await delay(200);
+
+      await expect(fsPromises.access(workspaceDir)).rejects.toThrow();
+      await expect(fsPromises.access(uploadDir)).rejects.toThrow();
+    } finally {
+      if (retentionApp) {
+        await getServerLifecycle(retentionApp).shutdown();
+      }
+      await fsPromises.rm(storageDir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs HTTP requests with correlation identifiers and updates metrics', async () => {
+    const logCapture = createLogCapture();
+    const metricsRegistry = new Registry();
+    const loggingApp = createServer({
+      ...baseConfig,
+      logger: logCapture.logger,
+      metricsRegistry,
+    });
+
+    await request(loggingApp).get('/health').expect(200);
+    await flushLogs();
+
+    const httpLog = logCapture.entries.find(
+      (entry) => entry.event === 'http_request' && entry.route === '/health',
+    );
+    expect(httpLog).toBeDefined();
+    expect(typeof httpLog?.requestId).toBe('string');
+    expect((httpLog?.requestId as string).length).toBeGreaterThanOrEqual(16);
+    expect(httpLog?.status).toBe(200);
+    expect(httpLog?.durationMs).toBeGreaterThanOrEqual(0);
+
+    const metricsText = await metricsRegistry.metrics();
+    expect(metricsText).toContain('soipack_http_requests_total');
+    expect(metricsText).toContain('soipack_http_request_duration_seconds');
   });
 });
 

@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
 import os from 'os';
@@ -91,12 +91,65 @@ const getAuthContext = (req: Request): AuthContext => {
   return context;
 };
 
+const REQUEST_CONTEXT_SYMBOL = Symbol('soipack:request');
+
+interface RequestContext {
+  id: string;
+  startedAtNs: bigint;
+}
+
+const SERVER_CONTEXT_SYMBOL = Symbol('soipack:server');
+
+export interface ServerLifecycle {
+  waitForIdle: () => Promise<void>;
+  shutdown: () => Promise<void>;
+  runTenantRetention: (tenantId: string) => Promise<RetentionStats[]>;
+  runAllTenantRetention: () => Promise<Record<string, RetentionStats[]>>;
+  logger: Logger;
+}
+
+const setRequestContext = (req: Request, context: RequestContext): void => {
+  Reflect.set(req, REQUEST_CONTEXT_SYMBOL, context);
+};
+
+const getRequestContext = (req: Request): RequestContext | undefined =>
+  Reflect.get(req, REQUEST_CONTEXT_SYMBOL) as RequestContext | undefined;
+
+export const getServerLifecycle = (app: Express): ServerLifecycle => {
+  const context = Reflect.get(app, SERVER_CONTEXT_SYMBOL) as ServerLifecycle | undefined;
+  if (!context) {
+    throw new Error('Sunucu yaşam döngüsü bağlamı henüz yapılandırılmadı.');
+  }
+  return context;
+};
+
+const getRouteLabel = (req: Request): string => {
+  if (req.route && req.route.path) {
+    const base = req.baseUrl ?? '';
+    return `${base}${req.route.path}` || req.route.path;
+  }
+  if (req.baseUrl) {
+    return req.baseUrl;
+  }
+  if (req.originalUrl) {
+    return req.originalUrl.split('?')[0];
+  }
+  if (req.path) {
+    return req.path;
+  }
+  return req.url ?? 'unknown';
+};
+
 const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenantId}:${jobId}`;
 
 const normalizeScopeList = (scopes?: string[]): string[] =>
   (scopes ?? []).map((scope) => scope.trim()).filter((scope) => scope.length > 0);
 
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024;
+const DEFAULT_LICENSE_MAX_BYTES = 512 * 1024;
+const DEFAULT_LICENSE_HEADER_MAX_BYTES = Math.ceil((DEFAULT_LICENSE_MAX_BYTES * 4) / 3);
+const DEFAULT_LICENSE_CACHE_MAX_ENTRIES = 1024;
+const DEFAULT_LICENSE_CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 const DEFAULT_JWKS_TIMEOUT_MS = 5000;
 const DEFAULT_JWKS_BACKOFF_MS = 250;
 const DEFAULT_JWKS_MAX_RETRIES = 2;
@@ -521,20 +574,23 @@ type UploadPolicyMap = Record<string, UploadFieldPolicy>;
 export type UploadPolicyOverrides = Partial<Record<string, Partial<UploadFieldPolicy>>>;
 
 const matchesMimeType = (value: string, pattern: string): boolean => {
-  if (pattern === '*') {
+  const [rawType] = value.split(';', 1);
+  const normalizedValue = rawType.trim().toLowerCase();
+  const normalizedPattern = pattern.trim().toLowerCase();
+  if (normalizedPattern === '*') {
     return true;
   }
-  if (pattern.endsWith('/*')) {
-    const [type] = pattern.split('/', 1);
-    return value.startsWith(`${type}/`);
+  if (normalizedPattern.endsWith('/*')) {
+    const [type] = normalizedPattern.split('/', 1);
+    return normalizedValue.startsWith(`${type}/`);
   }
-  return value === pattern;
+  return normalizedValue === normalizedPattern;
 };
 
 const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => ({
   [LICENSE_FILE_FIELD]: {
     maxSizeBytes: Math.min(maxUploadSize, 512 * 1024),
-    allowedMimeTypes: ['application/octet-stream', 'text/plain'],
+    allowedMimeTypes: ['*'],
   },
   jira: {
     maxSizeBytes: maxUploadSize,
@@ -644,15 +700,14 @@ const ensureFileWithinPolicy = (
   }
 
   if (policy.allowedMimeTypes.length > 0) {
-    const allowed = policy.allowedMimeTypes.some((pattern) =>
-      matchesMimeType(file.mimetype, pattern),
-    );
+    const mimetype = file.mimetype || 'application/octet-stream';
+    const allowed = policy.allowedMimeTypes.some((pattern) => matchesMimeType(mimetype, pattern));
     if (!allowed) {
       throw new HttpError(
         415,
         'UNSUPPORTED_MEDIA_TYPE',
-        `${field} alanı için içerik türü kabul edilmiyor: ${file.mimetype || 'bilinmiyor'}.`,
-        { field, mimetype: file.mimetype },
+        `${field} alanı için içerik türü kabul edilmiyor: ${mimetype}.`,
+        { field, mimetype },
       );
     }
   }
@@ -816,6 +871,23 @@ export interface ServerConfig {
   healthcheckToken?: string;
   rateLimit?: RateLimitConfig;
   requireAdminClientCertificate?: boolean;
+  licenseLimits?: LicenseLimitsConfig;
+  licenseCache?: LicenseCacheConfig;
+  retentionScheduler?: RetentionSchedulerConfig;
+}
+
+export interface LicenseLimitsConfig {
+  maxBytes?: number;
+  headerMaxBytes?: number;
+}
+
+export interface LicenseCacheConfig {
+  maxEntries?: number;
+  maxAgeMs?: number;
+}
+
+export interface RetentionSchedulerConfig {
+  intervalMs: number;
 }
 
 export interface RemoteJwksConfig {
@@ -872,7 +944,7 @@ export interface RetentionPolicy {
 
 export type RetentionConfig = Partial<Record<RetentionTarget, RetentionPolicy>>;
 
-interface RetentionStats {
+export interface RetentionStats {
   target: RetentionTarget;
   removed: number;
   retained: number;
@@ -1337,7 +1409,7 @@ const createAsyncHandler =
 
 const createAuthMiddleware = (
   config: JwtAuthConfig,
-  options?: { tenantRateLimiter?: (tenantId: string) => void },
+  options?: { tenantRateLimiter?: (tenantId: string) => void; onAuthenticated?: (tenantId: string) => void },
 ) => {
   const { jwks, jwksUri } = config;
   const keyStore = jwks
@@ -1465,6 +1537,8 @@ const createAuthMiddleware = (
         options.tenantRateLimiter(tenantId);
       }
 
+      options?.onAuthenticated?.(tenantId);
+
       const userValue = payload[userClaim] ?? payload.sub;
       if (typeof userValue !== 'string' || userValue.trim() === '') {
         throw new HttpError(
@@ -1511,22 +1585,142 @@ export const createServer = (config: ServerConfig): Express => {
   interface LicenseCacheEntry {
     payload: LicensePayload;
     expiresAtMs: number | null;
+    addedAtMs: number;
   }
 
-  const toLicenseCacheEntry = (payload: LicensePayload): LicenseCacheEntry => {
+  const licenseMaxBytes = Math.max(1, config.licenseLimits?.maxBytes ?? DEFAULT_LICENSE_MAX_BYTES);
+  const licenseHeaderMaxBytes = Math.max(
+    1,
+    config.licenseLimits?.headerMaxBytes ?? DEFAULT_LICENSE_HEADER_MAX_BYTES,
+  );
+  const licenseCacheMaxEntries = Math.max(
+    1,
+    config.licenseCache?.maxEntries ?? DEFAULT_LICENSE_CACHE_MAX_ENTRIES,
+  );
+  const licenseCacheMaxAgeMs = Math.max(0, config.licenseCache?.maxAgeMs ?? DEFAULT_LICENSE_CACHE_MAX_AGE_MS);
+
+  const toLicenseCacheEntry = (payload: LicensePayload, addedAtMs: number): LicenseCacheEntry => {
     const expiresAt = payload.expiresAt ?? null;
     if (!expiresAt) {
-      return { payload, expiresAtMs: null };
+      return { payload, expiresAtMs: null, addedAtMs };
     }
     const parsed = Date.parse(expiresAt);
     return {
       payload,
       expiresAtMs: Number.isNaN(parsed) ? null : parsed,
+      addedAtMs,
     };
   };
 
   const licenseCache = new Map<string, LicenseCacheEntry>();
   const jobLicenses = new Map<string, VerifiedLicense>();
+  const knownTenants = new Set<string>();
+
+  const pruneLicenseCache = (nowMs: number): void => {
+    for (const [hash, entry] of licenseCache) {
+      if (entry.expiresAtMs !== null && entry.expiresAtMs <= nowMs) {
+        licenseCache.delete(hash);
+        continue;
+      }
+      if (licenseCacheMaxAgeMs > 0 && nowMs - entry.addedAtMs >= licenseCacheMaxAgeMs) {
+        licenseCache.delete(hash);
+      }
+    }
+    while (licenseCache.size > licenseCacheMaxEntries) {
+      const oldest = licenseCache.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      licenseCache.delete(oldest.value);
+    }
+  };
+
+  const getCachedLicense = (hash: string, nowMs: number): LicenseCacheEntry | undefined => {
+    const entry = licenseCache.get(hash);
+    if (!entry) {
+      return undefined;
+    }
+    if (entry.expiresAtMs !== null && entry.expiresAtMs <= nowMs) {
+      licenseCache.delete(hash);
+      throw new HttpError(402, 'LICENSE_INVALID', 'Lisans süresi dolmuş.');
+    }
+    if (licenseCacheMaxAgeMs > 0 && nowMs - entry.addedAtMs >= licenseCacheMaxAgeMs) {
+      licenseCache.delete(hash);
+      return undefined;
+    }
+    licenseCache.delete(hash);
+    licenseCache.set(hash, entry);
+    return entry;
+  };
+
+  const storeLicenseCacheEntry = (hash: string, payload: LicensePayload, nowMs: number): void => {
+    licenseCache.set(hash, toLicenseCacheEntry(payload, nowMs));
+    pruneLicenseCache(nowMs);
+  };
+
+  const normalizeLicenseError = (error: unknown): HttpError => {
+    if (error instanceof HttpError) {
+      return error;
+    }
+    if (error instanceof LicenseError) {
+      return new HttpError(402, 'LICENSE_INVALID', error.message);
+    }
+    const message = error instanceof Error ? error.message : 'Lisans doğrulaması tamamlanamadı.';
+    return new HttpError(500, 'LICENSE_VERIFY_FAILED', message);
+  };
+
+  const resolveLicenseWithCache = async (
+    hash: string,
+    nowMs: number,
+    loader: () => Promise<LicensePayload>,
+  ): Promise<VerifiedLicense> => {
+    const cached = getCachedLicense(hash, nowMs);
+    if (cached) {
+      return { hash, payload: cached.payload };
+    }
+
+    try {
+      const payload = await loader();
+      storeLicenseCacheEntry(hash, payload, nowMs);
+      return { hash, payload };
+    } catch (error) {
+      throw normalizeLicenseError(error);
+    }
+  };
+
+  const computeFileHash = async (filePath: string): Promise<string> => {
+    const hash = createHash('sha256');
+    return new Promise<string>((resolve, reject) => {
+      const stream = fs.createReadStream(filePath);
+      stream.on('data', (chunk: Buffer | string) => {
+        if (typeof chunk === 'string') {
+          hash.update(Buffer.from(chunk));
+        } else {
+          hash.update(chunk);
+        }
+      });
+      stream.on('error', reject);
+      stream.on('end', () => {
+        resolve(hash.digest('hex'));
+      });
+    });
+  };
+
+  const ensureLicenseWithinLimit = (size: number): void => {
+    if (size > licenseMaxBytes) {
+      throw new HttpError(413, 'LICENSE_TOO_LARGE', 'Lisans dosyası izin verilen boyutu aşıyor.', {
+        limit: licenseMaxBytes,
+      });
+    }
+  };
+
+  const estimateBase64DecodedSize = (value: string): number => {
+    if (!value) {
+      return 0;
+    }
+    const length = Buffer.byteLength(value, 'utf8');
+    return Math.floor((length * 3) / 4);
+  };
 
   const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
   const metricsRegistry = config.metricsRegistry ?? new Registry();
@@ -1558,37 +1752,57 @@ export const createServer = (config: ServerConfig): Express => {
     registers: [metricsRegistry],
   });
 
-  const verifyLicenseContent = async (content: Buffer): Promise<VerifiedLicense> => {
-    const hash = createHash('sha256').update(content).digest('hex');
-    const cached = licenseCache.get(hash);
-    if (cached) {
-      if (cached.payload.expiresAt && cached.expiresAtMs !== null && cached.expiresAtMs <= Date.now()) {
-        licenseCache.delete(hash);
-        throw new HttpError(402, 'LICENSE_INVALID', 'Lisans süresi dolmuş.');
-      }
-      return { hash, payload: cached.payload };
-    }
+  const httpRequestCounter = new Counter({
+    name: 'soipack_http_requests_total',
+    help: 'HTTP isteklerinin toplam sayısı.',
+    labelNames: ['method', 'route', 'status'] as const,
+    registers: [metricsRegistry],
+  });
 
-    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-license-'));
-    const tempPath = path.join(tempDir, 'license.key');
-    try {
-      await fsPromises.writeFile(tempPath, content);
-      const payload = await verifyLicenseFile(tempPath, { publicKey: licensePublicKey });
-      licenseCache.set(hash, toLicenseCacheEntry(payload));
-      return { hash, payload };
-    } catch (error) {
-      if (error instanceof LicenseError) {
-        throw new HttpError(402, 'LICENSE_INVALID', error.message);
+  const httpRequestDurationHistogram = new Histogram({
+    name: 'soipack_http_request_duration_seconds',
+    help: 'HTTP isteklerinin tamamlanma süreleri (saniye).',
+    labelNames: ['method', 'route', 'status'] as const,
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+    registers: [metricsRegistry],
+  });
+
+  const verifyLicenseFromBuffer = async (content: Buffer): Promise<VerifiedLicense> => {
+    ensureLicenseWithinLimit(content.byteLength);
+    const hash = createHash('sha256').update(content).digest('hex');
+    const nowMs = Date.now();
+    return resolveLicenseWithCache(hash, nowMs, async () => {
+      const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-license-'));
+      const tempPath = path.join(tempDir, 'license.key');
+      try {
+        await fsPromises.writeFile(tempPath, content);
+        return await verifyLicenseFile(tempPath, { publicKey: licensePublicKey });
+      } finally {
+        await fsPromises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
       }
-      const message = error instanceof Error ? error.message : 'Lisans doğrulaması tamamlanamadı.';
-      throw new HttpError(500, 'LICENSE_VERIFY_FAILED', message);
-    } finally {
-      await fsPromises.rm(tempDir, { recursive: true, force: true });
+    });
+  };
+
+  const verifyLicenseFromFile = async (filePath: string): Promise<VerifiedLicense> => {
+    let size: number;
+    try {
+      const stats = await fsPromises.stat(filePath);
+      size = stats.size;
+    } catch (error) {
+      throw new HttpError(400, 'LICENSE_INVALID', 'Lisans dosyası okunamadı.', {
+        cause: error instanceof Error ? error.message : String(error),
+      });
     }
+    ensureLicenseWithinLimit(size);
+    const hash = await computeFileHash(filePath);
+    const nowMs = Date.now();
+    return resolveLicenseWithCache(hash, nowMs, () =>
+      verifyLicenseFile(filePath, { publicKey: licensePublicKey }),
+    );
   };
 
   const registerJobLicense = (tenantId: string, jobId: string, license: VerifiedLicense): void => {
-    licenseCache.set(license.hash, toLicenseCacheEntry(license.payload));
+    storeLicenseCacheEntry(license.hash, license.payload, Date.now());
     jobLicenses.set(createScopedJobKey(tenantId, jobId), license);
   };
 
@@ -1618,11 +1832,150 @@ export const createServer = (config: ServerConfig): Express => {
     registerJobLicense(metadata.tenantId, metadata.id, { hash: metadata.license.hash, payload });
   };
 
+  const collectTenantIdsForRetention = async (): Promise<string[]> => {
+    const tenants = new Set<string>(knownTenants);
+    const directoriesToScan = [
+      storage.directories.workspaces,
+      storage.directories.analyses,
+      storage.directories.reports,
+      storage.directories.packages,
+    ];
+    for (const directory of directoriesToScan) {
+      try {
+        const exists = await storage.fileExists(directory);
+        if (!exists) {
+          continue;
+        }
+        const entries = await storage.listSubdirectories(directory);
+        entries.forEach((entry) => tenants.add(entry));
+      } catch (error) {
+        logger.warn(
+          {
+            event: 'retention_scan_skipped',
+            directory,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Saklama taraması sırasında dizin okunamadı.',
+        );
+      }
+    }
+    return [...tenants];
+  };
+
+  type RetentionSource = 'manual' | 'scheduler';
+
+  const runTenantRetention = async (
+    tenantId: string,
+    source: RetentionSource = 'manual',
+  ): Promise<RetentionStats[]> => {
+    try {
+      const summary = await runRetentionSweep(
+        storage,
+        queue,
+        tenantId,
+        config.retention ?? {},
+        jobLicenses,
+      );
+      logger.info({ event: 'retention_sweep', tenantId, source, summary });
+      return summary;
+    } catch (error) {
+      logger.error(
+        {
+          event: 'retention_sweep_failed',
+          tenantId,
+          source,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Saklama temizliği tamamlanamadı.',
+      );
+      throw error;
+    }
+  };
+
+  const runAllTenantRetention = async (
+    source: RetentionSource = 'scheduler',
+  ): Promise<Record<string, RetentionStats[]>> => {
+    const tenantIds = await collectTenantIdsForRetention();
+    const results: Record<string, RetentionStats[]> = {};
+    for (const tenantId of tenantIds) {
+      try {
+        results[tenantId] = await runTenantRetention(tenantId, source);
+      } catch (error) {
+        logger.warn(
+          {
+            event: 'retention_sweep_tenant_skipped',
+            tenantId,
+            source,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Kiracı saklama temizliği bir hata nedeniyle atlandı.',
+        );
+      }
+    }
+    return results;
+  };
+
+  let retentionSweepTimer: NodeJS.Timeout | undefined;
+  let retentionSweepPromise: Promise<void> | null = null;
+  let retentionSweepRunning = false;
+
+  const hasConfiguredRetention = Object.values(config.retention ?? {}).some(
+    (policy) => policy && policy.maxAgeMs !== undefined,
+  );
+
+  const triggerScheduledRetention = (): Promise<void> => {
+    if (retentionSweepRunning) {
+      return retentionSweepPromise ?? Promise.resolve();
+    }
+    retentionSweepRunning = true;
+    const execution = runAllTenantRetention('scheduler')
+      .then(() => undefined)
+      .catch((error) => {
+        logger.error(
+          {
+            event: 'retention_scheduler_failed',
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Planlı saklama temizliği sırasında hata oluştu.',
+        );
+      })
+      .finally(() => {
+        retentionSweepRunning = false;
+        retentionSweepPromise = null;
+      });
+    retentionSweepPromise = execution;
+    return execution;
+  };
+
+  if (
+    config.retentionScheduler?.intervalMs &&
+    config.retentionScheduler.intervalMs > 0 &&
+    hasConfiguredRetention
+  ) {
+    retentionSweepTimer = setInterval(() => {
+      void triggerScheduledRetention();
+    }, config.retentionScheduler.intervalMs);
+    logger.info(
+      {
+        event: 'retention_scheduler_started',
+        intervalMs: config.retentionScheduler.intervalMs,
+      },
+      'Saklama temizliği zamanlayıcısı etkinleştirildi.',
+    );
+  }
+
   const requireLicenseToken = async (req: Request, fileMap?: FileMap): Promise<VerifiedLicense> => {
     const headerValue = req.get(LICENSE_HEADER);
     if (headerValue) {
+      const estimatedSize = estimateBase64DecodedSize(headerValue);
+      if (Buffer.byteLength(headerValue, 'utf8') > licenseHeaderMaxBytes || estimatedSize > licenseMaxBytes) {
+        throw new HttpError(413, 'LICENSE_TOO_LARGE', 'Lisans belirteci izin verilen boyutu aşıyor.', {
+          limit: licenseMaxBytes,
+        });
+      }
       const decoded = decodeBase64Strict(headerValue, 'Lisans belirteci');
-      return verifyLicenseContent(decoded);
+      ensureLicenseWithinLimit(decoded.byteLength);
+      return verifyLicenseFromBuffer(decoded);
     }
 
     if (fileMap) {
@@ -1631,8 +1984,8 @@ export const createServer = (config: ServerConfig): Express => {
         const [licenseFile] = licenseFiles;
         delete fileMap[LICENSE_FILE_FIELD];
         try {
-          const buffer = await fsPromises.readFile(licenseFile.path);
-          return await verifyLicenseContent(buffer);
+          const license = await verifyLicenseFromFile(licenseFile.path);
+          return license;
         } finally {
           await fsPromises.rm(licenseFile.path, { force: true }).catch(() => undefined);
         }
@@ -1669,6 +2022,52 @@ export const createServer = (config: ServerConfig): Express => {
     throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);
   }) as unknown as typeof app.listen);
 
+  app.use((req, res, next) => {
+    const requestId = randomUUID();
+    const startedAtNs = process.hrtime.bigint();
+    setRequestContext(req, { id: requestId, startedAtNs });
+    res.setHeader('X-Request-Id', requestId);
+
+    let completed = false;
+    const finalize = (result: 'finish' | 'close') => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+
+      const durationSeconds = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000_000;
+      const method = req.method?.toUpperCase() ?? 'UNKNOWN';
+      const status = res.statusCode;
+      let tenantId: string | undefined;
+      try {
+        tenantId = getAuthContext(req).tenantId;
+      } catch {
+        tenantId = undefined;
+      }
+      const route = getRouteLabel(req);
+      const labels = { method, route, status: `${status}` } as const;
+      httpRequestCounter.inc(labels);
+      httpRequestDurationHistogram.observe(labels, durationSeconds);
+
+      logger.info({
+        event: 'http_request',
+        requestId,
+        method,
+        route,
+        status,
+        durationMs: durationSeconds * 1000,
+        tenantId,
+        remoteAddress: req.ip || req.socket.remoteAddress || 'unknown',
+        result,
+      });
+    };
+
+    res.on('finish', () => finalize('finish'));
+    res.on('close', () => finalize('close'));
+
+    next();
+  });
+
   const ipRateLimiter = config.rateLimit?.ip
     ? createSlidingWindowRateLimiter('ip', config.rateLimit.ip)
     : undefined;
@@ -1691,7 +2090,12 @@ export const createServer = (config: ServerConfig): Express => {
     : undefined;
 
   const adminScopes = normalizeScopeList(config.auth.adminScopes);
-  const requireAuth = createAuthMiddleware(config.auth, { tenantRateLimiter });
+  const requireAuth = createAuthMiddleware(config.auth, {
+    tenantRateLimiter,
+    onAuthenticated: (tenantId: string) => {
+      knownTenants.add(tenantId);
+    },
+  });
   const ensureAdminScope = (req: Request): void => {
     const { hasAdminScope } = getAuthContext(req);
     if (adminScopes.length > 0 && !hasAdminScope) {
@@ -1995,13 +2399,7 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
       const { tenantId } = getAuthContext(req);
-      const summary = await runRetentionSweep(
-        storage,
-        queue,
-        tenantId,
-        config.retention ?? {},
-        jobLicenses,
-      );
+      const summary = await runTenantRetention(tenantId, 'manual');
       res.json({ status: 'ok', summary });
     }),
   );
@@ -2683,6 +3081,25 @@ export const createServer = (config: ServerConfig): Express => {
       },
     });
   });
+
+  const lifecycle: ServerLifecycle = {
+    waitForIdle: () => queue.waitForIdle(),
+    shutdown: async () => {
+      if (retentionSweepTimer) {
+        clearInterval(retentionSweepTimer);
+        retentionSweepTimer = undefined;
+      }
+      if (retentionSweepPromise) {
+        await retentionSweepPromise.catch(() => undefined);
+      }
+      await fsPromises.rm(uploadTempDir, { recursive: true, force: true }).catch(() => undefined);
+    },
+    runTenantRetention: (tenantId: string) => runTenantRetention(tenantId, 'manual'),
+    runAllTenantRetention: () => runAllTenantRetention('manual'),
+    logger,
+  };
+
+  Reflect.set(app, SERVER_CONTEXT_SYMBOL, lifecycle);
 
   return app;
 };
