@@ -14,11 +14,16 @@ services:
       SOIPACK_AUTH_USER_CLAIM: ${SOIPACK_AUTH_USER_CLAIM:-sub}
       SOIPACK_AUTH_REQUIRED_SCOPES: ${SOIPACK_AUTH_REQUIRED_SCOPES:-soipack.api}
       SOIPACK_STORAGE_DIR: /app/data
+      SOIPACK_SIGNING_KEY_PATH: /run/secrets/soipack-signing.pem
+      SOIPACK_LICENSE_PUBLIC_KEY_PATH: /run/secrets/soipack-license.pub
+      SOIPACK_HEALTHCHECK_TOKEN: ${SOIPACK_HEALTHCHECK_TOKEN:?SOIPACK_HEALTHCHECK_TOKEN tanımlanmalıdır}
       PORT: ${PORT:-3000}
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
+      # ./secrets klasöründe soipack-signing.pem ve soipack-license.pub dosyalarını bekler
+      - ./secrets:/run/secrets:ro
     restart: unless-stopped
     healthcheck:
       test:
