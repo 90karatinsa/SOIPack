@@ -94,6 +94,17 @@ SOIPack API'si, gönderilen her iş isteğinin geçerli bir lisans ile yetkilend
 Sunucu, her istekte lisansın son kullanma tarihini doğrular; önbellekte tutulan lisanslar süresi dolduğunda otomatik olarak temizlenir.
 Geçersiz ya da süresi dolmuş lisanslar `402` durum kodu ve `LICENSE_INVALID` hata kodu ile reddedilir; lisans başlığı olmadan gönderilen isteklerde ise `401` durum kodu ve `LICENSE_REQUIRED` mesajı döner.
 
+Pipeline uç noktaları ayrıca lisansın yetkilendirdiği özelliklere göre sınırlandırılır:
+
+| Uç nokta | Gerekli özellik |
+| --- | --- |
+| `/v1/import` | `import` |
+| `/v1/analyze` | `analyze` |
+| `/v1/report` | `report` |
+| `/v1/pack` | `pack` |
+
+İlgili özellikler lisansın `features` alanında yer almıyorsa API `403 LICENSE_FEATURE_REQUIRED` döndürür ve `error.details.requiredFeature` alanında beklenen özelliği bildirir.
+
 #### Sunucu API hata kodları
 
 REST API, kimlik doğrulama ve kuyruk/depolama katmanında karşılaşılabilecek durumlar için yapılandırılmış hata gövdeleri döndürür. Sık görülen kodların özeti aşağıdadır:
