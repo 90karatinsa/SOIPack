@@ -126,6 +126,7 @@ describe('@soipack/server REST API', () => {
   const audience = 'soipack-api';
   const tenantClaim = 'tenant';
   const requiredScope = 'soipack.api';
+  const adminScope = 'soipack.admin';
   let token: string;
   let storageDir: string;
   let app: ReturnType<typeof createServer>;
@@ -142,7 +143,7 @@ describe('@soipack/server REST API', () => {
   const createAccessToken = async ({
     tenant = tenantId,
     subject = 'user-1',
-    scope = requiredScope,
+    scope = `${requiredScope} ${adminScope}`,
     expiresIn = '2h',
   }: {
     tenant?: string;
@@ -198,6 +199,7 @@ describe('@soipack/server REST API', () => {
         tenantClaim,
         jwks,
         requiredScopes: [requiredScope],
+        adminScopes: [adminScope],
         clockToleranceSeconds: 0,
       },
       storageDir,
@@ -260,6 +262,34 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${otherScopeToken}`)
       .expect(403);
     expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('requires admin scope for privileged endpoints', async () => {
+    const userToken = await createAccessToken({ scope: requiredScope });
+
+    const cleanupForbidden = await request(app)
+      .post('/v1/admin/cleanup')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(403);
+    expect(cleanupForbidden.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const metricsForbidden = await request(app)
+      .get('/metrics')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(403);
+    expect(metricsForbidden.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const adminToken = await createAccessToken({ scope: `${requiredScope} ${adminScope}` });
+
+    await request(app)
+      .post('/v1/admin/cleanup')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    await request(app)
+      .get('/metrics')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
   });
 
   it('rejects expired tokens', async () => {

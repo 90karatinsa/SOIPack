@@ -75,6 +75,10 @@ const start = async (): Promise<void> => {
     ?.split(',')
     .map((scope) => scope.trim())
     .filter((scope) => scope.length > 0);
+  const authAdminScopes = process.env.SOIPACK_AUTH_ADMIN_SCOPES
+    ?.split(',')
+    .map((scope) => scope.trim())
+    .filter((scope) => scope.length > 0);
 
   const clockToleranceSource = process.env.SOIPACK_AUTH_CLOCK_TOLERANCE_SECONDS;
   let authClockToleranceSeconds: number | undefined;
@@ -103,6 +107,9 @@ const start = async (): Promise<void> => {
   }
   if (authRequiredScopes && authRequiredScopes.length > 0) {
     authConfig.requiredScopes = authRequiredScopes;
+  }
+  if (authAdminScopes && authAdminScopes.length > 0) {
+    authConfig.adminScopes = authAdminScopes;
   }
   if (authClockToleranceSeconds !== undefined) {
     authConfig.clockToleranceSeconds = authClockToleranceSeconds;
