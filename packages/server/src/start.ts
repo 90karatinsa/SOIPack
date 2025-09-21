@@ -5,7 +5,17 @@ import process from 'process';
 import dotenv from 'dotenv';
 import type { JSONWebKeySet } from 'jose';
 
-import { JwtAuthConfig, RateLimitConfig, RetentionConfig, createHttpsServer, createServer } from './index';
+import {
+  JwtAuthConfig,
+  LicenseCacheConfig,
+  LicenseLimitsConfig,
+  RateLimitConfig,
+  RetentionConfig,
+  RetentionSchedulerConfig,
+  createHttpsServer,
+  createServer,
+  getServerLifecycle,
+} from './index';
 import { createCommandScanner } from './scanner';
 import type { FileScanner } from './scanner';
 
@@ -71,6 +81,10 @@ const parseNonNegativeInteger = (value: string, label: string): number => {
 };
 
 const DEFAULT_MAX_QUEUED_JOBS_PER_TENANT = 5;
+const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_HTTP_HEADERS_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_HTTP_KEEP_ALIVE_TIMEOUT_MS = 5 * 1000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30 * 1000;
 
 export const start = async (): Promise<void> => {
   const authIssuer = process.env.SOIPACK_AUTH_ISSUER;
@@ -344,6 +358,82 @@ export const start = async (): Promise<void> => {
     retention.packages = { maxAgeMs: packagesDays };
   }
 
+  const licenseMaxBytesSource = process.env.SOIPACK_LICENSE_MAX_BYTES;
+  let licenseMaxBytes: number | undefined;
+  if (licenseMaxBytesSource) {
+    licenseMaxBytes = parsePositiveInteger(licenseMaxBytesSource, 'SOIPACK_LICENSE_MAX_BYTES');
+  }
+
+  const licenseHeaderMaxBytesSource = process.env.SOIPACK_LICENSE_HEADER_MAX_BYTES;
+  let licenseHeaderMaxBytes: number | undefined;
+  if (licenseHeaderMaxBytesSource) {
+    licenseHeaderMaxBytes = parsePositiveInteger(
+      licenseHeaderMaxBytesSource,
+      'SOIPACK_LICENSE_HEADER_MAX_BYTES',
+    );
+  } else if (licenseMaxBytes !== undefined) {
+    licenseHeaderMaxBytes = Math.ceil((licenseMaxBytes * 4) / 3);
+  }
+
+  let licenseLimits: LicenseLimitsConfig | undefined;
+  if (licenseMaxBytes !== undefined || licenseHeaderMaxBytes !== undefined) {
+    licenseLimits = {};
+    if (licenseMaxBytes !== undefined) {
+      licenseLimits.maxBytes = licenseMaxBytes;
+    }
+    if (licenseHeaderMaxBytes !== undefined) {
+      licenseLimits.headerMaxBytes = licenseHeaderMaxBytes;
+    }
+  }
+
+  const licenseCacheMaxEntriesSource = process.env.SOIPACK_LICENSE_CACHE_MAX_ENTRIES;
+  const licenseCacheMaxAgeSource = process.env.SOIPACK_LICENSE_CACHE_MAX_AGE_MS;
+  let licenseCache: LicenseCacheConfig | undefined;
+  const licenseCacheCandidate: LicenseCacheConfig = {};
+  if (licenseCacheMaxEntriesSource) {
+    licenseCacheCandidate.maxEntries = parsePositiveInteger(
+      licenseCacheMaxEntriesSource,
+      'SOIPACK_LICENSE_CACHE_MAX_ENTRIES',
+    );
+  }
+  if (licenseCacheMaxAgeSource) {
+    licenseCacheCandidate.maxAgeMs = parseNonNegativeInteger(
+      licenseCacheMaxAgeSource,
+      'SOIPACK_LICENSE_CACHE_MAX_AGE_MS',
+    );
+  }
+  if (Object.keys(licenseCacheCandidate).length > 0) {
+    licenseCache = licenseCacheCandidate;
+  }
+
+  const retentionSweepIntervalSource = process.env.SOIPACK_RETENTION_SWEEP_INTERVAL_MS;
+  let retentionScheduler: RetentionSchedulerConfig | undefined;
+  if (retentionSweepIntervalSource) {
+    const intervalMs = parsePositiveInteger(
+      retentionSweepIntervalSource,
+      'SOIPACK_RETENTION_SWEEP_INTERVAL_MS',
+    );
+    retentionScheduler = { intervalMs };
+  }
+
+  const requestTimeoutSource = process.env.SOIPACK_HTTP_REQUEST_TIMEOUT_MS;
+  const headersTimeoutSource = process.env.SOIPACK_HTTP_HEADERS_TIMEOUT_MS;
+  const keepAliveTimeoutSource = process.env.SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS;
+  const shutdownTimeoutSource = process.env.SOIPACK_SHUTDOWN_TIMEOUT_MS;
+
+  const requestTimeoutMs = requestTimeoutSource
+    ? parsePositiveInteger(requestTimeoutSource, 'SOIPACK_HTTP_REQUEST_TIMEOUT_MS')
+    : DEFAULT_HTTP_REQUEST_TIMEOUT_MS;
+  const headersTimeoutMs = headersTimeoutSource
+    ? parsePositiveInteger(headersTimeoutSource, 'SOIPACK_HTTP_HEADERS_TIMEOUT_MS')
+    : DEFAULT_HTTP_HEADERS_TIMEOUT_MS;
+  const keepAliveTimeoutMs = keepAliveTimeoutSource
+    ? parsePositiveInteger(keepAliveTimeoutSource, 'SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS')
+    : DEFAULT_HTTP_KEEP_ALIVE_TIMEOUT_MS;
+  const shutdownTimeoutMs = shutdownTimeoutSource
+    ? parsePositiveInteger(shutdownTimeoutSource, 'SOIPACK_SHUTDOWN_TIMEOUT_MS')
+    : DEFAULT_SHUTDOWN_TIMEOUT_MS;
+
   const jsonBodyLimitSource = process.env.SOIPACK_MAX_JSON_BODY_BYTES;
   let jsonBodyLimitBytes: number | undefined;
   if (jsonBodyLimitSource) {
@@ -448,6 +538,9 @@ export const start = async (): Promise<void> => {
     jsonBodyLimitBytes,
     rateLimit,
     requireAdminClientCertificate,
+    licenseLimits,
+    licenseCache,
+    retentionScheduler,
   });
 
   const httpsServer = createHttpsServer(app, {
@@ -456,9 +549,104 @@ export const start = async (): Promise<void> => {
     clientCa: tlsClientCa,
   });
 
+  httpsServer.requestTimeout = requestTimeoutMs;
+  httpsServer.headersTimeout = headersTimeoutMs;
+  httpsServer.keepAliveTimeout = keepAliveTimeoutMs;
+
+  const lifecycle = getServerLifecycle(app);
+
+  const closeServer = (): Promise<void> =>
+    new Promise((resolve, reject) => {
+      httpsServer.close((error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+    });
+
+  const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
+  let shuttingDown = false;
+
+  const initiateShutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    lifecycle.logger.info({ event: 'shutdown_signal', signal }, 'Kapatma sinyali alındı.');
+    const timeout = setTimeout(() => {
+      lifecycle.logger.error(
+        { event: 'shutdown_timeout', timeoutMs: shutdownTimeoutMs },
+        'Graceful shutdown zaman aşımına uğradı; süreç sonlandırılıyor.',
+      );
+      process.exit(1);
+    }, shutdownTimeoutMs);
+
+    const closePromise = closeServer().catch((error) => {
+      lifecycle.logger.error(
+        {
+          event: 'shutdown_close_failed',
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'HTTPS sunucusu kapatılamadı.',
+      );
+      throw error;
+    });
+
+    const drainPromise = lifecycle.waitForIdle().catch((error) => {
+      lifecycle.logger.error(
+        {
+          event: 'shutdown_queue_failed',
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'İş kuyruğu boşaltılamadı.',
+      );
+      throw error;
+    });
+
+    const cleanupPromise = lifecycle.shutdown().catch((error) => {
+      lifecycle.logger.error(
+        {
+          event: 'shutdown_cleanup_failed',
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Sunucu kapanış temizliği tamamlanamadı.',
+      );
+      throw error;
+    });
+
+    Promise.all([closePromise, drainPromise, cleanupPromise])
+      .then(() => {
+        clearTimeout(timeout);
+        lifecycle.logger.info({ event: 'shutdown_complete' }, 'Sunucu başarıyla kapatıldı.');
+        process.exit(0);
+      })
+      .catch(() => {
+        clearTimeout(timeout);
+        lifecycle.logger.error({ event: 'shutdown_failed' }, 'Sunucu kapatma işlemi tamamlanamadı.');
+        process.exit(1);
+      });
+  };
+
+  signals.forEach((signal) => {
+    process.on(signal, () => initiateShutdown(signal));
+  });
+
   httpsServer.listen(port, () => {
     // eslint-disable-next-line no-console
     console.log(`SOIPack API HTTPS olarak ${port} portunda dinliyor.`);
+    lifecycle.logger.info(
+      {
+        event: 'server_listening',
+        port,
+        requestTimeoutMs,
+        headersTimeoutMs,
+        keepAliveTimeoutMs,
+      },
+      'SOIPack API HTTPS dinleyicisi başlatıldı.',
+    );
   });
 };
 

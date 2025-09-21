@@ -3,6 +3,66 @@ import path from 'path';
 
 import { HttpError } from './errors';
 
+const DIRECTORY_MODE = 0o750;
+const FILE_MODE = 0o640;
+
+const CURRENT_UID = typeof process.getuid === 'function' ? process.getuid() : undefined;
+const CURRENT_GID = typeof process.getgid === 'function' ? process.getgid() : undefined;
+
+const shouldIgnoreFsError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EINVAL' || code === 'ENOSYS';
+};
+
+const safeChmodSync = (target: string, mode: number): void => {
+  try {
+    fs.chmodSync(target, mode);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
+const safeChmod = async (target: string, mode: number): Promise<void> => {
+  try {
+    await fsPromises.chmod(target, mode);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
+const normalizeOwnershipSync = (target: string): void => {
+  if (CURRENT_UID === undefined || CURRENT_GID === undefined) {
+    return;
+  }
+  try {
+    fs.chownSync(target, CURRENT_UID, CURRENT_GID);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
+const normalizeOwnership = async (target: string): Promise<void> => {
+  if (CURRENT_UID === undefined || CURRENT_GID === undefined) {
+    return;
+  }
+  try {
+    await fsPromises.chown(target, CURRENT_UID, CURRENT_GID);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
 export interface PipelineDirectories {
   base: string;
   uploads: string;
@@ -54,7 +114,9 @@ export class FileSystemStorage implements StorageProvider {
 
     this.directories = directories;
     Object.values(directories).forEach((directory) => {
-      fs.mkdirSync(directory, { recursive: true });
+      fs.mkdirSync(directory, { recursive: true, mode: DIRECTORY_MODE });
+      safeChmodSync(directory, DIRECTORY_MODE);
+      normalizeOwnershipSync(directory);
     });
   }
 
@@ -74,6 +136,8 @@ export class FileSystemStorage implements StorageProvider {
         const safeName = sanitizeFileName(file.originalname, `${field}-${index}`);
         const targetPath = path.join(targetDir, safeName);
         await fsPromises.copyFile(file.path, targetPath);
+        await safeChmod(targetPath, FILE_MODE);
+        await normalizeOwnership(targetPath);
         await fsPromises.rm(file.path, { force: true });
         if (!result[field]) {
           result[field] = [];
@@ -86,7 +150,9 @@ export class FileSystemStorage implements StorageProvider {
   }
 
   public async ensureDirectory(target: string): Promise<void> {
-    await fsPromises.mkdir(target, { recursive: true });
+    await fsPromises.mkdir(target, { recursive: true, mode: DIRECTORY_MODE });
+    await safeChmod(target, DIRECTORY_MODE);
+    await normalizeOwnership(target);
   }
 
   public async removeDirectory(target: string): Promise<void> {
