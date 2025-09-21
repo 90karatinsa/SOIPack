@@ -1,14 +1,26 @@
 {
-  "psac": {
+  "plan": {
     "title": "Plan for Software Aspects of Certification",
     "path": "artifacts/PSAC.pdf"
   },
-  "sdp": {
-    "title": "Software Development Plan",
-    "path": "artifacts/SDP.pdf"
+  "analysis": {
+    "title": "Safety Assessment Summary",
+    "path": "artifacts/SafetyAnalysis.pdf"
   },
-  "svp": {
-    "title": "Software Verification Plan",
-    "path": "artifacts/SVVP.pdf"
+  "test": {
+    "title": "Requirements-Based Test Results",
+    "path": "artifacts/TestResults.xml"
+  },
+  "trace": {
+    "title": "Traceability Matrix",
+    "path": "artifacts/TraceMatrix.csv"
+  },
+  "coverage_stmt": {
+    "title": "Statement Coverage Report",
+    "path": "artifacts/coverage/lcov.info"
+  },
+  "cm_record": {
+    "title": "Configuration Baseline",
+    "path": "artifacts/CM_Baseline.pdf"
   }
 }

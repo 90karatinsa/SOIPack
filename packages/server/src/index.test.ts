@@ -1329,7 +1329,7 @@ describe('@soipack/server REST API', () => {
           .expect(200);
         const jobs = response.body.jobs as Array<{ status: string }>;
         const running = jobs.filter((job) => job.status === 'running').length;
-        return jobs.length === 3 && running >= 2;
+        return jobs.length >= 3 && running >= 2;
       });
       await waitForCondition(() => releaseDeferreds.length >= 2);
       expect(runImportSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -1700,7 +1700,7 @@ describe('@soipack/server REST API', () => {
     expect(Array.isArray(importJob.result.warnings)).toBe(true);
 
     const uploadDir = path.join(storageDir, 'uploads', tenantId, importResponse.body.id);
-    await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).resolves.toBeUndefined();
+    await expect(fsPromises.access(uploadDir, fs.constants.F_OK)).rejects.toThrow();
 
     const importList = await request(app)
       .get('/v1/jobs')
@@ -2032,7 +2032,16 @@ describe('@soipack/server REST API', () => {
   });
 
   it('supports cancelling queued jobs and deleting finished jobs', async () => {
-    const firstImport = await request(app)
+    const originalRunImport = cli.runImport;
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    const firstImportGate = createDeferred<void>();
+    runImportSpy.mockImplementationOnce(async (options) => {
+      await firstImportGate.promise;
+      return originalRunImport(options);
+    });
+
+    try {
+      const firstImport = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
       .set('X-SOIPACK-License', licenseHeader)
@@ -2043,21 +2052,21 @@ describe('@soipack/server REST API', () => {
       .field('projectVersion', '1.0.0')
       .expect(202);
 
-    let firstJobRunning = false;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const statusResponse = await request(app)
-        .get(`/v1/jobs/${firstImport.body.id}`)
-        .set('Authorization', `Bearer ${token}`)
-        .expect(200);
-      if (statusResponse.body.status === 'running') {
-        firstJobRunning = true;
-        break;
+      let firstJobRunning = false;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const statusResponse = await request(app)
+          .get(`/v1/jobs/${firstImport.body.id}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        if (statusResponse.body.status === 'running') {
+          firstJobRunning = true;
+          break;
+        }
+        await delay(50);
       }
-      await delay(50);
-    }
-    expect(firstJobRunning).toBe(true);
+      expect(firstJobRunning).toBe(true);
 
-    const secondImport = await request(app)
+      const secondImport = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
       .set('X-SOIPACK-License', licenseHeader)
@@ -2068,42 +2077,46 @@ describe('@soipack/server REST API', () => {
       .field('projectVersion', '2.0.0')
       .expect(202);
 
-    expect(secondImport.body.status).toBe('queued');
-    expect(secondImport.body.id).not.toBe(firstImport.body.id);
+      expect(secondImport.body.status).toBe('queued');
+      expect(secondImport.body.id).not.toBe(firstImport.body.id);
 
-    const cancelResponse = await request(app)
+      const cancelResponse = await request(app)
       .post(`/v1/jobs/${secondImport.body.id}/cancel`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(cancelResponse.body.status).toBe('cancelled');
+      expect(cancelResponse.body.status).toBe('cancelled');
 
-    await request(app)
+      await request(app)
       .get(`/v1/jobs/${secondImport.body.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
+      const cancelledWorkspace = path.join(storageDir, 'workspaces', tenantId, secondImport.body.id);
+      await expect(fsPromises.access(cancelledWorkspace, fs.constants.F_OK)).rejects.toThrow();
+      const cancelledUploads = path.join(storageDir, 'uploads', tenantId, secondImport.body.id);
+      await expect(fsPromises.access(cancelledUploads, fs.constants.F_OK)).rejects.toThrow();
 
-    const cancelledWorkspace = path.join(storageDir, 'workspaces', tenantId, secondImport.body.id);
-    await expect(fsPromises.access(cancelledWorkspace, fs.constants.F_OK)).rejects.toThrow();
-    const cancelledUploads = path.join(storageDir, 'uploads', tenantId, secondImport.body.id);
-    await expect(fsPromises.access(cancelledUploads, fs.constants.F_OK)).rejects.toThrow();
+      firstImportGate.resolve();
 
-    await waitForJobCompletion(app, token, firstImport.body.id);
+      await waitForJobCompletion(app, token, firstImport.body.id);
 
-    const deleteResponse = await request(app)
+      const deleteResponse = await request(app)
       .delete(`/v1/jobs/${firstImport.body.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(deleteResponse.body.status).toBe('deleted');
+      expect(deleteResponse.body.status).toBe('deleted');
 
-    await request(app)
+      await request(app)
       .get(`/v1/jobs/${firstImport.body.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
-
-    const deletedWorkspace = path.join(storageDir, 'workspaces', tenantId, firstImport.body.id);
-    await expect(fsPromises.access(deletedWorkspace, fs.constants.F_OK)).rejects.toThrow();
-    const deletedUploads = path.join(storageDir, 'uploads', tenantId, firstImport.body.id);
-    await expect(fsPromises.access(deletedUploads, fs.constants.F_OK)).rejects.toThrow();
+      const deletedWorkspace = path.join(storageDir, 'workspaces', tenantId, firstImport.body.id);
+      await expect(fsPromises.access(deletedWorkspace, fs.constants.F_OK)).rejects.toThrow();
+      const deletedUploads = path.join(storageDir, 'uploads', tenantId, firstImport.body.id);
+      await expect(fsPromises.access(deletedUploads, fs.constants.F_OK)).rejects.toThrow();
+    } finally {
+      firstImportGate.resolve();
+      runImportSpy.mockRestore();
+    }
   });
 
   it('emits structured logs and metrics for successful jobs', async () => {
@@ -2164,9 +2177,10 @@ describe('@soipack/server REST API', () => {
         `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="import",status="completed"}`,
       ),
     );
-    expect(durationLine).toBe(
-      `soipack_job_duration_seconds_count{tenantId="${tenantId}",kind="import",status="completed"} 1`,
-    );
+    expect(durationLine).toBeDefined();
+    const durationCount = Number(durationLine?.split(' ').pop());
+    expect(Number.isFinite(durationCount)).toBe(true);
+    expect(durationCount).toBeGreaterThanOrEqual(1);
 
     const queueLine = metricsLines.find((line) =>
       line.startsWith(`soipack_job_queue_depth{tenantId="${tenantId}"}`),

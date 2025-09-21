@@ -31,20 +31,23 @@ export const createRequirement = (
 
 export const normalizeTag = (tag: string): string => tag.trim().toLowerCase();
 
-export const objectiveAreas = ['Plans', 'Standards', 'Reviews', 'Verification', 'Coverage'] as const;
-export type ObjectiveArea = (typeof objectiveAreas)[number];
+export const objectiveTables = ['A-3', 'A-4', 'A-5', 'A-6', 'A-7'] as const;
+export type ObjectiveTable = (typeof objectiveTables)[number];
 
 export const objectiveArtifactTypes = [
-  'psac',
-  'sdp',
-  'svr',
-  'testResults',
-  'coverage',
-  'traceability',
-  'analysisReport',
-  'configurationIndex',
-  'git',
-  'other',
+  'plan',
+  'standard',
+  'review',
+  'analysis',
+  'test',
+  'coverage_stmt',
+  'coverage_dec',
+  'coverage_mcdc',
+  'trace',
+  'cm_record',
+  'qa_record',
+  'problem_report',
+  'conformity',
 ] as const;
 export type ObjectiveArtifactType = (typeof objectiveArtifactTypes)[number];
 
@@ -59,12 +62,17 @@ export interface LevelApplicability {
   E: boolean;
 }
 
+export const objectiveIndependenceLevels = ['none', 'recommended', 'required'] as const;
+export type ObjectiveIndependenceLevel = (typeof objectiveIndependenceLevels)[number];
+
 export interface Objective {
   id: string;
-  area: ObjectiveArea;
-  description: string;
+  table: ObjectiveTable;
+  name: string;
+  desc: string;
   artifacts: ObjectiveArtifactType[];
-  level: LevelApplicability;
+  levels: LevelApplicability;
+  independence: ObjectiveIndependenceLevel;
 }
 
 export const levelApplicabilitySchema: z.ZodType<LevelApplicability> = z
@@ -82,9 +90,10 @@ export const levelApplicabilitySchema: z.ZodType<LevelApplicability> = z
 export const objectiveSchema: z.ZodType<Objective> = z.object({
   id: z
     .string()
-    .regex(/^[A-E]-\d+-Obj\d+$/, 'Objective id must follow the pattern <Level>-<Area>-Obj<Number>.'),
-  area: z.enum(objectiveAreas),
-  description: z.string().min(10, 'Objective description should provide a concise summary.'),
+    .regex(/^A-[3-7]-\d{2}$/u, 'Objective id must follow the pattern A-<Table>-<Number>.'),
+  table: z.enum(objectiveTables),
+  name: z.string().min(3, 'Objective name should provide a concise title.'),
+  desc: z.string().min(10, 'Objective description should provide a concise summary.'),
   artifacts: z
     .array(z.enum(objectiveArtifactTypes))
     .min(1, 'At least one artifact type is expected for each objective.')
@@ -96,7 +105,8 @@ export const objectiveSchema: z.ZodType<Objective> = z.object({
         });
       }
     }),
-  level: levelApplicabilitySchema,
+  levels: levelApplicabilitySchema,
+  independence: z.enum(objectiveIndependenceLevels),
 });
 
 export const objectiveListSchema = z.array(objectiveSchema);

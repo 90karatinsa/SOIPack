@@ -21,12 +21,17 @@ export interface ReportFixture {
   manifestId: string;
 }
 
-const level = { A: true, B: false, C: false, D: false, E: false } as const;
+const allLevels = { A: true, B: true, C: true, D: true, E: false } as const;
+const noDLevels = { A: true, B: true, C: true, D: false, E: false } as const;
 
 const evidenceSourceMap: Partial<Record<ObjectiveArtifactType, EvidenceSource>> = {
-  testResults: 'junit',
-  coverage: 'lcov',
-  git: 'git',
+  plan: 'git',
+  analysis: 'other',
+  test: 'junit',
+  trace: 'git',
+  coverage_stmt: 'lcov',
+  cm_record: 'git',
+  problem_report: 'other',
 };
 
 const buildEvidence = (
@@ -99,32 +104,49 @@ const testResultsFixture = (): TestResult[] => [
 
 const objectivesFixture = (): Objective[] => [
   {
-    id: 'OBJ-PLAN-1',
-    area: 'Plans',
-    description: 'PSAC ve SDP tutarlılığı doğrulanmalı.',
-    artifacts: ['psac', 'sdp'],
-    level,
+    id: 'A-3-04',
+    table: 'A-3',
+    name: 'Doğrulama Stratejisi',
+    desc: 'Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.',
+    artifacts: ['plan', 'review'],
+    levels: allLevels,
+    independence: 'required',
   },
   {
-    id: 'OBJ-VER-1',
-    area: 'Verification',
-    description: 'Test sonuçları ve izlenebilirlik kanıtlanmalı.',
-    artifacts: ['testResults', 'traceability'],
-    level,
+    id: 'A-4-01',
+    table: 'A-4',
+    name: 'Üst Düzey Gereksinimler',
+    desc: 'HLR doğru, tutarlı, izlenebilir ve test edilebilir.',
+    artifacts: ['analysis', 'trace', 'review'],
+    levels: allLevels,
+    independence: 'required',
   },
   {
-    id: 'OBJ-VER-2',
-    area: 'Verification',
-    description: 'Kod kapsamı düzenli olarak izlenmeli.',
-    artifacts: ['coverage'],
-    level,
+    id: 'A-5-06',
+    table: 'A-5',
+    name: 'Test Stratejisi Uygulandı',
+    desc: 'Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.',
+    artifacts: ['test', 'trace', 'analysis'],
+    levels: allLevels,
+    independence: 'required',
   },
   {
-    id: 'OBJ-STND-1',
-    area: 'Standards',
-    description: 'Konfigürasyon indeksinin güncelliği izlenmeli.',
-    artifacts: ['configurationIndex', 'git'],
-    level,
+    id: 'A-5-08',
+    table: 'A-5',
+    name: 'Yapısal Kapsam—Statement',
+    desc: 'Kod satır kapsamı ölçüldü ve açıklandı.',
+    artifacts: ['coverage_stmt', 'analysis'],
+    levels: noDLevels,
+    independence: 'required',
+  },
+  {
+    id: 'A-6-02',
+    table: 'A-6',
+    name: 'Değişiklik Kontrolü',
+    desc: 'Değişiklikler onaylı, izlenebilir ve kayıtlı.',
+    artifacts: ['cm_record', 'problem_report'],
+    levels: allLevels,
+    independence: 'required',
   },
 ];
 
@@ -144,13 +166,13 @@ const requirementFixture = () => [
 ];
 
 const evidenceFixture = (): ImportBundle['evidenceIndex'] => ({
-  psac: [buildEvidence('psac', 'docs/psac-v1.pdf', 'PSAC onayı')],
-  sdp: [],
-  testResults: [buildEvidence('testResults', 'reports/junit.xml', 'JUnit sonuçları')],
-  traceability: [],
-  coverage: [buildEvidence('coverage', 'reports/coverage-summary.json', 'İstanbul kapsama özeti')],
-  configurationIndex: [],
-  git: [buildEvidence('git', 'git://repo#main', 'Git commit referansı')],
+  plan: [buildEvidence('plan', 'docs/verification-plan.md', 'Plan doğrulama stratejisi')],
+  analysis: [buildEvidence('analysis', 'reports/safety-analysis.pdf', 'Güvenlik analizi özeti')],
+  test: [buildEvidence('test', 'reports/junit.xml', 'JUnit sonuçları')],
+  trace: [buildEvidence('trace', 'artifacts/trace-map.csv', 'İzlenebilirlik matrisi')],
+  coverage_stmt: [
+    buildEvidence('coverage_stmt', 'reports/coverage-summary.json', 'Satır kapsamı özeti'),
+  ],
 });
 
 export const createReportFixture = (): ReportFixture => {

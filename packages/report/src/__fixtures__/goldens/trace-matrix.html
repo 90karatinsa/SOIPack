@@ -253,52 +253,44 @@
     <header class="report-header">
       <div>
         <h1>Kurumsal İzlenebilirlik Matrisi</h1>
-        
           <p class="report-meta">Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü</p>
-        
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
-        <div class="git-meta">
-          <p class="report-meta">
-            Commit:
-            <strong>
-              <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
-            </strong>
-          </p>
-          <p class="report-meta">Dallar: main</p>
-          <p class="report-meta">Etiketler: v1.0.0</p>
-          <p class="report-meta">Origin: https://example.com/repo.git</p>
-          <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
-          <p class="report-meta">Mesaj: Add avionics tests</p>
-        </div>
+          <div class="git-meta">
+            <p class="report-meta">
+              Commit:
+              <strong>
+                <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
+              </strong>
+            </p>
+              <p class="report-meta">Dallar: main</p>
+              <p class="report-meta">Etiketler: v1.0.0</p>
+              <p class="report-meta">Origin: https://example.com/repo.git</p>
+              <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
+              <p class="report-meta">Mesaj: Add avionics tests</p>
+          </div>
       </div>
       <div class="summary-grid">
-        
           <div class="summary-card">
             <span>Gereksinimler</span>
             <strong>3</strong>
           </div>
-        
           <div class="summary-card">
             <span>Bağlı Testler</span>
             <strong>5</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kod İzleri</span>
             <strong>4</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kapsamlı Gereksinimler</span>
             <strong>0/3</strong>
           </div>
-        
           <div class="summary-card">
             <span>Eksik/Kısmi Kapsam</span>
             <strong>2/1</strong>
           </div>
-        
       </div>
     </header>
     <main>
@@ -316,157 +308,102 @@
         </tr>
       </thead>
       <tbody>
-        
           <tr>
             <td>
               <div class="cell-title">REQ-AUTH-1</div>
               <div class="cell-description">Çok faktörlü giriş sağlamalı</div>
-              
                 <div class="muted">Durum: approved</div>
-              
-              
                 <div>
                   <span class="badge status-partial">Kısmen Kaplandı</span>
-                  
                     <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
-                  
                 </div>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
                     <li>
                       <span class="badge status-covered">Başarılı</span>
                       <div class="cell-title">geçerli kullanıcı giriş yapabilmeli</div>
                       <div class="muted">TC-LOGIN-1</div>
                     </li>
-                  
                     <li>
                       <span class="badge status-missing">Başarısız</span>
                       <div class="cell-title">başarısız girişler kilitlenmeli</div>
                       <div class="muted">TC-LOGIN-2</div>
                     </li>
-                  
                 </ul>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
                     <li>
                       <code class="code-pill">src/auth/login.ts</code>
-                      
                         <div class="muted">Satır: 87.5% | Dallanma: 75% | Fonksiyon: 80%</div>
-                      
                     </li>
-                  
                     <li>
                       <code class="code-pill">src/security/audit.ts</code>
-                      
                         <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50%</div>
-                      
                     </li>
-                  
                 </ul>
-              
             </td>
           </tr>
-        
           <tr>
             <td>
               <div class="cell-title">REQ-AUTH-2</div>
               <div class="cell-description">Başarısız girişler kaydedilmeli</div>
-              
                 <div class="muted">Durum: implemented</div>
-              
-              
                 <div>
                   <span class="badge status-partial">Kısmen Kaplandı</span>
-                  
                     <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
-                  
                 </div>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
                     <li>
                       <span class="badge status-missing">Başarısız</span>
                       <div class="cell-title">başarısız girişler kilitlenmeli</div>
                       <div class="muted">TC-LOGIN-2</div>
                     </li>
-                  
                     <li>
                       <span class="badge status-covered">Başarılı</span>
                       <div class="cell-title">denetim kayıtları oluşturulmalı</div>
                       <div class="muted">TC-AUDIT-1</div>
                     </li>
-                  
                 </ul>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
                     <li>
                       <code class="code-pill">src/auth/login.ts</code>
-                      
                         <div class="muted">Satır: 87.5% | Dallanma: 75% | Fonksiyon: 80%</div>
-                      
                     </li>
-                  
                     <li>
                       <code class="code-pill">src/security/audit.ts</code>
-                      
                         <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50%</div>
-                      
                     </li>
-                  
                 </ul>
-              
             </td>
           </tr>
-        
           <tr>
             <td>
               <div class="cell-title">REQ-AUTH-3</div>
               <div class="cell-description">Giriş ihlallerinde uyarı gönderilmeli</div>
-              
                 <div class="muted">Durum: draft</div>
-              
-              
                 <div>
                   <span class="badge status-missing">Kapsam Yok</span>
-                  
                 </div>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
                     <li>
                       <span class="badge status-partial">Atlandı</span>
                       <div class="cell-title">uyarı bildirimleri gönderilmeli</div>
                       <div class="muted">TC-AUDIT-2</div>
                     </li>
-                  
                 </ul>
-              
             </td>
             <td>
-              
                 <span class="muted">Kod bağlantısı yok</span>
-              
             </td>
           </tr>
-        
       </tbody>
     </table>
   </section>

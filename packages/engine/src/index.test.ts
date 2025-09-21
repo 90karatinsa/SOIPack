@@ -82,65 +82,87 @@ const testResultsFixture = (): TestResult[] => [
   },
 ];
 
-const level = { A: true, B: false, C: false, D: false, E: false } as const;
-
 const objectivesFixture = (): Objective[] => [
   {
-    id: 'A-Plans-Obj1',
-    area: 'Plans',
-    description: 'Ensure PSAC baseline is established.',
-    artifacts: ['psac'],
-    level,
+    id: 'A-3-01',
+    table: 'A-3',
+    name: 'Plan Seti Tanımlı',
+    desc: 'Tüm yazılım planlarının kapsam ve sorumlulukları tanımlanmış.',
+    artifacts: ['plan'],
+    levels: { A: true, B: true, C: true, D: true, E: false },
+    independence: 'recommended',
   },
   {
-    id: 'A-Plans-Obj2',
-    area: 'Plans',
-    description: 'Ensure SDP and PSAC consistency.',
-    artifacts: ['psac', 'sdp'],
-    level,
+    id: 'A-3-04',
+    table: 'A-3',
+    name: 'Doğrulama Stratejisi',
+    desc: 'Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.',
+    artifacts: ['plan', 'review'],
+    levels: { A: true, B: true, C: true, D: true, E: false },
+    independence: 'required',
   },
   {
-    id: 'A-Verification-Obj1',
-    area: 'Verification',
-    description: 'Verify implementation with tests and coverage.',
-    artifacts: ['testResults', 'coverage'],
-    level,
+    id: 'A-4-01',
+    table: 'A-4',
+    name: 'Üst Düzey Gereksinimler',
+    desc: 'HLR doğru, tutarlı, izlenebilir ve test edilebilir.',
+    artifacts: ['analysis', 'trace', 'review'],
+    levels: { A: true, B: true, C: true, D: true, E: false },
+    independence: 'required',
   },
   {
-    id: 'A-Verification-Obj2',
-    area: 'Verification',
-    description: 'Trace tests back to requirements.',
-    artifacts: ['testResults', 'traceability'],
-    level,
+    id: 'A-5-06',
+    table: 'A-5',
+    name: 'Test Stratejisi Uygulandı',
+    desc: 'Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.',
+    artifacts: ['test', 'trace', 'analysis'],
+    levels: { A: true, B: true, C: true, D: true, E: false },
+    independence: 'required',
   },
   {
-    id: 'A-Standards-Obj1',
-    area: 'Standards',
-    description: 'Maintain configuration index with plans.',
-    artifacts: ['configurationIndex', 'sdp'],
-    level,
+    id: 'A-5-08',
+    table: 'A-5',
+    name: 'Yapısal Kapsam—Statement',
+    desc: 'Kod satır kapsamı ölçüldü ve açıklandı.',
+    artifacts: ['coverage_stmt', 'analysis'],
+    levels: { A: true, B: true, C: true, D: false, E: false },
+    independence: 'required',
   },
   {
-    id: 'A-Reviews-Obj1',
-    area: 'Reviews',
-    description: 'Perform peer reviews for life cycle data.',
-    artifacts: ['analysisReport'],
-    level,
+    id: 'A-5-09',
+    table: 'A-5',
+    name: 'Yapısal Kapsam—Decision/Branch',
+    desc: 'Karar/branch kapsamı ölçüldü ve açıklandı.',
+    artifacts: ['coverage_dec', 'analysis'],
+    levels: { A: true, B: true, C: false, D: false, E: false },
+    independence: 'required',
   },
   {
-    id: 'A-Reviews-Obj2',
-    area: 'Reviews',
-    description: 'Audit configuration baselines.',
-    artifacts: ['git'],
-    level,
+    id: 'A-5-10',
+    table: 'A-5',
+    name: 'Yapısal Kapsam—MC/DC',
+    desc: 'Koşul/Karşılıklı Bağımsız Karar kapsamı sağlandı.',
+    artifacts: ['coverage_mcdc', 'analysis'],
+    levels: { A: true, B: false, C: false, D: false, E: false },
+    independence: 'required',
+  },
+  {
+    id: 'A-6-02',
+    table: 'A-6',
+    name: 'Değişiklik Kontrolü',
+    desc: 'Değişiklikler onaylı, izlenebilir ve kayıtlı.',
+    artifacts: ['cm_record', 'problem_report'],
+    levels: { A: true, B: true, C: true, D: true, E: false },
+    independence: 'required',
   },
 ];
 
 const evidenceIndexFixture = () => ({
-  psac: [evidence('psac', 'plans/psac.md', 'git')],
-  sdp: [evidence('sdp', 'plans/sdp.md', 'git')],
-  testResults: [evidence('testResults', 'reports/junit.xml', 'junit')],
-  coverage: [evidence('coverage', 'reports/lcov.info', 'lcov')],
+  plan: [evidence('plan', 'plans/plan.md', 'git')],
+  analysis: [evidence('analysis', 'analysis/resources.md', 'git')],
+  test: [evidence('test', 'reports/junit.xml', 'junit')],
+  trace: [evidence('trace', 'traces/requirements.csv', 'git')],
+  coverage_stmt: [evidence('coverage_stmt', 'reports/lcov.info', 'lcov')],
 });
 
 const traceLinksFixture = (): TraceLink[] => [{ from: 'REQ-3', to: 'TC-4', type: 'verifies' }];
@@ -238,19 +260,24 @@ describe('ObjectiveMapper', () => {
 
   it('returns coverage summaries for each objective', () => {
     const statuses = new Map(coverage.map((item) => [item.objectiveId, item.status]));
-    expect(statuses.get('A-Plans-Obj1')).toBe('covered');
-    expect(statuses.get('A-Plans-Obj2')).toBe('covered');
-    expect(statuses.get('A-Verification-Obj1')).toBe('covered');
-    expect(statuses.get('A-Verification-Obj2')).toBe('partial');
-    expect(statuses.get('A-Standards-Obj1')).toBe('partial');
-    expect(statuses.get('A-Reviews-Obj1')).toBe('missing');
-    expect(statuses.get('A-Reviews-Obj2')).toBe('missing');
+    expect(statuses.get('A-3-01')).toBe('covered');
+    expect(statuses.get('A-3-04')).toBe('partial');
+    expect(statuses.get('A-4-01')).toBe('partial');
+    expect(statuses.get('A-5-06')).toBe('covered');
+    expect(statuses.get('A-5-08')).toBe('covered');
+    expect(statuses.get('A-5-09')).toBe('partial');
+    expect(statuses.get('A-5-10')).toBe('partial');
+    expect(statuses.get('A-6-02')).toBe('missing');
   });
 
   it('collects evidence references for satisfied artifacts', () => {
-    const plansObjective = coverage.find((item) => item.objectiveId === 'A-Plans-Obj2');
-    expect(plansObjective?.evidenceRefs).toEqual(
-      expect.arrayContaining(['psac:plans/psac.md', 'sdp:plans/sdp.md']),
+    const testObjective = coverage.find((item) => item.objectiveId === 'A-5-06');
+    expect(testObjective?.evidenceRefs).toEqual(
+      expect.arrayContaining([
+        'test:reports/junit.xml',
+        'trace:traces/requirements.csv',
+        'analysis:analysis/resources.md',
+      ]),
     );
   });
 });
@@ -260,12 +287,12 @@ describe('Compliance snapshot generation', () => {
   const snapshot = generateComplianceSnapshot(bundle);
 
   it('summarizes objective coverage and statistics', () => {
-    expect(snapshot.objectives).toHaveLength(7);
+    expect(snapshot.objectives).toHaveLength(8);
     expect(snapshot.stats.objectives).toEqual({
-      total: 7,
+      total: 8,
       covered: 3,
-      partial: 2,
-      missing: 2,
+      partial: 4,
+      missing: 1,
     });
 
     expect(snapshot.stats.tests).toEqual({ total: 4, passed: 2, failed: 1, skipped: 1 });
@@ -274,20 +301,35 @@ describe('Compliance snapshot generation', () => {
   });
 
   it('derives gap analysis grouped by artifact category', () => {
-    expect(snapshot.gaps.tests).toEqual([
-      { objectiveId: 'A-Verification-Obj2', missingArtifacts: ['traceability'] },
-    ]);
-
-    expect(snapshot.gaps.standards).toEqual(
+    expect(snapshot.gaps.reviews).toEqual(
       expect.arrayContaining([
-        { objectiveId: 'A-Standards-Obj1', missingArtifacts: ['configurationIndex'] },
-        { objectiveId: 'A-Reviews-Obj1', missingArtifacts: ['analysisReport'] },
-        { objectiveId: 'A-Reviews-Obj2', missingArtifacts: ['git'] },
+        { objectiveId: 'A-3-04', missingArtifacts: ['review'] },
+        { objectiveId: 'A-4-01', missingArtifacts: ['review'] },
       ]),
     );
 
-    expect(snapshot.gaps.coverage).toHaveLength(0);
+    expect(snapshot.gaps.coverage).toEqual(
+      expect.arrayContaining([
+        { objectiveId: 'A-5-09', missingArtifacts: ['coverage_dec'] },
+        { objectiveId: 'A-5-10', missingArtifacts: ['coverage_mcdc'] },
+      ]),
+    );
+
+    expect(snapshot.gaps.configuration).toEqual([
+      { objectiveId: 'A-6-02', missingArtifacts: ['cm_record'] },
+    ]);
+
+    expect(snapshot.gaps.issues).toEqual([
+      { objectiveId: 'A-6-02', missingArtifacts: ['problem_report'] },
+    ]);
+
     expect(snapshot.gaps.plans).toHaveLength(0);
+    expect(snapshot.gaps.standards).toHaveLength(0);
+    expect(snapshot.gaps.analysis).toHaveLength(0);
+    expect(snapshot.gaps.tests).toHaveLength(0);
+    expect(snapshot.gaps.trace).toHaveLength(0);
+    expect(snapshot.gaps.quality).toHaveLength(0);
+    expect(snapshot.gaps.conformity).toHaveLength(0);
   });
 
   it('exposes trace graph nodes for requirements, tests, and code paths', () => {

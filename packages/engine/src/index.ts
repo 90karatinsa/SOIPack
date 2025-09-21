@@ -514,29 +514,46 @@ export interface GapItem {
 export interface GapAnalysis {
   plans: GapItem[];
   standards: GapItem[];
+  reviews: GapItem[];
+  analysis: GapItem[];
   tests: GapItem[];
   coverage: GapItem[];
+  trace: GapItem[];
+  configuration: GapItem[];
+  quality: GapItem[];
+  issues: GapItem[];
+  conformity: GapItem[];
 }
 
 const artifactCategoryMap: Record<ObjectiveArtifactType, keyof GapAnalysis> = {
-  psac: 'plans',
-  sdp: 'plans',
-  svr: 'standards',
-  testResults: 'tests',
-  coverage: 'coverage',
-  traceability: 'tests',
-  analysisReport: 'standards',
-  configurationIndex: 'standards',
-  git: 'standards',
-  other: 'standards',
+  plan: 'plans',
+  standard: 'standards',
+  review: 'reviews',
+  analysis: 'analysis',
+  test: 'tests',
+  coverage_stmt: 'coverage',
+  coverage_dec: 'coverage',
+  coverage_mcdc: 'coverage',
+  trace: 'trace',
+  cm_record: 'configuration',
+  qa_record: 'quality',
+  problem_report: 'issues',
+  conformity: 'conformity',
 };
 
 export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAnalysis => {
   const categoryBuckets: Record<keyof GapAnalysis, Map<string, Set<ObjectiveArtifactType>>> = {
     plans: new Map(),
     standards: new Map(),
+    reviews: new Map(),
+    analysis: new Map(),
     tests: new Map(),
     coverage: new Map(),
+    trace: new Map(),
+    configuration: new Map(),
+    quality: new Map(),
+    issues: new Map(),
+    conformity: new Map(),
   };
 
   objectiveCoverage.forEach((coverage) => {
@@ -558,8 +575,15 @@ export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAna
   return {
     plans: toGapItems(categoryBuckets.plans),
     standards: toGapItems(categoryBuckets.standards),
+    reviews: toGapItems(categoryBuckets.reviews),
+    analysis: toGapItems(categoryBuckets.analysis),
     tests: toGapItems(categoryBuckets.tests),
     coverage: toGapItems(categoryBuckets.coverage),
+    trace: toGapItems(categoryBuckets.trace),
+    configuration: toGapItems(categoryBuckets.configuration),
+    quality: toGapItems(categoryBuckets.quality),
+    issues: toGapItems(categoryBuckets.issues),
+    conformity: toGapItems(categoryBuckets.conformity),
   };
 };
 

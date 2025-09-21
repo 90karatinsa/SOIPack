@@ -53,8 +53,9 @@ interface ComplianceMatrixRow {
   status: ComplianceSnapshot['objectives'][number]['status'];
   statusLabel: string;
   statusClass: string;
-  description?: string;
-  area?: string;
+  table?: string;
+  name?: string;
+  desc?: string;
   satisfiedArtifacts: string[];
   missingArtifacts: string[];
   evidenceRefs: string[];
@@ -93,8 +94,9 @@ interface TraceMatrixRow {
 
 interface GapReportRow {
   objectiveId: string;
-  description?: string;
-  area?: string;
+  table?: string;
+  name?: string;
+  desc?: string;
   missingArtifacts: string[];
 }
 
@@ -106,8 +108,9 @@ export interface ComplianceMatrixJson {
   objectives: Array<{
     id: string;
     status: ComplianceSnapshot['objectives'][number]['status'];
-    description?: string;
-    area?: string;
+    table?: string;
+    name?: string;
+    desc?: string;
     satisfiedArtifacts: string[];
     missingArtifacts: string[];
     evidenceRefs: string[];
@@ -163,29 +166,46 @@ const coverageStatusLabels: Record<CoverageStatus, { label: string; className: s
 
 const gapLabels: Record<GapCategoryKey, string> = {
   plans: 'Planlama Kanıtları',
-  standards: 'Standart & Konfigürasyon',
+  standards: 'Standart Referansları',
+  reviews: 'Gözden Geçirme Kanıtları',
+  analysis: 'Analiz Kanıtları',
   tests: 'Test Kanıtları',
   coverage: 'Kapsam Kanıtları',
+  trace: 'İzlenebilirlik',
+  configuration: 'Konfigürasyon Yönetimi',
+  quality: 'Kalite Güvencesi',
+  issues: 'Problem Takibi',
+  conformity: 'Uygunluk Doğrulamaları',
 };
 
 const gapSummaryLabels: Record<GapCategoryKey, string> = {
   plans: 'Plan Boşlukları',
   standards: 'Standart Boşlukları',
+  reviews: 'Gözden Geçirme Boşlukları',
+  analysis: 'Analiz Boşlukları',
   tests: 'Test Boşlukları',
   coverage: 'Kapsam Boşlukları',
+  trace: 'İzlenebilirlik Boşlukları',
+  configuration: 'Konfigürasyon Boşlukları',
+  quality: 'Kalite Boşlukları',
+  issues: 'Problem Takibi Boşlukları',
+  conformity: 'Uygunluk Boşlukları',
 };
 
 const artifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
-  psac: 'PSAC',
-  sdp: 'SDP',
-  svr: 'SVR',
-  testResults: 'Test Sonuçları',
-  coverage: 'Kod Kapsamı',
-  traceability: 'İzlenebilirlik',
-  analysisReport: 'Analiz Raporu',
-  configurationIndex: 'Konfigürasyon İndeksi',
-  git: 'Sürüm Kontrol',
-  other: 'Diğer',
+  plan: 'Plan',
+  standard: 'Standart',
+  review: 'Gözden Geçirme',
+  analysis: 'Analiz',
+  test: 'Test',
+  coverage_stmt: 'Satır Kapsamı',
+  coverage_dec: 'Karar Kapsamı',
+  coverage_mcdc: 'MC/DC Kapsamı',
+  trace: 'İzlenebilirlik',
+  cm_record: 'Konfigürasyon Kaydı',
+  qa_record: 'QA Kaydı',
+  problem_report: 'Problem Raporu',
+  conformity: 'Uygunluk Desteği',
 };
 
 const formatCoverageMetrics = (
@@ -610,11 +630,15 @@ const complianceTemplate = nunjucks.compile(
           <tr>
             <td>
               <div class="cell-title">{{ row.id }}</div>
-              {% if row.area %}
-                <div class="cell-subtitle">{{ row.area }}</div>
+              {% if row.table or row.name %}
+                <div class="cell-subtitle">
+                  {% if row.table %}{{ row.table }}{% endif %}
+                  {% if row.table and row.name %} • {% endif %}
+                  {% if row.name %}{{ row.name }}{% endif %}
+                </div>
               {% endif %}
-              {% if row.description %}
-                <div class="cell-description">{{ row.description }}</div>
+              {% if row.desc %}
+                <div class="cell-description">{{ row.desc }}</div>
               {% endif %}
             </td>
             <td><span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span></td>
@@ -785,11 +809,15 @@ const gapsTemplate = nunjucks.compile(
               {% for item in category.items %}
                 <li>
                   <div class="cell-title">{{ item.objectiveId }}</div>
-                  {% if item.area %}
-                    <div class="cell-subtitle">{{ item.area }}</div>
+                  {% if item.table or item.name %}
+                    <div class="cell-subtitle">
+                      {% if item.table %}{{ item.table }}{% endif %}
+                      {% if item.table and item.name %} • {% endif %}
+                      {% if item.name %}{{ item.name }}{% endif %}
+                    </div>
                   {% endif %}
-                  {% if item.description %}
-                    <div class="cell-description">{{ item.description }}</div>
+                  {% if item.desc %}
+                    <div class="cell-description">{{ item.desc }}</div>
                   {% endif %}
                   <div>
                     {% for artifact in item.missingArtifacts %}
@@ -911,8 +939,9 @@ export const renderComplianceMatrix = (
           : objective.status === 'partial'
             ? 'status-partial'
             : 'status-missing',
-      description: metadata?.description,
-      area: metadata?.area,
+      table: metadata?.table,
+      name: metadata?.name,
+      desc: metadata?.desc,
       satisfiedArtifacts: objective.satisfiedArtifacts.map(formatArtifact),
       missingArtifacts: objective.missingArtifacts.map(formatArtifact),
       evidenceRefs: objective.evidenceRefs,
@@ -955,8 +984,9 @@ export const renderComplianceMatrix = (
     objectives: rows.map((row) => ({
       id: row.id,
       status: row.status,
-      description: row.description,
-      area: row.area,
+      table: row.table,
+      name: row.name,
+      desc: row.desc,
       satisfiedArtifacts: [...row.satisfiedArtifacts],
       missingArtifacts: [...row.missingArtifacts],
       evidenceRefs: [...row.evidenceRefs],
@@ -1073,8 +1103,9 @@ export const renderGaps = (
       const metadata = objectiveLookup.get(gap.objectiveId);
       return {
         objectiveId: gap.objectiveId,
-        description: metadata?.description,
-        area: metadata?.area,
+        table: metadata?.table,
+        name: metadata?.name,
+        desc: metadata?.desc,
         missingArtifacts: gap.missingArtifacts.map(formatArtifact),
       };
     });
