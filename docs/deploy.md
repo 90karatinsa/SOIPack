@@ -93,7 +93,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
    `SOIPACK_AUTH_ADMIN_SCOPES`, virgülle ayrılmış yönetici kapsamlarını tanımlar. Liste boş değilse yalnızca bu kapsamların en az birine sahip belirteçler yönetici uç noktalarına (`POST /v1/admin/cleanup` ve `/metrics`) erişebilir. İş yüklerini tetikleyen kullanıcılarla gözlemleme/bakım ekiplerini ayrıştırmak için ayrı bir erişim scope'u tanımlamanız önerilir.
 
-   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır.
+   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır ve sunucu bu değer tanımlandığında `/health` uç noktasına gelen isteklerin `Authorization: Bearer <token>` başlığını içermesini zorunlu kılar. Başlık eksik ya da hatalıysa API `401 UNAUTHORIZED` döner.
 
    Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
 
@@ -104,7 +104,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker compose up -d
    ```
-6. Sağlık kontrolünü doğrulayın (geçerli bir JWT üretmek için OIDC sağlayıcınızı kullanın; `.env` dosyasındaki `SOIPACK_HEALTHCHECK_TOKEN` değerinin aynı olması gerekir):
+6. Sağlık kontrolünü doğrulayın (geçerli bir JWT veya uzun ömürlü servis belirteci üretmek için OIDC sağlayıcınızı kullanın; `.env` dosyasındaki `SOIPACK_HEALTHCHECK_TOKEN` değerinin aynı olması gerekir):
    ```bash
    docker compose ps
    TOKEN=$(./jwt-olustur.sh) # örnek: kendi betiğiniz veya sağlayıcı SDK'sı
@@ -113,7 +113,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
      http://localhost:3000/health
    ```
 
-Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
+Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
 ## 3. Örnek Pipeline Çağrısı
 
