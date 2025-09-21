@@ -602,6 +602,7 @@ export interface ServerConfig {
   signingKeyPath: string;
   licensePublicKeyPath: string;
   maxUploadSizeBytes?: number;
+  maxQueuedJobsPerTenant?: number;
   storageProvider?: StorageProvider;
   retention?: RetentionConfig;
   uploadPolicies?: UploadPolicyOverrides;
@@ -1357,13 +1358,29 @@ export const createServer = (config: ServerConfig): Express => {
   app.use(express.json());
 
   const requireAuth = createAuthMiddleware(config.auth);
+  const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
   const queue = new JobQueue();
 
-  const updateQueueDepth = (tenantId: string): void => {
-    const activeJobs = queue
+  const getActiveJobCount = (tenantId: string): number =>
+    queue
       .list(tenantId)
       .filter((job) => job.status === 'queued' || job.status === 'running').length;
+
+  const updateQueueDepth = (tenantId: string): void => {
+    const activeJobs = getActiveJobCount(tenantId);
     jobQueueDepthGauge.set({ tenantId }, activeJobs);
+  };
+
+  const ensureQueueWithinLimit = (tenantId: string): void => {
+    const activeJobs = getActiveJobCount(tenantId);
+    if (activeJobs >= maxQueuedJobsPerTenant) {
+      throw new HttpError(
+        429,
+        'QUEUE_LIMIT_EXCEEDED',
+        'Kiracı için kuyrukta bekleyen iş limiti aşıldı.',
+        { limit: maxQueuedJobsPerTenant },
+      );
+    }
   };
 
   const instrumentJobRun = <T>(
@@ -1436,6 +1453,7 @@ export const createServer = (config: ServerConfig): Express => {
     hash: string;
     run: () => Promise<T>;
   }): JobDetails<T> => {
+    ensureQueueWithinLimit(options.tenantId);
     const job = queue.enqueue<T>({
       tenantId: options.tenantId,
       id: options.id,
