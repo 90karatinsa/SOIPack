@@ -42,10 +42,13 @@ jobs:
             -e SOIPACK_SIGNING_KEY_PATH=/run/secrets/signing-key.pem \
             -e SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/license.pub \
             -e SOIPACK_STORAGE_DIR=/tmp/soipack \
+            -e SOIPACK_HEALTHCHECK_TOKEN=ci-health-token \
             -e PORT=3000 \
             soipack/server
           for attempt in {1..30}; do
-            if curl --fail --silent --show-error http://localhost:3000/health; then
+            if curl --fail --silent --show-error \
+              -H "Authorization: Bearer ci-health-token" \
+              http://localhost:3000/health; then
               docker rm -f soipack-ci >/dev/null 2>&1 || true
               exit 0
             fi

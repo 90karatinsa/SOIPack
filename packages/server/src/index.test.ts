@@ -236,6 +236,41 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('allows health checks without authorization when no token is configured', async () => {
+    const response = await request(app).get('/health').expect(200);
+    expect(response.body).toEqual({ status: 'ok' });
+  });
+
+  it('accepts health checks with the configured bearer token', async () => {
+    const healthcheckToken = 'test-health-token';
+    const serverWithToken = createServer({
+      ...baseConfig,
+      healthcheckToken,
+      metricsRegistry: new Registry(),
+    });
+    const response = await request(serverWithToken)
+      .get('/health')
+      .set('Authorization', `Bearer ${healthcheckToken}`)
+      .expect(200);
+    expect(response.body).toEqual({ status: 'ok' });
+  });
+
+  it('rejects health checks without or with an invalid token', async () => {
+    const healthcheckToken = 'test-health-token';
+    const serverWithToken = createServer({
+      ...baseConfig,
+      healthcheckToken,
+      metricsRegistry: new Registry(),
+    });
+    const missingResponse = await request(serverWithToken).get('/health').expect(401);
+    expect(missingResponse.body.error.code).toBe('UNAUTHORIZED');
+    const wrongResponse = await request(serverWithToken)
+      .get('/health')
+      .set('Authorization', 'Bearer wrong-token')
+      .expect(401);
+    expect(wrongResponse.body.error.code).toBe('UNAUTHORIZED');
+  });
+
   it('requires authorization for job and artifact endpoints', async () => {
     const jobList = await request(app).get('/v1/jobs').expect(401);
     expect(jobList.body.error.code).toBe('UNAUTHORIZED');

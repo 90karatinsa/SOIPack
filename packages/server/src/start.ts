@@ -138,6 +138,8 @@ const start = async (): Promise<void> => {
     process.exit(1);
   }
 
+  const healthcheckToken = process.env.SOIPACK_HEALTHCHECK_TOKEN;
+
   const maxQueuedJobsSource = process.env.SOIPACK_MAX_QUEUED_JOBS;
   let maxQueuedJobsPerTenant = DEFAULT_MAX_QUEUED_JOBS_PER_TENANT;
   if (maxQueuedJobsSource !== undefined) {
@@ -233,6 +235,7 @@ const start = async (): Promise<void> => {
     maxQueuedJobsPerTenant,
     retention,
     scanner,
+    healthcheckToken,
   });
 
   app.listen(port, () => {

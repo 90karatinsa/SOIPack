@@ -623,6 +623,7 @@ export interface ServerConfig {
   scanner?: FileScanner;
   logger?: Logger;
   metricsRegistry?: Registry;
+  healthcheckToken?: string;
 }
 
 type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
@@ -1235,6 +1236,9 @@ export const createServer = (config: ServerConfig): Express => {
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
   const licensePublicKey = loadLicensePublicKey(licensePublicKeyPath);
+  const expectedHealthcheckAuthorization = config.healthcheckToken
+    ? `Bearer ${config.healthcheckToken}`
+    : null;
   interface LicenseCacheEntry {
     payload: LicensePayload;
     expiresAtMs: number | null;
@@ -1541,7 +1545,17 @@ export const createServer = (config: ServerConfig): Express => {
 
   app.get(
     '/health',
-    createAsyncHandler(async (_req, res) => {
+    createAsyncHandler(async (req, res) => {
+      if (expectedHealthcheckAuthorization) {
+        const authorization = req.get('Authorization');
+        if (authorization !== expectedHealthcheckAuthorization) {
+          throw new HttpError(
+            401,
+            'UNAUTHORIZED',
+            'Sağlık kontrolü için bearer kimlik doğrulaması gerekiyor.',
+          );
+        }
+      }
       res.json({ status: 'ok' });
     }),
   );
