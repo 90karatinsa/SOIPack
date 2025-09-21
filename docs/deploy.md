@@ -13,12 +13,12 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    git clone https://github.com/<kurumunuz>/SOIPack.git
    cd SOIPack
    ```
-3. Üretim derlemesini hazırlayın. Bu adım, çok-aşamalı Docker imajında da çalıştırıldığı için Playwright tarayıcıları dâhil tüm bağımlılıkları indirir:
+3. TypeScript kaynaklarını derleyin. Bu adım, çok-aşamalı Docker imajının builder katmanında da çalıştırılan `npm ci` ve `npm run build` komutlarıyla `packages/**/dist` çıktısını hazırlar:
    ```bash
    npm ci
    npm run build
    ```
-4. Konteyner imajını oluşturun:
+4. Konteyner imajını oluşturun. Oluşturulan imaj, builder katmanından yalnızca derlenmiş çıktıları (`packages/**/dist`), `data/` altındaki paylaşılan veri dosyalarını ve gereken yapılandırmaları kopyalar; çalışma zamanı girdisi `node packages/server/dist/start.js` olarak tanımlıdır:
    ```bash
    docker build -t soipack/server:latest .
    ```
@@ -39,7 +39,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    - `data/` dizini (hedefte kalıcı depolama için aynı yolu kullanacağız)
    - Örnek veri setleri (isteğe bağlı olarak `examples/minimal/`)
 
-> **Not:** Docker imajı Playwright'ın `chromium` motoru ve ilgili sistem paketleriyle birlikte gelir. Air-gapped ortamda ek bağımlılık indirmenize gerek yoktur.
+> **Not:** Çalışma zamanı imajı Playwright tarayıcılarını içermez; `npm ci --omit=dev` ile yalnızca üretim bağımlılıkları yüklenir ve TypeScript kaynaklarının yerine derlenmiş paketler kullanılır. Bu sayede air-gapped ortamda ek bağımlılık indirmeniz gerekmez ve imaj boyutu küçülür.
 
 ## 2. Air-Gapped Ortamda Kurulum
 

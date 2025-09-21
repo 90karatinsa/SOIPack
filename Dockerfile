@@ -3,13 +3,10 @@
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 
-# Install dependencies and prepare the workspace
-COPY package.json package-lock.json tsconfig.json tsconfig.base.json tsconfig.build.json ./
+COPY package.json package-lock.json ./
+COPY tsconfig.json tsconfig.base.json tsconfig.build.json ./
 COPY packages ./packages
-COPY docs ./docs
-COPY scripts ./scripts
 COPY data ./data
-COPY examples ./examples
 
 RUN npm ci \
   && npm run build \
@@ -19,17 +16,30 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Copy the compiled application and production dependencies
-COPY --from=builder /app /app
+COPY package.json package-lock.json ./
+COPY packages/adapters/package.json packages/adapters/package.json
+COPY packages/cli/package.json packages/cli/package.json
+COPY packages/core/package.json packages/core/package.json
+COPY packages/engine/package.json packages/engine/package.json
+COPY packages/packager/package.json packages/packager/package.json
+COPY packages/report/package.json packages/report/package.json
+COPY packages/server/package.json packages/server/package.json
 
-# Install Playwright browsers and required system dependencies
-RUN npx playwright install --with-deps chromium \
-  && rm -rf /var/lib/apt/lists/*
-
-# Final runtime configuration
-RUN mkdir -p /app/data \
-  && chown -R node:node /app \
+RUN npm ci --omit=dev \
   && npm cache clean --force
+
+COPY --from=builder /app/packages/adapters/dist packages/adapters/dist
+COPY --from=builder /app/packages/cli/dist packages/cli/dist
+COPY --from=builder /app/packages/core/dist packages/core/dist
+COPY --from=builder /app/packages/engine/dist packages/engine/dist
+COPY --from=builder /app/packages/packager/dist packages/packager/dist
+COPY --from=builder /app/packages/report/dist packages/report/dist
+COPY --from=builder /app/packages/server/dist packages/server/dist
+COPY --from=builder /app/data data
+COPY packages/server/openapi.yaml packages/server/openapi.yaml
+
+RUN mkdir -p /app/data \
+  && chown -R node:node /app
 
 VOLUME ["/app/data"]
 
@@ -40,4 +50,4 @@ EXPOSE 3000
 
 USER node
 
-ENTRYPOINT ["node", "node_modules/.bin/tsx", "packages/server/src/start.ts"]
+ENTRYPOINT ["node", "packages/server/dist/start.js"]
