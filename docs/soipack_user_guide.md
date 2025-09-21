@@ -77,6 +77,7 @@ SOIPack API'si, gönderilen her iş isteğinin geçerli bir lisans ile yetkilend
 - JSON tabanlı lisans dosyasını base64'e çevirip `X-SOIPACK-License` HTTP başlığına ekleyin. Örnek: ``cat license.key | base64`` çıktısını başlık değeri olarak kullanın.
 - `/v1/import` uç noktasına çok parçalı form gönderirken `license` alanına lisans dosyasını ekleyin; diğer uç noktalar yalnızca başlık yöntemini kabul eder.
 
+Sunucu, her istekte lisansın son kullanma tarihini doğrular; önbellekte tutulan lisanslar süresi dolduğunda otomatik olarak temizlenir.
 Geçersiz ya da süresi dolmuş lisanslar `402` durum kodu ve `LICENSE_INVALID` hata kodu ile reddedilir; lisans başlığı olmadan gönderilen isteklerde ise `401` durum kodu ve `LICENSE_REQUIRED` mesajı döner.
 
 #### Sunucu API hata kodları
