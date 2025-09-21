@@ -117,6 +117,7 @@ describe('@soipack/server REST API', () => {
   let signingKeyPath: string;
   let licensePublicKeyPath: string;
   let licenseHeader: string;
+  let licenseExpiresAt: Date | undefined;
   let privateKey: KeyLike;
   let jwks: JSONWebKeySet;
   let baseConfig: ServerConfig;
@@ -157,6 +158,11 @@ describe('@soipack/server REST API', () => {
     await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
     const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
     licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
+    const parsedLicense = JSON.parse(licenseContent) as { payload: string };
+    const decodedPayload = JSON.parse(
+      Buffer.from(parsedLicense.payload, 'base64').toString('utf8'),
+    ) as { expiresAt?: string };
+    licenseExpiresAt = decodedPayload.expiresAt ? new Date(decodedPayload.expiresAt) : undefined;
 
     const { publicKey, privateKey: generatedPrivateKey } = await generateKeyPair('RS256');
     privateKey = generatedPrivateKey;
@@ -279,6 +285,59 @@ describe('@soipack/server REST API', () => {
       .expect(402);
 
     expect(response.body.error.code).toBe('LICENSE_INVALID');
+  });
+
+  it('rejects cached licenses once they expire', async () => {
+    if (!licenseExpiresAt) {
+      throw new Error('Demo lisansının son kullanma tarihi yok.');
+    }
+    const beforeExpiry = new Date(licenseExpiresAt.getTime() - 60_000);
+    const afterExpiry = new Date(licenseExpiresAt.getTime() + 1_000);
+
+    jest.useFakeTimers({
+      now: beforeExpiry,
+      doNotFake: ['setTimeout', 'setInterval', 'setImmediate'],
+    });
+    try {
+      const futureToken = await createAccessToken();
+      const projectBase = `license-expiry-${Date.now()}`;
+      const primeResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${futureToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Expiry Cache Project')
+        .field('projectVersion', projectBase)
+        .expect((response) => {
+          if (![200, 202].includes(response.status)) {
+            throw new Error(`Unexpected status while priming license cache: ${response.status}`);
+          }
+        });
+
+      if (primeResponse.status === 202) {
+        expect(primeResponse.body.error).toBeUndefined();
+      }
+
+      jest.setSystemTime(afterExpiry);
+
+      const expiredResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${futureToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Expiry Cache Project')
+        .field('projectVersion', `${projectBase}-retry`)
+        .expect(402);
+
+      expect(expiredResponse.body.error.code).toBe('LICENSE_INVALID');
+      expect(expiredResponse.body.error.message).toBe('Lisans süresi dolmuş.');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('requires a license token for analyze, report, and pack requests', async () => {

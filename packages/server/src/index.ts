@@ -1198,7 +1198,24 @@ export const createServer = (config: ServerConfig): Express => {
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
   const licensePublicKey = loadLicensePublicKey(licensePublicKeyPath);
-  const licenseCache = new Map<string, LicensePayload>();
+  interface LicenseCacheEntry {
+    payload: LicensePayload;
+    expiresAtMs: number | null;
+  }
+
+  const toLicenseCacheEntry = (payload: LicensePayload): LicenseCacheEntry => {
+    const expiresAt = payload.expiresAt ?? null;
+    if (!expiresAt) {
+      return { payload, expiresAtMs: null };
+    }
+    const parsed = Date.parse(expiresAt);
+    return {
+      payload,
+      expiresAtMs: Number.isNaN(parsed) ? null : parsed,
+    };
+  };
+
+  const licenseCache = new Map<string, LicenseCacheEntry>();
   const jobLicenses = new Map<string, VerifiedLicense>();
 
   const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
@@ -1235,7 +1252,11 @@ export const createServer = (config: ServerConfig): Express => {
     const hash = createHash('sha256').update(content).digest('hex');
     const cached = licenseCache.get(hash);
     if (cached) {
-      return { hash, payload: cached };
+      if (cached.payload.expiresAt && cached.expiresAtMs !== null && cached.expiresAtMs <= Date.now()) {
+        licenseCache.delete(hash);
+        throw new HttpError(402, 'LICENSE_INVALID', 'Lisans süresi dolmuş.');
+      }
+      return { hash, payload: cached.payload };
     }
 
     const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-license-'));
@@ -1243,7 +1264,7 @@ export const createServer = (config: ServerConfig): Express => {
     try {
       await fsPromises.writeFile(tempPath, content);
       const payload = await verifyLicenseFile(tempPath, { publicKey: licensePublicKey });
-      licenseCache.set(hash, payload);
+      licenseCache.set(hash, toLicenseCacheEntry(payload));
       return { hash, payload };
     } catch (error) {
       if (error instanceof LicenseError) {
@@ -1257,7 +1278,7 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const registerJobLicense = (tenantId: string, jobId: string, license: VerifiedLicense): void => {
-    licenseCache.set(license.hash, license.payload);
+    licenseCache.set(license.hash, toLicenseCacheEntry(license.payload));
     jobLicenses.set(createScopedJobKey(tenantId, jobId), license);
   };
 
