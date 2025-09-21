@@ -52,7 +52,14 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker load < soipack-server.tar.gz
    ```
-3. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
+3. Sunucunun imza anahtarını ve lisans doğrulama anahtarını `secrets/` dizinine kopyalayın. Docker Compose yapılandırması, dosya adlarının sırasıyla `soipack-signing.pem` ve `soipack-license.pub` olmasını bekler. Aynı dizinde HTTP isteklerinde kullanılacak lisans dosyasını `license.key` adıyla saklayın:
+   ```bash
+   mkdir -p secrets
+   cp /path/to/soipack-signing.pem secrets/soipack-signing.pem
+   cp /path/to/soipack-license.pub secrets/soipack-license.pub
+   cp /path/to/license.key license.key
+   ```
+4. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
    ```bash
    cat <<'ENV' > .env
    SOIPACK_AUTH_ISSUER=https://kimlik.example.com/
@@ -62,11 +69,12 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_AUTH_TENANT_CLAIM=tenant
    SOIPACK_AUTH_USER_CLAIM=sub
    SOIPACK_AUTH_REQUIRED_SCOPES=soipack.api
-   # Sağlık kontrolü için uzun ömürlü bir JWT sağlayın (opsiyonel)
+   # Sağlık kontrolü için zorunlu bearer token (örn. uzun ömürlü JWT)
    SOIPACK_HEALTHCHECK_TOKEN=
    PORT=3000
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
+   SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/soipack-license.pub
    # Antivirüs komut satırı entegrasyonu (örn. ClamAV)
    SOIPACK_SCAN_COMMAND=/usr/bin/clamdscan
    SOIPACK_SCAN_ARGS=--fdpass,--no-summary
@@ -79,15 +87,21 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_RETENTION_PACKAGES_DAYS=60
    ENV
    ```
-4. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
+
+   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır.
+
+   Tüm HTTP istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
+5. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
    ```bash
    docker compose up -d
    ```
-5. Sağlık kontrolünü doğrulayın (geçerli bir JWT üretmek için OIDC sağlayıcınızı kullanın):
+6. Sağlık kontrolünü doğrulayın (geçerli bir JWT üretmek için OIDC sağlayıcınızı kullanın; `.env` dosyasındaki `SOIPACK_HEALTHCHECK_TOKEN` değerinin aynı olması gerekir):
    ```bash
    docker compose ps
    TOKEN=$(./jwt-olustur.sh) # örnek: kendi betiğiniz veya sağlayıcı SDK'sı
-   curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/health
+   curl -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
+     http://localhost:3000/health
    ```
 
 Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
@@ -105,6 +119,7 @@ BASE_URL=http://localhost:3000
    ```bash
    curl -X POST "$BASE_URL/v1/import" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      -F "projectName=SOIPack Demo" \
      -F "projectVersion=1.0" \
      -F "level=C" \
@@ -120,6 +135,7 @@ BASE_URL=http://localhost:3000
    ```bash
    curl -X POST "$BASE_URL/v1/analyze" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      -H "Content-Type: application/json" \
      -d "{\"importId\":\"$IMPORT_ID\"}"
    ```
@@ -129,6 +145,7 @@ BASE_URL=http://localhost:3000
    ```bash
    curl -X POST "$BASE_URL/v1/report" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      -H "Content-Type: application/json" \
      -d "{\"analysisId\":\"$ANALYSIS_ID\"}"
    ```
@@ -138,6 +155,7 @@ BASE_URL=http://localhost:3000
    ```bash
    curl -X POST "$BASE_URL/v1/pack" \
      -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      -H "Content-Type: application/json" \
      -d "{\"reportId\":\"<rapor-id>\"}"
    ```
@@ -146,10 +164,12 @@ BASE_URL=http://localhost:3000
 
    ```bash
    curl -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      "$BASE_URL/v1/packages/$PACKAGE_ID/archive" \
      --output soipack-$PACKAGE_ID.zip
 
    curl -H "Authorization: Bearer $TOKEN" \
+     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
      "$BASE_URL/v1/packages/$PACKAGE_ID/manifest" \
      --output manifest-$PACKAGE_ID.json
    ```
@@ -191,7 +211,9 @@ BASE_URL=http://localhost:3000
   Bu günlükleri `docker compose logs -f server` veya kendi log toplayıcınıza yönlendirerek inceleyebilirsiniz.
 - Prometheus uyumlu metrikler `/metrics` uç noktasından sunulur ve diğer API çağrıları gibi JWT ile kimlik doğrulaması gerektirir:
   ```bash
-  curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/metrics
+  curl -H "Authorization: Bearer $TOKEN" \
+    -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
+    http://localhost:3000/metrics
   ```
   Başlıca metrikler:
   - `soipack_job_duration_seconds{tenantId,kind,status}`: Her iş türü için tamamlanma/başarısızlık süre histogramı.
