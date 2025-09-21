@@ -1173,7 +1173,7 @@ const createArchive = async (
   const completion = new Promise<void>((resolve, reject) => {
     output.on('close', () => resolve());
     output.on('error', (error) => reject(error));
-    zip.outputStream.on('error', (error) => reject(error));
+    zip.outputStream.on('error', (error: unknown) => reject(error));
   });
 
   zip.outputStream.pipe(output);
@@ -1226,6 +1226,28 @@ const resolveEvidenceDirectories = async (
     .filter((dir) => path.resolve(dir) !== path.resolve(reportDir));
 };
 
+const PACKAGE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/;
+
+export const normalizePackageName = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error('packageName değeri boş olamaz.');
+  }
+
+  const baseName = path.basename(trimmed);
+  if (baseName !== trimmed) {
+    throw new Error('packageName yalnızca dosya adı olmalı; klasör veya yol segmentleri içeremez.');
+  }
+
+  if (!PACKAGE_NAME_PATTERN.test(baseName)) {
+    throw new Error(
+      'packageName `.zip` uzantılı ve yalnızca harf, rakam, nokta, alt çizgi veya tire içeren bir dosya adı olmalıdır.',
+    );
+  }
+
+  return baseName;
+};
+
 export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const inputDir = path.resolve(options.input);
   const outputDir = path.resolve(options.output);
@@ -1252,7 +1274,10 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const signaturePath = path.join(outputDir, 'manifest.sig');
   await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
-  const archiveName = options.packageName ?? `soipack-${manifestId}.zip`;
+  const archiveName =
+    options.packageName !== undefined
+      ? normalizePackageName(options.packageName)
+      : `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
   await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
 

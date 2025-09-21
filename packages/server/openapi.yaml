@@ -507,7 +507,8 @@ paths:
                   type: string
                 packageName:
                   type: string
-                  description: Oluşturulacak zip dosyası adı.
+                  description: Oluşturulacak zip dosyası adı. Yalnızca `.zip` uzantılı ve harf/rakam, nokta, alt çizgi veya tire içeren düz dosya adları kabul edilir.
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$'
       responses:
         '200':
           description: Paket başarıyla oluşturuldu.

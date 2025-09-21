@@ -1033,6 +1033,58 @@ describe('@soipack/server REST API', () => {
       .expect(404);
   });
 
+  it('rejects pack jobs with unsafe package names', async () => {
+    const unsafeTenant = `tenant-unsafe-${Date.now()}`;
+    const unsafeToken = await createAccessToken({ tenant: unsafeTenant });
+
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${unsafeToken}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Unsafe Package Project')
+      .field('projectVersion', '1.0.0')
+      .expect(202);
+
+    await waitForJobCompletion(app, unsafeToken, importResponse.body.id);
+
+    const analyzeResponse = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${unsafeToken}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ importId: importResponse.body.id })
+      .expect(202);
+
+    await waitForJobCompletion(app, unsafeToken, analyzeResponse.body.id);
+
+    const reportResponse = await request(app)
+      .post('/v1/report')
+      .set('Authorization', `Bearer ${unsafeToken}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ analysisId: analyzeResponse.body.id })
+      .expect(202);
+
+    await waitForJobCompletion(app, unsafeToken, reportResponse.body.id);
+
+    const invalidResponse = await request(app)
+      .post('/v1/pack')
+      .set('Authorization', `Bearer ${unsafeToken}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ reportId: reportResponse.body.id, packageName: '../../../escape-from-pack.zip' })
+      .expect(400);
+
+    expect(invalidResponse.body.error.code).toBe('INVALID_REQUEST');
+    expect(invalidResponse.body.error.message).toContain('packageName');
+
+    const tenantPackagesDir = path.join(storageDir, 'packages', unsafeTenant);
+    await expect(fsPromises.access(tenantPackagesDir, fs.constants.F_OK)).rejects.toThrow();
+
+    const escapePath = path.join(storageDir, 'escape-from-pack.zip');
+    await expect(fsPromises.access(escapePath, fs.constants.F_OK)).rejects.toThrow();
+  });
+
   it('supports cancelling queued jobs and deleting finished jobs', async () => {
     const firstImport = await request(app)
       .post('/v1/import')

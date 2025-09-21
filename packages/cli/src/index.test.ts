@@ -192,6 +192,56 @@ describe('@soipack/cli pipeline', () => {
   });
 });
 
+describe('runPack package name validation', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-pack-name-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const createPackInputs = async () => {
+    const distDir = path.join(tempDir, 'dist');
+    const reportsDir = path.join(distDir, 'reports');
+    const releaseDir = path.join(tempDir, 'release');
+    await fs.mkdir(reportsDir, { recursive: true });
+    await fs.writeFile(path.join(reportsDir, 'report.txt'), 'demo report', 'utf8');
+    return { distDir, releaseDir };
+  };
+
+  it('accepts release.zip as a package name', async () => {
+    const { distDir, releaseDir } = await createPackInputs();
+
+    const result = await runPack({
+      input: distDir,
+      output: releaseDir,
+      packageName: 'release.zip',
+      signingKey: TEST_SIGNING_PRIVATE_KEY,
+    });
+
+    expect(path.basename(result.archivePath)).toBe('release.zip');
+  });
+
+  it.each([
+    '../hack.zip',
+    path.join(path.sep, 'tmp', 'hack.zip'),
+  ])('rejects unsafe package name %s', async (packageName) => {
+    const { distDir, releaseDir } = await createPackInputs();
+
+    await expect(
+      runPack({
+        input: distDir,
+        output: releaseDir,
+        packageName,
+        signingKey: TEST_SIGNING_PRIVATE_KEY,
+      }),
+    ).rejects.toThrow(/packageName/);
+  });
+});
+
 describe('runVerify', () => {
   let tempDir: string;
 
