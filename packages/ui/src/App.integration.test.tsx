@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
@@ -131,9 +131,40 @@ const packResult = {
 };
 
 const jobStore = new Map<string, JobState>();
+const licensePayload = { tenant: 'demo', expiresAt: '2025-12-31T00:00:00Z' };
+const expectedLicenseHeader = Buffer.from(JSON.stringify(licensePayload)).toString('base64');
+const capturedLicenses: string[] = [];
+
+const ensureLicense = (req: any, res: any, ctx: any) => {
+  const authHeader = req.headers.get('authorization');
+  expect(authHeader).toBe('Bearer demo-token');
+
+  const licenseHeader = req.headers.get('x-soipack-license');
+  if (!licenseHeader) {
+    return res(
+      ctx.status(401),
+      ctx.json({ error: { message: 'LICENSE_REQUIRED' } })
+    );
+  }
+
+  const sanitized = licenseHeader.replace(/\s+/g, '');
+  if (sanitized !== expectedLicenseHeader) {
+    return res(
+      ctx.status(401),
+      ctx.json({ error: { message: 'LICENSE_INVALID' } })
+    );
+  }
+
+  capturedLicenses.push(sanitized);
+  return null;
+};
 
 const server = setupServer(
   rest.post('/v1/import', async (_req, res, ctx) => {
+    const authError = ensureLicense(_req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const jobId = 'job-import';
     const result = {
       warnings: ['REQ-2 testleri eksik'],
@@ -156,6 +187,10 @@ const server = setupServer(
     );
   }),
   rest.post('/v1/analyze', async (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const body = await req.json();
     if (!body.importId) {
       return res(ctx.status(400));
@@ -184,6 +219,10 @@ const server = setupServer(
     );
   }),
   rest.post('/v1/report', async (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const body = await req.json();
     if (!body.analysisId) {
       return res(ctx.status(400));
@@ -215,6 +254,10 @@ const server = setupServer(
     );
   }),
   rest.post('/v1/pack', async (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const body = await req.json();
     if (!body.reportId) {
       return res(ctx.status(400));
@@ -234,6 +277,10 @@ const server = setupServer(
     );
   }),
   rest.get('/v1/jobs/:id', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const { id } = req.params as { id: string };
     const job = jobStore.get(id);
     if (!job) {
@@ -256,13 +303,25 @@ const server = setupServer(
     }
     return res(ctx.status(status === 'completed' ? 200 : 202), ctx.json(payload));
   }),
-  rest.get('/v1/reports/:id/compliance.json', (_req, res, ctx) => {
+  rest.get('/v1/reports/:id/compliance.json', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     return res(ctx.status(200), ctx.json(compliancePayload));
   }),
-  rest.get('/v1/reports/:id/traces.json', (_req, res, ctx) => {
+  rest.get('/v1/reports/:id/traces.json', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     return res(ctx.status(200), ctx.json(tracesPayload));
   }),
   rest.get('/v1/reports/:id/:asset', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     const { asset } = req.params as { asset: string };
     const content = reportAssets[asset];
     if (!content) {
@@ -271,7 +330,11 @@ const server = setupServer(
     const isJson = asset.endsWith('.json');
     return isJson ? res(ctx.status(200), ctx.json(JSON.parse(content))) : res(ctx.status(200), ctx.text(content));
   }),
-  rest.get('/v1/packages/:id/archive', (_req, res, ctx) => {
+  rest.get('/v1/packages/:id/archive', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     return res(
       ctx.status(200),
       ctx.set('Content-Type', 'application/zip'),
@@ -279,7 +342,11 @@ const server = setupServer(
       ctx.body('FAKEZIP')
     );
   }),
-  rest.get('/v1/packages/:id/manifest', (_req, res, ctx) => {
+  rest.get('/v1/packages/:id/manifest', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
     return res(
       ctx.status(200),
       ctx.set('Content-Type', 'application/json'),
@@ -293,6 +360,7 @@ beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
   jobStore.clear();
+  capturedLicenses.length = 0;
   saveAsMock.mockReset();
 });
 afterAll(() => server.close());
@@ -306,6 +374,13 @@ describe('App integration', () => {
     await act(async () => {
       await user.type(tokenInput, 'demo-token');
     });
+
+    const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
 
     const file = new File(['reqif'], 'requirements.reqif', { type: 'application/xml' });
     const fileInput = screen.getByLabelText(/Dosyaları sürükleyip bırakın ya da seçin/i, { selector: 'input' });
@@ -349,5 +424,36 @@ describe('App integration', () => {
     expect(downloadedName).toBe('soipack-demo.zip');
     const content = await blob.text();
     expect(content).toBe('FAKEZIP');
+
+    expect(capturedLicenses.length).toBeGreaterThan(0);
+    capturedLicenses.forEach((value) => {
+      expect(value).toBe(expectedLicenseHeader);
+      expect(value).not.toMatch(/\s/);
+    });
+  });
+
+  it('surfaces an error when the license is missing', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
+    const file = new File(['reqif'], 'requirements.reqif', { type: 'application/xml' });
+    const fileInput = screen.getByLabelText(/Dosyaları sürükleyip bırakın ya da seçin/i, { selector: 'input' });
+    await act(async () => {
+      await user.upload(fileInput, file);
+    });
+
+    const runButton = screen.getByRole('button', { name: 'Pipeline Başlat' });
+    await act(async () => {
+      await user.click(runButton);
+    });
+
+    await screen.findByText('Lütfen önce geçerli bir lisans yükleyin.');
+    expect(jobStore.size).toBe(0);
+    expect(capturedLicenses).toHaveLength(0);
   });
 });

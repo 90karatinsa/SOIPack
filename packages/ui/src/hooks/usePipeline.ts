@@ -107,7 +107,12 @@ const sanitizeDownloadName = (name: string, fallback: string): string => {
   return normalized || fallback;
 };
 
-export const usePipeline = (token: string): UsePipelineResult => {
+interface PipelineAuth {
+  token: string;
+  license: string;
+}
+
+export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult => {
   const abortRef = useRef<AbortController | null>(null);
   const [logs, setLogs] = useState<PipelineLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -161,11 +166,11 @@ export const usePipeline = (token: string): UsePipelineResult => {
   }, []);
 
   useEffect(() => {
-    if (!token) {
+    if (!token || !license) {
       abortRef.current?.abort();
       clearState();
     }
-  }, [token, clearState]);
+  }, [token, license, clearState]);
 
   const handleJobFailure = useCallback(
     (kind: PipelineJobKey, failure: JobFailedError | ApiError | Error) => {
@@ -190,8 +195,13 @@ export const usePipeline = (token: string): UsePipelineResult => {
   const runPipeline = useCallback(
     async (files: File[]) => {
       const trimmedToken = token.trim();
+      const trimmedLicense = license.trim();
       if (!trimmedToken) {
         setError('Lütfen önce geçerli bir token girin.');
+        return;
+      }
+      if (!trimmedLicense) {
+        setError('Lütfen önce geçerli bir lisans yükleyin.');
         return;
       }
       if (!files.length) {
@@ -216,6 +226,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
         appendLog('info', 'Import isteği gönderiliyor...');
         const importInitial = await importArtifacts({
           token: trimmedToken,
+          license: trimmedLicense,
           files,
           projectVersion: projectVersionForNow(),
           signal: controller.signal,
@@ -224,6 +235,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
 
         const importJob = await pollJob<ImportJobResult>({
           token: trimmedToken,
+          license: trimmedLicense,
           jobId: importInitial.id,
           initial: importInitial,
           signal: controller.signal,
@@ -242,6 +254,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
         appendLog('info', 'Analyze isteği gönderiliyor...');
         const analyzeInitial = await analyzeArtifacts({
           token: trimmedToken,
+          license: trimmedLicense,
           importId: importJob.id,
           signal: controller.signal,
         });
@@ -249,6 +262,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
 
         const analyzeJob = await pollJob<AnalyzeJobResult>({
           token: trimmedToken,
+          license: trimmedLicense,
           jobId: analyzeInitial.id,
           initial: analyzeInitial,
           signal: controller.signal,
@@ -264,6 +278,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
         appendLog('info', 'Report isteği gönderiliyor...');
         const reportInitial = await reportArtifacts({
           token: trimmedToken,
+          license: trimmedLicense,
           analysisId: analyzeJob.id,
           signal: controller.signal,
         });
@@ -271,6 +286,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
 
         const reportJob = await pollJob<ReportJobResult>({
           token: trimmedToken,
+          license: trimmedLicense,
           jobId: reportInitial.id,
           initial: reportInitial,
           signal: controller.signal,
@@ -289,6 +305,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
         appendLog('info', 'Pack isteği gönderiliyor...');
         const packInitial = await packArtifacts({
           token: trimmedToken,
+          license: trimmedLicense,
           reportId: reportJob.id,
           signal: controller.signal,
         });
@@ -296,6 +313,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
 
         const packJobResult = await pollJob<PackJobResult>({
           token: trimmedToken,
+          license: trimmedLicense,
           jobId: packInitial.id,
           initial: packInitial,
           signal: controller.signal,
@@ -311,8 +329,13 @@ export const usePipeline = (token: string): UsePipelineResult => {
 
         appendLog('info', 'Rapor çıktıları yükleniyor...');
         const [compliance, traces] = await Promise.all([
-          fetchComplianceMatrix({ token: trimmedToken, reportId: reportJob.id, signal: controller.signal }),
-          fetchRequirementTraces({ token: trimmedToken, reportId: reportJob.id, signal: controller.signal }),
+          fetchComplianceMatrix({ token: trimmedToken, license: trimmedLicense, reportId: reportJob.id, signal: controller.signal }),
+          fetchRequirementTraces({
+            token: trimmedToken,
+            license: trimmedLicense,
+            reportId: reportJob.id,
+            signal: controller.signal,
+          }),
         ]);
         setReportData(createReportDataset(reportJob.id, compliance, traces));
         appendLog('success', 'Uyum ve izlenebilirlik verileri güncellendi.');
@@ -342,18 +365,18 @@ export const usePipeline = (token: string): UsePipelineResult => {
         setIsRunning(false);
       }
     },
-    [
-      token,
-      appendLog,
-      handleJobFailure,
-      updateJob,
-    ],
+    [token, license, appendLog, handleJobFailure, updateJob],
   );
 
   const downloadArtifacts = useCallback(async () => {
     const trimmedToken = token.trim();
+    const trimmedLicense = license.trim();
     if (!trimmedToken) {
       setError('Dosya indirebilmek için token gereklidir.');
+      return;
+    }
+    if (!trimmedLicense) {
+      setError('Dosya indirebilmek için lisans gereklidir.');
       return;
     }
     if (!packageJob || packageJob.status !== 'completed') {
@@ -366,6 +389,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
     try {
       const response = await fetchPackageArchive({
         token: trimmedToken,
+        license: trimmedLicense,
         packageId: packageJob.id,
       });
       const blob = await response.blob();
@@ -382,7 +406,7 @@ export const usePipeline = (token: string): UsePipelineResult => {
     } finally {
       setIsDownloading(false);
     }
-  }, [appendLog, packageJob, token]);
+  }, [appendLog, packageJob, token, license]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();

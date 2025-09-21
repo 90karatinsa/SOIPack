@@ -68,10 +68,34 @@ export class JobFailedError<T = unknown> extends Error {
   }
 }
 
-const buildAuthHeaders = (token: string): Record<string, string> => ({
-  Authorization: `Bearer ${token}`,
-  'X-SOIPACK-License': token,
-});
+export interface AuthCredentials {
+  token: string;
+  license: string;
+}
+
+const sanitizeLicense = (license: string): string => license.replace(/\s+/g, '').trim();
+
+export const buildAuthHeaders = ({ token, license }: AuthCredentials): Record<string, string> => {
+  const trimmedToken = token.trim();
+  const trimmedLicense = license.trim();
+
+  if (!trimmedToken) {
+    throw new Error('Token gereklidir.');
+  }
+  if (!trimmedLicense) {
+    throw new Error('Lisans gereklidir.');
+  }
+
+  const sanitizedLicense = sanitizeLicense(trimmedLicense);
+  if (!sanitizedLicense) {
+    throw new Error('Lisans gereklidir.');
+  }
+
+  return {
+    Authorization: `Bearer ${trimmedToken}`,
+    'X-SOIPACK-License': sanitizedLicense,
+  };
+};
 
 const parseErrorPayload = async (response: Response): Promise<ApiError> => {
   let message = response.statusText || 'Sunucu hatası oluştu.';
@@ -112,6 +136,7 @@ const readJson = async <T>(response: Response): Promise<T> => {
 
 interface ImportOptions {
   token: string;
+  license: string;
   files: File[];
   projectName?: string;
   projectVersion?: string;
@@ -150,6 +175,7 @@ const inferImportField = (file: File): string | undefined => {
 
 export const importArtifacts = async ({
   token,
+  license,
   files,
   projectName = 'SOIPack UI Upload',
   projectVersion,
@@ -179,7 +205,7 @@ export const importArtifacts = async ({
 
   const response = await fetch(joinUrl('/v1/import'), {
     method: 'POST',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     body: formData,
     signal,
   });
@@ -189,19 +215,21 @@ export const importArtifacts = async ({
 
 interface AnalyzeOptions {
   token: string;
+  license: string;
   importId: string;
   signal?: AbortSignal;
 }
 
 export const analyzeArtifacts = async ({
   token,
+  license,
   importId,
   signal,
 }: AnalyzeOptions): Promise<ApiJob<AnalyzeJobResult>> => {
   const response = await fetch(joinUrl('/v1/analyze'), {
     method: 'POST',
     headers: {
-      ...buildAuthHeaders(token),
+      ...buildAuthHeaders({ token, license }),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ importId }),
@@ -213,6 +241,7 @@ export const analyzeArtifacts = async ({
 
 interface ReportOptions {
   token: string;
+  license: string;
   analysisId: string;
   manifestId?: string;
   signal?: AbortSignal;
@@ -220,6 +249,7 @@ interface ReportOptions {
 
 export const reportArtifacts = async ({
   token,
+  license,
   analysisId,
   manifestId,
   signal,
@@ -227,7 +257,7 @@ export const reportArtifacts = async ({
   const response = await fetch(joinUrl('/v1/report'), {
     method: 'POST',
     headers: {
-      ...buildAuthHeaders(token),
+      ...buildAuthHeaders({ token, license }),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ analysisId, manifestId }),
@@ -239,6 +269,7 @@ export const reportArtifacts = async ({
 
 interface PackOptions {
   token: string;
+  license: string;
   reportId: string;
   packageName?: string;
   signal?: AbortSignal;
@@ -246,6 +277,7 @@ interface PackOptions {
 
 export const packArtifacts = async ({
   token,
+  license,
   reportId,
   packageName,
   signal,
@@ -253,7 +285,7 @@ export const packArtifacts = async ({
   const response = await fetch(joinUrl('/v1/pack'), {
     method: 'POST',
     headers: {
-      ...buildAuthHeaders(token),
+      ...buildAuthHeaders({ token, license }),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ reportId, packageName }),
@@ -265,14 +297,15 @@ export const packArtifacts = async ({
 
 interface GetJobOptions {
   token: string;
+  license: string;
   jobId: string;
   signal?: AbortSignal;
 }
 
-export const getJob = async <T>({ token, jobId, signal }: GetJobOptions): Promise<ApiJob<T>> => {
+export const getJob = async <T>({ token, license, jobId, signal }: GetJobOptions): Promise<ApiJob<T>> => {
   const response = await fetch(joinUrl(`/v1/jobs/${jobId}`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
@@ -301,6 +334,7 @@ const wait = (ms: number, signal?: AbortSignal): Promise<void> =>
 
 interface PollJobOptions<T> {
   token: string;
+  license: string;
   jobId: string;
   signal?: AbortSignal;
   initial?: ApiJob<T>;
@@ -310,13 +344,14 @@ interface PollJobOptions<T> {
 
 export const pollJob = async <T>({
   token,
+  license,
   jobId,
   signal,
   initial,
   onUpdate,
   pollIntervalMs = 750,
 }: PollJobOptions<T>): Promise<ApiJob<T>> => {
-  let current = initial ?? (await getJob<T>({ token, jobId, signal }));
+  let current = initial ?? (await getJob<T>({ token, license, jobId, signal }));
   onUpdate?.(current);
 
   if (current.status === 'completed') {
@@ -328,7 +363,7 @@ export const pollJob = async <T>({
 
   while (true) {
     await wait(pollIntervalMs, signal);
-    current = await getJob<T>({ token, jobId, signal });
+    current = await getJob<T>({ token, license, jobId, signal });
     onUpdate?.(current);
 
     if (current.status === 'completed') {
@@ -342,18 +377,20 @@ export const pollJob = async <T>({
 
 interface FetchReportDataOptions {
   token: string;
+  license: string;
   reportId: string;
   signal?: AbortSignal;
 }
 
 export const fetchComplianceMatrix = async ({
   token,
+  license,
   reportId,
   signal,
 }: FetchReportDataOptions): Promise<ComplianceMatrixPayload> => {
   const response = await fetch(joinUrl(`/v1/reports/${reportId}/compliance.json`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
@@ -362,12 +399,13 @@ export const fetchComplianceMatrix = async ({
 
 export const fetchRequirementTraces = async ({
   token,
+  license,
   reportId,
   signal,
 }: FetchReportDataOptions): Promise<RequirementTracePayload[]> => {
   const response = await fetch(joinUrl(`/v1/reports/${reportId}/traces.json`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
@@ -380,13 +418,14 @@ interface FetchAssetOptions extends FetchReportDataOptions {
 
 export const fetchReportAsset = async ({
   token,
+  license,
   reportId,
   asset,
   signal,
 }: FetchAssetOptions): Promise<Response> => {
   const response = await fetch(joinUrl(`/v1/reports/${reportId}/${asset}`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
@@ -396,18 +435,20 @@ export const fetchReportAsset = async ({
 
 interface FetchPackageOptions {
   token: string;
+  license: string;
   packageId: string;
   signal?: AbortSignal;
 }
 
 export const fetchPackageArchive = async ({
   token,
+  license,
   packageId,
   signal,
 }: FetchPackageOptions): Promise<Response> => {
   const response = await fetch(joinUrl(`/v1/packages/${packageId}/archive`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
@@ -417,12 +458,13 @@ export const fetchPackageArchive = async ({
 
 export const fetchPackageManifest = async ({
   token,
+  license,
   packageId,
   signal,
 }: FetchPackageOptions): Promise<Response> => {
   const response = await fetch(joinUrl(`/v1/packages/${packageId}/manifest`), {
     method: 'GET',
-    headers: buildAuthHeaders(token),
+    headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
