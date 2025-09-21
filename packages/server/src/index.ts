@@ -71,6 +71,7 @@ interface AuthContext {
   tenantId: string;
   subject: string;
   claims: JWTPayload;
+  hasAdminScope: boolean;
 }
 
 const AUTH_CONTEXT_SYMBOL = Symbol('soipack:auth');
@@ -88,6 +89,9 @@ const getAuthContext = (req: Request): AuthContext => {
 };
 
 const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenantId}:${jobId}`;
+
+const normalizeScopeList = (scopes?: string[]): string[] =>
+  (scopes ?? []).map((scope) => scope.trim()).filter((scope) => scope.length > 0);
 
 interface JobLicenseMetadata {
   hash: string;
@@ -600,6 +604,7 @@ export interface JwtAuthConfig {
   userClaim?: string;
   scopeClaim?: string;
   requiredScopes?: string[];
+  adminScopes?: string[];
   jwksUri?: string;
   jwks?: JSONWebKeySet;
   clockToleranceSeconds?: number;
@@ -1106,10 +1111,45 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
   const tenantClaim = config.tenantClaim;
   const userClaim = config.userClaim ?? 'sub';
   const scopeClaim = config.scopeClaim ?? 'scope';
-  const requiredScopes = (config.requiredScopes ?? []).map((scope) => scope.trim()).filter(Boolean);
-  const scopeSet = new Set(requiredScopes);
+  const requiredScopes = normalizeScopeList(config.requiredScopes);
+  const requiredScopeSet = new Set(requiredScopes);
+  const adminScopes = normalizeScopeList(config.adminScopes);
+  const adminScopeSet = new Set(adminScopes);
   const clockTolerance = config.clockToleranceSeconds ?? 5;
   const tenantPattern = /^[A-Za-z0-9._-]+$/;
+
+  const collectScopes = (payload: JWTPayload): string[] => {
+    const scopeSources: unknown[] = [payload[scopeClaim]];
+    if (scopeClaim !== 'scope') {
+      scopeSources.push(payload.scope);
+    }
+    if (scopeClaim !== 'scp') {
+      scopeSources.push(payload.scp);
+    }
+
+    const scopes = new Set<string>();
+    scopeSources.forEach((value) => {
+      if (typeof value === 'string') {
+        value
+          .split(/\s+/u)
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .forEach((entry) => scopes.add(entry));
+      } else if (Array.isArray(value)) {
+        value.forEach((entry) => {
+          if (typeof entry === 'string') {
+            entry
+              .split(/\s+/u)
+              .map((token) => token.trim())
+              .filter(Boolean)
+              .forEach((token) => scopes.add(token));
+          }
+        });
+      }
+    });
+
+    return [...scopes];
+  };
 
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -1165,29 +1205,11 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
       }
       const subject = userValue;
 
-      if (scopeSet.size > 0) {
-        const scopeSources: unknown[] = [payload[scopeClaim]];
-        if (scopeClaim !== 'scope') {
-          scopeSources.push(payload.scope);
-        }
-        if (scopeClaim !== 'scp') {
-          scopeSources.push(payload.scp);
-        }
+      const scopes = collectScopes(payload);
 
-        const scopes: string[] = [];
-        scopeSources.forEach((value) => {
-          if (typeof value === 'string') {
-            scopes.push(...value.split(/\s+/u).filter(Boolean));
-          } else if (Array.isArray(value)) {
-            value.forEach((entry) => {
-              if (typeof entry === 'string') {
-                scopes.push(...entry.split(/\s+/u).filter(Boolean));
-              }
-            });
-          }
-        });
-
-        const missing = [...scopeSet].filter((scope) => !scopes.includes(scope));
+      if (requiredScopeSet.size > 0) {
+        const scopeValues = new Set(scopes);
+        const missing = [...requiredScopeSet].filter((scope) => !scopeValues.has(scope));
         if (missing.length > 0) {
           throw new HttpError(
             403,
@@ -1197,7 +1219,9 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
         }
       }
 
-      setAuthContext(req, { token, tenantId, subject, claims: payload });
+      const hasAdminScope = adminScopeSet.size > 0 && scopes.some((scope) => adminScopeSet.has(scope));
+
+      setAuthContext(req, { token, tenantId, subject, claims: payload, hasAdminScope });
       next();
     } catch (error) {
       next(error);
@@ -1369,7 +1393,19 @@ export const createServer = (config: ServerConfig): Express => {
   const app = express();
   app.use(express.json());
 
+  const adminScopes = normalizeScopeList(config.auth.adminScopes);
   const requireAuth = createAuthMiddleware(config.auth);
+  const ensureAdminScope = (req: Request): void => {
+    const { hasAdminScope } = getAuthContext(req);
+    if (adminScopes.length > 0 && !hasAdminScope) {
+      throw new HttpError(
+        403,
+        'INSUFFICIENT_SCOPE',
+        'Bu uç nokta yönetici yetkisi gerektirir.',
+        { requiredScopes: adminScopes },
+      );
+    }
+  };
   const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
   const queue = new JobQueue();
 
@@ -1635,6 +1671,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/admin/cleanup',
     requireAuth,
     createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
       const { tenantId } = getAuthContext(req);
       const summary = await runRetentionSweep(
         storage,
@@ -2284,7 +2321,8 @@ export const createServer = (config: ServerConfig): Express => {
   app.get(
     '/metrics',
     requireAuth,
-    createAsyncHandler(async (_req, res) => {
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
       res.set('Content-Type', metricsRegistry.contentType);
       res.send(await metricsRegistry.metrics());
     }),

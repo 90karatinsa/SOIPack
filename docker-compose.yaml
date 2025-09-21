@@ -13,6 +13,7 @@ services:
       SOIPACK_AUTH_TENANT_CLAIM: ${SOIPACK_AUTH_TENANT_CLAIM:-tenant}
       SOIPACK_AUTH_USER_CLAIM: ${SOIPACK_AUTH_USER_CLAIM:-sub}
       SOIPACK_AUTH_REQUIRED_SCOPES: ${SOIPACK_AUTH_REQUIRED_SCOPES:-soipack.api}
+      SOIPACK_AUTH_ADMIN_SCOPES: ${SOIPACK_AUTH_ADMIN_SCOPES:-soipack.admin}
       SOIPACK_STORAGE_DIR: /app/data
       SOIPACK_SIGNING_KEY_PATH: /run/secrets/soipack-signing.pem
       SOIPACK_LICENSE_PUBLIC_KEY_PATH: /run/secrets/soipack-license.pub

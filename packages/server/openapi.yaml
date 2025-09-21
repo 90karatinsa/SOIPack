@@ -867,3 +867,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/cleanup:
+    post:
+      operationId: runRetentionCleanup
+      summary: Saklama politikalarına göre eski iş çıktılarının temizliğini tetikler.
+      description: |-
+        Yalnızca yönetici kapsamına sahip belirteçlerle çağrılabilir. `SOIPACK_AUTH_ADMIN_SCOPES`
+        listesinde tanımlanan kapsamların en az birine sahip erişim belirteci gerektirir.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Temizlik işlemi özeti.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - summary
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                  summary:
+                    type: array
+                    description: Her saklama hedefi için temizlenen/korunan kayıt sayıları.
+                    items:
+                      type: object
+                      required:
+                        - target
+                        - removed
+                        - retained
+                        - skipped
+                        - configured
+                      properties:
+                        target:
+                          type: string
+                          description: Saklama politikası hedefi.
+                          enum:
+                            - uploads
+                            - analyses
+                            - reports
+                            - packages
+                        removed:
+                          type: integer
+                          minimum: 0
+                        retained:
+                          type: integer
+                          minimum: 0
+                        skipped:
+                          type: integer
+                          minimum: 0
+                        configured:
+                          type: boolean
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Yönetici kapsamı eksik.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus formatında gözlemlenebilirlik metriklerini döner.
+      description: |-
+        Yalnızca yönetici kapsamına sahip belirteçlerle çağrılabilir. `SOIPACK_AUTH_ADMIN_SCOPES`
+        listesinde tanımlanan kapsamların en az birine sahip erişim belirteci gerektirir.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Prometheus metrikleri.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Yönetici kapsamı eksik.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

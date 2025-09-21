@@ -69,6 +69,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_AUTH_TENANT_CLAIM=tenant
    SOIPACK_AUTH_USER_CLAIM=sub
    SOIPACK_AUTH_REQUIRED_SCOPES=soipack.api
+   SOIPACK_AUTH_ADMIN_SCOPES=soipack.admin
    # Sağlık kontrolü için zorunlu bearer token (örn. uzun ömürlü JWT)
    SOIPACK_HEALTHCHECK_TOKEN=
    PORT=3000
@@ -89,6 +90,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_RETENTION_PACKAGES_DAYS=60
    ENV
    ```
+
+   `SOIPACK_AUTH_ADMIN_SCOPES`, virgülle ayrılmış yönetici kapsamlarını tanımlar. Liste boş değilse yalnızca bu kapsamların en az birine sahip belirteçler yönetici uç noktalarına (`POST /v1/admin/cleanup` ve `/metrics`) erişebilir. İş yüklerini tetikleyen kullanıcılarla gözlemleme/bakım ekiplerini ayrıştırmak için ayrı bir erişim scope'u tanımlamanız önerilir.
 
    `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır.
 
@@ -209,7 +212,7 @@ BASE_URL=http://localhost:3000
 - Yeni bir sürüm yayınlandığında, hazırlık makinesinde `docker build` ve `docker save` adımlarını tekrar ederek yeni imajı içe aktarın.
 - Kalıcı `data/` klasörünü düzenli olarak yedekleyin.
 - `docker compose logs -f server` komutu ile hata ayıklama günlüklerini takip edebilirsiniz.
-- Saklama politikaları ayarlıysa (örn. `SOIPACK_RETENTION_*_DAYS`), eski iş çıktıları `POST /v1/admin/cleanup` çağrısıyla temizlenir. JSON yanıtı hangi dizinlerden kaç kaydın silindiğini gösterir.
+- Saklama politikaları ayarlıysa (örn. `SOIPACK_RETENTION_*_DAYS`), eski iş çıktıları `POST /v1/admin/cleanup` çağrısıyla temizlenir. Bu uç noktaya erişim için `SOIPACK_AUTH_ADMIN_SCOPES` listesindeki kapsamların en az biri gerekir. JSON yanıtı hangi dizinlerden kaç kaydın silindiğini gösterir.
 
 ## 5. Gözlemlenebilirlik
 
@@ -219,7 +222,7 @@ BASE_URL=http://localhost:3000
   - `job_reused`: Aynı parametrelerle oluşturulmuş önceki bir iş yeniden kullanıldığında.
   - `job_failed`: İş çalışırken hata aldığında (HTTP hata kodu ve ayrıntılar dahil).
   Bu günlükleri `docker compose logs -f server` veya kendi log toplayıcınıza yönlendirerek inceleyebilirsiniz.
-- Prometheus uyumlu metrikler `/metrics` uç noktasından sunulur ve diğer API çağrıları gibi JWT ile kimlik doğrulaması gerektirir:
+- Prometheus uyumlu metrikler `/metrics` uç noktasından sunulur ve diğer API çağrıları gibi, ayrıca `SOIPACK_AUTH_ADMIN_SCOPES` listesinden en az bir kapsam içeren bir JWT ile kimlik doğrulaması gerektirir:
   ```bash
   curl -H "Authorization: Bearer $TOKEN" \
     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
