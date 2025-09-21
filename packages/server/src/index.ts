@@ -9,6 +9,7 @@ import {
   ImportOptions,
   ImportWorkspace,
   LicenseError,
+  normalizePackageName,
   PackOptions,
   ReportOptions,
   runAnalyze,
@@ -2140,12 +2141,25 @@ export const createServer = (config: ServerConfig): Express => {
 
       assertJobId(body.reportId);
 
+      let packageName: string | undefined;
+      if (body.packageName !== undefined) {
+        try {
+          packageName = normalizePackageName(body.packageName);
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'packageName değeri geçersiz.';
+          throw new HttpError(400, 'INVALID_REQUEST', message);
+        }
+      }
+
       const reportDir = path.join(directories.reports, tenantId, body.reportId);
       await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
 
       const hashEntries: HashEntry[] = [
         { key: 'reportId', value: body.reportId },
-        { key: 'packageName', value: body.packageName ?? '' },
+        { key: 'packageName', value: packageName ?? '' },
       ];
       const hash = computeHash(hashEntries);
       const packId = createJobId(hash);
@@ -2182,7 +2196,7 @@ export const createServer = (config: ServerConfig): Express => {
             const packOptions: PackOptions = {
               input: reportDir,
               output: packageDir,
-              packageName: body.packageName,
+              packageName,
               signingKey,
             };
             const result = await runPack(packOptions);
@@ -2196,7 +2210,7 @@ export const createServer = (config: ServerConfig): Express => {
               directory: packageDir,
               params: {
                 reportId: body.reportId,
-                packageName: body.packageName ?? null,
+                packageName: packageName ?? null,
               },
               license: toLicenseMetadata(license),
               outputs: {

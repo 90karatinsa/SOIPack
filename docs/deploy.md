@@ -166,6 +166,8 @@ BASE_URL=http://localhost:3000
      -d "{\"reportId\":\"<rapor-id>\"}"
    ```
 
+   İsteğe bağlı `packageName` alanı gönderilecekse değer yalnızca harf/rakam, nokta, alt çizgi veya tire içeren ve `.zip` ile biten düz bir dosya adı olmalıdır (ör. `release.zip`). Yol gezinme dizileri (`../hack.zip`) veya mutlak yollar reddedilir.
+
    Yanıtın `id` alanını `PACKAGE_ID` olarak kaydedin. Paket arşivi ile manifesti JWT kimlik doğrulamasıyla çekmek için:
 
    ```bash
