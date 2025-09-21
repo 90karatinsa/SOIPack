@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { constants as cryptoConstants, createHash, randomUUID } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
 import os from 'os';
@@ -23,6 +23,7 @@ import {
 } from '@soipack/cli';
 import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
+import helmet from 'helmet';
 import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JSONWebKeySet } from 'jose';
 import multer from 'multer';
@@ -233,15 +234,56 @@ const findTlsError = (error: unknown): TlsErrorInfo | undefined => {
   return undefined;
 };
 
+const DEFAULT_RATE_LIMIT_MAX_ENTRIES = 10_000;
+const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000;
+
 const createSlidingWindowRateLimiter = (
   scope: 'ip' | 'tenant',
   options: RateLimitWindowConfig,
 ): ((key: string) => void) => {
   const counters = new Map<string, { count: number; resetAt: number }>();
+  const maxEntries = Math.max(1, options.maxEntries ?? DEFAULT_RATE_LIMIT_MAX_ENTRIES);
+  const cleanupInterval = Math.max(1, Math.min(options.windowMs, RATE_LIMIT_CLEANUP_INTERVAL_MS));
+  let nextCleanupAt = Date.now() + cleanupInterval;
+
+  const purgeExpired = (now: number) => {
+    if (now < nextCleanupAt) {
+      return;
+    }
+    for (const [key, entry] of counters) {
+      if (entry.resetAt <= now) {
+        counters.delete(key);
+      }
+    }
+    nextCleanupAt = now + cleanupInterval;
+  };
+
+  const evictOldestEntry = () => {
+    if (counters.size < maxEntries) {
+      return;
+    }
+    let oldestKey: string | undefined;
+    let oldestResetAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of counters) {
+      if (entry.resetAt < oldestResetAt) {
+        oldestResetAt = entry.resetAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey !== undefined) {
+      counters.delete(oldestKey);
+    }
+  };
+
   return (key: string) => {
     const now = Date.now();
-    const existing = counters.get(key);
+    purgeExpired(now);
+
+    let existing = counters.get(key);
     if (!existing || existing.resetAt <= now) {
+      if (!existing) {
+        evictOldestEntry();
+      }
       counters.set(key, { count: 1, resetAt: now + options.windowMs });
       return;
     }
@@ -872,6 +914,7 @@ export interface ServerConfig {
   healthcheckToken?: string;
   rateLimit?: RateLimitConfig;
   requireAdminClientCertificate?: boolean;
+  trustProxy?: boolean | number | string;
   licenseLimits?: LicenseLimitsConfig;
   licenseCache?: LicenseCacheConfig;
   retentionScheduler?: RetentionSchedulerConfig;
@@ -902,11 +945,23 @@ export interface RemoteJwksConfig {
 export interface RateLimitWindowConfig {
   windowMs: number;
   max: number;
+  maxEntries?: number;
 }
 
 export interface RateLimitConfig {
   ip?: RateLimitWindowConfig;
   tenant?: RateLimitWindowConfig;
+}
+
+const PIPELINE_LICENSE_FEATURES = {
+  import: 'import',
+  analyze: 'analyze',
+  report: 'report',
+  pack: 'pack',
+} as const;
+
+export interface HttpsServerOptions {
+  requireClientCertificate?: boolean;
 }
 
 export interface HttpsListenerConfig {
@@ -915,7 +970,21 @@ export interface HttpsListenerConfig {
   clientCa?: string | Buffer;
 }
 
-export const createHttpsServer = (app: Express, tls: HttpsListenerConfig): https.Server => {
+const SECURE_TLS_CIPHERS = [
+  'TLS_AES_256_GCM_SHA384',
+  'TLS_AES_128_GCM_SHA256',
+  'TLS_CHACHA20_POLY1305_SHA256',
+  'ECDHE-ECDSA-AES256-GCM-SHA384',
+  'ECDHE-RSA-AES256-GCM-SHA384',
+  'ECDHE-ECDSA-AES128-GCM-SHA256',
+  'ECDHE-RSA-AES128-GCM-SHA256',
+].join(':');
+
+export const createHttpsServer = (
+  app: Express,
+  tls: HttpsListenerConfig,
+  options: HttpsServerOptions = {},
+): https.Server => {
   if (!tls.key) {
     throw new Error('TLS özel anahtar dosyası sağlanmalıdır.');
   }
@@ -923,18 +992,41 @@ export const createHttpsServer = (app: Express, tls: HttpsListenerConfig): https
     throw new Error('TLS sertifika dosyası sağlanmalıdır.');
   }
 
-  const options: https.ServerOptions = {
+  const serverOptions: https.ServerOptions = {
     key: tls.key,
     cert: tls.cert,
+    minVersion: 'TLSv1.2',
+    ciphers: SECURE_TLS_CIPHERS,
+    honorCipherOrder: true,
+    secureOptions: cryptoConstants.SSL_OP_NO_RENEGOTIATION,
   };
 
   if (tls.clientCa) {
-    options.ca = tls.clientCa;
-    options.requestCert = true;
-    options.rejectUnauthorized = false;
+    serverOptions.ca = tls.clientCa;
+    serverOptions.requestCert = true;
+    serverOptions.rejectUnauthorized = true;
+  } else if (options.requireClientCertificate) {
+    throw new Error('İstemci sertifikası gerektirildiğinde istemci CA demeti sağlanmalıdır.');
   }
 
-  return https.createServer(options, app);
+  const server = https.createServer(serverOptions, app);
+
+  server.on('secureConnection', (socket) => {
+    if (typeof socket.disableRenegotiation === 'function') {
+      try {
+        socket.disableRenegotiation();
+      } catch {
+        socket.destroy();
+        return;
+      }
+    }
+
+    if (options.requireClientCertificate && !socket.authorized) {
+      socket.destroy(new Error('TLS_CLIENT_CERT_REQUIRED'));
+    }
+  });
+
+  return server;
 };
 
 type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
@@ -2003,6 +2095,18 @@ export const createServer = (config: ServerConfig): Express => {
     throw new HttpError(401, 'LICENSE_REQUIRED', 'Geçerli bir lisans anahtarı sağlanmalıdır.');
   };
 
+  const requireLicenseFeature = (license: VerifiedLicense, feature: string): void => {
+    const features = Array.isArray(license.payload.features) ? license.payload.features : [];
+    if (!features.includes(feature)) {
+      throw new HttpError(
+        403,
+        'LICENSE_FEATURE_REQUIRED',
+        'Bu işlem için gerekli lisans özelliği etkin değil.',
+        { requiredFeature: feature },
+      );
+    }
+  };
+
   const maxUploadSize = config.maxUploadSizeBytes ?? 25 * 1024 * 1024;
   const uploadPolicies = mergeUploadPolicies(maxUploadSize, config.uploadPolicies);
   const scanner = config.scanner ?? createNoopScanner();
@@ -2026,6 +2130,17 @@ export const createServer = (config: ServerConfig): Express => {
 
   const jsonBodyLimit = Math.max(1, config.jsonBodyLimitBytes ?? DEFAULT_JSON_BODY_LIMIT_BYTES);
   const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', config.trustProxy ?? false);
+  app.use(
+    helmet({
+      hsts: {
+        maxAge: 31_536_000,
+        includeSubDomains: true,
+        preload: true,
+      },
+    }),
+  );
   app.listen = (((...args: Parameters<typeof app.listen>) => {
     void args;
     throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);
@@ -2549,6 +2664,7 @@ export const createServer = (config: ServerConfig): Express => {
         await scanUploadedFiles(scanner, fileMap);
 
         const license = await requireLicenseToken(req, fileMap);
+        requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.import);
         const body = req.body as Record<string, unknown>;
 
         const availableFiles = Object.values(fileMap).reduce((sum, files) => sum + files.length, 0);
@@ -2688,6 +2804,7 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
+      requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.analyze);
       const body = req.body as {
         importId?: string;
         level?: string;
@@ -2824,6 +2941,7 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
+      requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
       const body = req.body as { analysisId?: string; manifestId?: string };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
@@ -2925,6 +3043,7 @@ export const createServer = (config: ServerConfig): Express => {
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
       const license = await requireLicenseToken(req);
+      requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
       const body = req.body as { reportId?: string; packageName?: string };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');

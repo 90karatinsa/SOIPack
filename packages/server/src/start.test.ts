@@ -150,14 +150,17 @@ describe('start', () => {
     process.env.SOIPACK_MAX_JSON_BODY_BYTES = '4096';
     process.env.SOIPACK_RATE_LIMIT_IP_WINDOW_MS = '1000';
     process.env.SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS = '5';
+    process.env.SOIPACK_RATE_LIMIT_IP_MAX_KEYS = '50';
     process.env.SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS = '1000';
     process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS = '3';
+    process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_KEYS = '25';
     process.env.SOIPACK_LICENSE_MAX_BYTES = '131072';
     process.env.SOIPACK_LICENSE_CACHE_MAX_ENTRIES = '10';
     process.env.SOIPACK_LICENSE_CACHE_MAX_AGE_MS = '60000';
     process.env.SOIPACK_HTTP_REQUEST_TIMEOUT_MS = '10000';
     process.env.SOIPACK_HTTP_HEADERS_TIMEOUT_MS = '5000';
     process.env.SOIPACK_HTTP_KEEP_ALIVE_TIMEOUT_MS = '2000';
+    process.env.SOIPACK_TRUST_PROXY = 'loopback';
     process.env.SOIPACK_MAX_QUEUED_JOBS_TOTAL = '9';
     process.env.SOIPACK_WORKER_CONCURRENCY = '3';
     process.env.SOIPACK_SHUTDOWN_TIMEOUT_MS = '15000';
@@ -222,10 +225,11 @@ describe('start', () => {
       expect.objectContaining({
         jsonBodyLimitBytes: 4096,
         rateLimit: {
-          ip: { windowMs: 1000, max: 5 },
-          tenant: { windowMs: 1000, max: 3 },
+          ip: { windowMs: 1000, max: 5, maxEntries: 50 },
+          tenant: { windowMs: 1000, max: 3, maxEntries: 25 },
         },
         requireAdminClientCertificate: true,
+        trustProxy: 'loopback',
         licenseLimits: {
           maxBytes: 131072,
           headerMaxBytes: Math.ceil((131072 * 4) / 3),
@@ -242,6 +246,7 @@ describe('start', () => {
         cert: 'tls-cert',
         clientCa: 'client-ca',
       }),
+      { requireClientCertificate: true },
     );
     expect(getServerLifecycleMock).toHaveBeenCalledWith(mockApp);
     expect(mockHttpsServer.requestTimeout).toBe(10000);

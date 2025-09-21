@@ -52,7 +52,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker load < soipack-server.tar.gz
    ```
-3. Sunucunun imza anahtarını, lisans doğrulama anahtarını ve TLS sertifikalarını `secrets/` dizinine kopyalayın. Docker Compose yapılandırması, dosya adlarının sırasıyla `soipack-signing.pem`, `soipack-license.pub`, `soipack-tls.key` ve `soipack-tls.crt` olmasını bekler. Yönetici uç noktaları için istemci sertifikası doğrulaması kullanılacaksa güvenilir istemci sertifika otoritesini `soipack-client-ca.pem` adıyla aynı dizine yerleştirin. HTTP isteklerinde kullanılacak lisans dosyasını `license.key` adıyla saklayın:
+3. Sunucunun imza anahtarını, lisans doğrulama anahtarını ve TLS sertifikalarını `secrets/` dizinine kopyalayın. Docker Compose yapılandırması, dosya adlarının sırasıyla `soipack-signing.pem`, `soipack-license.pub`, `soipack-tls.key` ve `soipack-tls.crt` olmasını bekler. Sunucu yalnızca TLS 1.2 ve üzeri istemcileri kabul eder; modern AES-GCM/CHACHA20 paketlerinden oluşan sabit bir şifre kümesiyle ve TLS yeniden görüşmesini devre dışı bırakarak bağlantıyı sertleştirir. Yönetici uç noktaları için istemci sertifikası doğrulaması kullanılacaksa güvenilir istemci sertifika otoritesini `soipack-client-ca.pem` adıyla aynı dizine yerleştirin. Bu değer tanımlandığında istemci sertifikası zorunlu hâle gelir ve sertifika sunamayan veya CA ile doğrulanmayan istemciler TLS el sıkışmasında reddedilir. HTTP isteklerinde kullanılacak lisans dosyasını `license.key` adıyla saklayın:
    ```bash
    mkdir -p secrets
    cp /path/to/soipack-signing.pem secrets/soipack-signing.pem
@@ -63,6 +63,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    # cp /path/to/clients/ca.crt secrets/soipack-client-ca.pem
    cp /path/to/license.key license.key
    ```
+
+   HTTPS dinleyicisi varsayılan olarak `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options` ve benzeri HTTP başlıklarını göndererek kullanıcı arayüzleri ve API çağrıları için güvenli varsayılanlar uygular; Express'in `X-Powered-By` başlığı devre dışı bırakılmıştır. Tüm istemcilerin bu başlıklara hazır olduğundan emin olun ve TLS sonlandırmasını başka bir katmanda yapıyorsanız aynı güvenlik başlıklarını orada da çoğaltın.
 4. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
    ```bash
    cat <<'ENV' > .env
@@ -93,8 +95,12 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_MAX_JSON_BODY_BYTES=2097152
    SOIPACK_RATE_LIMIT_IP_WINDOW_MS=60000
    SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS=300
+   SOIPACK_RATE_LIMIT_IP_MAX_KEYS=10000
    SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS=60000
    SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS=150
+   SOIPACK_RATE_LIMIT_TENANT_MAX_KEYS=10000
+   # Reverse proxy arkasında gerçek istemci IP'lerini kullanmak için true/loopback/127.0.0.1/8 gibi değerler
+   SOIPACK_TRUST_PROXY=false
    # Kiracı başına kuyruğa alınan/çalışan iş limiti (opsiyonel, varsayılan 5)
    SOIPACK_MAX_QUEUED_JOBS=5
    # Tüm kiracılar için global kuyruğa alınan iş limiti (opsiyonel)
@@ -130,11 +136,15 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
   Tüm HTTPS istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir. Lisans içeriği `SOIPACK_LICENSE_MAX_BYTES` ile sınırlıdır; başlıkta gönderilen base64 verisi `SOIPACK_LICENSE_HEADER_MAX_BYTES` üstüne çıkarsa veya çözülmüş hali sınırı aşarsa sunucu `413 LICENSE_TOO_LARGE` döndürür. Büyük `license` form alanları belleğe yüklenmez, sınır aşıldığında akış diske taşınmadan önce kesilir ve aynı hata kodu döner. Bu değerleri yükseltmeniz gerekiyorsa sınırlarınızı eş zamanlı olarak güncelleyin.
 
+  Lisans anahtarında bulunan `features` listesi, istemcinin hangi pipeline uç noktalarını çağırabileceğini belirler. Sırasıyla `/v1/import`, `/v1/analyze`, `/v1/report` ve `/v1/pack` uç noktaları `import`, `analyze`, `report` ve `pack` özelliklerine ihtiyaç duyar; gerekli özellik eksikse sunucu istekleri `403 LICENSE_FEATURE_REQUIRED` yanıtıyla reddeder.
+
   Lisans doğrulama yanıtları, tekrar eden istemcilerin gecikmesini azaltmak için `SOIPACK_LICENSE_CACHE_MAX_ENTRIES` ve `SOIPACK_LICENSE_CACHE_MAX_AGE_MS` ile sınırlı bellek önbelleğinde tutulur. Varsayılanlar sırasıyla 1024 kayıt ve 1 saat olup, yeni kiracılar eklendikçe önbellek en eski girişleri otomatik temizler. Bellek tüketimini yakından izliyorsanız, cache büyüklüğünü ortamınızın kullanıcı sayısına göre ayarlayın.
 
-  JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir.
+  JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir. Her pencere için benzersiz IP/kiralayan girişlerinin bellekte tutulacağı üst sınırı `SOIPACK_RATE_LIMIT_IP_MAX_KEYS` ve `SOIPACK_RATE_LIMIT_TENANT_MAX_KEYS` ile belirleyebilirsiniz; sınır aşıldığında en eski sayaçlar otomatik olarak düşürülür ve pencere süresi sona erdiğinde temizlenir. Bu davranış, saldırganların sahte IP'lerle sınırsız sayaç biriktirmesini engeller.
 
   Kuyruk limitleri iki seviyede yapılandırılabilir. `SOIPACK_MAX_QUEUED_JOBS`, her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler (varsayılan 5). `SOIPACK_MAX_QUEUED_JOBS_TOTAL` tanımlandığında aynı zamanda tüm kiracılar için global bir üst sınır uygulanır; toplam limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve hata detaylarında `scope: "global"` bilgisi yer alır. `SOIPACK_WORKER_CONCURRENCY` ise arka planda aynı anda kaç işin çalıştırılacağını belirler. Bu değeri CPU çekirdek sayınıza göre ayarlayarak paralel import/analiz yürütmelerini hızlandırabilir, ancak disk ve bellek tüketimini yakından izlemelisiniz. Limitlerden herhangi biri aşıldığında sunucu yeni işleri kuyruğa almaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
+
+  API'nin bir ters proxy arkasında çalıştığı dağıtımlarda, istemci IP'lerinin `X-Forwarded-For` başlığından alınabilmesi ve oran sınırlamasının doğru IP'ler üzerinde uygulanması için `SOIPACK_TRUST_PROXY` değerini uygun şekilde (örneğin `true`, `loopback` veya CIDR bloğu) ayarlayın.
 
 ### Zarif kapatma ve zaman aşımı kontrolleri
 

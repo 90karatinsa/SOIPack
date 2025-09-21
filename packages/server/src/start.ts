@@ -484,6 +484,17 @@ export const start = async (): Promise<void> => {
     };
   }
 
+  const rateLimitIpMaxKeysSource = process.env.SOIPACK_RATE_LIMIT_IP_MAX_KEYS;
+  if (rateLimitIpMaxKeysSource !== undefined) {
+    rateLimit.ip = {
+      ...rateLimit.ip!,
+      maxEntries: parsePositiveInteger(
+        rateLimitIpMaxKeysSource,
+        'SOIPACK_RATE_LIMIT_IP_MAX_KEYS',
+      ),
+    };
+  }
+
   const rateLimitTenantWindowSource = process.env.SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS;
   const rateLimitTenantMaxSource = process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS;
   if (rateLimitTenantWindowSource || rateLimitTenantMaxSource) {
@@ -500,6 +511,17 @@ export const start = async (): Promise<void> => {
       max: parsePositiveInteger(
         rateLimitTenantMaxSource,
         'SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS',
+      ),
+    };
+  }
+
+  const rateLimitTenantMaxKeysSource = process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_KEYS;
+  if (rateLimitTenantMaxKeysSource !== undefined) {
+    rateLimit.tenant = {
+      ...rateLimit.tenant!,
+      maxEntries: parsePositiveInteger(
+        rateLimitTenantMaxKeysSource,
+        'SOIPACK_RATE_LIMIT_TENANT_MAX_KEYS',
       ),
     };
   }
@@ -545,6 +567,22 @@ export const start = async (): Promise<void> => {
     });
   }
 
+  const trustProxySource = process.env.SOIPACK_TRUST_PROXY;
+  let trustProxy: boolean | number | string | undefined;
+  if (trustProxySource !== undefined) {
+    const normalized = trustProxySource.trim();
+    const lower = normalized.toLowerCase();
+    if (lower === 'true') {
+      trustProxy = true;
+    } else if (lower === 'false') {
+      trustProxy = false;
+    } else if (/^\d+$/.test(normalized)) {
+      trustProxy = Number.parseInt(normalized, 10);
+    } else {
+      trustProxy = normalized;
+    }
+  }
+
   const app = createServer({
     auth: authConfig,
     storageDir,
@@ -559,6 +597,7 @@ export const start = async (): Promise<void> => {
     jsonBodyLimitBytes,
     rateLimit,
     requireAdminClientCertificate,
+    trustProxy,
     licenseLimits,
     licenseCache,
     retentionScheduler,
@@ -568,7 +607,7 @@ export const start = async (): Promise<void> => {
     key: tlsKey,
     cert: tlsCert,
     clientCa: tlsClientCa,
-  });
+  }, { requireClientCertificate: requireAdminClientCertificate });
 
   httpsServer.requestTimeout = requestTimeoutMs;
   httpsServer.headersTimeout = headersTimeoutMs;

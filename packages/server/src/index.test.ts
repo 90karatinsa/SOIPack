@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
+import tls from 'tls';
 import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
@@ -434,6 +435,26 @@ describe('@soipack/server REST API', () => {
     expect(wrongResponse.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('applies security headers to responses', async () => {
+    const health = await request(app).get('/health').expect(200);
+    expect(health.headers['strict-transport-security']).toContain('max-age=31536000');
+    expect(health.headers['strict-transport-security']).toContain('includeSubDomains');
+    expect(health.headers['strict-transport-security']).toContain('preload');
+    expect(health.headers['x-content-type-options']).toBe('nosniff');
+    expect(health.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(health.headers['x-powered-by']).toBeUndefined();
+
+    const jobs = await request(app)
+      .get('/v1/jobs')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(jobs.headers['strict-transport-security']).toBe(health.headers['strict-transport-security']);
+    expect(jobs.headers['x-content-type-options']).toBe('nosniff');
+    expect(jobs.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(jobs.headers['x-powered-by']).toBeUndefined();
+  });
+
   it('requires authorization for job and artifact endpoints', async () => {
     const jobList = await request(app).get('/v1/jobs').expect(401);
     expect(jobList.body.error.code).toBe('UNAUTHORIZED');
@@ -621,6 +642,61 @@ describe('@soipack/server REST API', () => {
     expect(response.headers['retry-after']).toBeDefined();
   });
 
+  it('uses forwarded client IPs when trust proxy is enabled', async () => {
+    const proxyLogCapture = createLogCapture();
+    const proxyApp = createServer({
+      ...baseConfig,
+      logger: proxyLogCapture.logger,
+      trustProxy: true,
+      rateLimit: {
+        ip: { windowMs: 1000, max: 1, maxEntries: 5 },
+        tenant: baseConfig.rateLimit?.tenant,
+      },
+      metricsRegistry: new Registry(),
+    });
+
+    const firstIp = '203.0.113.10';
+    const secondIp = '203.0.113.11';
+
+    await request(proxyApp).get('/health').set('X-Forwarded-For', firstIp).expect(200);
+    await request(proxyApp).get('/health').set('X-Forwarded-For', secondIp).expect(200);
+    const limited = await request(proxyApp)
+      .get('/health')
+      .set('X-Forwarded-For', firstIp)
+      .expect(429);
+    expect(limited.body.error.code).toBe('IP_RATE_LIMIT_EXCEEDED');
+
+    await flushLogs();
+    const seenAddresses = proxyLogCapture.entries
+      .filter((entry) => entry.event === 'http_request')
+      .map((entry) => entry.remoteAddress);
+    expect(seenAddresses).toContain(firstIp);
+    expect(seenAddresses).toContain(secondIp);
+  });
+
+  it('evicts old rate limit entries when capacity is reached', async () => {
+    const evictionApp = createServer({
+      ...baseConfig,
+      trustProxy: true,
+      rateLimit: {
+        ip: { windowMs: 10_000, max: 1, maxEntries: 3 },
+        tenant: baseConfig.rateLimit?.tenant,
+      },
+      metricsRegistry: new Registry(),
+    });
+
+    const ips = ['198.51.100.1', '198.51.100.2', '198.51.100.3', '198.51.100.4'];
+    for (const ip of ips) {
+      await request(evictionApp).get('/health').set('X-Forwarded-For', ip).expect(200);
+    }
+
+    const reused = await request(evictionApp)
+      .get('/health')
+      .set('X-Forwarded-For', ips[0])
+      .expect(200);
+    expect(reused.body).toEqual({ status: 'ok' });
+  });
+
   it('enforces per-tenant rate limits', async () => {
     const tenantLimitedApp = createServer({
       ...baseConfig,
@@ -719,7 +795,7 @@ describe('@soipack/server REST API', () => {
         issuedTo: 'test-suite',
         issuedAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        features: [],
+        features: ['import', 'analyze', 'report', 'pack'],
       } as cli.LicensePayload;
     });
     runImportSpy.mockResolvedValue({
@@ -773,25 +849,50 @@ describe('@soipack/server REST API', () => {
     }
   });
 
-  it('requires mutual TLS for admin endpoints when configured', async () => {
+  it('rejects unauthorized TLS handshakes and legacy protocols when mutual TLS is required', async () => {
     const secureConfig: ServerConfig = {
       ...baseConfig,
       requireAdminClientCertificate: true,
       metricsRegistry: new Registry(),
     };
     const secureApp = createServer(secureConfig);
-    const httpsServer = createHttpsServer(secureApp, {
-      key: TEST_SERVER_KEY,
-      cert: TEST_SERVER_CERT,
-      clientCa: TEST_CA_CERT,
-    });
+    const httpsServer = createHttpsServer(
+      secureApp,
+      {
+        key: TEST_SERVER_KEY,
+        cert: TEST_SERVER_CERT,
+        clientCa: TEST_CA_CERT,
+      },
+      { requireClientCertificate: true },
+    );
 
     await new Promise<void>((resolve) => httpsServer.listen(0, resolve));
     const { port } = httpsServer.address() as AddressInfo;
     const adminToken = await createAccessToken({ scope: `${requiredScope} ${adminScope}` });
 
-    const performRequest = (options?: https.RequestOptions) =>
-      new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const attemptTlsConnection = (options: tls.ConnectionOptions) =>
+      new Promise<void>((resolve, reject) => {
+        const socket = tls.connect(
+          {
+            host: 'localhost',
+            port,
+            ca: TEST_CA_CERT,
+            rejectUnauthorized: true,
+            ...options,
+          },
+        );
+        socket.once('secureConnect', () => {
+          socket.end();
+          resolve();
+        });
+        socket.once('error', (error) => {
+          socket.destroy();
+          reject(error);
+        });
+      });
+
+    const expectRequestFailure = (options?: https.RequestOptions) =>
+      new Promise<never>((_resolve, reject) => {
         const requestOptions: https.RequestOptions = {
           host: 'localhost',
           port,
@@ -801,6 +902,42 @@ describe('@soipack/server REST API', () => {
           ca: TEST_CA_CERT,
           rejectUnauthorized: true,
           ...options,
+        };
+        const req = https.request(requestOptions, (res) => {
+          reject(new Error(`unexpected response ${res.statusCode ?? 'unknown'}`));
+        });
+        req.on('error', (error) => reject(error));
+        req.end();
+      });
+
+    await expect(expectRequestFailure()).rejects.toMatchObject({
+      code: expect.stringMatching(/^(ERR_TLS_|ERR_SSL_|ECONNRESET$)/u),
+    });
+
+    await expect(
+      expectRequestFailure({ key: TEST_SERVER_KEY, cert: TEST_CLIENT_CERT }),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(/^(ERR_TLS_|ERR_OSSL_)/u),
+    });
+
+    await expect(
+      attemptTlsConnection({ secureProtocol: 'TLSv1_1_method' }),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(/^(ERR_TLS_|ERR_SSL_)/u),
+    });
+
+    const performAuthorizedRequest = () =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const requestOptions: https.RequestOptions = {
+          host: 'localhost',
+          port,
+          path: '/metrics',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${adminToken}` },
+          ca: TEST_CA_CERT,
+          rejectUnauthorized: true,
+          key: TEST_CLIENT_KEY,
+          cert: TEST_CLIENT_CERT,
         };
         const req = https.request(requestOptions, (res) => {
           const chunks: Buffer[] = [];
@@ -813,12 +950,8 @@ describe('@soipack/server REST API', () => {
         req.end();
       });
 
-    const withoutCert = await performRequest();
-    expect(withoutCert.status).toBe(403);
-    expect(JSON.parse(withoutCert.body).error.code).toBe('ADMIN_CLIENT_CERT_REQUIRED');
-
-    const withCert = await performRequest({ key: TEST_CLIENT_KEY, cert: TEST_CLIENT_CERT });
-    expect(withCert.status).toBe(200);
+    const authorized = await performAuthorizedRequest();
+    expect(authorized.status).toBe(200);
 
     await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
   });
@@ -844,6 +977,122 @@ describe('@soipack/server REST API', () => {
       .send({ reportId: 'missing-report' })
       .expect(401);
     expect(packResponse.body.error.code).toBe('LICENSE_REQUIRED');
+  });
+
+  it('enforces license feature entitlements for pipeline routes', async () => {
+    const basePayload = {
+      licenseId: 'feature-test',
+      issuedTo: 'Feature Tester',
+      issuedAt: new Date().toISOString(),
+    };
+    let currentFeatures: string[] = [];
+
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('@soipack/cli', () => {
+        const actual = jest.requireActual('@soipack/cli');
+        return {
+          ...actual,
+          verifyLicenseFile: jest.fn(async () => ({
+            ...basePayload,
+            features: currentFeatures.length ? [...currentFeatures] : undefined,
+          })),
+        };
+      });
+
+      const { createServer: createServerWithMock } = await import('./index');
+      const featureApp = createServerWithMock({
+        ...baseConfig,
+        metricsRegistry: new Registry(),
+      });
+
+      const expectDenied = async (
+        path: string,
+        configure: (req: request.Test) => request.Test,
+        feature: string,
+      ) => {
+        currentFeatures = [];
+        const headerValue = Buffer.from(
+          `feature-denied-${feature}-${Math.random().toString(36).slice(2)}`,
+        ).toString('base64');
+        const response = await configure(
+          request(featureApp)
+            .post(path)
+            .set('Authorization', `Bearer ${token}`)
+            .set('X-SOIPACK-License', headerValue),
+        ).expect(403);
+        expect(response.body.error.code).toBe('LICENSE_FEATURE_REQUIRED');
+        expect(response.body.error.details).toEqual(expect.objectContaining({ requiredFeature: feature }));
+      };
+
+      await expectDenied(
+        '/v1/import',
+        (req) =>
+          req
+            .attach('reqif', minimalExample('spec.reqif'))
+            .field('projectName', 'Feature Project')
+            .field('projectVersion', '1.0.0'),
+        'import',
+      );
+      await expectDenied(
+        '/v1/analyze',
+        (req) => req.send({ importId: 'aaaaaaaaaaaaaaaa' }),
+        'analyze',
+      );
+      await expectDenied(
+        '/v1/report',
+        (req) => req.send({ analysisId: 'bbbbbbbbbbbbbbbb' }),
+        'report',
+      );
+      await expectDenied(
+        '/v1/pack',
+        (req) => req.send({ reportId: 'cccccccccccccccc' }),
+        'pack',
+      );
+
+      currentFeatures = ['import', 'analyze', 'report', 'pack'];
+      const allowedHeader = Buffer.from(
+        `feature-allowed-${Math.random().toString(36).slice(2)}`,
+      ).toString('base64');
+
+      const allowedImport = await request(featureApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', allowedHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .field('projectName', 'Feature Project')
+        .field('projectVersion', '1.0.1');
+      expect([200, 202]).toContain(allowedImport.status);
+
+      const allowedAnalyze = await request(featureApp)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', Buffer.from(`feature-allowed-analyze-${Math.random()
+            .toString(36)
+            .slice(2)}`).toString('base64'))
+        .send({ importId: 'aaaaaaaaaaaaaaaa' });
+      expect(allowedAnalyze.status).toBe(404);
+
+      const allowedReport = await request(featureApp)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', Buffer.from(`feature-allowed-report-${Math.random()
+            .toString(36)
+            .slice(2)}`).toString('base64'))
+        .send({ analysisId: 'bbbbbbbbbbbbbbbb' });
+      expect(allowedReport.status).toBe(404);
+
+      const allowedPack = await request(featureApp)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', Buffer.from(`feature-allowed-pack-${Math.random()
+            .toString(36)
+            .slice(2)}`).toString('base64'))
+        .send({ reportId: 'cccccccccccccccc' });
+      expect(allowedPack.status).toBe(404);
+    });
+
+    jest.resetModules();
+    jest.dontMock('@soipack/cli');
   });
 
   it('enforces per-field size limits before queuing import jobs', async () => {
