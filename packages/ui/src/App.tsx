@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { CoverageStatus } from './types/pipeline';
 import { TokenInput } from './components/TokenInput';
+import { LicenseInput } from './components/LicenseInput';
 import { NavigationTabs, type View } from './components/NavigationTabs';
 import { UploadAndRun } from './components/UploadAndRun';
 import { ComplianceMatrix } from './components/ComplianceMatrix';
@@ -10,6 +11,7 @@ import { usePipeline } from './hooks/usePipeline';
 
 export default function App() {
   const [token, setToken] = useState('');
+  const [license, setLicense] = useState('');
   const [activeView, setActiveView] = useState<View>('upload');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [activeStatuses, setActiveStatuses] = useState<CoverageStatus[]>([
@@ -19,14 +21,16 @@ export default function App() {
   ]);
 
   const isTokenActive = token.trim().length > 0;
-  const { runPipeline, downloadArtifacts, state, reset } = usePipeline(token);
+  const isLicenseActive = license.trim().length > 0;
+  const isAuthorized = isTokenActive && isLicenseActive;
+  const { runPipeline, downloadArtifacts, state, reset } = usePipeline({ token, license });
 
   const { logs, isRunning, isDownloading, jobs, reportData, packageJob, error, lastCompletedAt } = state;
 
   const canRunPipeline = selectedFiles.length > 0;
 
   const handleRun = () => {
-    if (!isTokenActive || !canRunPipeline || isRunning) return;
+    if (!canRunPipeline || isRunning) return;
     void runPipeline(selectedFiles);
   };
 
@@ -62,6 +66,13 @@ export default function App() {
 
   const handleTokenClear = () => {
     setToken('');
+    setLicense('');
+    setSelectedFiles([]);
+    reset();
+  };
+
+  const handleLicenseClear = () => {
+    setLicense('');
     setSelectedFiles([]);
     reset();
   };
@@ -82,12 +93,18 @@ export default function App() {
           </div>
           <DownloadPackageButton
             onDownload={() => downloadArtifacts()}
-            disabled={!isTokenActive || !packageJob || packageJob.status !== 'completed'}
+            disabled={!isAuthorized || !packageJob || packageJob.status !== 'completed'}
             isBusy={isDownloading}
           />
         </header>
 
         <TokenInput token={token} onTokenChange={setToken} onClear={handleTokenClear} />
+
+        <LicenseInput
+          license={license}
+          onLicenseChange={(value) => setLicense(value)}
+          onClear={handleLicenseClear}
+        />
 
         <NavigationTabs activeView={activeView} onChange={setActiveView} disabled={!isTokenActive} />
 
@@ -99,6 +116,13 @@ export default function App() {
             <p className="mt-2 text-xs text-slate-500">
               Token girildiğinde yükleme, matriksler ve paket indirme aktif hale gelecektir.
             </p>
+          </div>
+        )}
+
+        {isTokenActive && !isLicenseActive && (
+          <div className="rounded-3xl border border-amber-700/40 bg-amber-950/30 p-6 text-center text-amber-100">
+            <p className="text-sm font-medium">Lütfen JSON lisans dosyasını yükleyin veya yapıştırın.</p>
+            <p className="mt-2 text-xs text-amber-200">Lisans olmadan gönderilen istekler sunucu tarafından reddedilecektir.</p>
           </div>
         )}
 

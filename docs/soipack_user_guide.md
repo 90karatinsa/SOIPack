@@ -112,6 +112,8 @@ npm run ui
 
 Varsayılan olarak UI, aynı origin üzerindeki `/v1` uç noktalarına istek yapar; farklı bir API adresi kullanıyorsanız `VITE_API_BASE_URL` ortam değişkenini `npm run ui` komutundan önce tanımlayabilirsiniz. Giriş ekranına JWT tokenınızı yazdığınızda import → analyze → report adımları sırasıyla tetiklenir, her işin kuyruk/durum bilgisi gerçek zamanlı olarak “Pipeline aşamaları” bölümünde güncellenir ve sunucudan dönen uyarılar çalıştırma günlüğünde yer alır. İşlem tamamlandığında uyum ve izlenebilirlik matrisleri API’den gelen JSON dosyalarına göre doldurulur; “Rapor paketini indir” butonu ise sunucuda üretilen `analysis.json`, `snapshot.json`, `traces.json` ve HTML raporlarını gerçek dosya içerikleriyle zip halinde indirir.
 
+Token kutusunun hemen yanında yeni “Lisans Anahtarı” bileşeni bulunur. JSON tabanlı lisans dosyanızı yüklediğinizde veya panodan yapıştırdığınızda içerik istemci tarafında doğrulanır, `JSON.stringify` ile normalize edilir ve otomatik olarak base64’e çevrilerek tüm API çağrılarında `X-SOIPACK-License` başlığına eklenir. Lisans alanı boş bırakılırsa UI pipeline’ı başlatmadan önce uyarı gösterir ve sunucuya istek göndermez; bu sayede lisanssız isteklerin msw tabanlı testlerde bile `LICENSE_REQUIRED` hatasıyla reddedildiği doğrulanır.
+
 Arayüzdeki temel görünüm aşağıda özetlenmiştir:
 
 ![SOIPack UI pipeline görünümü](images/ui-pipeline.png)
