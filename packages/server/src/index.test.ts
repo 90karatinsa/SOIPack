@@ -1,11 +1,11 @@
 import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
-import tls from 'tls';
 import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
 import { Writable } from 'stream';
+import tls from 'tls';
 
 import * as cli from '@soipack/cli';
 import { Manifest } from '@soipack/core';
@@ -1398,6 +1398,68 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('resolves lifecycle waitForIdle only after running jobs finish', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    const jobStarted = createDeferred<void>();
+    const allowCompletion = createDeferred<void>();
+    runImportSpy.mockImplementation(async () => {
+      jobStarted.resolve();
+      await allowCompletion.promise;
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+        },
+      };
+      return {
+        workspace,
+        workspacePath: 'workspace.json',
+        warnings: [],
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const idleApp = createServer({
+      ...baseConfig,
+      metricsRegistry: new Registry(),
+    });
+    const projectVersion = `idle-${Date.now()}`;
+
+    try {
+      const response = await request(idleApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Idle Wait Demo')
+        .field('projectVersion', projectVersion)
+        .expect(202);
+
+      await jobStarted.promise;
+
+      const lifecycle = getServerLifecycle(idleApp);
+      const waitPromise = lifecycle.waitForIdle().then(() => true);
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await expect(Promise.race([waitPromise, Promise.resolve(false)])).resolves.toBe(false);
+
+      allowCompletion.resolve();
+      await waitPromise;
+
+      await waitForJobCompletion(idleApp, token, response.body.id);
+    } finally {
+      allowCompletion.resolve();
+      runImportSpy.mockRestore();
+    }
+  });
+
   it('rejects malicious uploads flagged by the scanning service', async () => {
     const scanningStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-scan-test-'));
     const scanningScanner: FileScanner = {
@@ -2299,6 +2361,55 @@ describe('@soipack/server REST API', () => {
     const metricsText = await metricsRegistry.metrics();
     expect(metricsText).toContain('soipack_http_requests_total');
     expect(metricsText).toContain('soipack_http_request_duration_seconds');
+  });
+
+  it('adopts completed jobs after a restart without rerunning pipelines', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    runImportSpy.mockResolvedValue({
+      workspace: {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        metadata: { generatedAt: new Date().toISOString(), warnings: [], inputs: {} },
+      },
+      workspacePath: 'workspace.json',
+      warnings: [],
+    } satisfies Awaited<ReturnType<typeof cli.runImport>>);
+
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Restart Demo')
+      .field('projectVersion', `restart-${Date.now()}`)
+      .expect(202);
+
+    const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+    expect(importJob.status).toBe('completed');
+
+    const initialRuns = runImportSpy.mock.calls.length;
+
+    const restartRegistry = new Registry();
+    const restartApp = createServer({
+      ...baseConfig,
+      metricsRegistry: restartRegistry,
+    });
+
+    const adoptedResponse = await request(restartApp)
+      .get(`/v1/jobs/${importResponse.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(adoptedResponse.body.status).toBe('completed');
+    expect(adoptedResponse.body.id).toBe(importResponse.body.id);
+    expect(runImportSpy.mock.calls.length).toBe(initialRuns);
+
+    runImportSpy.mockRestore();
   });
 });
 

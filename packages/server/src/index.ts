@@ -32,7 +32,7 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom
 
 
 import { HttpError, toHttpError } from './errors';
-import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
+import { JobDetails, JobExecutionContext, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 import {
   FileSystemStorage,
@@ -279,7 +279,7 @@ const createSlidingWindowRateLimiter = (
     const now = Date.now();
     purgeExpired(now);
 
-    let existing = counters.get(key);
+    const existing = counters.get(key);
     if (!existing || existing.resetAt <= now) {
       if (!existing) {
         evictOldestEntry();
@@ -1119,6 +1119,63 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
   },
 });
 
+interface ImportJobPayload {
+  workspaceDir: string;
+  uploads: Record<string, string[]>;
+  level?: CertificationLevel | null;
+  projectName?: string | null;
+  projectVersion?: string | null;
+  license: JobLicenseMetadata;
+}
+
+interface AnalyzeJobPayload {
+  workspaceDir: string;
+  analysisDir: string;
+  analyzeOptions: AnalyzeOptions;
+  importId: string;
+  license: JobLicenseMetadata;
+}
+
+interface ReportJobPayload {
+  analysisDir: string;
+  reportDir: string;
+  reportOptions: ReportOptions;
+  analysisId: string;
+  manifestId?: string | null;
+  license: JobLicenseMetadata;
+}
+
+interface PackJobPayload {
+  reportDir: string;
+  packageDir: string;
+  packageName?: string;
+  signingKeyPath: string;
+  reportId: string;
+  license: JobLicenseMetadata;
+}
+
+type JobPayloadMap = {
+  import: ImportJobPayload;
+  analyze: AnalyzeJobPayload;
+  report: ReportJobPayload;
+  pack: PackJobPayload;
+};
+
+type JobResultMap = {
+  import: ImportJobResult;
+  analyze: AnalyzeJobResult;
+  report: ReportJobResult;
+  pack: PackJobResult;
+};
+
+type JobHandler<K extends JobKind> = (
+  context: JobExecutionContext<JobPayloadMap[K]>,
+) => Promise<JobResultMap[K]>;
+
+type JobHandlers = {
+  [K in JobKind]: JobHandler<K>;
+};
+
 const serializeJobSummary = (summary: JobSummary) => ({
   id: summary.id,
   kind: summary.kind,
@@ -1671,6 +1728,7 @@ export const createServer = (config: ServerConfig): Express => {
   const directories = storage.directories;
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
+  const queueDirectory = path.join(directories.base, '.queue');
   const licensePublicKey = loadLicensePublicKey(licensePublicKeyPath);
   const expectedHealthcheckAuthorization = config.healthcheckToken
     ? `Bearer ${config.healthcheckToken}`
@@ -1930,6 +1988,190 @@ export const createServer = (config: ServerConfig): Express => {
     }
     const payload = toLicensePayloadFromMetadata(metadata.license);
     registerJobLicense(metadata.tenantId, metadata.id, { hash: metadata.license.hash, payload });
+  };
+
+  const requireJobPayload = <K extends JobKind>(
+    context: JobExecutionContext<JobPayloadMap[K]>,
+  ): JobPayloadMap[K] => {
+    if (context.payload === undefined) {
+      throw new HttpError(500, 'JOB_PAYLOAD_MISSING', 'İş için kalıcı yük bulunamadı.');
+    }
+    return context.payload as JobPayloadMap[K];
+  };
+
+  const jobHandlers: JobHandlers = {
+    import: async (context) => {
+      const payload = requireJobPayload<'import'>(context);
+      await storage.ensureDirectory(payload.workspaceDir);
+      try {
+        const importOptions: ImportOptions = {
+          output: payload.workspaceDir,
+          jira: payload.uploads.jira?.[0],
+          reqif: payload.uploads.reqif?.[0],
+          junit: payload.uploads.junit?.[0],
+          lcov: payload.uploads.lcov?.[0],
+          cobertura: payload.uploads.cobertura?.[0],
+          git: payload.uploads.git?.[0],
+          traceLinksCsv: payload.uploads.traceLinksCsv?.[0],
+          traceLinksJson: payload.uploads.traceLinksJson?.[0],
+          objectives: payload.uploads.objectives?.[0],
+          level: payload.level ?? undefined,
+          projectName: payload.projectName ?? undefined,
+          projectVersion: payload.projectVersion ?? undefined,
+        };
+
+        const result = await runImport(importOptions);
+        const metadata: ImportJobMetadata = {
+          tenantId: context.tenantId,
+          id: context.id,
+          hash: context.hash,
+          kind: 'import',
+          createdAt: new Date().toISOString(),
+          directory: payload.workspaceDir,
+          params: {
+            level: payload.level ?? null,
+            projectName: payload.projectName ?? null,
+            projectVersion: payload.projectVersion ?? null,
+            files: Object.fromEntries(
+              Object.entries(payload.uploads).map(([key, values]) => [
+                key,
+                values.map((value) => path.basename(value)),
+              ]),
+            ),
+          },
+          license: payload.license,
+          warnings: result.warnings,
+          outputs: {
+            workspacePath: path.join(payload.workspaceDir, 'workspace.json'),
+          },
+        };
+
+        await writeJobMetadata(storage, payload.workspaceDir, metadata);
+
+        await storage
+          .removeDirectory(path.join(directories.uploads, context.tenantId, context.id))
+          .catch(() => undefined);
+
+        return toImportResult(storage, metadata);
+      } catch (error) {
+        await storage.removeDirectory(payload.workspaceDir);
+        await storage.removeDirectory(path.join(directories.uploads, context.tenantId, context.id));
+        throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
+      }
+    },
+    analyze: async (context) => {
+      const payload = requireJobPayload<'analyze'>(context);
+      await storage.ensureDirectory(payload.analysisDir);
+      try {
+        const result = await runAnalyze(payload.analyzeOptions);
+        const metadata: AnalyzeJobMetadata = {
+          tenantId: context.tenantId,
+          id: context.id,
+          hash: context.hash,
+          kind: 'analyze',
+          createdAt: new Date().toISOString(),
+          directory: payload.analysisDir,
+          params: {
+            importId: payload.importId,
+            level: payload.analyzeOptions.level ?? null,
+            projectName: payload.analyzeOptions.projectName ?? null,
+            projectVersion: payload.analyzeOptions.projectVersion ?? null,
+            objectivesPath: payload.analyzeOptions.objectives,
+          },
+          license: payload.license,
+          exitCode: result.exitCode,
+          outputs: {
+            snapshotPath: path.join(payload.analysisDir, 'snapshot.json'),
+            tracePath: path.join(payload.analysisDir, 'traces.json'),
+            analysisPath: path.join(payload.analysisDir, 'analysis.json'),
+          },
+        };
+
+        await writeJobMetadata(storage, payload.analysisDir, metadata);
+
+        return toAnalyzeResult(storage, metadata);
+      } catch (error) {
+        await storage.removeDirectory(payload.analysisDir);
+        throw createPipelineError(error, 'Analiz işlemi başarısız oldu.');
+      }
+    },
+    report: async (context) => {
+      const payload = requireJobPayload<'report'>(context);
+      await storage.ensureDirectory(payload.reportDir);
+      try {
+        const result = await runReport(payload.reportOptions);
+        const metadata: ReportJobMetadata = {
+          tenantId: context.tenantId,
+          id: context.id,
+          hash: context.hash,
+          kind: 'report',
+          createdAt: new Date().toISOString(),
+          directory: payload.reportDir,
+          params: {
+            analysisId: payload.analysisId,
+            manifestId: payload.manifestId ?? null,
+          },
+          license: payload.license,
+          outputs: {
+            directory: payload.reportDir,
+            complianceHtml: result.complianceHtml,
+            complianceJson: result.complianceJson,
+            traceHtml: result.traceHtml,
+            gapsHtml: result.gapsHtml,
+            analysisPath: path.join(payload.reportDir, 'analysis.json'),
+            snapshotPath: path.join(payload.reportDir, 'snapshot.json'),
+            tracesPath: path.join(payload.reportDir, 'traces.json'),
+          },
+        };
+
+        await writeJobMetadata(storage, payload.reportDir, metadata);
+
+        return toReportResult(storage, metadata);
+      } catch (error) {
+        await storage.removeDirectory(payload.reportDir);
+        throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
+      }
+    },
+    pack: async (context) => {
+      const payload = requireJobPayload<'pack'>(context);
+      await storage.ensureDirectory(payload.packageDir);
+      try {
+        const signingKey = await fsPromises.readFile(payload.signingKeyPath, 'utf8');
+        const packOptions: PackOptions = {
+          input: payload.reportDir,
+          output: payload.packageDir,
+          packageName: payload.packageName,
+          signingKey,
+        };
+        const result = await runPack(packOptions);
+
+        const metadata: PackJobMetadata = {
+          tenantId: context.tenantId,
+          id: context.id,
+          hash: context.hash,
+          kind: 'pack',
+          createdAt: new Date().toISOString(),
+          directory: payload.packageDir,
+          params: {
+            reportId: payload.reportId,
+            packageName: payload.packageName ?? null,
+          },
+          license: payload.license,
+          outputs: {
+            manifestPath: result.manifestPath,
+            archivePath: result.archivePath,
+            manifestId: result.manifestId,
+          },
+        };
+
+        await writeJobMetadata(storage, payload.packageDir, metadata);
+
+        return toPackResult(storage, metadata);
+      } catch (error) {
+        await storage.removeDirectory(payload.packageDir);
+        throw createPipelineError(error, 'Paket oluşturma işlemi başarısız oldu.');
+      }
+    },
   };
 
   const collectTenantIdsForRetention = async (): Promise<string[]> => {
@@ -2252,7 +2494,22 @@ export const createServer = (config: ServerConfig): Express => {
   const maxQueuedJobsTotal =
     config.maxQueuedJobsTotal !== undefined ? Math.max(1, config.maxQueuedJobsTotal) : undefined;
   const workerConcurrency = Math.max(1, config.workerConcurrency ?? 1);
-  const queue = new JobQueue(workerConcurrency);
+  const queue = new JobQueue(workerConcurrency, {
+    directory: queueDirectory,
+    createRunner: (context) => {
+      const handler = jobHandlers[context.kind] as JobHandler<JobKind>;
+      const run = () => handler(context as JobExecutionContext<JobPayloadMap[JobKind]>);
+      return instrumentJobRun(
+        {
+          tenantId: context.tenantId,
+          id: context.id,
+          kind: context.kind,
+          hash: context.hash,
+        },
+        run,
+      );
+    },
+  });
 
   const getActiveJobCount = (tenantId: string): number =>
     queue
@@ -2359,20 +2616,20 @@ export const createServer = (config: ServerConfig): Express => {
     };
   };
 
-  const enqueueObservedJob = <T>(options: {
+  const enqueueObservedJob = <TResult, TPayload>(options: {
     tenantId: string;
     id: string;
     kind: JobKind;
     hash: string;
-    run: () => Promise<T>;
-  }): JobDetails<T> => {
+    payload: TPayload;
+  }): JobDetails<TResult> => {
     ensureQueueWithinLimit(options.tenantId);
-    const job = queue.enqueue<T>({
+    const job = queue.enqueue<TPayload, TResult>({
       tenantId: options.tenantId,
       id: options.id,
       kind: options.kind,
       hash: options.hash,
-      run: instrumentJobRun(options, options.run),
+      payload: options.payload,
     });
     logger.info({
       event: 'job_created',
@@ -2723,74 +2980,39 @@ export const createServer = (config: ServerConfig): Express => {
         const uploadedFiles = convertFileMap(fileMap);
         const level = asCertificationLevel(stringFields.level);
 
-        const job = enqueueObservedJob<ImportJobResult>({
-          tenantId,
-          id: importId,
-          kind: 'import',
-          hash,
-          run: async () => {
-            await storage.ensureDirectory(workspaceDir);
+        let persistedUploads: Record<string, string[]>;
+        try {
+          persistedUploads = await storage.persistUploads(
+            path.join(tenantId, importId),
+            uploadedFiles,
+          );
+        } catch (error) {
+          await ensureCleanup();
+          throw error;
+        }
 
-            try {
-              const persisted = await storage.persistUploads(
-                path.join(tenantId, importId),
-                uploadedFiles,
-              );
-              const importOptions: ImportOptions = {
-                output: workspaceDir,
-                jira: persisted.jira?.[0],
-                reqif: persisted.reqif?.[0],
-                junit: persisted.junit?.[0],
-                lcov: persisted.lcov?.[0],
-                cobertura: persisted.cobertura?.[0],
-                git: persisted.git?.[0],
-                traceLinksCsv: persisted.traceLinksCsv?.[0],
-                traceLinksJson: persisted.traceLinksJson?.[0],
-                objectives: persisted.objectives?.[0],
-                level,
-                projectName: stringFields.projectName,
-                projectVersion: stringFields.projectVersion,
-              };
+        try {
+          const job = enqueueObservedJob<ImportJobResult, ImportJobPayload>({
+            tenantId,
+            id: importId,
+            kind: 'import',
+            hash,
+            payload: {
+              workspaceDir,
+              uploads: persistedUploads,
+              level: level ?? null,
+              projectName: stringFields.projectName ?? null,
+              projectVersion: stringFields.projectVersion ?? null,
+              license: toLicenseMetadata(license),
+            },
+          });
 
-              const result = await runImport(importOptions);
-              const metadata: ImportJobMetadata = {
-                tenantId,
-                id: importId,
-                hash,
-                kind: 'import',
-                createdAt: new Date().toISOString(),
-                directory: workspaceDir,
-                params: {
-                  level: level ?? null,
-                  projectName: stringFields.projectName ?? null,
-                  projectVersion: stringFields.projectVersion ?? null,
-                  files: Object.fromEntries(
-                    Object.entries(persisted).map(([key, values]) => [
-                      key,
-                      values.map((value) => path.basename(value)),
-                    ]),
-                  ),
-                },
-                license: toLicenseMetadata(license),
-                warnings: result.warnings,
-                outputs: {
-                  workspacePath: path.join(workspaceDir, 'workspace.json'),
-                },
-              };
-
-              await writeJobMetadata(storage, workspaceDir, metadata);
-
-              return toImportResult(storage, metadata);
-            } catch (error) {
-              await storage.removeDirectory(workspaceDir);
-              await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
-              throw createPipelineError(error, 'Import işlemi sırasında bir hata oluştu.');
-            }
-          },
-        });
-
-        registerJobLicense(tenantId, importId, license);
-        sendJobResponse(res, job, tenantId);
+          registerJobLicense(tenantId, importId, license);
+          sendJobResponse(res, job, tenantId);
+        } catch (error) {
+          await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
+          throw error;
+        }
       } catch (error) {
         await ensureCleanup();
         throw error;
@@ -2879,54 +3101,26 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      const job = enqueueObservedJob<AnalyzeJobResult>({
+      const analyzeOptions: AnalyzeOptions = {
+        input: workspaceDir,
+        output: analysisDir,
+        level: effectiveLevel,
+        objectives: objectivesPath,
+        projectName: effectiveProjectName,
+        projectVersion: effectiveProjectVersion,
+      };
+
+      const job = enqueueObservedJob<AnalyzeJobResult, AnalyzeJobPayload>({
         tenantId,
         id: analyzeId,
         kind: 'analyze',
         hash,
-        run: async () => {
-          await storage.ensureDirectory(analysisDir);
-          try {
-            const analyzeOptions: AnalyzeOptions = {
-              input: workspaceDir,
-              output: analysisDir,
-              level: effectiveLevel,
-              objectives: objectivesPath,
-              projectName: effectiveProjectName,
-              projectVersion: effectiveProjectVersion,
-            };
-            const result = await runAnalyze(analyzeOptions);
-
-            const metadata: AnalyzeJobMetadata = {
-              tenantId,
-              id: analyzeId,
-              hash,
-              kind: 'analyze',
-              createdAt: new Date().toISOString(),
-              directory: analysisDir,
-              params: {
-                importId: body.importId,
-                level: effectiveLevel,
-                projectName: effectiveProjectName ?? null,
-                projectVersion: effectiveProjectVersion ?? null,
-                objectivesPath,
-              },
-              license: toLicenseMetadata(license),
-              exitCode: result.exitCode,
-              outputs: {
-                snapshotPath: path.join(analysisDir, 'snapshot.json'),
-                tracePath: path.join(analysisDir, 'traces.json'),
-                analysisPath: path.join(analysisDir, 'analysis.json'),
-              },
-            };
-
-            await writeJobMetadata(storage, analysisDir, metadata);
-
-            return toAnalyzeResult(storage, metadata);
-          } catch (error) {
-            await storage.removeDirectory(analysisDir);
-            throw createPipelineError(error, 'Analiz işlemi başarısız oldu.');
-          }
+        payload: {
+          workspaceDir,
+          analysisDir,
+          analyzeOptions,
+          importId: body.importId,
+          license: toLicenseMetadata(license),
         },
       });
 
@@ -2983,52 +3177,24 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      const job = enqueueObservedJob<ReportJobResult>({
+      const reportOptions: ReportOptions = {
+        input: analysisDir,
+        output: reportDir,
+        manifestId: body.manifestId,
+      };
+
+      const job = enqueueObservedJob<ReportJobResult, ReportJobPayload>({
         tenantId,
         id: reportId,
         kind: 'report',
         hash,
-        run: async () => {
-          await storage.ensureDirectory(reportDir);
-          try {
-            const reportOptions: ReportOptions = {
-              input: analysisDir,
-              output: reportDir,
-              manifestId: body.manifestId,
-            };
-            const result = await runReport(reportOptions);
-
-            const metadata: ReportJobMetadata = {
-              tenantId,
-              id: reportId,
-              hash,
-              kind: 'report',
-              createdAt: new Date().toISOString(),
-              directory: reportDir,
-              params: {
-                analysisId: body.analysisId,
-                manifestId: body.manifestId ?? null,
-              },
-              license: toLicenseMetadata(license),
-              outputs: {
-                directory: reportDir,
-                complianceHtml: result.complianceHtml,
-                complianceJson: result.complianceJson,
-                traceHtml: result.traceHtml,
-                gapsHtml: result.gapsHtml,
-                analysisPath: path.join(reportDir, 'analysis.json'),
-                snapshotPath: path.join(reportDir, 'snapshot.json'),
-                tracesPath: path.join(reportDir, 'traces.json'),
-              },
-            };
-
-            await writeJobMetadata(storage, reportDir, metadata);
-
-            return toReportResult(storage, metadata);
-          } catch (error) {
-            await storage.removeDirectory(reportDir);
-            throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
-          }
+        payload: {
+          analysisDir,
+          reportDir,
+          reportOptions,
+          analysisId: body.analysisId,
+          manifestId: body.manifestId ?? null,
+          license: toLicenseMetadata(license),
         },
       });
 
@@ -3094,49 +3260,18 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      const job = enqueueObservedJob<PackJobResult>({
+      const job = enqueueObservedJob<PackJobResult, PackJobPayload>({
         tenantId,
         id: packId,
         kind: 'pack',
         hash,
-        run: async () => {
-          await storage.ensureDirectory(packageDir);
-          try {
-            const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
-            const packOptions: PackOptions = {
-              input: reportDir,
-              output: packageDir,
-              packageName,
-              signingKey,
-            };
-            const result = await runPack(packOptions);
-
-            const metadata: PackJobMetadata = {
-              tenantId,
-              id: packId,
-              hash,
-              kind: 'pack',
-              createdAt: new Date().toISOString(),
-              directory: packageDir,
-              params: {
-                reportId: body.reportId,
-                packageName: packageName ?? null,
-              },
-              license: toLicenseMetadata(license),
-              outputs: {
-                manifestPath: result.manifestPath,
-                archivePath: result.archivePath,
-                manifestId: result.manifestId,
-              },
-            };
-
-            await writeJobMetadata(storage, packageDir, metadata);
-
-            return toPackResult(storage, metadata);
-          } catch (error) {
-            await storage.removeDirectory(packageDir);
-            throw createPipelineError(error, 'Paket oluşturma işlemi başarısız oldu.');
-          }
+        payload: {
+          reportDir,
+          packageDir,
+          packageName,
+          signingKeyPath,
+          reportId: body.reportId,
+          license: toLicenseMetadata(license),
         },
       });
 

@@ -33,3 +33,7 @@ Bu prosedürler, demo çıktılarındaki raporların ve manifestlerin denetleneb
 - **Gövde boyutu**: JSON istekleri `SOIPACK_MAX_JSON_BODY_BYTES` sınırı ile korunur; sınır aşılırsa API `413 PAYLOAD_TOO_LARGE` hatası üretir ve büyük gövde analizleri başlamadan engellenir.
 - **Lisans sınırları**: `X-SOIPACK-License` başlığından veya çok parçalı `license` alanından gelen veriler `SOIPACK_LICENSE_MAX_BYTES`/`SOIPACK_LICENSE_HEADER_MAX_BYTES` sınırlarıyla doğrulanır. Limitleri aşan içerik base64 çözülmeden reddedilir ve `413 LICENSE_TOO_LARGE` hatası döner; streaming uygulaması sayesinde bellek tüketimi kontrol altında tutulur.
 - **Kalıcı dosya izinleri**: Sunucu `storage` dizinlerini `0750` ile oluşturur, içe aktarılan/paketlenen tüm dosyaları `0640` izinleriyle saklar ve mevcut POSIX sahipliklerini normalize eder. Böylece yalnızca uygulama kullanıcısı ve grup üyeleri artefaktlara erişebilir, dünya genelindeki okuyucu izinleri engellenir.
+
+## Telemetri ve Günlükler
+
+- **Kişisel bilgilerin maskelenmesi**: CLI'nın lisans doğrulama günlükleri, `licenseId` ve `issuedTo` alanlarını SHA-256 parmak izlerine dönüştürerek hata ayıklama için gereken bağlamı korur ancak ham PII değerlerinin terminal veya dosya günlüklerine yazılmasını engeller. Aynı redaksiyon davranışı Jest testleriyle doğrulanmıştır.【F:packages/cli/src/index.ts†L1470-L1492】【F:packages/cli/src/index.test.ts†L477-L508】

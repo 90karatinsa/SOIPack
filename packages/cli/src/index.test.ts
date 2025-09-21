@@ -9,6 +9,9 @@ import { Manifest } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifest, verifyManifestSignature } from '@soipack/packager';
 
+import type { LicensePayload } from './license';
+import type { Logger } from './logging';
+
 import {
   downloadPackageArtifacts,
   exitCodes,
@@ -17,6 +20,7 @@ import {
   runPack,
   runReport,
   runVerify,
+  __internal,
 } from './index';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -468,5 +472,41 @@ describe('downloadPackageArtifacts', () => {
     request!.triggerTimeout();
 
     await expect(downloadPromise).rejects.toThrow('tamamlanmadı');
+  });
+});
+
+describe('logLicenseValidated redaction', () => {
+  it('hashes license identifiers before logging', () => {
+    const debug = jest.fn();
+    const stubLogger = {
+      debug,
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+      fatal: jest.fn(),
+      trace: jest.fn(),
+      level: 'info',
+      child: jest.fn(),
+    };
+    const logger = stubLogger as unknown as Logger;
+    (stubLogger.child as jest.Mock).mockReturnValue(logger);
+    const license: LicensePayload = {
+      licenseId: 'test-license-id',
+      issuedTo: 'Test Issued To',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      features: ['feature-a'],
+    };
+
+    __internal.logLicenseValidated(logger, license, { command: 'test' });
+
+    expect(debug.mock.calls.length).toBe(1);
+    const [payload] = debug.mock.calls[0];
+    expect(payload.licenseIdFingerprint).toMatch(/^sha256:/);
+    expect(payload.issuedToFingerprint).toMatch(/^sha256:/);
+    expect(payload.licenseIdFingerprint).not.toContain('test-license-id');
+    expect(payload.issuedToFingerprint).not.toContain('Test Issued To');
+    expect(payload).not.toHaveProperty('licenseId');
+    expect(payload).not.toHaveProperty('issuedTo');
   });
 });

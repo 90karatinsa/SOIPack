@@ -59,6 +59,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    cp /path/to/soipack-license.pub secrets/soipack-license.pub
    cp /path/to/tls/server.key secrets/soipack-tls.key
    cp /path/to/tls/server.crt secrets/soipack-tls.crt
+   # Sağlık kontrolü ve Compose healthcheck'i için güvenilir sunucu CA'sı
+   cp /path/to/tls/ca.crt secrets/soipack-ca.crt
    # İsteğe bağlı: yönetici uçları için istemci CA sertifikası
    # cp /path/to/clients/ca.crt secrets/soipack-client-ca.pem
    cp /path/to/license.key license.key
@@ -130,7 +132,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
    `SOIPACK_AUTH_JWKS_URI` değeri yalnızca HTTPS protokolünü kabul eder; air-gap senaryosunda JWKS içeriğini önceden indirip `SOIPACK_AUTH_JWKS_PATH` ile dosya sisteminden paylaşabilirsiniz. Uzak JWKS yanıtlarının zaman aşımına uğramaması için varsayılan değerler 5 saniyelik zaman aşımı, sınırlı tekrar denemeleri ve önbellekleme davranışı içerir; ortamınızın gereksinimlerine göre `SOIPACK_AUTH_JWKS_TIMEOUT_MS` ve ilgili değişkenlerle bu süreleri ayarlayabilirsiniz.
 
-   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_TLS_KEY_PATH` ve `SOIPACK_TLS_CERT_PATH` ise HTTPS dinleyicisi için sunucu anahtarı ile sertifikasını gösterir; bu dosyalar okunamazsa hizmet başlatılmaz. Yönetici uç noktaları için istemci sertifikası zorunlu tutulacaksa `SOIPACK_TLS_CLIENT_CA_PATH` değerini güvenilir kök sertifika otoritesiyle birlikte tanımlayın; aksi halde bu değişken boş bırakılmalıdır. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır ve sunucu bu değer tanımlandığında `/health` uç noktasına gelen isteklerin `Authorization: Bearer <token>` başlığını içermesini zorunlu kılar. Başlık eksik ya da hatalıysa API `401 UNAUTHORIZED` döner.
+   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_TLS_KEY_PATH` ve `SOIPACK_TLS_CERT_PATH` ise HTTPS dinleyicisi için sunucu anahtarı ile sertifikasını gösterir; bu dosyalar okunamazsa hizmet başlatılmaz. Yönetici uç noktaları için istemci sertifikası zorunlu tutulacaksa `SOIPACK_TLS_CLIENT_CA_PATH` değerini güvenilir kök sertifika otoritesiyle birlikte tanımlayın; aksi halde bu değişken boş bırakılmalıdır. `SOIPACK_HEALTHCHECK_CA_PATH` değeri varsayılan olarak `/run/secrets/soipack-ca.crt` yolunu kullanır ve hem Docker Compose healthcheck komutunun hem de `scripts/verify-healthcheck.js` betiğinin kendine imzalı sertifikaları doğrulamasını sağlar. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır ve sunucu bu değer tanımlandığında `/health` uç noktasına gelen isteklerin `Authorization: Bearer <token>` başlığını içermesini zorunlu kılar. Başlık eksik ya da hatalıysa API `401 UNAUTHORIZED` döner.
 
    Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
 
@@ -159,17 +161,16 @@ Sunucu `SIGTERM` veya `SIGINT` aldığında yeni bağlantıları durdurur, bekle
    ```bash
    docker compose up -d
    ```
-6. Sağlık kontrolünü doğrulayın (geçerli bir JWT veya uzun ömürlü servis belirteci üretmek için OIDC sağlayıcınızı kullanın; `.env` dosyasındaki `SOIPACK_HEALTHCHECK_TOKEN` değerinin aynı olması gerekir):
+6. Sağlık kontrolünü doğrulayın (geçerli bir JWT veya uzun ömürlü servis belirteci üretmek için OIDC sağlayıcınızı kullanın; `.env` dosyasındaki `SOIPACK_HEALTHCHECK_TOKEN` değerinin aynı olması gerekir). `scripts/verify-healthcheck.js` betiği Node.js içinde `NODE_EXTRA_CA_CERTS` ayarını geçici olarak yapılandırarak self-signed sertifikaları doğrular:
    ```bash
    docker compose ps
    TOKEN=$(./jwt-olustur.sh) # örnek: kendi betiğiniz veya sağlayıcı SDK'sı
-   curl -H "Authorization: Bearer $TOKEN" \
-     -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
-     --cacert secrets/soipack-tls.crt \
-     https://localhost:3443/health
+   export SOIPACK_HEALTHCHECK_TOKEN=$TOKEN
+   export SOIPACK_HEALTHCHECK_CA_PATH=$(pwd)/secrets/soipack-ca.crt
+   node scripts/verify-healthcheck.js
    ```
 
-Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
+Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Aynı dizin altında oluşturulan `.queue/` klasörü, durdurulup yeniden başlatılan örneklerin kuyruk durumunu (bekleyen, çalışan veya tamamlanan işler) kalıcı olarak saklar; bu sayede bekleyen işler yeniden kuyruğa alınmadan devam eder. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
 ## 3. Örnek Pipeline Çağrısı
 

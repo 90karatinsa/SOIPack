@@ -20,6 +20,7 @@
     "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check",
     "demo": "bash examples/minimal/demo.sh",
     "demo:test": "node examples/minimal/verify-demo.js",
+    "healthcheck:verify": "node scripts/verify-healthcheck.js",
     "ui": "npm run dev --workspace @soipack/ui"
   },
   "devDependencies": {

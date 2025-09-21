@@ -36,26 +36,44 @@ jobs:
           set -euo pipefail
           docker rm -f soipack-ci >/dev/null 2>&1 || true
           docker run -d --name soipack-ci \
-            -p 3000:3000 \
+            -p 3443:3443 \
             -v "${{ github.workspace }}/docker/testdata:/run/secrets:ro" \
             -e SOIPACK_AUTH_ISSUER=https://auth.example.test/ \
             -e SOIPACK_AUTH_AUDIENCE=soipack-api \
             -e SOIPACK_AUTH_JWKS_URI=https://auth.example.test/.well-known/jwks.json \
             -e SOIPACK_SIGNING_KEY_PATH=/run/secrets/signing-key.pem \
             -e SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/license.pub \
+            -e SOIPACK_TLS_KEY_PATH=/run/secrets/ci-server.key \
+            -e SOIPACK_TLS_CERT_PATH=/run/secrets/ci-server.crt \
             -e SOIPACK_STORAGE_DIR=/tmp/soipack \
             -e SOIPACK_HEALTHCHECK_TOKEN=ci-health-token \
-            -e PORT=3000 \
+            -e PORT=3443 \
             soipack/server
+
+          success=false
           for attempt in {1..30}; do
             if curl --fail --silent --show-error \
+              --cacert "${{ github.workspace }}/docker/testdata/ci-ca.crt" \
               -H "Authorization: Bearer ci-health-token" \
-              http://localhost:3000/health; then
-              docker rm -f soipack-ci >/dev/null 2>&1 || true
-              exit 0
+              https://localhost:3443/health; then
+              success=true
+              break
             fi
             sleep 2
           done
-          docker logs soipack-ci || true
+
+          if [[ "${success}" != "true" ]]; then
+            docker logs soipack-ci || true
+            docker rm -f soipack-ci >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          if curl --fail --silent --show-error \
+            -H "Authorization: Bearer ci-health-token" \
+            https://localhost:3443/health; then
+            echo "healthcheck unexpectedly succeeded without CA"
+            docker rm -f soipack-ci >/dev/null 2>&1 || true
+            exit 1
+          fi
+
           docker rm -f soipack-ci >/dev/null 2>&1 || true
-          exit 1
