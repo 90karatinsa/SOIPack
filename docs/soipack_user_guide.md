@@ -69,6 +69,20 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
 
+### Paket artefaktlarını indirme
+
+Pipeline sunucusu tarafından üretilen arşiv ve manifest dosyalarını almak için `download` alt komutu kullanılabilir:
+
+```bash
+node packages/cli/dist/index.js --license data/licenses/demo-license.key download \
+  --api https://soipack.example.com \
+  --token $TOKEN \
+  --package $PACKAGE_ID \
+  --output artifacts/
+```
+
+İndirilecek URL'ler varsayılan olarak HTTPS olmak zorundadır; CLI, `http://` taban adresleri güvenli olmadığı için reddeder. Yalnızca yerel geliştirme ortamlarında gerekli olduğunda `--allow-insecure-http` bayrağını global argüman olarak ekleyerek HTTP'ye geçici olarak izin verebilirsiniz.
+
 Pipeline'ın YAML sürümü için `node packages/cli/dist/index.js --license data/licenses/demo-license.key run --config examples/minimal/soipack.config.yaml` komutunu çalıştırabilirsiniz; bu komut demo betiğinin tetiklediği konfigürasyonla aynıdır.【F:README.md†L36-L73】
 
 ### Sunucu lisans doğrulaması
