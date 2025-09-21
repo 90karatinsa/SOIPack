@@ -1,9 +1,21 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { DefaultBodyType, ResponseComposition, RestContext, RestRequest } from 'msw';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
 
 import App from './App';
+import type {
+  AnalyzeJobResult,
+  ApiJob,
+  ComplianceMatrixPayload,
+  ImportJobResult,
+  JobKind,
+  JobStatus,
+  PackJobResult,
+  ReportJobResult,
+  RequirementTracePayload,
+} from './types/pipeline';
 
 jest.mock('file-saver', () => ({
   saveAs: jest.fn()
@@ -13,21 +25,17 @@ const saveAsMock = jest.requireMock('file-saver').saveAs as jest.Mock;
 
 jest.setTimeout(15000);
 
-type JobStatus = 'queued' | 'running' | 'completed';
-
-type JobKind = 'import' | 'analyze' | 'report' | 'pack';
-
-interface JobState {
+interface JobState<T = unknown> {
   id: string;
   kind: JobKind;
   createdAt: string;
   statuses: JobStatus[];
   cursor: number;
-  result: any;
+  result: T;
   hash: string;
 }
 
-const buildJob = (id: string, kind: JobKind, result: any): JobState => ({
+const buildJob = <T,>(id: string, kind: JobKind, result: T): JobState<T> => ({
   id,
   kind,
   createdAt: new Date().toISOString(),
@@ -37,7 +45,7 @@ const buildJob = (id: string, kind: JobKind, result: any): JobState => ({
   hash: `${kind}-${id}`
 });
 
-const compliancePayload = {
+const compliancePayload: ComplianceMatrixPayload = {
   generatedAt: '2024-04-01T10:00:00Z',
   version: '1.0.0',
   stats: {
@@ -69,7 +77,7 @@ const compliancePayload = {
   ]
 };
 
-const tracesPayload = [
+const tracesPayload: RequirementTracePayload[] = [
   {
     requirement: {
       id: 'REQ-1',
@@ -121,7 +129,7 @@ const reportAssets: Record<string, string> = {
   'gaps.html': '<html><body>gaps</body></html>'
 };
 
-const packResult = {
+const packResult: PackJobResult = {
   manifestId: 'MANIFEST-1234',
   outputs: {
     directory: 'packages/demo/job-pack',
@@ -130,12 +138,18 @@ const packResult = {
   }
 };
 
-const jobStore = new Map<string, JobState>();
+const jobStore = new Map<string, JobState<unknown>>();
 const licensePayload = { tenant: 'demo', expiresAt: '2025-12-31T00:00:00Z' };
 const expectedLicenseHeader = Buffer.from(JSON.stringify(licensePayload)).toString('base64');
 const capturedLicenses: string[] = [];
 
-const ensureLicense = (req: any, res: any, ctx: any) => {
+type LicenseResponse = ReturnType<ResponseComposition<DefaultBodyType>>;
+
+const ensureLicense = (
+  req: RestRequest<DefaultBodyType>,
+  res: ResponseComposition<DefaultBodyType>,
+  ctx: RestContext,
+): LicenseResponse | null => {
   const authHeader = req.headers.get('authorization');
   expect(authHeader).toBe('Bearer demo-token');
 
@@ -166,7 +180,7 @@ const server = setupServer(
       return authError;
     }
     const jobId = 'job-import';
-    const result = {
+    const result: ImportJobResult = {
       warnings: ['REQ-2 testleri eksik'],
       outputs: {
         directory: 'workspaces/demo/job-import',
@@ -196,7 +210,7 @@ const server = setupServer(
       return res(ctx.status(400));
     }
     const jobId = 'job-analyze';
-    const result = {
+    const result: AnalyzeJobResult = {
       exitCode: 0,
       outputs: {
         directory: 'analyses/demo/job-analyze',
@@ -228,7 +242,7 @@ const server = setupServer(
       return res(ctx.status(400));
     }
     const jobId = 'job-report';
-    const result = {
+    const result: ReportJobResult = {
       outputs: {
         directory: 'reports/demo/job-report',
         complianceHtml: 'reports/demo/job-report/compliance.html',
@@ -290,7 +304,7 @@ const server = setupServer(
     const status = job.statuses[index];
     job.cursor = Math.min(job.cursor + 1, job.statuses.length - 1);
     const updatedAt = new Date(Date.parse(job.createdAt) + index * 500).toISOString();
-    const payload: any = {
+    const payload: ApiJob<unknown> = {
       id,
       kind: job.kind,
       hash: job.hash,

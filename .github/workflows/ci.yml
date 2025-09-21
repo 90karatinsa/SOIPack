@@ -26,6 +26,8 @@ jobs:
         run: npm run build
       - name: Test
         run: npm run test
+      - name: Validate OpenAPI
+        run: npm run openapi:validate
       - name: Build Docker image
         run: docker build -t soipack/server .
       - name: Smoke test Docker image

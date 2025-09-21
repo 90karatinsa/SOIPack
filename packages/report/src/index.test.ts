@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { BuildInfo } from '@soipack/adapters';
 import { createRequirement, TestCase } from '@soipack/core';
 
+import { createReportFixture } from './__fixtures__/snapshot';
+
 import {
   HtmlReportOptions,
   renderComplianceMatrix,
@@ -14,7 +16,6 @@ import {
   renderTraceMatrix,
   printToPDF,
 } from './index';
-import { createReportFixture } from './__fixtures__/snapshot';
 
 type PlaywrightModule = typeof import('playwright');
 
@@ -95,7 +96,12 @@ describe('@soipack/report', () => {
         actions.push('setContent');
         expect(content).toBe(html);
       },
-      async pdf(options: any) {
+      async pdf(options: {
+        format: string;
+        displayHeaderFooter: boolean;
+        headerTemplate: string;
+        footerTemplate: string;
+      }) {
         actions.push('pdf');
         expect(options.format).toBe('A4');
         expect(options.displayHeaderFooter).toBe(true);

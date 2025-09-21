@@ -1,8 +1,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { renderComplianceMatrix, renderGaps, renderTraceMatrix, printToPDF } from './index';
 import { createReportFixture } from './__fixtures__/snapshot';
+
+import { renderComplianceMatrix, renderGaps, renderTraceMatrix, printToPDF } from './index';
 
 const main = async (): Promise<void> => {
   const fixture = createReportFixture();

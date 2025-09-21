@@ -11,14 +11,14 @@ SOIPack monoreposuna katkıda bulunmak istediğiniz için teşekkürler! Bu depo
 ## Kod Stili
 
 - Tüm TypeScript dosyaları için `npm run lint` ve `npm run format` komutlarını çalıştırın.
-- Tip güvenliği kritik olduğundan `npm run typecheck` ve `npm run test` komutları geçilmelidir.
+- Tip güvenliği kritik olduğundan `npm run typecheck`, `npm run test` ve `npm run openapi:validate` komutları geçilmelidir.
 - Her paket için jest testleri `src` dizininde tutulur.
 
 ## Git İş Akışı
 
 - Özellikler ve hatalar için ayrı branch kullanın.
 - Açtığınız Pull Request'lerde yaptığınız değişiklikleri ve test sonuçlarını açıklayın.
-- PR'ler birleşmeden önce CI kontrollerinin tamamı geçmelidir.
+- PR'ler birleşmeden önce CI kontrollerinin (`npm run lint`, `npm run typecheck`, `npm run test`, `npm run openapi:validate`) tamamı geçmelidir.
 
 ## Soru ve Geri Bildirim
 

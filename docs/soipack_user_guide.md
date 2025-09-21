@@ -109,6 +109,7 @@ REST API, kimlik doğrulama ve kuyruk/depolama katmanında karşılaşılabilece
 | `400` | `INVALID_PATH` | Rapor varlığı indirilirken dizin dışına çıkmaya çalışan (ör. `../`) yol kullanıldı. |
 | `404` | `JOB_NOT_FOUND` | İstenen iş kimliği mevcut değil veya başka bir tenant tarafından oluşturuldu. |
 | `413` | `FILE_TOO_LARGE` | Alan bazlı politika (`uploadPolicies`) sınırı aşan dosya tespit edildi. |
+| `429` | `QUEUE_LIMIT_EXCEEDED` | Kiracı başına veya global iş kuyruğu limiti aşıldı; `error.details.scope` hangi sınırın (`tenant`/`global`) tetiklendiğini belirtir. |
 | `500` | `UNEXPECTED_ERROR` | HTTP taşıma limiti (`maxUploadSizeBytes`) aşılırsa yükleyici `File too large` hatasıyla isteği sonlandırır. |
 
 Sunucu yanıtları her durumda `error.code`, `error.message` ve (varsa) `error.details` alanlarını içerir; istemciler bu alanları kullanarak UI bildirimlerini veya otomatik yeniden denemeleri tetikleyebilir.
@@ -125,6 +126,8 @@ npm run ui
 ```
 
 Varsayılan olarak UI, aynı origin üzerindeki `/v1` uç noktalarına istek yapar; farklı bir API adresi kullanıyorsanız `VITE_API_BASE_URL` ortam değişkenini `npm run ui` komutundan önce tanımlayabilirsiniz. Giriş ekranına JWT tokenınızı yazdığınızda import → analyze → report adımları sırasıyla tetiklenir, her işin kuyruk/durum bilgisi gerçek zamanlı olarak “Pipeline aşamaları” bölümünde güncellenir ve sunucudan dönen uyarılar çalıştırma günlüğünde yer alır. İşlem tamamlandığında uyum ve izlenebilirlik matrisleri API’den gelen JSON dosyalarına göre doldurulur; “Rapor paketini indir” butonu ise sunucuda üretilen `analysis.json`, `snapshot.json`, `traces.json` ve HTML raporlarını gerçek dosya içerikleriyle zip halinde indirir.
+
+UI derlemesi Vite'in `import.meta.env` nesnesini doğrudan kullanır ve dinamik `eval`/`new Function` çağrılarına ihtiyaç duymaz; bu sayede uygulama `Content-Security-Policy: script-src 'self'` gibi sıkı politika başlıklarıyla dağıtıldığında tarayıcılar tarafından engellenmez.
 
 Token kutusunun hemen yanında yeni “Lisans Anahtarı” bileşeni bulunur. JSON tabanlı lisans dosyanızı yüklediğinizde veya panodan yapıştırdığınızda içerik istemci tarafında doğrulanır, `JSON.stringify` ile normalize edilir ve otomatik olarak base64’e çevrilerek tüm API çağrılarında `X-SOIPACK-License` başlığına eklenir. Lisans alanı boş bırakılırsa UI pipeline’ı başlatmadan önce uyarı gösterir ve sunucuya istek göndermez; bu sayede lisanssız isteklerin msw tabanlı testlerde bile `LICENSE_REQUIRED` hatasıyla reddedildiği doğrulanır.
 
