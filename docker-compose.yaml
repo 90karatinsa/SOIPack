@@ -17,10 +17,18 @@ services:
       SOIPACK_STORAGE_DIR: /app/data
       SOIPACK_SIGNING_KEY_PATH: /run/secrets/soipack-signing.pem
       SOIPACK_LICENSE_PUBLIC_KEY_PATH: /run/secrets/soipack-license.pub
+      SOIPACK_TLS_KEY_PATH: /run/secrets/soipack-tls.key
+      SOIPACK_TLS_CERT_PATH: /run/secrets/soipack-tls.crt
+      SOIPACK_TLS_CLIENT_CA_PATH: ${SOIPACK_TLS_CLIENT_CA_PATH:-}
       SOIPACK_HEALTHCHECK_TOKEN: ${SOIPACK_HEALTHCHECK_TOKEN:?SOIPACK_HEALTHCHECK_TOKEN tanımlanmalıdır}
-      PORT: ${PORT:-3000}
+      SOIPACK_MAX_JSON_BODY_BYTES: ${SOIPACK_MAX_JSON_BODY_BYTES:-2097152}
+      SOIPACK_RATE_LIMIT_IP_WINDOW_MS: ${SOIPACK_RATE_LIMIT_IP_WINDOW_MS:-60000}
+      SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS: ${SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS:-300}
+      SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS: ${SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS:-60000}
+      SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS: ${SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS:-150}
+      PORT: ${PORT:-3443}
     ports:
-      - "3000:3000"
+      - "3443:3443"
     volumes:
       - ./data:/app/data
       # ./secrets klasöründe soipack-signing.pem ve soipack-license.pub dosyalarını bekler
@@ -32,11 +40,11 @@ services:
         - >-
           node -e "const token=process.env.SOIPACK_HEALTHCHECK_TOKEN;
           if(!token){process.exit(1);}
-          fetch('http://localhost:3000/health', {
+          fetch('https://localhost:3443/health', {
             headers: { Authorization: 'Bearer ' + token }
           }).then((res) => {
             if(!res.ok){process.exit(1);}
-          }).catch(() => process.exit(1));"
+          }).catch(() => process.exit(1));" 
       interval: 30s
       timeout: 10s
       retries: 5

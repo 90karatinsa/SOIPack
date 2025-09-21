@@ -1,19 +1,24 @@
 import fs, { promises as fsPromises } from 'fs';
+import https from 'https';
 import os from 'os';
 import path from 'path';
 import { Writable } from 'stream';
+import type { AddressInfo } from 'net';
 
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import request from 'supertest';
 import pino from 'pino';
+import { Agent, setGlobalDispatcher } from 'undici';
 
 import { Registry } from 'prom-client';
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 import * as cli from '@soipack/cli';
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
 
-import { createServer, type ServerConfig } from './index';
+import { createHttpsServer, createServer, type ServerConfig } from './index';
 import type { FileScanner } from './scanner';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -27,6 +32,128 @@ MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
 `;
 
 const LICENSE_PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
+
+const TEST_CA_CERT = `-----BEGIN CERTIFICATE-----
+MIIDFTCCAf2gAwIBAgIUOrBbV6ZFBaLvne/UffpWm90JGXEwDQYJKoZIhvcNAQEL
+BQAwGjEYMBYGA1UEAwwPU09JUGFjayBUZXN0IENBMB4XDTI1MDkyMTA5NTQ1N1oX
+DTI2MDkyMTA5NTQ1N1owGjEYMBYGA1UEAwwPU09JUGFjayBUZXN0IENBMIIBIjAN
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwfgu4Ppytc9XVj9WLxJDzHeudFEv
+JbIAI7kX0KheeDY2vZd8F1E4cwtc3sh9FDp4zOqS3Fz9T25cwsKeX7L7quazuIX0
+UgXzM2BsWb94DOxgF9ZVSoLGPhHH2t5BuP5/xabnOEuNyT/IqSdVkZpjjVtLQRae
+0hwDwhJZsbDUQGOM2yJBUEyyDUjouP5mUT5jHrdtLwioIGnp4IuH32O1EzrJ6nAG
+kevZFi5uLLvw02nULm53trFSFy8xgXTGxtMZppbXWaWFH16ihbEBMWW9U7BAAdjw
+El9jQTGF+88ist9vQ6AP70zyxGV4I9kcGGlJZSoy275ld6XZnN9zaUY9DQIDAQAB
+o1MwUTAdBgNVHQ4EFgQUK/DFywnrjojGChaU81wZLdxFc30wHwYDVR0jBBgwFoAU
+K/DFywnrjojGChaU81wZLdxFc30wDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
+AQsFAAOCAQEAR5Ur5Mddvckl8Ivh20qq8c/KcgJb9Lo2Thm9ShatsWa3Ra4/Lyhp
+16XhrSoWzJZlsv1TcHE9gG07r5Jib93V/zJR3mt56k8uTstoeoIdTBC3en2Slpjl
+/N+8vnRbe5EkpOKYlQdMTYskXQCmqH5za8xQw5v/6yUZ0GKy8N43cDF7PPF0sjgn
+tBgOLs61YTU6Za6f+g2G+XlNnZzhjkqaLhcimSLzf/DCrquglvBjiWFdx0brVATi
+sl10a+f47mqanJk0JQF2VHgOQEUXnCh9YrwmJqUOsJl1Txt7gs60ZqN9ryWczPyF
+U+Nd/6z3RWIXJCA/Ue+xRDowhgI4yFISoA==
+-----END CERTIFICATE-----`;
+
+setGlobalDispatcher(
+  new Agent({
+    connect: {
+      ca: TEST_CA_CERT,
+    },
+  }),
+);
+
+const TEST_SERVER_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDsphbJCknHw4kG
+hOkj030GF8bjJ37bESelmyJIXX2G9GeipNPoDuqJYKxIuKyEphDWrHzm4S3sZRmg
+KyDdY5dhVOd+w6rCw1FmcLOfoqaKAEE4GgXAuaZaKtUtynuePb7s81nRSRA82qnm
+a2zZH3sBVZPB4suHMiOtdVLUj0o5cW5sXxuJfNb0U59zXD+Cd2KJ9/k/0W6UD0ck
+/LQBWH2OTsgrq2D2ODiLJvbkmMo5B8AEfgtuZ98mfgJuEAAQPU6h6RjnIoCLnKlr
+A+2wT3ns0U/wkIZLg2NGtpDck2b1NgYHtW3mcIh8rD0qQtBXMEtDw+ezxeDdD3vK
+V8MEIbyZAgMBAAECggEAHFUmx3dVPcbf/BEz4gOPNYhpehcHkbYQNXw5OqmBzsNq
+eH8sNT168EtsGRFOK1wAClmwowpM759rleDwAH2M2Vz7UdKemk6c62s9IDTOpFlT
+NaKs82XuwB8ecorqabfKCO+6Pku1d1m1K3aLW8Pwe8iJhhYviK5Ute7k5bjJmc6L
+SbsRh9xkIsmLVkQW6mClMd4RkownWWRSai7w7OpDxqNH1XaRYOWSZDZL6bkDZxLB
+UEB7O7IcCLeXrAFjNHra7b82ZeKTUVu/sU1/+Adt6Kb3vmeS+85BsIxqTa3evB49
+obBqq3xUnPz0u68PvmQTO4NnlUX4sdyuylEBq3vhoQKBgQD4TXyudkzRX+eo5+wJ
+COyjwsZX6FSbg43qvPJG4VTJFk5zo44GqvbE1IYvstzmlSZRdC6j10p3e+6k098N
+QanSNs8mrMJrUlGrwG7QWPxkqE1Fpz9TreNKTZ+8jmzwZVwJoaDw5aIoiDvVkYOs
+Q6KAvkkoBMYBLbEZLYCITQxXeQKBgQDz/B4QG6LmYQAh5S0JeLyPO5BpiuIhD4/M
+6SHedDSCDTy+RC5nvcfOi2drsD7ntimhQ95rYaUl9kpMg9oyIItS/uMDxAPqHCjK
+473xIqLR/TPJUJhCA+n46mdgdzzaEKhjuJpqqX1ITWz5yqXAbrO2GjtKhR4ULauE
+e6yhvOKmIQKBgFyJRDYgkHBXNZaVGDolwUsmg5SvWRi75l/dGs2fnGF0lrgx8/Q4
+Ms8YBQoxtnGYlDc2/UrCKVZuMXnsG+xs1EUrd/gJ2kr02ssPZDzxbN52epXCxq8A
+1vwSAb3btm3A2JQeUER20AAbBXGKUXAZpK4mPE1VuhUmWiHv+z7QuBDBAoGBAIAW
+rhm6yIy2BAHHdRtx3Vw84xXlqc29g7sJ8ZP94csc8/TXip1ADvOqUANDJeMzySs2
+nEA3pSIG6P6+ggCrATnzQm8pqvxvCCNr6L39dwlTKqrXuvd9YoohVWBZeQLql9yy
+f67biEA7FakV8GrUM1i48MOwmxfw2gjVfM30gfDBAoGBAMZYUGLKO2QNX6RV2H49
+ie03SVEAKZT8dCsrMaI4jb8cOy1wKA40QO+0/T3Yji7efYtmowPMpCeKJWkzC7z0
+IdW4wEQFhOPiSvRM6JNbcWWzBovjIbo2U8PJ4FHQouTZRqGLG0CgPwSvpfNt2ZOe
+MuHbT+pZKzPEWjAkdc2naxXX
+-----END PRIVATE KEY-----`;
+
+const TEST_SERVER_CERT = `-----BEGIN CERTIFICATE-----
+MIICtTCCAZ0CFDYXYeMMS+SgDF+eusp4dBJ/BqVvMA0GCSqGSIb3DQEBCwUAMBox
+GDAWBgNVBAMMD1NPSVBhY2sgVGVzdCBDQTAeFw0yNTA5MjEwOTU1MDRaFw0yNjA5
+MjEwOTU1MDRaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDCCASIwDQYJKoZIhvcNAQEB
+BQADggEPADCCAQoCggEBAOymFskKScfDiQaE6SPTfQYXxuMnftsRJ6WbIkhdfYb0
+Z6Kk0+gO6olgrEi4rISmENasfObhLexlGaArIN1jl2FU537DqsLDUWZws5+ipooA
+QTgaBcC5ploq1S3Ke549vuzzWdFJEDzaqeZrbNkfewFVk8Hiy4cyI611UtSPSjlx
+bmxfG4l81vRTn3NcP4J3Yon3+T/RbpQPRyT8tAFYfY5OyCurYPY4OIsm9uSYyjkH
+wAR+C25n3yZ+Am4QABA9TqHpGOcigIucqWsD7bBPeezRT/CQhkuDY0a2kNyTZvU2
+Bge1beZwiHysPSpC0FcwS0PD57PF4N0Pe8pXwwQhvJkCAwEAATANBgkqhkiG9w0B
+AQsFAAOCAQEAR71+ZuU5zm3B6UGQD34QSkTE6iQyM2ZLgk8bVp1WXCLDt5UVRqyZ
+jGATfGuFivyWSDy5ckPp7kw9DClOLSg5LBuprl97LxTNPyqOFmHD1WxxfTd8LWIo
+kFYaLOx45k0pmCEt7T1hRl7g75uj/msBNIWRnSbjBYW5y2d22C6BlAARkCUDVbOx
+ud24tNK+D+lODKlrfkQLSKmQ2wSL4sZ0+ZLUk6h92/qxS5gxpxBKhsJZ/grEchPk
+hqneJkRzLDD5p22v0oxB4SsQrgksStxEM5cFBEKWD+BZeyoKwPL8NOfQoF80uYEo
+ln1Jnl9pkw7o1qX2ygX2kc+Yp3VaOTJL3g==
+-----END CERTIFICATE-----`;
+
+const TEST_CLIENT_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCjMtGc+lMmO7Ve
+zawGQycswlu/VdBz/AcqMGyqxRPiVUwKamtv0XGEoVFuQFr0hYffQvwJNkz45vwc
+AAvSv2b/EcB71oYTTc4yy+ne0GcuIgW5FbRXtLaNKcp48uHQhIEv3YhwnfsIJEzC
+yBJyvCmInar2JjXBC3fCYTEqfWY4FriqbNrjXL8rQT4hoJ7fixtqD+H5+nEQ3UXM
+iAu/49133WK/4UG881UOvoQ19np6iOU8jXlYrljdUgzSJ9Yk9il43/SEL40pRygS
+HSrUNDgFfwhaD6nFhuNpRP/Q9i6Ci0qMQeoC7y4+QpXXiMnRjwYyF+FBhJQwzCOk
+OFvCsdKxAgMBAAECggEAImPR2IjGj1K7OkZQdwRdI7k0MLpiYiKMlvcb2xOLCGGN
+k89PowFJcNe2q2s7z3W5B1Lb/gv3hebU3wiidS9YwqzIuT/gQn6dkkY2mvmjGI1a
+U+GPPoEqC86v6DNUYwadG4tNFmAwF0vg8hXLj2p3vR5ueY7dOngSbT9iZzAEI5LN
+adp7Ek4JVE1zPqNnoTdHfymGiH/mi7RDvYQ/8hldX99K0UGjoDqBRXs/nRkUg3cr
+v/65pzgmBllHU9Tk1W77z66wgqiNAagRK/RNCa+Q4FDeiRlZpSyC27BQRjKVy/6k
+Xa7mIN7fKKjwaj3Ms6MUHfu1606i6wxT+6iwkLL8vQKBgQDmAQFjv7xXiazL2ZBu
+2xHUkmEWPCeBoCjtgCkfsrxyjCNrpXyfXM9oLWbRy5898Gdc2NAitaOVGbxkmNZZ
+bPmuIAygvNulAVCT/nZFNKUzLcqBPvYmmD47py2Y8ETjIQyqEqRZLaBUX6rw7HFF
+QujdpQvZVk/B3gl6VUnZD0KJrQKBgQC1pNkGWuNMLSFSX4Tb3LHzFGjR4tMweagd
+vn+Vu3JTdAjrflE/Lp79/qdcxKryguqsXLSNxX31RYl0395m7VRpdwpsvv+33Q3S
+g3LmpJ85RG3c7YwVtgmM3wnPcciu/gkll5lHJzHscDUljov4/4/NgWxCEaHl6wXk
+8lO9yO6VlQKBgEMNk/wij6PtjSS4vrSyxRX1vrweuV2+9W+X52VIVEwIsuLVEenb
+wtOaONl8xWXnShr1UmhsD86N/DBPpl3XuUqcKVJK/LW0FmuuyYgPewHanajkVBqY
+U7xMVqy5jzuwDOMgIC2ncZBne4xVQghxIzZKwZOQ6BuawaSabLcNDdbZAoGARVOe
+dTt5JxjOb/b+6T8pN8JhY0H0Irs7++Y6IbbCIrHVubOjZL7xdbWcwN5a9GYdFR3o
+13c55MPee5n580S/g+UoOGsJhG49GUyMLRVFpADHAZw0bBDnQjnaL6+YzZkteoiK
+uspt1nTZA/WM3MMFaoTsAadjKDJ0NHZ8maG31aUCgYEA1gAw02osTtWUOGP4sNXC
+l0PUFAhpmYE1Lzw4KOTJkfDpdliiXcKVgmTJqt1SCwO3n06dDtTn0ZnOEDjscy1b
+4QGMj7cDwgTIX0oazNZHqfShz9eWy52XZh8ROedo/DZJZOMWtQ/YT17VwJl8dXLy
+OmRYUyFHmEjWjETI/3fBxYo=
+-----END PRIVATE KEY-----`;
+
+const TEST_CLIENT_CERT = `-----BEGIN CERTIFICATE-----
+MIICsjCCAZoCFDYXYeMMS+SgDF+eusp4dBJ/BqVwMA0GCSqGSIb3DQEBCwUAMBox
+GDAWBgNVBAMMD1NPSVBhY2sgVGVzdCBDQTAeFw0yNTA5MjEwOTU1MTBaFw0yNjA5
+MjEwOTU1MTBaMBExDzANBgNVBAMMBmNsaWVudDCCASIwDQYJKoZIhvcNAQEBBQAD
+ggEPADCCAQoCggEBAKMy0Zz6UyY7tV7NrAZDJyzCW79V0HP8ByowbKrFE+JVTApq
+a2/RcYShUW5AWvSFh99C/Ak2TPjm/BwAC9K/Zv8RwHvWhhNNzjLL6d7QZy4iBbkV
+tFe0to0pynjy4dCEgS/diHCd+wgkTMLIEnK8KYidqvYmNcELd8JhMSp9ZjgWuKps
+2uNcvytBPiGgnt+LG2oP4fn6cRDdRcyIC7/j3XfdYr/hQbzzVQ6+hDX2enqI5TyN
+eViuWN1SDNIn1iT2KXjf9IQvjSlHKBIdKtQ0OAV/CFoPqcWG42lE/9D2LoKLSoxB
+6gLvLj5CldeIydGPBjIX4UGElDDMI6Q4W8Kx0rECAwEAATANBgkqhkiG9w0BAQsF
+AAOCAQEAgMJ/lY9V7STQh4q8qaL6pACwpZjckIg3u2nRZ52UB1TcikgkOu4IIbr4
+0h20sP5T7UXto4M8h8Zg2uLtA3jxL9G8V2sTIAGgz0Nyw8d9V1nWi5HR2moxW9R1
+fvYlYqxN0YYwkV8l44kf8FwkIAXOAwrN1IAloe0XSEE2ObafGrzMaUuWRx7Rc1vB
+TdnU4QWMvPvrFYb9or81QTPBDCQI9k8Xfb8PG5jz37fqVzTOXoW77/O9Nvfp+DVa
+uge7kxuxKUyC7Ed7/uZ18cQzYoHE1Yj445O+0dWG4LRD/0+Vu8TPM74/Evxn340v
+Z/bzenvXPNe+zu8uumrKWmwy+w3kTw==
+-----END CERTIFICATE-----`;
 
 const minimalExample = (...segments: string[]): string =>
   path.resolve(__dirname, '../../..', 'examples', 'minimal', ...segments);
@@ -213,6 +340,12 @@ describe('@soipack/server REST API', () => {
       },
       logger: logCapture.logger,
       metricsRegistry,
+      jsonBodyLimitBytes: 2 * 1024 * 1024,
+      rateLimit: {
+        ip: { windowMs: 60_000, max: 1_000 },
+        tenant: { windowMs: 60_000, max: 1_000 },
+      },
+      requireAdminClientCertificate: false,
     };
 
     app = createServer(baseConfig);
@@ -231,9 +364,27 @@ describe('@soipack/server REST API', () => {
     await fsPromises.rm(storageDir, { recursive: true, force: true });
   });
 
+  it('rejects direct HTTP listen attempts', () => {
+    expect(() => app.listen(0)).toThrow('SOIPack sunucusu yalnızca HTTPS ile başlatılabilir.');
+  });
+
   it('rejects unauthorized requests', async () => {
     const response = await request(app).post('/v1/import').expect(401);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('throws when jwksUri is not HTTPS', () => {
+    expect(() =>
+      createServer({
+        ...baseConfig,
+        auth: {
+          ...baseConfig.auth,
+          jwks: undefined,
+          jwksUri: 'http://invalid.test/jwks.json',
+        },
+        metricsRegistry: new Registry(),
+      }),
+    ).toThrow('jwksUri HTTPS protokolü kullanmalıdır.');
   });
 
   it('allows health checks without authorization when no token is configured', async () => {
@@ -337,6 +488,46 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('propagates JWKS fetch timeouts as service unavailable', async () => {
+    const slowJwksServer = https.createServer({ key: TEST_SERVER_KEY, cert: TEST_SERVER_CERT }, (_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(jwks));
+      }, 200);
+    });
+
+    const originalTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+    try {
+      await new Promise<void>((resolve) => slowJwksServer.listen(0, resolve));
+      const { port } = slowJwksServer.address() as AddressInfo;
+      const remoteConfig: ServerConfig = {
+        ...baseConfig,
+        auth: {
+          ...baseConfig.auth,
+          jwks: undefined,
+          jwksUri: `https://localhost:${port}/jwks.json`,
+          remoteJwks: { timeoutMs: 50, maxRetries: 0, backoffMs: 10 },
+        },
+        metricsRegistry: new Registry(),
+      };
+      const remoteApp = createServer(remoteConfig);
+      const response = await request(remoteApp)
+        .get('/v1/jobs')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(503);
+      expect(response.body.error.code).toBe('JWKS_UNAVAILABLE');
+    } finally {
+      await new Promise<void>((resolve) => slowJwksServer.close(() => resolve()));
+      if (originalTlsSetting === undefined) {
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      } else {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalTlsSetting;
+      }
+    }
+  });
+
   it('requires a license token for import requests', async () => {
     const response = await request(app)
       .post('/v1/import')
@@ -365,6 +556,56 @@ describe('@soipack/server REST API', () => {
       .expect(402);
 
     expect(response.body.error.code).toBe('LICENSE_INVALID');
+  });
+
+  it('throttles repeated requests from the same IP', async () => {
+    const throttledApp = createServer({
+      ...baseConfig,
+      rateLimit: {
+        ip: { windowMs: 1000, max: 1 },
+        tenant: baseConfig.rateLimit?.tenant,
+      },
+      metricsRegistry: new Registry(),
+    });
+
+    await request(throttledApp).get('/health').expect(200);
+    const response = await request(throttledApp).get('/health').expect(429);
+    expect(response.body.error.code).toBe('IP_RATE_LIMIT_EXCEEDED');
+    expect(response.headers['retry-after']).toBeDefined();
+  });
+
+  it('enforces per-tenant rate limits', async () => {
+    const tenantLimitedApp = createServer({
+      ...baseConfig,
+      rateLimit: {
+        ip: { windowMs: 60_000, max: 1_000 },
+        tenant: { windowMs: 1000, max: 2 },
+      },
+      metricsRegistry: new Registry(),
+    });
+
+    const authHeader = { Authorization: `Bearer ${token}` };
+    await request(tenantLimitedApp).get('/v1/jobs').set(authHeader).expect(200);
+    await request(tenantLimitedApp).get('/v1/jobs').set(authHeader).expect(200);
+    const response = await request(tenantLimitedApp).get('/v1/jobs').set(authHeader).expect(429);
+    expect(response.body.error.code).toBe('TENANT_RATE_LIMIT_EXCEEDED');
+  });
+
+  it('rejects oversized JSON bodies', async () => {
+    const limitedApp = createServer({
+      ...baseConfig,
+      jsonBodyLimitBytes: 32,
+      metricsRegistry: new Registry(),
+    });
+
+    const payload = { importId: 'x'.repeat(64) };
+    const response = await request(limitedApp)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify(payload))
+      .expect(413);
+    expect(response.body.error.code).toBe('PAYLOAD_TOO_LARGE');
   });
 
   it('rejects cached licenses once they expire', async () => {
@@ -418,6 +659,56 @@ describe('@soipack/server REST API', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('requires mutual TLS for admin endpoints when configured', async () => {
+    const secureConfig: ServerConfig = {
+      ...baseConfig,
+      requireAdminClientCertificate: true,
+      metricsRegistry: new Registry(),
+    };
+    const secureApp = createServer(secureConfig);
+    const httpsServer = createHttpsServer(secureApp, {
+      key: TEST_SERVER_KEY,
+      cert: TEST_SERVER_CERT,
+      clientCa: TEST_CA_CERT,
+    });
+
+    await new Promise<void>((resolve) => httpsServer.listen(0, resolve));
+    const { port } = httpsServer.address() as AddressInfo;
+    const adminToken = await createAccessToken({ scope: `${requiredScope} ${adminScope}` });
+
+    const performRequest = (options?: https.RequestOptions) =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const requestOptions: https.RequestOptions = {
+          host: 'localhost',
+          port,
+          path: '/metrics',
+          method: 'GET',
+          headers: { Authorization: `Bearer ${adminToken}` },
+          ca: TEST_CA_CERT,
+          rejectUnauthorized: true,
+          ...options,
+        };
+        const req = https.request(requestOptions, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on('end', () => {
+            resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+    const withoutCert = await performRequest();
+    expect(withoutCert.status).toBe(403);
+    expect(JSON.parse(withoutCert.body).error.code).toBe('ADMIN_CLIENT_CERT_REQUIRED');
+
+    const withCert = await performRequest({ key: TEST_CLIENT_KEY, cert: TEST_CLIENT_CERT });
+    expect(withCert.status).toBe(200);
+
+    await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
   });
 
   it('requires a license token for analyze, report, and pack requests', async () => {

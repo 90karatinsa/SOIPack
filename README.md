@@ -12,6 +12,8 @@ SOIPack, yazılım odaklı organizasyonların gereksinim, test, kod ve kalite ar
 - **@soipack/cli** – İzlenebilirlik işlemlerini otomatikleştiren komut satırı istemcisi.
 - **@soipack/server** – Express ve OpenAPI tabanlı REST servisleri.
 
+> Not: Sunucu yalnızca HTTPS dinleyicisiyle başlatılır; `SOIPACK_TLS_KEY_PATH` ve `SOIPACK_TLS_CERT_PATH` olmadan hizmet ayağa kalkmaz. Yönetici uç noktaları için istemci sertifikası doğrulaması isteğe bağlıdır (`SOIPACK_TLS_CLIENT_CA_PATH`). JWKS uç noktaları HTTPS ile çağrılmalı veya dosya sistemi üzerinden (`SOIPACK_AUTH_JWKS_PATH`) sağlanmalıdır. İstekler varsayılan olarak IP ve kiracı bazında sınırlandırılır (`SOIPACK_RATE_LIMIT_*`); JSON gövdeleri `SOIPACK_MAX_JSON_BODY_BYTES` eşiğini aşarsa `413` yanıtı döner.
+
 ## Başlarken
 
 ```bash
