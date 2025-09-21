@@ -1472,11 +1472,18 @@ const logLicenseValidated = (
   license: LicensePayload,
   context: Record<string, unknown>,
 ): void => {
+  const toFingerprint = (value: string | undefined): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    const digest = createHash('sha256').update(value).digest('hex');
+    return `sha256:${digest.slice(0, 12)}`;
+  };
   logger.debug(
     {
       ...context,
-      licenseId: license.licenseId,
-      issuedTo: license.issuedTo,
+      licenseIdFingerprint: toFingerprint(license.licenseId),
+      issuedToFingerprint: toFingerprint(license.issuedTo),
       expiresAt: license.expiresAt,
     },
     'Lisans doğrulandı.',
@@ -1998,6 +2005,10 @@ if (require.main === module) {
 
   cli.parse();
 }
+
+export const __internal = {
+  logLicenseValidated,
+};
 
 export {
   exitCodes,
