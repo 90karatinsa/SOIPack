@@ -1,7 +1,7 @@
 project:
-  name: "SOIPack Demo Avionics - Level C"
+  name: "SOIPack Demo Avionics - Level A"
   version: "1.0.0"
-level: "C"
+level: "A"
 objectives:
   file: "../../data/objectives/do178c_objectives.min.json"
 inputs:
@@ -12,13 +12,13 @@ inputs:
   cobertura: "coverage.xml"
   git: "../.."
 output:
-  work: ".soipack/work"
-  analysis: ".soipack/out"
-  reports: "dist/reports"
-  release: "release"
+  work: ".soipack/level-a/work"
+  analysis: ".soipack/level-a/out"
+  reports: "dist/level-a/reports"
+  release: "release/level-a"
 artifacts:
   map: "artifact_map.json"
   directory: "artifacts"
 pack:
-  name: "soi-pack-demo.zip"
-  input: "dist"
+  name: "soi-pack-demo-level-a.zip"
+  input: "dist/level-a"

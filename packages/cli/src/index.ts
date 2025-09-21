@@ -774,9 +774,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'traceability',
-        createEvidence('traceability', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı')
-          .evidence,
+        'trace',
+        createEvidence('trace', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı').evidence,
       );
     }
     requirements.push(result.data.map(toRequirementFromJira));
@@ -788,8 +787,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'traceability',
-        createEvidence('traceability', 'reqif', options.reqif, 'ReqIF gereksinim paketi').evidence,
+        'trace',
+        createEvidence('trace', 'reqif', options.reqif, 'ReqIF gereksinim paketi').evidence,
       );
     }
     requirements.push(result.data.map(toRequirementFromReqif));
@@ -802,8 +801,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'testResults',
-        createEvidence('testResults', 'junit', options.junit, 'JUnit test sonuçları').evidence,
+        'test',
+        createEvidence('test', 'junit', options.junit, 'JUnit test sonuçları').evidence,
       );
     }
   }
@@ -818,8 +817,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'coverage',
-        createEvidence('coverage', 'lcov', options.lcov, 'LCOV kapsam raporu').evidence,
+        'coverage_stmt',
+        createEvidence('coverage_stmt', 'lcov', options.lcov, 'LCOV kapsam raporu').evidence,
       );
     }
   }
@@ -834,8 +833,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'coverage',
-        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
+        'coverage_stmt',
+        createEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
           .evidence,
       );
     }
@@ -848,8 +847,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.files.length > 0) {
       mergeEvidence(
         evidenceIndex,
-        'coverage',
-        createEvidence('coverage', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
+        'coverage_stmt',
+        createEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
           .evidence,
       );
     }
@@ -862,8 +861,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data) {
       mergeEvidence(
         evidenceIndex,
-        'git',
-        createEvidence('git', 'git', options.git, 'Git depo başlığı').evidence,
+        'cm_record',
+        createEvidence('cm_record', 'git', options.git, 'Git depo başlığı').evidence,
       );
     }
   }
@@ -875,13 +874,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       manualTraceLinks.push(...result.links);
       mergeEvidence(
         evidenceIndex,
-        'traceability',
-        createEvidence(
-          'traceability',
-          'other',
-          options.traceLinksCsv,
-          'Manuel izlenebilirlik eşlemeleri (CSV)',
-        ).evidence,
+        'trace',
+        createEvidence('trace', 'other', options.traceLinksCsv, 'Manuel izlenebilirlik eşlemeleri (CSV)')
+          .evidence,
       );
     }
   }
@@ -893,13 +888,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       manualTraceLinks.push(...result.links);
       mergeEvidence(
         evidenceIndex,
-        'traceability',
-        createEvidence(
-          'traceability',
-          'other',
-          options.traceLinksJson,
-          'Manuel izlenebilirlik eşlemeleri (JSON)',
-        ).evidence,
+        'trace',
+        createEvidence('trace', 'other', options.traceLinksJson, 'Manuel izlenebilirlik eşlemeleri (JSON)')
+          .evidence,
       );
     }
   }
@@ -981,7 +972,7 @@ const loadObjectives = async (filePath: string): Promise<Objective[]> => {
 };
 
 const filterObjectives = (objectives: Objective[], level: CertificationLevel): Objective[] => {
-  return objectives.filter((objective) => objective.level[level]);
+  return objectives.filter((objective) => objective.levels[level]);
 };
 
 const buildImportBundle = (workspace: ImportWorkspace, objectives: Objective[]): ImportBundle => ({

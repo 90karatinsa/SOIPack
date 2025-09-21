@@ -2,7 +2,7 @@
 <html lang="tr">
   <head>
     <meta charset="utf-8" />
-    <title>SOIPack Demo Avionics Kanıt Boşlukları</title>
+    <title>Uyum Boşlukları</title>
     <style>
       
   :root {
@@ -36,6 +36,31 @@
     margin: 0;
     font-size: 14px;
     opacity: 0.9;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  .report-meta + .report-meta {
+    margin-top: 4px;
+  }
+
+  .report-meta-flag {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(248, 113, 113, 0.35);
+    color: #fee2e2;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .git-meta {
+    margin-top: 16px;
+    display: grid;
+    gap: 4px;
   }
 
   .summary-grid {
@@ -227,35 +252,69 @@
   <body>
     <header class="report-header">
       <div>
-        <h1>SOIPack Demo Avionics Kanıt Boşlukları</h1>
-        
+        <h1>Uyum Boşlukları</h1>
           <p class="report-meta">Kanıt eksikliği bulunan alanların özet görünümü</p>
-        
-        <p class="report-meta">Kanıt Manifest ID: <strong>N/A</strong></p>
-        <p class="report-meta">Rapor Tarihi: 2024-03-01 10:00 UTC</p>
+        <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
+        <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
+          <div class="git-meta">
+            <p class="report-meta">
+              Commit:
+              <strong>
+                <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
+              </strong>
+            </p>
+              <p class="report-meta">Dallar: main</p>
+              <p class="report-meta">Etiketler: v1.0.0</p>
+              <p class="report-meta">Origin: https://example.com/repo.git</p>
+              <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
+              <p class="report-meta">Mesaj: Add avionics tests</p>
+          </div>
       </div>
       <div class="summary-grid">
-        
           <div class="summary-card">
             <span>Plan Boşlukları</span>
-            <strong>2</strong>
+            <strong>0</strong>
           </div>
-        
           <div class="summary-card">
             <span>Standart Boşlukları</span>
-            <strong>8</strong>
+            <strong>0</strong>
           </div>
-        
+          <div class="summary-card">
+            <span>Gözden Geçirme Boşlukları</span>
+            <strong>2</strong>
+          </div>
+          <div class="summary-card">
+            <span>Analiz Boşlukları</span>
+            <strong>0</strong>
+          </div>
           <div class="summary-card">
             <span>Test Boşlukları</span>
             <strong>0</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kapsam Boşlukları</span>
             <strong>0</strong>
           </div>
-        
+          <div class="summary-card">
+            <span>İzlenebilirlik Boşlukları</span>
+            <strong>0</strong>
+          </div>
+          <div class="summary-card">
+            <span>Konfigürasyon Boşlukları</span>
+            <strong>1</strong>
+          </div>
+          <div class="summary-card">
+            <span>Kalite Boşlukları</span>
+            <strong>0</strong>
+          </div>
+          <div class="summary-card">
+            <span>Problem Takibi Boşlukları</span>
+            <strong>1</strong>
+          </div>
+          <div class="summary-card">
+            <span>Uygunluk Boşlukları</span>
+            <strong>0</strong>
+          </div>
       </div>
     </header>
     <main>
@@ -265,191 +324,89 @@
       Kanıt eksikliklerini kategori bazında gösterir. Boşluklar denetim öncesi tamamlanması gereken alanları belirtir.
     </p>
     <div class="gap-grid">
-      
         <article class="gap-card">
           <h3>Planlama Kanıtları</h3>
-          
-            <ul class="list">
-              
-                <li>
-                  <div class="cell-title">A-1-Obj1</div>
-                  
-                    <div class="cell-subtitle">Plans</div>
-                  
-                  
-                    <div class="cell-description">Define PSAC addressing software lifecycle and level.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">PSAC</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">A-2-Obj2</div>
-                  
-                    <div class="cell-subtitle">Plans</div>
-                  
-                  
-                    <div class="cell-description">Establish software development plan tailoring activities.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">SDP</span>
-                    
-                  </div>
-                </li>
-              
-            </ul>
-          
+            <p class="muted">Boşluk tespit edilmedi.</p>
         </article>
-      
         <article class="gap-card">
-          <h3>Standart &amp; Konfigürasyon</h3>
-          
-            <ul class="list">
-              
-                <li>
-                  <div class="cell-title">A-3-Obj3</div>
-                  
-                    <div class="cell-subtitle">Plans</div>
-                  
-                  
-                    <div class="cell-description">Capture verification plan with objectives and responsibilities.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">SVR</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">A-4-Obj4</div>
-                  
-                    <div class="cell-subtitle">Plans</div>
-                  
-                  
-                    <div class="cell-description">Specify configuration management activities and audits.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Konfigürasyon İndeksi</span>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">B-1-Obj5</div>
-                  
-                    <div class="cell-subtitle">Standards</div>
-                  
-                  
-                    <div class="cell-description">Define software coding standards to guide implementation.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">B-2-Obj6</div>
-                  
-                    <div class="cell-subtitle">Standards</div>
-                  
-                  
-                    <div class="cell-description">Establish verification standards for reviews and testing.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">SVR</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">C-1-Obj7</div>
-                  
-                    <div class="cell-subtitle">Reviews</div>
-                  
-                  
-                    <div class="cell-description">Review high level requirements for correctness and safety.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">C-2-Obj8</div>
-                  
-                    <div class="cell-subtitle">Reviews</div>
-                  
-                  
-                    <div class="cell-description">Ensure low level requirements trace to high level intent.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">C-3-Obj9</div>
-                  
-                    <div class="cell-subtitle">Reviews</div>
-                  
-                  
-                    <div class="cell-description">Confirm source code meets standards and requirements.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-                <li>
-                  <div class="cell-title">D-2-Obj11</div>
-                  
-                    <div class="cell-subtitle">Verification</div>
-                  
-                  
-                    <div class="cell-description">Perform robustness testing for off-nominal behavior.</div>
-                  
-                  <div>
-                    
-                      <span class="badge badge-critical">Analiz Raporu</span>
-                    
-                  </div>
-                </li>
-              
-            </ul>
-          
+          <h3>Standart Referansları</h3>
+            <p class="muted">Boşluk tespit edilmedi.</p>
         </article>
-      
+        <article class="gap-card">
+          <h3>Gözden Geçirme Kanıtları</h3>
+            <ul class="list">
+                <li>
+                  <div class="cell-title">A-3-04</div>
+                    <div class="cell-subtitle">
+A-3 • Doğrulama Stratejisi                    </div>
+                    <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                  <div>
+                      <span class="badge badge-critical">Gözden Geçirme</span>
+                  </div>
+                </li>
+                <li>
+                  <div class="cell-title">A-4-01</div>
+                    <div class="cell-subtitle">
+A-4 • Üst Düzey Gereksinimler                    </div>
+                    <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                  <div>
+                      <span class="badge badge-critical">Gözden Geçirme</span>
+                  </div>
+                </li>
+            </ul>
+        </article>
+        <article class="gap-card">
+          <h3>Analiz Kanıtları</h3>
+            <p class="muted">Boşluk tespit edilmedi.</p>
+        </article>
         <article class="gap-card">
           <h3>Test Kanıtları</h3>
-          
             <p class="muted">Boşluk tespit edilmedi.</p>
-          
         </article>
-      
         <article class="gap-card">
           <h3>Kapsam Kanıtları</h3>
-          
             <p class="muted">Boşluk tespit edilmedi.</p>
-          
         </article>
-      
+        <article class="gap-card">
+          <h3>İzlenebilirlik</h3>
+            <p class="muted">Boşluk tespit edilmedi.</p>
+        </article>
+        <article class="gap-card">
+          <h3>Konfigürasyon Yönetimi</h3>
+            <ul class="list">
+                <li>
+                  <div class="cell-title">A-6-02</div>
+                    <div class="cell-subtitle">
+A-6 • Değişiklik Kontrolü                    </div>
+                    <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                  <div>
+                      <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                  </div>
+                </li>
+            </ul>
+        </article>
+        <article class="gap-card">
+          <h3>Kalite Güvencesi</h3>
+            <p class="muted">Boşluk tespit edilmedi.</p>
+        </article>
+        <article class="gap-card">
+          <h3>Problem Takibi</h3>
+            <ul class="list">
+                <li>
+                  <div class="cell-title">A-6-02</div>
+                    <div class="cell-subtitle">
+A-6 • Değişiklik Kontrolü                    </div>
+                    <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                  <div>
+                      <span class="badge badge-critical">Problem Raporu</span>
+                  </div>
+                </li>
+            </ul>
+        </article>
+        <article class="gap-card">
+          <h3>Uygunluk Doğrulamaları</h3>
+            <p class="muted">Boşluk tespit edilmedi.</p>
+        </article>
     </div>
   </section>
     </main>

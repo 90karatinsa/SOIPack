@@ -253,67 +253,56 @@
     <header class="report-header">
       <div>
         <h1>Kurumsal Uyum Matrisi</h1>
-        
           <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
-        
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
-        <div class="git-meta">
-          <p class="report-meta">
-            Commit:
-            <strong>
-              <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
-            </strong>
-          </p>
-          <p class="report-meta">Dallar: main</p>
-          <p class="report-meta">Etiketler: v1.0.0</p>
-          <p class="report-meta">Origin: https://example.com/repo.git</p>
-          <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
-          <p class="report-meta">Mesaj: Add avionics tests</p>
-        </div>
+          <div class="git-meta">
+            <p class="report-meta">
+              Commit:
+              <strong>
+                <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
+              </strong>
+            </p>
+              <p class="report-meta">Dallar: main</p>
+              <p class="report-meta">Etiketler: v1.0.0</p>
+              <p class="report-meta">Origin: https://example.com/repo.git</p>
+              <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
+              <p class="report-meta">Mesaj: Add avionics tests</p>
+          </div>
       </div>
       <div class="summary-grid">
-        
           <div class="summary-card">
             <span>Hedefler</span>
-            <strong>4</strong>
+            <strong>5</strong>
           </div>
-        
           <div class="summary-card">
             <span>Tamamlanan</span>
-            <strong>1</strong>
+            <strong>2</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kısmi</span>
-            <strong>3</strong>
+            <strong>2</strong>
           </div>
-        
           <div class="summary-card">
             <span>Eksik</span>
-            <strong>0</strong>
+            <strong>1</strong>
           </div>
-        
           <div class="summary-card">
             <span>Testler</span>
             <strong>4</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kod Yolları</span>
             <strong>2</strong>
           </div>
-        
           <div class="summary-card">
             <span>Kapsamlı Gereksinimler</span>
             <strong>0/3</strong>
           </div>
-        
           <div class="summary-card">
             <span>Eksik/Kısmi Kapsam</span>
             <strong>2/1</strong>
           </div>
-        
       </div>
     </header>
     <main>
@@ -333,153 +322,116 @@
         </tr>
       </thead>
       <tbody>
-        
           <tr>
             <td>
-              <div class="cell-title">OBJ-PLAN-1</div>
-              
-                <div class="cell-subtitle">Plans</div>
-              
-              
-                <div class="cell-description">PSAC ve SDP tutarlılığı doğrulanmalı.</div>
-              
+              <div class="cell-title">A-3-04</div>
+                <div class="cell-subtitle">
+A-3 • Doğrulama Stratejisi                </div>
+                <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
             </td>
             <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
             <td>
-              
-                
-                  <span class="badge badge-soft">PSAC</span>
-                
-              
+                  <span class="badge badge-soft">Plan</span>
             </td>
             <td>
-              
-                
-                  <span class="badge badge-critical">SDP</span>
-                
-              
+                  <span class="badge badge-critical">Gözden Geçirme</span>
             </td>
             <td>
-              
                 <ul class="list">
-                  
-                    <li class="muted">psac:docs/psac-v1.pdf</li>
-                  
+                    <li class="muted">plan:docs/verification-plan.md</li>
                 </ul>
-              
             </td>
           </tr>
-        
           <tr>
             <td>
-              <div class="cell-title">OBJ-VER-1</div>
-              
-                <div class="cell-subtitle">Verification</div>
-              
-              
-                <div class="cell-description">Test sonuçları ve izlenebilirlik kanıtlanmalı.</div>
-              
+              <div class="cell-title">A-4-01</div>
+                <div class="cell-subtitle">
+A-4 • Üst Düzey Gereksinimler                </div>
+                <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
             </td>
             <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
             <td>
-              
-                
-                  <span class="badge badge-soft">Test Sonuçları</span>
-                
-              
+                  <span class="badge badge-soft">Analiz</span>
+                  <span class="badge badge-soft">İzlenebilirlik</span>
             </td>
             <td>
-              
-                
-                  <span class="badge badge-critical">İzlenebilirlik</span>
-                
-              
+                  <span class="badge badge-critical">Gözden Geçirme</span>
             </td>
             <td>
-              
                 <ul class="list">
-                  
-                    <li class="muted">testResults:reports/junit.xml</li>
-                  
+                    <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                    <li class="muted">trace:artifacts/trace-map.csv</li>
                 </ul>
-              
             </td>
           </tr>
-        
           <tr>
             <td>
-              <div class="cell-title">OBJ-VER-2</div>
-              
-                <div class="cell-subtitle">Verification</div>
-              
-              
-                <div class="cell-description">Kod kapsamı düzenli olarak izlenmeli.</div>
-              
+              <div class="cell-title">A-5-06</div>
+                <div class="cell-subtitle">
+A-5 • Test Stratejisi Uygulandı                </div>
+                <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
             </td>
             <td><span class="badge status-covered">Tam Karşılandı</span></td>
             <td>
-              
-                
-                  <span class="badge badge-soft">Kod Kapsamı</span>
-                
-              
+                  <span class="badge badge-soft">Test</span>
+                  <span class="badge badge-soft">İzlenebilirlik</span>
+                  <span class="badge badge-soft">Analiz</span>
             </td>
             <td>
-              
                 <span class="muted">Eksik kanıt yok</span>
-              
             </td>
             <td>
-              
                 <ul class="list">
-                  
-                    <li class="muted">coverage:reports/coverage-summary.json</li>
-                  
+                    <li class="muted">test:reports/junit.xml</li>
+                    <li class="muted">trace:artifacts/trace-map.csv</li>
+                    <li class="muted">analysis:reports/safety-analysis.pdf</li>
                 </ul>
-              
             </td>
           </tr>
-        
           <tr>
             <td>
-              <div class="cell-title">OBJ-STND-1</div>
-              
-                <div class="cell-subtitle">Standards</div>
-              
-              
-                <div class="cell-description">Konfigürasyon indeksinin güncelliği izlenmeli.</div>
-              
+              <div class="cell-title">A-5-08</div>
+                <div class="cell-subtitle">
+A-5 • Yapısal Kapsam—Statement                </div>
+                <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
             </td>
-            <td><span class="badge status-partial">Kısmen Karşılandı</span></td>
+            <td><span class="badge status-covered">Tam Karşılandı</span></td>
             <td>
-              
-                
-                  <span class="badge badge-soft">Sürüm Kontrol</span>
-                
-              
+                  <span class="badge badge-soft">Satır Kapsamı</span>
+                  <span class="badge badge-soft">Analiz</span>
             </td>
             <td>
-              
-                
-                  <span class="badge badge-critical">Konfigürasyon İndeksi</span>
-                
-              
+                <span class="muted">Eksik kanıt yok</span>
             </td>
             <td>
-              
                 <ul class="list">
-                  
-                    <li class="muted">git:git://repo#main</li>
-                  
+                    <li class="muted">coverage_stmt:reports/coverage-summary.json</li>
+                    <li class="muted">analysis:reports/safety-analysis.pdf</li>
                 </ul>
-              
             </td>
           </tr>
-        
+          <tr>
+            <td>
+              <div class="cell-title">A-6-02</div>
+                <div class="cell-subtitle">
+A-6 • Değişiklik Kontrolü                </div>
+                <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+            </td>
+            <td><span class="badge status-missing">Eksik</span></td>
+            <td>
+                <span class="muted">Kanıt bulunmuyor</span>
+            </td>
+            <td>
+                  <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                  <span class="badge badge-critical">Problem Raporu</span>
+            </td>
+            <td>
+                <span class="muted">Referans bulunmuyor</span>
+            </td>
+          </tr>
       </tbody>
     </table>
   </section>
-  
     <section class="section">
       <h2>Gereksinim Kapsamı</h2>
       <p class="section-lead">
@@ -494,7 +446,6 @@
           </tr>
         </thead>
         <tbody>
-          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-1</div>
@@ -502,23 +453,15 @@
               </td>
               <td>
                 <span class="badge status-partial">Kısmen Kaplandı</span>
-                
                   <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
-                
               </td>
               <td>
-                
                   <ul class="list">
-                    
                       <li><code class="code-pill">src/auth/login.ts</code></li>
-                    
                       <li><code class="code-pill">src/security/audit.ts</code></li>
-                    
                   </ul>
-                
               </td>
             </tr>
-          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-2</div>
@@ -526,23 +469,15 @@
               </td>
               <td>
                 <span class="badge status-partial">Kısmen Kaplandı</span>
-                
                   <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
-                
               </td>
               <td>
-                
                   <ul class="list">
-                    
                       <li><code class="code-pill">src/auth/login.ts</code></li>
-                    
                       <li><code class="code-pill">src/security/audit.ts</code></li>
-                    
                   </ul>
-                
               </td>
             </tr>
-          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-3</div>
@@ -550,19 +485,15 @@
               </td>
               <td>
                 <span class="badge status-missing">Kapsam Yok</span>
-                
               </td>
               <td>
-                
                   <span class="muted">Kod bağlantısı yok</span>
-                
               </td>
             </tr>
-          
         </tbody>
       </table>
     </section>
-  
+
     </main>
     <footer>
       <span>SOIPack Sürüm 0.1.0</span>

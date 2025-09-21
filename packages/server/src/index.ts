@@ -2553,10 +2553,10 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
 
-  const instrumentJobRun = <T>(
+  function instrumentJobRun<T>(
     context: { tenantId: string; id: string; kind: JobKind; hash: string },
     run: () => Promise<T>,
-  ): (() => Promise<T>) => {
+  ): () => Promise<T> {
     return async () => {
       const startedAt = process.hrtime.bigint();
       try {
@@ -2614,7 +2614,7 @@ export const createServer = (config: ServerConfig): Express => {
         throw error;
       }
     };
-  };
+  }
 
   const enqueueObservedJob = <TResult, TPayload>(options: {
     tenantId: string;
