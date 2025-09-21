@@ -9,6 +9,7 @@ import pino from 'pino';
 
 import { Registry } from 'prom-client';
 
+import * as cli from '@soipack/cli';
 import { Manifest } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
 
@@ -33,6 +34,20 @@ const minimalExample = (...segments: string[]): string =>
 const demoLicensePath = path.resolve(__dirname, '../../..', 'data', 'licenses', 'demo-license.key');
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const createDeferred = <T = void>() => {
+  let resolve: (value: T | PromiseLike<T>) => void;
+  let reject: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return {
+    promise,
+    resolve: resolve!,
+    reject: reject!,
+  };
+};
 
 const createLogCapture = () => {
   const entries: Array<Record<string, unknown>> = [];
@@ -417,6 +432,85 @@ describe('@soipack/server REST API', () => {
       expect(response.body.error.details?.cause).toBe('File too large');
     } finally {
       await fsPromises.rm(limitedStorageDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects new jobs once the tenant queue limit is reached', async () => {
+    const limitedRegistry = new Registry();
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    const importStarted = createDeferred<void>();
+    const allowImportToFinish = createDeferred<void>();
+    runImportSpy.mockImplementation(async () => {
+      importStarted.resolve();
+      await allowImportToFinish.promise;
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+        },
+      };
+      return {
+        workspace,
+        workspacePath: 'workspace.json',
+        warnings: [],
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const limitedApp = createServer({
+      ...baseConfig,
+      metricsRegistry: limitedRegistry,
+      maxQueuedJobsPerTenant: 1,
+    });
+
+    const projectVersion = `queue-limit-${Date.now()}`;
+
+    try {
+      const firstResponse = await request(limitedApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Queue Limit Demo')
+        .field('projectVersion', projectVersion)
+        .expect(202);
+
+      await importStarted.promise;
+
+      let metricSnapshot = await limitedRegistry.getSingleMetricAsString('soipack_job_queue_depth');
+      expect(metricSnapshot).toContain(`soipack_job_queue_depth{tenantId="${tenantId}"} 1`);
+
+      const secondResponse = await request(limitedApp)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Queue Limit Demo')
+        .field('projectVersion', `${projectVersion}-retry`)
+        .expect(429);
+
+      expect(secondResponse.body.error.code).toBe('QUEUE_LIMIT_EXCEEDED');
+      expect(secondResponse.body.error.details.limit).toBe(1);
+      expect(runImportSpy).toHaveBeenCalledTimes(1);
+
+      allowImportToFinish.resolve();
+
+      await waitForJobCompletion(limitedApp, token, firstResponse.body.id);
+
+      metricSnapshot = await limitedRegistry.getSingleMetricAsString('soipack_job_queue_depth');
+      expect(metricSnapshot).toContain(`soipack_job_queue_depth{tenantId="${tenantId}"} 0`);
+    } finally {
+      allowImportToFinish.resolve();
+      runImportSpy.mockRestore();
     }
   });
 

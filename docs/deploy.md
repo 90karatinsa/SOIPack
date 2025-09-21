@@ -75,6 +75,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
    SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/soipack-license.pub
+   # Kiracı başına kuyrukta bekleyen/çalışan iş limiti (opsiyonel, varsayılan 5)
+   SOIPACK_MAX_QUEUED_JOBS=5
    # Antivirüs komut satırı entegrasyonu (örn. ClamAV)
    SOIPACK_SCAN_COMMAND=/usr/bin/clamdscan
    SOIPACK_SCAN_ARGS=--fdpass,--no-summary
@@ -93,6 +95,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
 
    Tüm HTTP istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
+
+   Kuyruk limiti her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler. Varsayılan değer 5'tir; daha yüksek değerler daha yoğun iş yüklerine izin verirken, aynı anda yürütülen import/analiz işlemlerinin CPU ve disk üzerindeki etkilerini de artırır. Limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve ilgili kiracı için yeni işler kuyruğa alınmaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
 5. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
    ```bash
    docker compose up -d

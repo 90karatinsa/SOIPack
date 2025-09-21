@@ -44,6 +44,8 @@ const parseRetentionDays = (value: string | undefined, label: string): number | 
   return parsed * 24 * 60 * 60 * 1000;
 };
 
+const DEFAULT_MAX_QUEUED_JOBS_PER_TENANT = 5;
+
 const start = async (): Promise<void> => {
   const authIssuer = process.env.SOIPACK_AUTH_ISSUER;
   if (!authIssuer) {
@@ -129,6 +131,18 @@ const start = async (): Promise<void> => {
     process.exit(1);
   }
 
+  const maxQueuedJobsSource = process.env.SOIPACK_MAX_QUEUED_JOBS;
+  let maxQueuedJobsPerTenant = DEFAULT_MAX_QUEUED_JOBS_PER_TENANT;
+  if (maxQueuedJobsSource !== undefined) {
+    const parsed = Number.parseInt(maxQueuedJobsSource, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      // eslint-disable-next-line no-console
+      console.error('SOIPACK_MAX_QUEUED_JOBS pozitif bir tam sayı olmalıdır.');
+      process.exit(1);
+    }
+    maxQueuedJobsPerTenant = parsed;
+  }
+
   const retention: RetentionConfig = {};
 
   const uploadsDays = parseRetentionDays(
@@ -209,6 +223,7 @@ const start = async (): Promise<void> => {
     storageDir,
     signingKeyPath,
     licensePublicKeyPath,
+    maxQueuedJobsPerTenant,
     retention,
     scanner,
   });
