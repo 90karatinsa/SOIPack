@@ -198,6 +198,9 @@ interface DownloadPackageOptions {
   token: string;
   packageId: string;
   outputDir: string;
+  allowInsecureHttp?: boolean;
+  httpGet?: typeof http.get;
+  httpsGet?: typeof https.get;
 }
 
 interface DownloadResult {
@@ -205,13 +208,50 @@ interface DownloadResult {
   manifestPath: string;
 }
 
+const HTTP_REQUEST_TIMEOUT_MS = 30_000;
+
 const requestStream = (
   targetUrl: string,
   headers: Record<string, string>,
+  options: {
+    allowInsecureHttp?: boolean;
+    httpGet?: typeof http.get;
+    httpsGet?: typeof https.get;
+  } = {},
 ): Promise<http.IncomingMessage> => {
+  const {
+    allowInsecureHttp = false,
+    httpGet = http.get,
+    httpsGet = https.get,
+  } = options;
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch (error) {
+    return Promise.reject(
+      new Error(
+        `Geçersiz URL: ${targetUrl}. Lütfen API taban adresini kontrol edin. ${(error as Error).message}`,
+      ),
+    );
+  }
+
+  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+    return Promise.reject(new Error(`Desteklenmeyen protokol: ${parsedUrl.protocol}`));
+  }
+
+  if (parsedUrl.protocol !== 'https:' && !allowInsecureHttp) {
+    return Promise.reject(
+      new Error(
+        `İndirilen URL güvenli değil (${parsedUrl.toString()}). HTTP istekleri varsayılan olarak engellenir; ` +
+          '`--allow-insecure-http` bayrağı ile HTTP kullanımını bilinçli olarak etkinleştirin.',
+      ),
+    );
+  }
+
   return new Promise((resolve, reject) => {
-    const client = targetUrl.startsWith('https') ? https : http;
-    const request = client.get(targetUrl, { headers }, (response) => {
+    const clientGet = parsedUrl.protocol === 'https:' ? httpsGet : httpGet;
+    const request = clientGet(parsedUrl, { headers }, (response) => {
       const { statusCode } = response;
       if (statusCode && statusCode >= 200 && statusCode < 300) {
         resolve(response);
@@ -223,6 +263,13 @@ const requestStream = (
         const message = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : response.statusMessage;
         reject(new Error(`HTTP ${statusCode ?? 0}: ${message ?? 'Beklenmeyen sunucu hatası'}`));
       });
+    });
+    request.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(
+        new Error(
+          `Sunucudan yanıt alınamadı: ${parsedUrl.toString()} isteği ${HTTP_REQUEST_TIMEOUT_MS}ms içinde tamamlanmadı.`,
+        ),
+      );
     });
     request.on('error', reject);
   });
@@ -243,21 +290,32 @@ const writeStreamToFile = async (
   return targetPath;
 };
 
-const downloadPackageArtifacts = async ({
+export const downloadPackageArtifacts = async ({
   baseUrl,
   token,
   packageId,
   outputDir,
+  allowInsecureHttp,
+  httpGet,
+  httpsGet,
 }: DownloadPackageOptions): Promise<DownloadResult> => {
   await ensureDirectory(outputDir);
   const headers = { Authorization: `Bearer ${token}` };
   const archiveUrl = new URL(`/v1/packages/${packageId}/archive`, baseUrl).toString();
   const manifestUrl = new URL(`/v1/packages/${packageId}/manifest`, baseUrl).toString();
 
-  const archiveResponse = await requestStream(archiveUrl, headers);
+  const archiveResponse = await requestStream(archiveUrl, headers, {
+    allowInsecureHttp,
+    httpGet,
+    httpsGet,
+  });
   const archivePath = await writeStreamToFile(archiveResponse, outputDir, `soipack-${packageId}.zip`);
 
-  const manifestResponse = await requestStream(manifestUrl, headers);
+  const manifestResponse = await requestStream(manifestUrl, headers, {
+    allowInsecureHttp,
+    httpGet,
+    httpsGet,
+  });
   const manifestPath = await writeStreamToFile(manifestResponse, outputDir, `manifest-${packageId}.json`);
 
   return { archivePath, manifestPath };
@@ -1366,6 +1424,7 @@ export const runPipeline = async (
 interface GlobalArguments {
   verbose?: boolean;
   license?: string;
+  allowInsecureHttp?: boolean;
 }
 
 let sharedLogger: Logger | undefined;
@@ -1439,6 +1498,12 @@ if (require.main === module) {
       type: 'string',
       global: true,
       default: DEFAULT_LICENSE_FILE,
+    })
+    .option('allow-insecure-http', {
+      describe: 'HTTPS yerine HTTP üzerinden indirmelere izin verir (varsayılan: devre dışı).',
+      type: 'boolean',
+      global: true,
+      default: false,
     })
     .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
     .alias('version', 'V')
@@ -1640,6 +1705,7 @@ if (require.main === module) {
         const tokenOption = Array.isArray(argv.token) ? argv.token[0] : argv.token;
         const packageOption = Array.isArray(argv.package) ? argv.package[0] : argv.package;
         const outputOption = Array.isArray(argv.output) ? argv.output[0] : argv.output;
+        const allowInsecureHttp = Boolean(argv.allowInsecureHttp);
 
         const baseUrl = String(apiOption);
         const packageId = String(packageOption);
@@ -1649,6 +1715,7 @@ if (require.main === module) {
           api: baseUrl,
           packageId,
           outputDir,
+          allowInsecureHttp,
         };
 
         try {
@@ -1657,6 +1724,7 @@ if (require.main === module) {
             token: String(tokenOption),
             packageId,
             outputDir,
+            allowInsecureHttp,
           });
           logger.info({ ...context, ...result }, 'Paket artefaktları indirildi.');
           console.log(`Arşiv indirildi: ${result.archivePath}`);

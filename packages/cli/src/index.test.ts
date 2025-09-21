@@ -1,12 +1,23 @@
 import os from 'os';
 import path from 'path';
 import { promises as fs } from 'fs';
+import http from 'http';
+import { PassThrough } from 'stream';
+import { EventEmitter } from 'events';
 
 import { Manifest } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifest, verifyManifestSignature } from '@soipack/packager';
 
-import { exitCodes, runAnalyze, runImport, runPack, runReport, runVerify } from './index';
+import {
+  downloadPackageArtifacts,
+  exitCodes,
+  runAnalyze,
+  runImport,
+  runPack,
+  runReport,
+  runVerify,
+} from './index';
 
 const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
@@ -276,5 +287,135 @@ describe('runVerify', () => {
     await expect(runVerify({ manifestPath, signaturePath, publicKeyPath })).rejects.toThrow(
       /Manifest JSON formatı çözümlenemedi/,
     );
+  });
+});
+
+describe('downloadPackageArtifacts', () => {
+  class MockClientRequest extends EventEmitter {
+    timeoutHandler?: () => void;
+    timeoutMs?: number;
+
+    setTimeout(ms: number, handler: () => void): this {
+      this.timeoutMs = ms;
+      this.timeoutHandler = handler;
+      return this;
+    }
+
+    triggerTimeout(): void {
+      this.timeoutHandler?.();
+    }
+
+    destroy(error?: Error): this {
+      if (error) {
+        this.emit('error', error);
+      }
+      return this;
+    }
+  }
+
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-download-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const createHttpGetMock = () => jest.fn() as jest.MockedFunction<typeof http.get>;
+
+  it('rejects HTTP downloads when insecure flag is not set', async () => {
+    const getMock = createHttpGetMock();
+
+    await expect(
+      downloadPackageArtifacts({
+        baseUrl: 'http://example.com',
+        token: 'demo-token',
+        packageId: 'pkg-123',
+        outputDir: tempDir,
+        httpGet: getMock,
+      }),
+    ).rejects.toThrow('HTTP istekleri varsayılan olarak engellenir');
+
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it('allows HTTP downloads when --allow-insecure-http is set', async () => {
+    const requests: MockClientRequest[] = [];
+    let callCount = 0;
+    const getMock = createHttpGetMock();
+
+    getMock.mockImplementation(((url: unknown, _options: unknown, callback: (res: http.IncomingMessage) => void) => {
+        const request = new MockClientRequest();
+        requests.push(request);
+
+        const responseStream = new PassThrough();
+        const response = Object.assign(responseStream, {
+          statusCode: 200,
+          headers: {} as http.IncomingHttpHeaders,
+        }) as unknown as http.IncomingMessage;
+
+        process.nextTick(() => {
+          callback(response);
+          responseStream.write(callCount === 0 ? 'archive-content' : 'manifest-content');
+          responseStream.end();
+        });
+
+        callCount += 1;
+
+        return request as unknown as http.ClientRequest;
+      }) as unknown as typeof http.get);
+
+    const result = await downloadPackageArtifacts({
+      baseUrl: 'http://example.com',
+      token: 'demo-token',
+      packageId: 'pkg-123',
+      outputDir: tempDir,
+      allowInsecureHttp: true,
+      httpGet: getMock,
+    });
+
+    expect(callCount).toBe(2);
+    expect(requests).toHaveLength(2);
+    requests.forEach((request) => expect(typeof request.timeoutHandler).toBe('function'));
+
+    const archiveStats = await fs.stat(result.archivePath);
+    const manifestStats = await fs.stat(result.manifestPath);
+    expect(archiveStats.isFile()).toBe(true);
+    expect(manifestStats.isFile()).toBe(true);
+    expect(archiveStats.size).toBeGreaterThan(0);
+    expect(manifestStats.size).toBeGreaterThan(0);
+  });
+
+  it('aborts requests that exceed the timeout', async () => {
+    const requests: MockClientRequest[] = [];
+    const getMock = createHttpGetMock();
+
+    getMock.mockImplementation(((url: unknown, _options: unknown, _callback?: (res: http.IncomingMessage) => void) => {
+        const request = new MockClientRequest();
+        requests.push(request);
+        return request as unknown as http.ClientRequest;
+      }) as unknown as typeof http.get);
+
+    const downloadPromise = downloadPackageArtifacts({
+      baseUrl: 'http://example.com',
+      token: 'demo-token',
+      packageId: 'pkg-123',
+      outputDir: tempDir,
+      allowInsecureHttp: true,
+      httpGet: getMock,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getMock).toHaveBeenCalledTimes(1);
+    const request = requests[0];
+    expect(request).toBeDefined();
+    expect(request!.timeoutHandler).toBeDefined();
+
+    request!.triggerTimeout();
+
+    await expect(downloadPromise).rejects.toThrow('tamamlanmadı');
   });
 });

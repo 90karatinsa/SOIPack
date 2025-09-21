@@ -184,6 +184,8 @@ BASE_URL=http://localhost:3000
      --output artifacts/
    ```
 
+   CLI varsayılan olarak yalnızca HTTPS taban adreslerinden indirmeye izin verir; güvenli olmayan `http://` uç noktaları için geliştirici ortamlarında `--allow-insecure-http` bayrağını özellikle eklemeniz gerekir.
+
    Arşiv içinde yer alan `manifest.sig` dosyası ile indirilen manifesti teslimat öncesinde doğrulamak için:
 
    ```bash
