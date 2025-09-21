@@ -52,11 +52,15 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```bash
    docker load < soipack-server.tar.gz
    ```
-3. Sunucunun imza anahtarını ve lisans doğrulama anahtarını `secrets/` dizinine kopyalayın. Docker Compose yapılandırması, dosya adlarının sırasıyla `soipack-signing.pem` ve `soipack-license.pub` olmasını bekler. Aynı dizinde HTTP isteklerinde kullanılacak lisans dosyasını `license.key` adıyla saklayın:
+3. Sunucunun imza anahtarını, lisans doğrulama anahtarını ve TLS sertifikalarını `secrets/` dizinine kopyalayın. Docker Compose yapılandırması, dosya adlarının sırasıyla `soipack-signing.pem`, `soipack-license.pub`, `soipack-tls.key` ve `soipack-tls.crt` olmasını bekler. Yönetici uç noktaları için istemci sertifikası doğrulaması kullanılacaksa güvenilir istemci sertifika otoritesini `soipack-client-ca.pem` adıyla aynı dizine yerleştirin. HTTP isteklerinde kullanılacak lisans dosyasını `license.key` adıyla saklayın:
    ```bash
    mkdir -p secrets
    cp /path/to/soipack-signing.pem secrets/soipack-signing.pem
    cp /path/to/soipack-license.pub secrets/soipack-license.pub
+   cp /path/to/tls/server.key secrets/soipack-tls.key
+   cp /path/to/tls/server.crt secrets/soipack-tls.crt
+   # İsteğe bağlı: yönetici uçları için istemci CA sertifikası
+   # cp /path/to/clients/ca.crt secrets/soipack-client-ca.pem
    cp /path/to/license.key license.key
    ```
 4. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
@@ -65,6 +69,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_AUTH_ISSUER=https://kimlik.example.com/
    SOIPACK_AUTH_AUDIENCE=soipack-api
    SOIPACK_AUTH_JWKS_URI=https://kimlik.example.com/.well-known/jwks.json
+   # Alternatif olarak JWKS'i dosyadan okuyun
+   # SOIPACK_AUTH_JWKS_PATH=/run/secrets/oidc-jwks.json
    # İsteğe bağlı claim eşlemesi ve kapsam gereksinimleri
    SOIPACK_AUTH_TENANT_CLAIM=tenant
    SOIPACK_AUTH_USER_CLAIM=sub
@@ -72,10 +78,19 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_AUTH_ADMIN_SCOPES=soipack.admin
    # Sağlık kontrolü için zorunlu bearer token (örn. uzun ömürlü JWT)
    SOIPACK_HEALTHCHECK_TOKEN=
-   PORT=3000
+   PORT=3443
    SOIPACK_STORAGE_DIR=/data/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
    SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/soipack-license.pub
+   SOIPACK_TLS_KEY_PATH=/run/secrets/soipack-tls.key
+   SOIPACK_TLS_CERT_PATH=/run/secrets/soipack-tls.crt
+   # İsteğe bağlı: yönetici uçları için istemci CA sertifikası
+   SOIPACK_TLS_CLIENT_CA_PATH=/run/secrets/soipack-client-ca.pem
+   SOIPACK_MAX_JSON_BODY_BYTES=2097152
+   SOIPACK_RATE_LIMIT_IP_WINDOW_MS=60000
+   SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS=300
+   SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS=60000
+   SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS=150
    # Kiracı başına kuyrukta bekleyen/çalışan iş limiti (opsiyonel, varsayılan 5)
    SOIPACK_MAX_QUEUED_JOBS=5
    # Antivirüs komut satırı entegrasyonu (örn. ClamAV)
@@ -93,11 +108,15 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
    `SOIPACK_AUTH_ADMIN_SCOPES`, virgülle ayrılmış yönetici kapsamlarını tanımlar. Liste boş değilse yalnızca bu kapsamların en az birine sahip belirteçler yönetici uç noktalarına (`POST /v1/admin/cleanup` ve `/metrics`) erişebilir. İş yüklerini tetikleyen kullanıcılarla gözlemleme/bakım ekiplerini ayrıştırmak için ayrı bir erişim scope'u tanımlamanız önerilir.
 
-   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır ve sunucu bu değer tanımlandığında `/health` uç noktasına gelen isteklerin `Authorization: Bearer <token>` başlığını içermesini zorunlu kılar. Başlık eksik ya da hatalıysa API `401 UNAUTHORIZED` döner.
+   `SOIPACK_AUTH_JWKS_URI` değeri yalnızca HTTPS protokolünü kabul eder; air-gap senaryosunda JWKS içeriğini önceden indirip `SOIPACK_AUTH_JWKS_PATH` ile dosya sisteminden paylaşabilirsiniz. Uzak JWKS yanıtlarının zaman aşımına uğramaması için varsayılan değerler 5 saniyelik zaman aşımı, sınırlı tekrar denemeleri ve önbellekleme davranışı içerir; ortamınızın gereksinimlerine göre `SOIPACK_AUTH_JWKS_TIMEOUT_MS` ve ilgili değişkenlerle bu süreleri ayarlayabilirsiniz.
+
+   `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_TLS_KEY_PATH` ve `SOIPACK_TLS_CERT_PATH` ise HTTPS dinleyicisi için sunucu anahtarı ile sertifikasını gösterir; bu dosyalar okunamazsa hizmet başlatılmaz. Yönetici uç noktaları için istemci sertifikası zorunlu tutulacaksa `SOIPACK_TLS_CLIENT_CA_PATH` değerini güvenilir kök sertifika otoritesiyle birlikte tanımlayın; aksi halde bu değişken boş bırakılmalıdır. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır ve sunucu bu değer tanımlandığında `/health` uç noktasına gelen isteklerin `Authorization: Bearer <token>` başlığını içermesini zorunlu kılar. Başlık eksik ya da hatalıysa API `401 UNAUTHORIZED` döner.
 
    Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
 
-   Tüm HTTP istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
+   Tüm HTTPS istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
+
+   JSON gövde boyutu (`SOIPACK_MAX_JSON_BODY_BYTES`) ve oran sınırlaması (`SOIPACK_RATE_LIMIT_*` değişkenleri) varsayılan olarak hizmet kötüye kullanımına karşı koruma sağlar. Değerler milisaniye ve istek sayısı cinsinden ayarlanabilir.
 
    Kuyruk limiti her kiracı için eşzamanlı olarak kuyruğa alınan veya çalışan işlerin üst sınırını belirler. Varsayılan değer 5'tir; daha yüksek değerler daha yoğun iş yüklerine izin verirken, aynı anda yürütülen import/analiz işlemlerinin CPU ve disk üzerindeki etkilerini de artırır. Limit aşıldığında API `429 QUEUE_LIMIT_EXCEEDED` hatası döner ve ilgili kiracı için yeni işler kuyruğa alınmaz; istemciler mevcut işlerden biri tamamlandıktan sonra yeniden denemelidir.
 5. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
@@ -110,7 +129,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    TOKEN=$(./jwt-olustur.sh) # örnek: kendi betiğiniz veya sağlayıcı SDK'sı
    curl -H "Authorization: Bearer $TOKEN" \
      -H "X-SOIPACK-License: $(base64 -w0 license.key)" \
-     http://localhost:3000/health
+     --cacert secrets/soipack-tls.crt \
+     https://localhost:3443/health
    ```
 
 Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
@@ -121,7 +141,7 @@ Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak 
 
 ```bash
 TOKEN=$(./jwt-olustur.sh)
-BASE_URL=http://localhost:3000
+BASE_URL=https://localhost:3443
 ```
 
 1. Gereken demo dosyalarını içeren bir import isteği gönderin:

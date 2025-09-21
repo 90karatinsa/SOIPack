@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
+import https from 'https';
 import os from 'os';
 import path from 'path';
 import { pipeline as streamPipeline } from 'stream/promises';
@@ -27,6 +28,8 @@ import type { JSONWebKeySet } from 'jose';
 
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+
+import { TLSSocket } from 'tls';
 
 import { HttpError, toHttpError } from './errors';
 import { JobDetails, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
@@ -92,6 +95,191 @@ const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenan
 
 const normalizeScopeList = (scopes?: string[]): string[] =>
   (scopes ?? []).map((scope) => scope.trim()).filter((scope) => scope.length > 0);
+
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024;
+const DEFAULT_JWKS_TIMEOUT_MS = 5000;
+const DEFAULT_JWKS_BACKOFF_MS = 250;
+const DEFAULT_JWKS_MAX_RETRIES = 2;
+const DEFAULT_JWKS_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+const DEFAULT_JWKS_COOLDOWN_MS = 1000;
+const PLAINTEXT_LISTEN_ERROR_MESSAGE =
+  'SOIPack sunucusu yalnızca HTTPS ile başlatılabilir. createHttpsServer kullanın.';
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+class JwksFetchError extends Error {
+  public readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'JwksFetchError';
+    this.cause = cause;
+  }
+}
+
+const findJwksFetchError = (error: unknown): JwksFetchError | undefined => {
+  if (error instanceof JwksFetchError) {
+    return error;
+  }
+  if (error && typeof error === 'object' && 'cause' in error) {
+    const nested = (error as { cause?: unknown }).cause;
+    if (nested) {
+      return findJwksFetchError(nested);
+    }
+  }
+  return undefined;
+};
+
+const KNOWN_TLS_ERROR_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+]);
+
+const KNOWN_TLS_ERROR_MESSAGE_PATTERNS = [
+  'unable to verify the first certificate',
+  'self signed certificate',
+  'certificate has expired',
+  'unable to get local issuer certificate',
+];
+
+interface TlsErrorInfo {
+  code?: string;
+  message: string;
+}
+
+const findTlsError = (error: unknown): TlsErrorInfo | undefined => {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const candidate = error as { code?: unknown; message?: unknown; cause?: unknown };
+  const code = typeof candidate.code === 'string' ? candidate.code : undefined;
+  const message =
+    typeof candidate.message === 'string'
+      ? candidate.message
+      : candidate instanceof Error
+        ? candidate.message
+        : undefined;
+
+  if (code && (code.startsWith('ERR_TLS_') || KNOWN_TLS_ERROR_CODES.has(code))) {
+    return { code, message: message ?? code };
+  }
+
+  if (typeof message === 'string') {
+    const normalized = message.toLowerCase();
+    if (KNOWN_TLS_ERROR_MESSAGE_PATTERNS.some((pattern) => normalized.includes(pattern))) {
+      return { code, message };
+    }
+  }
+
+  if ('cause' in candidate && candidate.cause) {
+    return findTlsError(candidate.cause);
+  }
+
+  return undefined;
+};
+
+const createSlidingWindowRateLimiter = (
+  scope: 'ip' | 'tenant',
+  options: RateLimitWindowConfig,
+): ((key: string) => void) => {
+  const counters = new Map<string, { count: number; resetAt: number }>();
+  return (key: string) => {
+    const now = Date.now();
+    const existing = counters.get(key);
+    if (!existing || existing.resetAt <= now) {
+      counters.set(key, { count: 1, resetAt: now + options.windowMs });
+      return;
+    }
+
+    if (existing.count >= options.max) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+      const details = {
+        scope,
+        retryAfterSeconds,
+        limit: options.max,
+        windowMs: options.windowMs,
+      };
+      if (scope === 'ip') {
+        throw new HttpError(429, 'IP_RATE_LIMIT_EXCEEDED', 'Bu IP adresi için istek limiti aşıldı.', details);
+      }
+      throw new HttpError(429, 'TENANT_RATE_LIMIT_EXCEEDED', 'Kiracı için istek limiti aşıldı.', details);
+    }
+
+    existing.count += 1;
+  };
+};
+
+const createRemoteJwkSetWithBounds = (config: JwtAuthConfig): ReturnType<typeof createRemoteJWKSet> => {
+  if (!config.jwksUri) {
+    throw new Error('jwksUri tanımlanmadan uzak JWKS yapılandırılamaz.');
+  }
+  const jwksUrl = new URL(config.jwksUri);
+  if (jwksUrl.protocol !== 'https:') {
+    throw new Error('jwksUri HTTPS protokolü kullanmalıdır.');
+  }
+
+  const remoteOptions = config.remoteJwks ?? {};
+  const timeoutMs = remoteOptions.timeoutMs ?? DEFAULT_JWKS_TIMEOUT_MS;
+  const maxRetries = remoteOptions.maxRetries ?? DEFAULT_JWKS_MAX_RETRIES;
+  const backoffMs = remoteOptions.backoffMs ?? DEFAULT_JWKS_BACKOFF_MS;
+  const cacheMaxAgeMs = remoteOptions.cacheMaxAgeMs ?? DEFAULT_JWKS_CACHE_MAX_AGE_MS;
+  const cooldownMs = remoteOptions.cooldownMs ?? DEFAULT_JWKS_COOLDOWN_MS;
+
+  const globalFetch = globalThis.fetch?.bind(globalThis);
+  if (!globalFetch) {
+    throw new Error('Küresel fetch API kullanılamıyor.');
+  }
+
+  const boundedFetch: typeof globalFetch = async (input, init) => {
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= maxRetries) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await globalFetch(input, { ...init, signal: controller.signal });
+        clearTimeout(timeout);
+        return response;
+      } catch (error) {
+        clearTimeout(timeout);
+        lastError = error;
+        if (attempt >= maxRetries) {
+          throw new JwksFetchError('JWKS kaynağına ulaşılamadı.', error);
+        }
+        await wait(backoffMs * Math.max(1, attempt + 1));
+      }
+      attempt += 1;
+    }
+
+    throw new JwksFetchError('JWKS kaynağına ulaşılamadı.', lastError);
+  };
+
+  const remote = createRemoteJWKSet(jwksUrl, {
+    cooldownDuration: cooldownMs,
+    cacheMaxAge: cacheMaxAgeMs,
+    timeoutDuration: timeoutMs,
+  });
+
+  return (async (protectedHeader, token) => {
+    const previousFetch = globalThis.fetch;
+    try {
+      (globalThis as typeof globalThis & { fetch: typeof fetch }).fetch = boundedFetch as typeof fetch;
+      return await remote(protectedHeader, token);
+    } catch (error) {
+      const jwksError = findJwksFetchError(error);
+      if (jwksError) {
+        throw jwksError;
+      }
+      throw error;
+    } finally {
+      (globalThis as typeof globalThis & { fetch: typeof fetch }).fetch = previousFetch;
+    }
+  }) as ReturnType<typeof createRemoteJWKSet>;
+};
 
 interface JobLicenseMetadata {
   hash: string;
@@ -608,6 +796,7 @@ export interface JwtAuthConfig {
   jwksUri?: string;
   jwks?: JSONWebKeySet;
   clockToleranceSeconds?: number;
+  remoteJwks?: RemoteJwksConfig;
 }
 
 export interface ServerConfig {
@@ -616,6 +805,7 @@ export interface ServerConfig {
   signingKeyPath: string;
   licensePublicKeyPath: string;
   maxUploadSizeBytes?: number;
+  jsonBodyLimitBytes?: number;
   maxQueuedJobsPerTenant?: number;
   storageProvider?: StorageProvider;
   retention?: RetentionConfig;
@@ -624,7 +814,55 @@ export interface ServerConfig {
   logger?: Logger;
   metricsRegistry?: Registry;
   healthcheckToken?: string;
+  rateLimit?: RateLimitConfig;
+  requireAdminClientCertificate?: boolean;
 }
+
+export interface RemoteJwksConfig {
+  timeoutMs?: number;
+  maxRetries?: number;
+  backoffMs?: number;
+  cacheMaxAgeMs?: number;
+  cooldownMs?: number;
+}
+
+export interface RateLimitWindowConfig {
+  windowMs: number;
+  max: number;
+}
+
+export interface RateLimitConfig {
+  ip?: RateLimitWindowConfig;
+  tenant?: RateLimitWindowConfig;
+}
+
+export interface HttpsListenerConfig {
+  key: string | Buffer;
+  cert: string | Buffer;
+  clientCa?: string | Buffer;
+}
+
+export const createHttpsServer = (app: Express, tls: HttpsListenerConfig): https.Server => {
+  if (!tls.key) {
+    throw new Error('TLS özel anahtar dosyası sağlanmalıdır.');
+  }
+  if (!tls.cert) {
+    throw new Error('TLS sertifika dosyası sağlanmalıdır.');
+  }
+
+  const options: https.ServerOptions = {
+    key: tls.key,
+    cert: tls.cert,
+  };
+
+  if (tls.clientCa) {
+    options.ca = tls.clientCa;
+    options.requestCert = true;
+    options.rejectUnauthorized = false;
+  }
+
+  return https.createServer(options, app);
+};
 
 type RetentionTarget = 'uploads' | 'analyses' | 'reports' | 'packages';
 
@@ -1097,12 +1335,15 @@ const createAsyncHandler =
     }
   };
 
-const createAuthMiddleware = (config: JwtAuthConfig) => {
+const createAuthMiddleware = (
+  config: JwtAuthConfig,
+  options?: { tenantRateLimiter?: (tenantId: string) => void },
+) => {
   const { jwks, jwksUri } = config;
   const keyStore = jwks
     ? createLocalJWKSet(jwks)
     : jwksUri
-      ? createRemoteJWKSet(new URL(jwksUri))
+      ? createRemoteJwkSetWithBounds(config)
       : null;
 
   if (!keyStore) {
@@ -1173,6 +1414,30 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
         });
         payload = result.payload;
       } catch (error) {
+        const jwksError = findJwksFetchError(error);
+        if (jwksError) {
+          const causeMessage = jwksError.cause instanceof Error ? jwksError.cause.message : undefined;
+          throw new HttpError(
+            503,
+            'JWKS_UNAVAILABLE',
+            'Kimlik doğrulama anahtarları şu anda getirilemiyor.',
+            { cause: causeMessage ?? jwksError.message },
+          );
+        }
+
+        const tlsError = findTlsError(error);
+        if (tlsError) {
+          throw new HttpError(
+            503,
+            'JWKS_UNAVAILABLE',
+            'Kimlik doğrulama anahtarları şu anda getirilemiyor.',
+            {
+              cause: tlsError.code ?? tlsError.message,
+              message: tlsError.message,
+            },
+          );
+        }
+
         const cause = error instanceof Error ? error.message : String(error);
         throw new HttpError(401, 'UNAUTHORIZED', 'Geçersiz kimlik doğrulama belirteci.', { cause });
       }
@@ -1195,6 +1460,10 @@ const createAuthMiddleware = (config: JwtAuthConfig) => {
       }
 
       const tenantId = tenantValue;
+
+      if (options?.tenantRateLimiter) {
+        options.tenantRateLimiter(tenantId);
+      }
 
       const userValue = payload[userClaim] ?? payload.sub;
       if (typeof userValue !== 'string' || userValue.trim() === '') {
@@ -1394,11 +1663,35 @@ export const createServer = (config: ServerConfig): Express => {
     },
   });
 
+  const jsonBodyLimit = Math.max(1, config.jsonBodyLimitBytes ?? DEFAULT_JSON_BODY_LIMIT_BYTES);
   const app = express();
-  app.use(express.json());
+  app.listen = (((..._args: Parameters<typeof app.listen>) => {
+    throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);
+  }) as unknown as typeof app.listen);
+
+  const ipRateLimiter = config.rateLimit?.ip
+    ? createSlidingWindowRateLimiter('ip', config.rateLimit.ip)
+    : undefined;
+  if (ipRateLimiter) {
+    app.use((req, _res, next) => {
+      try {
+        const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+        ipRateLimiter(clientIp);
+        next();
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
+
+  app.use(express.json({ limit: jsonBodyLimit }));
+
+  const tenantRateLimiter = config.rateLimit?.tenant
+    ? createSlidingWindowRateLimiter('tenant', config.rateLimit.tenant)
+    : undefined;
 
   const adminScopes = normalizeScopeList(config.auth.adminScopes);
-  const requireAuth = createAuthMiddleware(config.auth);
+  const requireAuth = createAuthMiddleware(config.auth, { tenantRateLimiter });
   const ensureAdminScope = (req: Request): void => {
     const { hasAdminScope } = getAuthContext(req);
     if (adminScopes.length > 0 && !hasAdminScope) {
@@ -1408,6 +1701,21 @@ export const createServer = (config: ServerConfig): Express => {
         'Bu uç nokta yönetici yetkisi gerektirir.',
         { requiredScopes: adminScopes },
       );
+    }
+    if (config.requireAdminClientCertificate) {
+      const socket = req.socket;
+      if (!(socket instanceof TLSSocket) || !socket.authorized) {
+        const reason =
+          socket instanceof TLSSocket
+            ? socket.authorizationError ?? 'TLS_CLIENT_CERT_REQUIRED'
+            : 'NON_TLS_CONNECTION';
+        throw new HttpError(
+          403,
+          'ADMIN_CLIENT_CERT_REQUIRED',
+          'Yönetici işlemleri için geçerli istemci sertifikası gerekiyor.',
+          { reason },
+        );
+      }
     }
   };
   const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
@@ -2344,12 +2652,29 @@ export const createServer = (config: ServerConfig): Express => {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const isPayloadTooLargeError =
+      error !== null &&
+      typeof error === 'object' &&
+      'type' in error &&
+      (error as { type?: unknown }).type === 'entity.too.large';
+
     const normalized =
       error instanceof HttpError
         ? error
-        : new HttpError(500, 'UNEXPECTED_ERROR', 'Beklenmeyen bir sunucu hatası oluştu.', {
-            cause: error instanceof Error ? error.message : String(error),
-          });
+        : isPayloadTooLargeError
+          ? new HttpError(413, 'PAYLOAD_TOO_LARGE', 'JSON gövde boyutu sınırını aştı.', {
+              limit: jsonBodyLimit,
+            })
+          : new HttpError(500, 'UNEXPECTED_ERROR', 'Beklenmeyen bir sunucu hatası oluştu.', {
+              cause: error instanceof Error ? error.message : String(error),
+            });
+
+    if (normalized.statusCode === 429 && normalized.details && typeof normalized.details === 'object') {
+      const retryAfterSeconds = (normalized.details as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+      if (typeof retryAfterSeconds === 'number' && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+        res.set('Retry-After', `${Math.ceil(retryAfterSeconds)}`);
+      }
+    }
     res.status(normalized.statusCode).json({
       error: {
         code: normalized.code,

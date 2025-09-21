@@ -3,7 +3,7 @@ info:
   title: SOIPack REST API
   version: 0.1.0
   description: |
-    SOIPack çalışma akışlarını HTTP üzerinden tetikleyen REST arayüzü.
+    SOIPack çalışma akışlarını HTTPS üzerinden tetikleyen REST arayüzü. Sunucu yalnızca TLS sertifikası ve anahtarı sağlandığında başlatılır; düz HTTP dinleyicileri desteklenmez. Uygulama IP ve kiracı bazında oran sınırlaması uygular ve JSON gövdeleri için maksimum boyut denetimi yapar.
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT

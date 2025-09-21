@@ -3,12 +3,18 @@ import path from 'path';
 import process from 'process';
 
 import dotenv from 'dotenv';
+import type { JSONWebKeySet } from 'jose';
 
-import { JwtAuthConfig, RetentionConfig, createServer } from './index';
+import { JwtAuthConfig, RateLimitConfig, RetentionConfig, createHttpsServer, createServer } from './index';
 import { createCommandScanner } from './scanner';
 import type { FileScanner } from './scanner';
 
 dotenv.config();
+
+const DEFAULT_IP_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_IP_RATE_LIMIT_MAX = 300;
+const DEFAULT_TENANT_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_TENANT_RATE_LIMIT_MAX = 150;
 
 export const resolveSigningKeyPath = async (): Promise<string> => {
   const signingKeyPathSource = process.env.SOIPACK_SIGNING_KEY_PATH;
@@ -44,9 +50,29 @@ const parseRetentionDays = (value: string | undefined, label: string): number | 
   return parsed * 24 * 60 * 60 * 1000;
 };
 
+const parsePositiveInteger = (value: string, label: string): number => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    // eslint-disable-next-line no-console
+    console.error(`${label} pozitif bir tam sayı olmalıdır.`);
+    process.exit(1);
+  }
+  return parsed;
+};
+
+const parseNonNegativeInteger = (value: string, label: string): number => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // eslint-disable-next-line no-console
+    console.error(`${label} negatif olmayan bir tam sayı olmalıdır.`);
+    process.exit(1);
+  }
+  return parsed;
+};
+
 const DEFAULT_MAX_QUEUED_JOBS_PER_TENANT = 5;
 
-const start = async (): Promise<void> => {
+export const start = async (): Promise<void> => {
   const authIssuer = process.env.SOIPACK_AUTH_ISSUER;
   if (!authIssuer) {
     // eslint-disable-next-line no-console
@@ -62,10 +88,46 @@ const start = async (): Promise<void> => {
   }
 
   const authJwksUri = process.env.SOIPACK_AUTH_JWKS_URI;
-  if (!authJwksUri) {
+  const authJwksPath = process.env.SOIPACK_AUTH_JWKS_PATH;
+  if (authJwksUri && authJwksPath) {
     // eslint-disable-next-line no-console
-    console.error('SOIPACK_AUTH_JWKS_URI ortam değişkeni tanımlanmalıdır.');
+    console.error('SOIPACK_AUTH_JWKS_URI ve SOIPACK_AUTH_JWKS_PATH aynı anda tanımlanamaz.');
     process.exit(1);
+  }
+  if (!authJwksUri && !authJwksPath) {
+    // eslint-disable-next-line no-console
+    console.error('SOIPACK_AUTH_JWKS_URI veya SOIPACK_AUTH_JWKS_PATH ortam değişkenlerinden biri tanımlanmalıdır.');
+    process.exit(1);
+  }
+
+  let authJwksFromFile: JSONWebKeySet | undefined;
+  if (authJwksPath) {
+    const resolved = path.resolve(authJwksPath);
+    try {
+      await fs.promises.access(resolved, fs.constants.R_OK);
+    } catch {
+      // eslint-disable-next-line no-console
+      console.error(`SOIPACK_AUTH_JWKS_PATH ile belirtilen dosyaya erişilemiyor: ${resolved}`);
+      process.exit(1);
+    }
+    try {
+      const raw = await fs.promises.readFile(resolved, 'utf8');
+      authJwksFromFile = JSON.parse(raw) as JSONWebKeySet;
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(`SOIPACK_AUTH_JWKS_PATH altındaki JWKS dosyası okunamadı: ${
+        error instanceof Error ? error.message : String(error)
+      }`);
+      process.exit(1);
+    }
+  }
+
+  if (authJwksUri) {
+    if (!authJwksUri.startsWith('https://')) {
+      // eslint-disable-next-line no-console
+      console.error('SOIPACK_AUTH_JWKS_URI yalnızca HTTPS protokolüyle kullanılabilir.');
+      process.exit(1);
+    }
   }
 
   const authTenantClaim = process.env.SOIPACK_AUTH_TENANT_CLAIM ?? 'tenant';
@@ -96,8 +158,55 @@ const start = async (): Promise<void> => {
     issuer: authIssuer,
     audience: authAudience,
     tenantClaim: authTenantClaim,
-    jwksUri: authJwksUri,
   };
+
+  if (authJwksUri) {
+    authConfig.jwksUri = authJwksUri;
+  }
+  if (authJwksFromFile) {
+    authConfig.jwks = authJwksFromFile;
+  }
+
+  const jwksTimeoutSource = process.env.SOIPACK_AUTH_JWKS_TIMEOUT_MS;
+  const jwksMaxRetriesSource = process.env.SOIPACK_AUTH_JWKS_MAX_RETRIES;
+  const jwksBackoffSource = process.env.SOIPACK_AUTH_JWKS_BACKOFF_MS;
+  const jwksCacheSource = process.env.SOIPACK_AUTH_JWKS_CACHE_MS;
+  const jwksCooldownSource = process.env.SOIPACK_AUTH_JWKS_COOLDOWN_MS;
+
+  const remoteJwksConfig: NonNullable<JwtAuthConfig['remoteJwks']> = {};
+  if (jwksTimeoutSource) {
+    remoteJwksConfig.timeoutMs = parsePositiveInteger(
+      jwksTimeoutSource,
+      'SOIPACK_AUTH_JWKS_TIMEOUT_MS',
+    );
+  }
+  if (jwksMaxRetriesSource) {
+    remoteJwksConfig.maxRetries = parseNonNegativeInteger(
+      jwksMaxRetriesSource,
+      'SOIPACK_AUTH_JWKS_MAX_RETRIES',
+    );
+  }
+  if (jwksBackoffSource) {
+    remoteJwksConfig.backoffMs = parseNonNegativeInteger(
+      jwksBackoffSource,
+      'SOIPACK_AUTH_JWKS_BACKOFF_MS',
+    );
+  }
+  if (jwksCacheSource) {
+    remoteJwksConfig.cacheMaxAgeMs = parseNonNegativeInteger(
+      jwksCacheSource,
+      'SOIPACK_AUTH_JWKS_CACHE_MS',
+    );
+  }
+  if (jwksCooldownSource) {
+    remoteJwksConfig.cooldownMs = parseNonNegativeInteger(
+      jwksCooldownSource,
+      'SOIPACK_AUTH_JWKS_COOLDOWN_MS',
+    );
+  }
+  if (Object.keys(remoteJwksConfig).length > 0) {
+    authConfig.remoteJwks = remoteJwksConfig;
+  }
 
   if (authUserClaim) {
     authConfig.userClaim = authUserClaim;
@@ -136,6 +245,55 @@ const start = async (): Promise<void> => {
     // eslint-disable-next-line no-console
     console.error('Geçerli bir PORT değeri belirtilmelidir.');
     process.exit(1);
+  }
+
+  const tlsKeyPathSource = process.env.SOIPACK_TLS_KEY_PATH;
+  if (!tlsKeyPathSource) {
+    // eslint-disable-next-line no-console
+    console.error('SOIPACK_TLS_KEY_PATH ortam değişkeni tanımlanmalıdır.');
+    process.exit(1);
+  }
+  const tlsKeyPath = path.resolve(tlsKeyPathSource);
+  try {
+    await fs.promises.access(tlsKeyPath, fs.constants.R_OK);
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error(`SOIPACK_TLS_KEY_PATH ile belirtilen dosyaya erişilemiyor: ${tlsKeyPath}`);
+    process.exit(1);
+  }
+
+  const tlsCertPathSource = process.env.SOIPACK_TLS_CERT_PATH;
+  if (!tlsCertPathSource) {
+    // eslint-disable-next-line no-console
+    console.error('SOIPACK_TLS_CERT_PATH ortam değişkeni tanımlanmalıdır.');
+    process.exit(1);
+  }
+  const tlsCertPath = path.resolve(tlsCertPathSource);
+  try {
+    await fs.promises.access(tlsCertPath, fs.constants.R_OK);
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error(`SOIPACK_TLS_CERT_PATH ile belirtilen dosyaya erişilemiyor: ${tlsCertPath}`);
+    process.exit(1);
+  }
+
+  const tlsKey = await fs.promises.readFile(tlsKeyPath, 'utf8');
+  const tlsCert = await fs.promises.readFile(tlsCertPath, 'utf8');
+
+  const tlsClientCaPathSource = process.env.SOIPACK_TLS_CLIENT_CA_PATH;
+  let tlsClientCa: string | undefined;
+  let requireAdminClientCertificate = false;
+  if (tlsClientCaPathSource) {
+    const tlsClientCaPath = path.resolve(tlsClientCaPathSource);
+    try {
+      await fs.promises.access(tlsClientCaPath, fs.constants.R_OK);
+    } catch {
+      // eslint-disable-next-line no-console
+      console.error(`SOIPACK_TLS_CLIENT_CA_PATH ile belirtilen dosyaya erişilemiyor: ${tlsClientCaPath}`);
+      process.exit(1);
+    }
+    tlsClientCa = await fs.promises.readFile(tlsClientCaPath, 'utf8');
+    requireAdminClientCertificate = true;
   }
 
   const healthcheckToken = process.env.SOIPACK_HEALTHCHECK_TOKEN;
@@ -184,6 +342,57 @@ const start = async (): Promise<void> => {
   );
   if (packagesDays !== undefined) {
     retention.packages = { maxAgeMs: packagesDays };
+  }
+
+  const jsonBodyLimitSource = process.env.SOIPACK_MAX_JSON_BODY_BYTES;
+  let jsonBodyLimitBytes: number | undefined;
+  if (jsonBodyLimitSource) {
+    jsonBodyLimitBytes = parsePositiveInteger(jsonBodyLimitSource, 'SOIPACK_MAX_JSON_BODY_BYTES');
+  }
+
+  const rateLimit: RateLimitConfig = {
+    ip: {
+      windowMs: DEFAULT_IP_RATE_LIMIT_WINDOW_MS,
+      max: DEFAULT_IP_RATE_LIMIT_MAX,
+    },
+    tenant: {
+      windowMs: DEFAULT_TENANT_RATE_LIMIT_WINDOW_MS,
+      max: DEFAULT_TENANT_RATE_LIMIT_MAX,
+    },
+  };
+
+  const rateLimitIpWindowSource = process.env.SOIPACK_RATE_LIMIT_IP_WINDOW_MS;
+  const rateLimitIpMaxSource = process.env.SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS;
+  if (rateLimitIpWindowSource || rateLimitIpMaxSource) {
+    if (!rateLimitIpWindowSource || !rateLimitIpMaxSource) {
+      // eslint-disable-next-line no-console
+      console.error('IP oran limiti için hem SOIPACK_RATE_LIMIT_IP_WINDOW_MS hem de SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS tanımlanmalıdır.');
+      process.exit(1);
+    }
+    rateLimit.ip = {
+      windowMs: parsePositiveInteger(rateLimitIpWindowSource, 'SOIPACK_RATE_LIMIT_IP_WINDOW_MS'),
+      max: parsePositiveInteger(rateLimitIpMaxSource, 'SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS'),
+    };
+  }
+
+  const rateLimitTenantWindowSource = process.env.SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS;
+  const rateLimitTenantMaxSource = process.env.SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS;
+  if (rateLimitTenantWindowSource || rateLimitTenantMaxSource) {
+    if (!rateLimitTenantWindowSource || !rateLimitTenantMaxSource) {
+      // eslint-disable-next-line no-console
+      console.error('Tenant oran limiti için hem SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS hem de SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS tanımlanmalıdır.');
+      process.exit(1);
+    }
+    rateLimit.tenant = {
+      windowMs: parsePositiveInteger(
+        rateLimitTenantWindowSource,
+        'SOIPACK_RATE_LIMIT_TENANT_WINDOW_MS',
+      ),
+      max: parsePositiveInteger(
+        rateLimitTenantMaxSource,
+        'SOIPACK_RATE_LIMIT_TENANT_MAX_REQUESTS',
+      ),
+    };
   }
 
   let scanner: FileScanner | undefined;
@@ -236,11 +445,20 @@ const start = async (): Promise<void> => {
     retention,
     scanner,
     healthcheckToken,
+    jsonBodyLimitBytes,
+    rateLimit,
+    requireAdminClientCertificate,
   });
 
-  app.listen(port, () => {
+  const httpsServer = createHttpsServer(app, {
+    key: tlsKey,
+    cert: tlsCert,
+    clientCa: tlsClientCa,
+  });
+
+  httpsServer.listen(port, () => {
     // eslint-disable-next-line no-console
-    console.log(`SOIPack API ${port} portunda çalışıyor.`);
+    console.log(`SOIPack API HTTPS olarak ${port} portunda dinliyor.`);
   });
 };
 

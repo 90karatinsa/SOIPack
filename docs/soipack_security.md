@@ -24,3 +24,10 @@ SOIPack, gereksinim izlenebilirliği sonuçlarını paketlerken manifest imzası
 - **İz kayıtları**: `manifest.json` içindeki tarih damgası (`generatedAt`) sabitlenmiş demo zaman damgasıyla (`SOIPACK_DEMO_TIMESTAMP`) veya gerçek zamanlı saatle üretilir. Air-gap ortamında saat senkronizasyonu güvenilir NTP yerine kontrollü manuel prosedürlerle yapılmalıdır.【F:packages/cli/src/index.ts†L48-L115】
 
 Bu prosedürler, demo çıktılarındaki raporların ve manifestlerin denetlenebilirliğini korurken, üretim süreçlerinde uyarlanabilir güvenlik kontrolleri sağlar.
+
+## REST API Sertleştirmeleri
+
+- **HTTPS zorunluluğu**: @soipack/server yalnızca TLS sertifikası (`SOIPACK_TLS_CERT_PATH`) ve özel anahtarı (`SOIPACK_TLS_KEY_PATH`) sağlandığında başlatılır; düz HTTP dinleyicileri reddedilir. Yönetici uçları (`/v1/admin/cleanup` ve `/metrics`) için istemci sertifikası gereksinimi `SOIPACK_TLS_CLIENT_CA_PATH` ile etkinleştirilebilir ve yalnızca güvenilir istemci sertifikaları kabul edilir.
+- **JWKS güvenliği**: JSON Web Key Set uç noktaları yalnızca HTTPS üzerinden çözümlenir; air-gap ortamlarında JWKS içeriği dosya sistemi üzerinden (`SOIPACK_AUTH_JWKS_PATH`) sağlanabilir. Uzak JWKS çağrıları zaman aşımı, tekrar deneme ve önbellekleme limitleriyle sarılarak yanıt vermeyen sağlayıcılar `503 JWKS_UNAVAILABLE` hatasıyla raporlanır.
+- **İstek sınırlaması**: Uygulama katmanında kişi başı (`SOIPACK_RATE_LIMIT_IP_*`) ve kiracı başına (`SOIPACK_RATE_LIMIT_TENANT_*`) oran sınırlaması uygulanır. Limit aşılırsa `429` yanıtı döner ve `Retry-After` başlığı kullanılır.
+- **Gövde boyutu**: JSON istekleri `SOIPACK_MAX_JSON_BODY_BYTES` sınırı ile korunur; sınır aşılırsa API `413 PAYLOAD_TOO_LARGE` hatası üretir ve büyük gövde analizleri başlamadan engellenir.
