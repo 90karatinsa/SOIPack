@@ -90,6 +90,8 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
 
    `SOIPACK_SIGNING_KEY_PATH` ve `SOIPACK_LICENSE_PUBLIC_KEY_PATH` değerleri, üçüncü adımda oluşturduğunuz `/run/secrets` bağlamasındaki `soipack-signing.pem` ve `soipack-license.pub` dosyalarına işaret eder. `SOIPACK_HEALTHCHECK_TOKEN` boş bırakılamaz; konteynerdeki sağlık kontrolü komutu aynı bearer token'ı kullanır.
 
+   Sunucu başlatma betiği, `SOIPACK_SIGNING_KEY_PATH` tarafından işaret edilen PEM dosyasının okunabilirliğini baştan doğrular. Dosya yanlış bağlanmışsa veya izinler sebebiyle erişilemiyorsa hizmet `SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor` hatasıyla hemen durur.
+
    Tüm HTTP istekleri için lisans dosyasını base64'e çevirerek `X-SOIPACK-License` başlığına ekleyin. Örneklerde kullanılan `license.key`, lisans sağlayıcısından aldığınız JSON dosyasının ham halidir.
 5. Kalıcı depolama için `data/` dizinini kullanarak servisi başlatın:
    ```bash
