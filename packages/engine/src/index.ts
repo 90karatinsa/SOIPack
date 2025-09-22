@@ -16,6 +16,8 @@ import {
 
 import { evaluateQualityFindings, QualityFinding } from './quality';
 
+export * from './coverage';
+
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
 export interface CodePath {

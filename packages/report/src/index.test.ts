@@ -4,11 +4,13 @@ import path from 'node:path';
 
 import type { BuildInfo } from '@soipack/adapters';
 import { createRequirement, TestCase } from '@soipack/core';
+import htmlValidator from 'html-validator';
 
-import { createReportFixture } from './__fixtures__/snapshot';
+import { createReportFixture, coverageSummaryFixture } from './__fixtures__/snapshot';
 
 import {
   HtmlReportOptions,
+  renderComplianceCoverageReport,
   renderComplianceMatrix,
   renderGaps,
   renderHtmlReport,
@@ -17,9 +19,15 @@ import {
   printToPDF,
 } from './index';
 
+jest.mock('html-validator', () => ({
+  __esModule: true,
+  default: jest.fn(async () => ({ messages: [] })),
+}));
+
 type PlaywrightModule = typeof import('playwright');
 
 describe('@soipack/report', () => {
+  const mockedValidator = htmlValidator as jest.MockedFunction<typeof htmlValidator>;
   const goldenDir = path.resolve(__dirname, '__fixtures__', 'goldens');
   const sanitizeHtml = (value: string): string => value.replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ').trim();
   const hashHtml = (value: string): string => createHash('sha256').update(sanitizeHtml(value)).digest('hex');
@@ -33,6 +41,10 @@ describe('@soipack/report', () => {
     dirty: false,
     remoteOrigins: ['https://example.com/repo.git'],
   };
+
+  beforeEach(() => {
+    mockedValidator.mockClear();
+  });
 
   it('renders compliance matrix with JSON payload', () => {
     const fixture = createReportFixture();
@@ -57,6 +69,33 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Kanıt Manifest ID');
     expect(result.html).toContain('Commit:');
     expect(result.html).toContain('Kalite Bulguları');
+  });
+
+  it('renders combined compliance and coverage report with valid HTML', async () => {
+    const fixture = createReportFixture();
+    const coverage = coverageSummaryFixture();
+    const coverageWarnings = ['MC/DC kapsam verisi eksik: src/legacy/logger.ts'];
+
+    const result = renderComplianceCoverageReport(fixture.snapshot, coverage, {
+      manifestId: fixture.manifestId,
+      objectivesMetadata: fixture.objectives,
+      title: 'Uyum ve Kapsam Özeti',
+      git: gitFixture,
+      coverageWarnings,
+    });
+
+    expect(result.coverageWarnings).toEqual(coverageWarnings);
+    expect(result.coverage).toEqual(coverage);
+    expect(result.html).toContain('Kapsam Özeti');
+    expect(result.html).toContain('MC/DC');
+    expect(result.json.coverage).toEqual(coverage);
+    expect(result.json.coverageWarnings).toEqual(coverageWarnings);
+
+    mockedValidator.mockResolvedValueOnce({ messages: [] });
+    const validation = await htmlValidator({ data: result.html, format: 'json' });
+    const errors = (validation.messages ?? []).filter((message) => message.type === 'error');
+    expect(mockedValidator).toHaveBeenCalledWith(expect.objectContaining({ format: 'json' }));
+    expect(errors).toHaveLength(0);
   });
 
   it('renders trace matrix with trace information', () => {
@@ -88,15 +127,29 @@ describe('@soipack/report', () => {
     expect(html).toContain('Boşluk');
   });
 
-  it('prints PDF using Playwright with metadata in header and footer', async () => {
+  it('prints combined report PDF using Playwright with coverage warnings listed', async () => {
     const pdfBuffer = Buffer.from('pdf');
-    const html = '<html><body><main>report</main></body></html>';
+    const fixture = createReportFixture();
+    const coverage = coverageSummaryFixture();
+    const warnings = [
+      'MC/DC kapsam verisi eksik: PDF-WARN-1',
+      'Karar kapsamı verisi bulunamadı: PDF-WARN-2',
+    ];
+    const report = renderComplianceCoverageReport(fixture.snapshot, coverage, {
+      manifestId: fixture.manifestId,
+      objectivesMetadata: fixture.objectives,
+      title: 'Uyum ve Kapsam Raporu',
+      coverageWarnings: warnings,
+      git: gitFixture,
+    });
     const actions: string[] = [];
 
     const pageStub = {
       async setContent(content: string) {
         actions.push('setContent');
-        expect(content).toBe(html);
+        expect(content).toContain('<h1>Uyum ve Kapsam Raporu</h1>');
+        expect(content).toContain('Rapor Tarihi: 2024-02-01 12:00 UTC');
+        expect(content).toContain('<li class="muted">MC/DC kapsam verisi eksik: PDF-WARN-1</li>');
       },
       async pdf(options: {
         format: string;
@@ -108,7 +161,7 @@ describe('@soipack/report', () => {
         expect(options.format).toBe('A4');
         expect(options.displayHeaderFooter).toBe(true);
         expect(options.headerTemplate).toContain('Sürüm 9.9.9');
-        expect(options.footerTemplate).toContain('MANIFEST-001');
+        expect(options.footerTemplate).toContain(fixture.manifestId);
         return pdfBuffer;
       },
       async close() {
@@ -135,12 +188,13 @@ describe('@soipack/report', () => {
       },
     } as unknown as PlaywrightModule;
 
+    mockedValidator.mockResolvedValueOnce({ messages: [] });
     await expect(
-      printToPDF(html, {
+      printToPDF(report.html, {
         playwright: playwrightStub,
         version: '9.9.9',
-        manifestId: 'MANIFEST-001',
-        generatedAt: '2024-02-01T12:00:00Z',
+        manifestId: fixture.manifestId,
+        generatedAt: fixture.snapshot.generatedAt,
       }),
     ).resolves.toBe(pdfBuffer);
 
