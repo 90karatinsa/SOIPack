@@ -1,3 +1,9 @@
+import type {
+  CertificationLevel,
+  Objective,
+  ObjectiveArtifactType,
+} from '@soipack/core';
+import type { ComplianceSnapshot } from '@soipack/engine';
 import {
   AlignmentType,
   Document,
@@ -12,18 +18,12 @@ import {
 } from 'docx';
 import nunjucks from 'nunjucks';
 
-type ParagraphAlignment = (typeof AlignmentType)[keyof typeof AlignmentType];
-
-import type {
-  CertificationLevel,
-  Objective,
-  ObjectiveArtifactType,
-} from '@soipack/core';
-import type { ComplianceSnapshot } from '@soipack/engine';
-
 import packageInfo from '../../package.json';
+
 import { basePlanTemplate, planTemplateDefinitions } from './templates';
 import type { PlanTemplateDefinition, PlanTemplateId } from './types';
+
+type ParagraphAlignment = (typeof AlignmentType)[keyof typeof AlignmentType];
 
 const templateEnv = new nunjucks.Environment(undefined, {
   autoescape: true,

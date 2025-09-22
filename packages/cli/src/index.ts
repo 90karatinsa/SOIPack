@@ -26,7 +26,6 @@ import {
   type JiraRequirement,
   type JenkinsClientOptions,
   type PolarionClientOptions,
-  type RemoteBuildRecord,
   type RemoteRequirementRecord,
   type RemoteTestRecord,
   type ReqIFRequirement,
