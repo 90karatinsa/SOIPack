@@ -1,10 +1,18 @@
 import {
   CoverageMetric,
-  CoverageSummary,
+  CoverageReport,
   FileCoverageSummary,
   TestResult,
+  CoverageSummary as StructuralCoverageSummary,
 } from '@soipack/adapters';
-import { Evidence, Objective, ObjectiveArtifactType, Requirement, TraceLink } from '@soipack/core';
+import {
+  CertificationLevel,
+  Evidence,
+  Objective,
+  ObjectiveArtifactType,
+  Requirement,
+  TraceLink,
+} from '@soipack/core';
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
@@ -32,11 +40,13 @@ export interface ImportBundle {
   requirements: Requirement[];
   objectives: Objective[];
   testResults: TestResult[];
-  coverage?: CoverageSummary;
+  coverage?: CoverageReport;
+  structuralCoverage?: StructuralCoverageSummary;
   evidenceIndex: EvidenceIndex;
   traceLinks?: TraceLink[];
   testToCodeMap?: Record<string, string[]>;
   generatedAt?: string;
+  targetLevel?: CertificationLevel;
 }
 
 interface InternalNodeBase {
@@ -181,7 +191,7 @@ export class TraceEngine {
     return 'partial';
   }
 
-  private indexCoverage(summary?: CoverageSummary): void {
+  private indexCoverage(summary?: CoverageReport): void {
     if (!summary) {
       return;
     }
@@ -456,11 +466,24 @@ export interface ObjectiveCoverage {
   missingArtifacts: ObjectiveArtifactType[];
 }
 
+const coverageArtifactMetrics: Partial<Record<ObjectiveArtifactType, 'stmt' | 'dec' | 'mcdc'>> = {
+  coverage_stmt: 'stmt',
+  coverage_dec: 'dec',
+  coverage_mcdc: 'mcdc',
+};
+
 export class ObjectiveMapper {
+  private readonly structuralCoverage?: StructuralCoverageSummary;
+  private readonly coverageTotals: Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>;
+
   constructor(
     private readonly objectives: Objective[],
     private readonly evidenceIndex: EvidenceIndex,
-  ) {}
+    options: { structuralCoverage?: StructuralCoverageSummary; targetLevel?: CertificationLevel } = {},
+  ) {
+    this.structuralCoverage = options.structuralCoverage;
+    this.coverageTotals = this.computeCoverageTotals(this.structuralCoverage);
+  }
 
   public mapObjectives(): ObjectiveCoverage[] {
     return this.objectives.map((objective) => this.evaluateObjective(objective));
@@ -470,9 +493,29 @@ export class ObjectiveMapper {
     const satisfiedArtifacts: ObjectiveArtifactType[] = [];
     const missingArtifacts: ObjectiveArtifactType[] = [];
     const evidenceRefs: string[] = [];
+    let hasPartialCoverage = false;
 
     objective.artifacts.forEach((artifactType) => {
       const evidenceItems = this.evidenceIndex[artifactType] ?? [];
+      if (coverageArtifactMetrics[artifactType]) {
+        const coverageStatus = this.evaluateCoverageArtifact(artifactType);
+        if (evidenceItems.length === 0) {
+          missingArtifacts.push(artifactType);
+        } else if (coverageStatus === 'covered') {
+          satisfiedArtifacts.push(artifactType);
+        } else if (coverageStatus === 'partial') {
+          satisfiedArtifacts.push(artifactType);
+          hasPartialCoverage = true;
+          missingArtifacts.push(artifactType);
+        } else {
+          missingArtifacts.push(artifactType);
+        }
+        evidenceItems.forEach((evidence) => {
+          evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
+        });
+        return;
+      }
+
       if (evidenceItems.length > 0) {
         satisfiedArtifacts.push(artifactType);
         evidenceItems.forEach((evidence) => {
@@ -485,7 +528,7 @@ export class ObjectiveMapper {
 
     let status: ObjectiveCoverageStatus;
     if (missingArtifacts.length === 0) {
-      status = 'covered';
+      status = hasPartialCoverage ? 'partial' : 'covered';
     } else if (satisfiedArtifacts.length === 0) {
       status = 'missing';
     } else {
@@ -499,6 +542,50 @@ export class ObjectiveMapper {
       satisfiedArtifacts,
       missingArtifacts,
     };
+  }
+
+  private computeCoverageTotals(
+    summary?: StructuralCoverageSummary,
+  ): Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }> {
+    const totals = {
+      stmt: { covered: 0, total: 0 },
+      dec: { covered: 0, total: 0 },
+      mcdc: { covered: 0, total: 0 },
+    };
+
+    if (!summary) {
+      return totals;
+    }
+
+    summary.files.forEach((file) => {
+      totals.stmt.covered += file.stmt.covered;
+      totals.stmt.total += file.stmt.total;
+      if (file.dec) {
+        totals.dec.covered += file.dec.covered;
+        totals.dec.total += file.dec.total;
+      }
+      if (file.mcdc) {
+        totals.mcdc.covered += file.mcdc.covered;
+        totals.mcdc.total += file.mcdc.total;
+      }
+    });
+
+    return totals;
+  }
+
+  private evaluateCoverageArtifact(artifact: ObjectiveArtifactType): 'missing' | 'partial' | 'covered' {
+    const metric = coverageArtifactMetrics[artifact];
+    if (!metric) {
+      return 'missing';
+    }
+    const totals = this.coverageTotals[metric];
+    if (!totals || totals.total === 0) {
+      return 'missing';
+    }
+    if (totals.covered >= totals.total) {
+      return 'covered';
+    }
+    return 'partial';
   }
 
   private createEvidenceRef(type: ObjectiveArtifactType, evidence: Evidence): string {
@@ -647,7 +734,10 @@ const summarizeTests = (tests: TestResult[]): TestStatistics => {
 
 export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnapshot => {
   const engine = new TraceEngine(bundle);
-  const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex);
+  const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex, {
+    structuralCoverage: bundle.structuralCoverage,
+    targetLevel: bundle.targetLevel,
+  });
   const objectiveCoverage = mapper.mapObjectives();
   const traceGraph = engine.getGraph();
   const requirementCoverage = engine.getRequirementCoverage();

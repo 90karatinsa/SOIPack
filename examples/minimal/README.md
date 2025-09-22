@@ -20,3 +20,20 @@ npm run demo -- --config examples/minimal/soipack.levelA.config.yaml
 
 The generated reports in `dist/level-*/reports` will highlight which Annex A
 objectives are covered, partially satisfied, or still missing evidence.
+
+## Static Analysis Fixtures
+
+The minimal workspace now bundles example outputs for the Polyspace, LDRA and
+VectorCAST adapters:
+
+- `polyspace/report.json` – static analysis findings with justification
+  statuses.
+- `ldra/tbvision.json` – rule violations plus statement coverage extracted from
+  LDRA unit test runs.
+- `vectorcast/coverage.json` – decision and MC/DC coverage with VectorCAST test
+  observations.
+
+When you run the Level A/B/C scenarios the resulting `workspace.json` includes
+these findings under the `findings` array and structural coverage metrics under
+`structuralCoverage`. The `EXPECTED/target_comparison.json` file captures how
+coverage objectives evaluate across levels for the demo data set.

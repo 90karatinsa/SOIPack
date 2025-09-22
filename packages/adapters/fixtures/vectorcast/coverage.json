@@ -1,0 +1,34 @@
+{
+  "project": "drv_ctrl",
+  "files": [
+    {
+      "path": "src/foo.c",
+      "stmt": { "covered": 60, "total": 60 },
+      "dec": { "covered": 30, "total": 30 },
+      "mcdc": { "covered": 25, "total": 25 }
+    },
+    {
+      "path": "src/bar.c",
+      "stmt": { "covered": 55, "total": 60 },
+      "dec": { "covered": 27, "total": 30 }
+    }
+  ],
+  "findings": [
+    {
+      "id": "V-001",
+      "file": "src/foo.c",
+      "func": "foo",
+      "line": 5,
+      "sev": "info",
+      "msg": "naming"
+    },
+    {
+      "id": "V-002",
+      "file": "src/bar.c",
+      "func": "bar",
+      "line": 77,
+      "sev": "warn",
+      "msg": "boundary not exercised"
+    }
+  ]
+}

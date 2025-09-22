@@ -49,7 +49,7 @@ export interface FileCoverageSummary {
   functions?: CoverageMetric;
 }
 
-export interface CoverageSummary {
+export interface CoverageReport {
   totals: {
     statements: CoverageMetric;
     branches?: CoverageMetric;
@@ -68,4 +68,48 @@ export interface BuildInfo {
   tags: string[];
   dirty: boolean;
   remoteOrigins: string[];
+}
+
+export type EvidenceKind =
+  | 'plan'
+  | 'standard'
+  | 'review'
+  | 'analysis'
+  | 'test'
+  | 'coverage_stmt'
+  | 'coverage_dec'
+  | 'coverage_mcdc'
+  | 'trace'
+  | 'cm_record'
+  | 'qa_record'
+  | 'problem_report'
+  | 'conformity';
+
+export interface Finding {
+  tool: 'polyspace' | 'ldra' | 'vectorcast';
+  id: string;
+  file?: string;
+  func?: string;
+  line?: number;
+  severity?: 'info' | 'warn' | 'error';
+  classification?: string;
+  message: string;
+  status?: 'open' | 'justified' | 'closed' | 'proved' | 'unproved';
+  objectiveLinks?: string[];
+}
+
+export interface CoverageSummary {
+  tool: 'vectorcast' | 'ldra';
+  files: Array<{
+    path: string;
+    stmt: { covered: number; total: number };
+    dec?: { covered: number; total: number };
+    mcdc?: { covered: number; total: number };
+  }>;
+  objectiveLinks?: string[];
+}
+
+export interface ImportedBundle {
+  findings?: Finding[];
+  coverage?: CoverageSummary;
 }

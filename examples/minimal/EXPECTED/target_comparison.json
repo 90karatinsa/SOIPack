@@ -1,0 +1,14 @@
+{
+  "levelA": {
+    "A-5-08": "covered",
+    "A-5-09": "partial",
+    "A-5-10": "partial"
+  },
+  "levelB": {
+    "A-5-08": "covered",
+    "A-5-09": "partial"
+  },
+  "levelC": {
+    "A-5-08": "covered"
+  }
+}

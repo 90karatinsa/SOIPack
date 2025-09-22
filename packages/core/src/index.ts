@@ -118,6 +118,9 @@ export const evidenceSources = [
   'lcov',
   'cobertura',
   'git',
+  'polyspace',
+  'ldra',
+  'vectorcast',
   'staticAnalysis',
   'other',
 ] as const;

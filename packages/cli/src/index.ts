@@ -14,11 +14,16 @@ import {
   importJUnitXml,
   importLcov,
   importReqIF,
-  BuildInfo,
-  CoverageSummary,
-  JiraRequirement,
-  ReqIFRequirement,
-  TestResult,
+  fromLDRA,
+  fromPolyspace,
+  fromVectorCAST,
+  type BuildInfo,
+  type CoverageReport,
+  type CoverageSummary as StructuralCoverageSummary,
+  type Finding,
+  type JiraRequirement,
+  type ReqIFRequirement,
+  type TestResult,
 } from '@soipack/adapters';
 import {
   CertificationLevel,
@@ -81,6 +86,9 @@ interface ImportPaths {
   git?: string;
   traceLinksCsv?: string;
   traceLinksJson?: string;
+  polyspace?: string;
+  ldra?: string;
+  vectorcast?: string;
 }
 
 export interface ImportOptions extends ImportPaths {
@@ -94,11 +102,13 @@ export interface ImportOptions extends ImportPaths {
 export interface ImportWorkspace {
   requirements: Requirement[];
   testResults: TestResult[];
-  coverage?: CoverageSummary;
+  coverage?: CoverageReport;
+  structuralCoverage?: StructuralCoverageSummary;
   traceLinks: TraceLink[];
   testToCodeMap: Record<string, string[]>;
   evidenceIndex: EvidenceIndex;
   git?: BuildInfo | null;
+  findings: Finding[];
   metadata: {
     generatedAt: string;
     warnings: string[];
@@ -160,6 +170,43 @@ const normalizeRelativePath = (filePath: string): string => {
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
   return normalized.split(path.sep).join('/');
+};
+
+const staticAnalysisTools = ['polyspace', 'ldra', 'vectorcast'] as const;
+type StaticAnalysisTool = (typeof staticAnalysisTools)[number];
+
+const parseAdapterImportArgs = (
+  value: unknown,
+): Partial<Record<StaticAnalysisTool, string>> => {
+  if (!value) {
+    return {};
+  }
+
+  const entries = Array.isArray(value) ? value : [value];
+  const imports: Partial<Record<StaticAnalysisTool, string>> = {};
+
+  entries.forEach((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error('--import seçenekleri tool=path biçiminde olmalıdır.');
+    }
+    const [toolName, ...rest] = entry.split('=');
+    if (!toolName || rest.length === 0) {
+      throw new Error(`Geçersiz --import değeri: ${entry}. Beklenen biçim tool=path.`);
+    }
+    const normalizedTool = toolName.trim().toLowerCase() as StaticAnalysisTool;
+    if (!staticAnalysisTools.includes(normalizedTool)) {
+      throw new Error(
+        `Desteklenmeyen --import aracı: ${toolName}. (polyspace, ldra, vectorcast)`,
+      );
+    }
+    const resolvedPath = rest.join('=').trim();
+    if (!resolvedPath) {
+      throw new Error(`--import ${normalizedTool} için dosya yolu belirtilmelidir.`);
+    }
+    imports[normalizedTool] = resolvedPath;
+  });
+
+  return imports;
 };
 
 const parseContentDispositionFileName = (value: string | string[] | undefined): string | undefined => {
@@ -666,6 +713,54 @@ const deriveTestToCodeMap = (
   );
 };
 
+const mergeObjectiveLinks = (...lists: Array<string[] | undefined>): string[] | undefined => {
+  const merged = new Set<string>();
+  lists.forEach((list) => {
+    list?.forEach((item) => merged.add(item));
+  });
+  return merged.size > 0 ? Array.from(merged).sort() : undefined;
+};
+
+const mergeStructuralCoverage = (
+  existing: StructuralCoverageSummary | undefined,
+  incoming: StructuralCoverageSummary,
+): StructuralCoverageSummary => {
+  if (!existing) {
+    return {
+      tool: incoming.tool,
+      files: incoming.files.map((file) => ({ ...file })),
+      objectiveLinks: incoming.objectiveLinks ? [...incoming.objectiveLinks] : undefined,
+    };
+  }
+
+  const files = new Map<string, StructuralCoverageSummary['files'][number]>();
+  existing.files.forEach((file) => {
+    files.set(file.path, { ...file });
+  });
+  incoming.files.forEach((file) => {
+    files.set(file.path, { ...file });
+  });
+
+  return {
+    tool: incoming.tool,
+    files: Array.from(files.values()),
+    objectiveLinks: mergeObjectiveLinks(existing.objectiveLinks, incoming.objectiveLinks),
+  };
+};
+
+const structuralCoverageHasMetric = (
+  summary: StructuralCoverageSummary | undefined,
+  metric: 'stmt' | 'dec' | 'mcdc',
+): boolean => {
+  if (!summary) {
+    return false;
+  }
+  return summary.files.some((file) => {
+    const metricValue = file[metric];
+    return metricValue !== undefined && metricValue.total > 0;
+  });
+};
+
 const createEvidence = (
   artifact: ObjectiveArtifactType,
   source: EvidenceSource,
@@ -747,9 +842,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const warnings: string[] = [];
   const requirements: Requirement[][] = [];
   const evidenceIndex: EvidenceIndex = {};
-  let coverage: CoverageSummary | undefined;
+  let coverage: CoverageReport | undefined;
+  let structuralCoverage: StructuralCoverageSummary | undefined;
   let gitMetadata: BuildInfo | null | undefined;
   const testResults: TestResult[] = [];
+  const findings: Finding[] = [];
   const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
@@ -762,6 +859,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     traceLinksJson: options.traceLinksJson
       ? normalizeRelativePath(options.traceLinksJson)
       : undefined,
+    polyspace: options.polyspace ? normalizeRelativePath(options.polyspace) : undefined,
+    ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
+    vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
   };
   const normalizedObjectivesPath = options.objectives
     ? path.resolve(options.objectives)
@@ -854,6 +954,103 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
   }
 
+  if (options.polyspace) {
+    const result = await fromPolyspace(options.polyspace);
+    warnings.push(...result.warnings);
+    if (result.data.findings) {
+      findings.push(...result.data.findings);
+    }
+    if ((result.data.findings?.length ?? 0) > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'review',
+        createEvidence('review', 'polyspace', options.polyspace, 'Polyspace statik analiz raporu')
+          .evidence,
+      );
+      mergeEvidence(
+        evidenceIndex,
+        'problem_report',
+        createEvidence('problem_report', 'polyspace', options.polyspace, 'Polyspace bulgu listesi')
+          .evidence,
+      );
+    }
+  }
+
+  if (options.ldra) {
+    const result = await fromLDRA(options.ldra);
+    warnings.push(...result.warnings);
+    if (result.data.findings) {
+      findings.push(...result.data.findings);
+    }
+    if (result.data.coverage) {
+      structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
+      mergeEvidence(
+        evidenceIndex,
+        'coverage_stmt',
+        createEvidence('coverage_stmt', 'ldra', options.ldra, 'LDRA kapsam özeti').evidence,
+      );
+    }
+    if ((result.data.findings?.length ?? 0) > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'review',
+        createEvidence('review', 'ldra', options.ldra, 'LDRA kural ihlalleri').evidence,
+      );
+      mergeEvidence(
+        evidenceIndex,
+        'problem_report',
+        createEvidence('problem_report', 'ldra', options.ldra, 'LDRA ihlal raporu').evidence,
+      );
+    }
+  }
+
+  if (options.vectorcast) {
+    const result = await fromVectorCAST(options.vectorcast);
+    warnings.push(...result.warnings);
+    if (result.data.findings) {
+      findings.push(...result.data.findings);
+    }
+    if (result.data.coverage) {
+      structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
+      mergeEvidence(
+        evidenceIndex,
+        'coverage_stmt',
+        createEvidence('coverage_stmt', 'vectorcast', options.vectorcast, 'VectorCAST kapsam raporu')
+          .evidence,
+      );
+      if (structuralCoverageHasMetric(result.data.coverage, 'dec')) {
+        mergeEvidence(
+          evidenceIndex,
+          'coverage_dec',
+          createEvidence('coverage_dec', 'vectorcast', options.vectorcast, 'VectorCAST karar kapsamı')
+            .evidence,
+        );
+      }
+      if (structuralCoverageHasMetric(result.data.coverage, 'mcdc')) {
+        mergeEvidence(
+          evidenceIndex,
+          'coverage_mcdc',
+          createEvidence('coverage_mcdc', 'vectorcast', options.vectorcast, 'VectorCAST MC/DC kapsamı')
+            .evidence,
+        );
+      }
+    }
+    if ((result.data.findings?.length ?? 0) > 0) {
+      mergeEvidence(
+        evidenceIndex,
+        'test',
+        createEvidence('test', 'vectorcast', options.vectorcast, 'VectorCAST test değerlendirmeleri')
+          .evidence,
+      );
+      mergeEvidence(
+        evidenceIndex,
+        'analysis',
+        createEvidence('analysis', 'vectorcast', options.vectorcast, 'VectorCAST sonuç analizi')
+          .evidence,
+      );
+    }
+  }
+
   if (options.git) {
     const result = await importGitMetadata(options.git);
     warnings.push(...result.warnings);
@@ -912,10 +1109,12 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     requirements: mergedRequirements,
     testResults,
     coverage,
+    structuralCoverage,
     traceLinks,
     testToCodeMap,
     evidenceIndex,
     git: gitMetadata,
+    findings,
     metadata: {
       generatedAt: getCurrentTimestamp(),
       warnings,
@@ -975,15 +1174,21 @@ const filterObjectives = (objectives: Objective[], level: CertificationLevel): O
   return objectives.filter((objective) => objective.levels[level]);
 };
 
-const buildImportBundle = (workspace: ImportWorkspace, objectives: Objective[]): ImportBundle => ({
+const buildImportBundle = (
+  workspace: ImportWorkspace,
+  objectives: Objective[],
+  level: CertificationLevel,
+): ImportBundle => ({
   requirements: workspace.requirements,
   objectives,
   testResults: workspace.testResults,
   coverage: workspace.coverage,
+  structuralCoverage: workspace.structuralCoverage,
   evidenceIndex: workspace.evidenceIndex,
   traceLinks: uniqueTraceLinks(workspace.traceLinks ?? []),
   testToCodeMap: workspace.testToCodeMap,
   generatedAt: workspace.metadata.generatedAt,
+  targetLevel: level,
 });
 
 const collectRequirementTraces = (
@@ -1006,7 +1211,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const objectives = await loadObjectives(objectivesPath);
   const filteredObjectives = filterObjectives(objectives, level);
 
-  const bundle = buildImportBundle(workspace, filteredObjectives);
+  const bundle = buildImportBundle(workspace, filteredObjectives, level);
   const snapshot = generateComplianceSnapshot(bundle);
   const engine = new TraceEngine(bundle);
   const traces = collectRequirementTraces(engine, workspace.requirements);
@@ -1371,6 +1576,13 @@ export const runPipeline = async (
       ? path.resolve(baseDir, config.inputs.cobertura)
       : undefined,
     git: config.inputs?.git ? path.resolve(baseDir, config.inputs.git) : undefined,
+    polyspace: config.inputs?.polyspace
+      ? path.resolve(baseDir, config.inputs.polyspace)
+      : undefined,
+    ldra: config.inputs?.ldra ? path.resolve(baseDir, config.inputs.ldra) : undefined,
+    vectorcast: config.inputs?.vectorcast
+      ? path.resolve(baseDir, config.inputs.vectorcast)
+      : undefined,
     objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
     level,
     projectName: config.project?.name,
@@ -1558,6 +1770,10 @@ if (require.main === module) {
             describe: 'Git deposu kök dizini.',
             type: 'string',
           })
+          .option('import', {
+            describe: 'Statik analiz ve kapsam raporları (polyspace=, ldra=, vectorcast=).',
+            type: 'array',
+          })
           .option('trace-links-csv', {
             describe: 'Manuel gereksinim izlenebilirlik bağlantıları CSV dosyası.',
             type: 'string',
@@ -1597,6 +1813,10 @@ if (require.main === module) {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
+          const adapterImports = parseAdapterImportArgs(
+            (argv as Record<string, unknown>)['import'],
+          );
+
           const result = await runImport({
             output: argv.output,
             jira: argv.jira,
@@ -1607,6 +1827,9 @@ if (require.main === module) {
             git: argv.git,
             traceLinksCsv: argv.traceLinksCsv as string | undefined,
             traceLinksJson: argv.traceLinksJson as string | undefined,
+            polyspace: adapterImports.polyspace,
+            ldra: adapterImports.ldra,
+            vectorcast: adapterImports.vectorcast,
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,

@@ -8,6 +8,9 @@ export { importJUnitXml } from './junitXml';
 export { importLcov } from './lcov';
 export { importCobertura } from './cobertura';
 export { importGitMetadata } from './git';
+export { fromPolyspace } from './polyspace';
+export { fromLDRA } from './ldra';
+export { fromVectorCAST } from './vectorcast';
 
 export interface AdapterMetadata {
   name: string;
