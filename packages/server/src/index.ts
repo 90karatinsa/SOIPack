@@ -23,6 +23,7 @@ import {
 } from '@soipack/cli';
 import { CertificationLevel } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
+import expressRateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { JWTPayload, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JSONWebKeySet } from 'jose';
@@ -949,6 +950,7 @@ export interface RateLimitWindowConfig {
 }
 
 export interface RateLimitConfig {
+  global?: RateLimitWindowConfig;
   ip?: RateLimitWindowConfig;
   tenant?: RateLimitWindowConfig;
 }
@@ -1767,6 +1769,109 @@ export const createServer = (config: ServerConfig): Express => {
   const jobLicenses = new Map<string, VerifiedLicense>();
   const knownTenants = new Set<string>();
 
+  interface EvidenceRecord {
+    id: string;
+    tenantId: string;
+    filename: string;
+    sha256: string;
+    size: number;
+    uploadedAt: string;
+    metadata: Record<string, unknown>;
+    contentEncoding: 'base64';
+    content: string;
+  }
+
+  interface ComplianceRequirementEntry {
+    id: string;
+    status: 'covered' | 'partial' | 'missing';
+    title?: string;
+    evidenceIds: string[];
+  }
+
+  interface ComplianceSummary {
+    total: number;
+    covered: number;
+    partial: number;
+    missing: number;
+  }
+
+  interface ComplianceMatrixPayload {
+    project?: string;
+    level?: string;
+    generatedAt?: string;
+    requirements: ComplianceRequirementEntry[];
+    summary: ComplianceSummary;
+  }
+
+  interface CoverageSummaryPayload {
+    statements?: number;
+    branches?: number;
+    functions?: number;
+    lines?: number;
+  }
+
+  interface ComplianceRecord {
+    id: string;
+    tenantId: string;
+    sha256: string;
+    createdAt: string;
+    matrix: ComplianceMatrixPayload;
+    coverage: CoverageSummaryPayload;
+    metadata?: Record<string, unknown>;
+  }
+
+  const evidenceStore = new Map<string, Map<string, EvidenceRecord>>();
+  const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
+  const isValidSha256Hex = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
+  const computeObjectSha256 = (value: unknown): string =>
+    createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+  const getTenantEvidenceMap = (tenantId: string): Map<string, EvidenceRecord> => {
+    let store = evidenceStore.get(tenantId);
+    if (!store) {
+      store = new Map();
+      evidenceStore.set(tenantId, store);
+    }
+    return store;
+  };
+
+  const getTenantComplianceMap = (tenantId: string): Map<string, ComplianceRecord> => {
+    let store = complianceStore.get(tenantId);
+    if (!store) {
+      store = new Map();
+      complianceStore.set(tenantId, store);
+    }
+    return store;
+  };
+
+  const serializeEvidenceRecord = (
+    record: EvidenceRecord,
+    options?: { includeContent?: boolean },
+  ): Record<string, unknown> => {
+    const base: Record<string, unknown> = {
+      id: record.id,
+      filename: record.filename,
+      sha256: record.sha256,
+      size: record.size,
+      uploadedAt: record.uploadedAt,
+      metadata: record.metadata,
+      contentEncoding: record.contentEncoding,
+    };
+    if (options?.includeContent) {
+      base.content = record.content;
+    }
+    return base;
+  };
+
+  const serializeComplianceRecord = (record: ComplianceRecord): Record<string, unknown> => ({
+    id: record.id,
+    sha256: record.sha256,
+    createdAt: record.createdAt,
+    matrix: record.matrix,
+    coverage: record.coverage,
+    metadata: record.metadata ?? {},
+  });
+
   const pruneLicenseCache = (nowMs: number): void => {
     for (const [hash, entry] of licenseCache) {
       if (entry.expiresAtMs !== null && entry.expiresAtMs <= nowMs) {
@@ -2436,6 +2541,31 @@ export const createServer = (config: ServerConfig): Express => {
     next();
   });
 
+  const globalRateLimiter = config.rateLimit?.global;
+  if (globalRateLimiter) {
+    const windowMs = Math.max(1, globalRateLimiter.windowMs);
+    const max = Math.max(1, globalRateLimiter.max);
+    app.use(
+      expressRateLimit({
+        windowMs,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        handler: (_req, _res, nextHandler, options) => {
+          const retryAfterSeconds = Math.max(1, Math.ceil(options.windowMs / 1000));
+          nextHandler(
+            new HttpError(429, 'GLOBAL_RATE_LIMIT_EXCEEDED', 'Global istek limiti aşıldı.', {
+              scope: 'global',
+              windowMs: options.windowMs,
+              limit: options.max,
+              retryAfterSeconds,
+            }),
+          );
+        },
+      }),
+    );
+  }
+
   const ipRateLimiter = config.rateLimit?.ip
     ? createSlidingWindowRateLimiter('ip', config.rateLimit.ip)
     : undefined;
@@ -2675,6 +2805,347 @@ export const createServer = (config: ServerConfig): Express => {
         }
       }
       res.json({ status: 'ok' });
+    }),
+  );
+
+  app.get(
+    '/evidence',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const store = evidenceStore.get(tenantId);
+      const items = store ? Array.from(store.values()).map((record) => serializeEvidenceRecord(record)) : [];
+      res.json({ items });
+    }),
+  );
+
+  app.get(
+    '/evidence/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kanıt kimliği belirtilmelidir.');
+      }
+      const record = getTenantEvidenceMap(tenantId).get(id);
+      if (!record) {
+        throw new HttpError(404, 'EVIDENCE_NOT_FOUND', 'İstenen kanıt bulunamadı.');
+      }
+      res.json(serializeEvidenceRecord(record, { includeContent: true }));
+    }),
+  );
+
+  app.post(
+    '/evidence/upload',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const body = req.body as { filename?: unknown; content?: unknown; metadata?: unknown };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+
+      const filenameRaw = body.filename;
+      if (typeof filenameRaw !== 'string' || filenameRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'filename alanı zorunludur.');
+      }
+
+      const contentRaw = body.content;
+      if (typeof contentRaw !== 'string' || contentRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'content alanı base64 kodlu olmalıdır.');
+      }
+
+      const metadataRaw = body.metadata;
+      if (!metadataRaw || typeof metadataRaw !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'metadata alanı zorunludur.');
+      }
+
+      const metadata = metadataRaw as Record<string, unknown>;
+      const shaValue = metadata.sha256;
+      if (typeof shaValue !== 'string' || !isValidSha256Hex(shaValue)) {
+        throw new HttpError(400, 'INVALID_HASH', 'metadata.sha256 geçerli bir SHA-256 hex değeri olmalıdır.');
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(contentRaw, 'base64');
+      } catch {
+        throw new HttpError(400, 'INVALID_CONTENT', 'content alanı base64 kodlu olmalıdır.');
+      }
+
+      const normalizedContent = contentRaw.replace(/\s+/g, '');
+      if (buffer.toString('base64') !== normalizedContent) {
+        throw new HttpError(400, 'INVALID_CONTENT', 'content alanı base64 kodlu olmalıdır.');
+      }
+
+      if (buffer.length === 0) {
+        throw new HttpError(400, 'INVALID_CONTENT', 'Boş kanıt yüklenemez.');
+      }
+
+      const computedHash = createHash('sha256').update(buffer).digest('hex');
+      const providedHash = shaValue.toLowerCase();
+      if (computedHash !== providedHash) {
+        throw new HttpError(400, 'HASH_MISMATCH', 'Gönderilen SHA-256 değeri içerikle eşleşmiyor.', {
+          expected: computedHash,
+          provided: providedHash,
+        });
+      }
+
+      if (metadata.size !== undefined) {
+        const sizeNumber = Number(metadata.size);
+        if (!Number.isFinite(sizeNumber) || sizeNumber < 0) {
+          throw new HttpError(400, 'INVALID_METADATA', 'metadata.size sayısal bir değer olmalıdır.');
+        }
+        if (Math.trunc(sizeNumber) !== buffer.length) {
+          throw new HttpError(400, 'SIZE_MISMATCH', 'metadata.size değeri içerik boyutu ile eşleşmiyor.', {
+            expected: Math.trunc(sizeNumber),
+            actual: buffer.length,
+          });
+        }
+      }
+
+      const normalizedMetadata: Record<string, unknown> = { ...metadata };
+      normalizedMetadata.sha256 = computedHash;
+      normalizedMetadata.size = buffer.length;
+
+      const record: EvidenceRecord = {
+        id: randomUUID(),
+        tenantId,
+        filename: sanitizeUploadFileName(filenameRaw),
+        sha256: computedHash,
+        size: buffer.length,
+        uploadedAt: new Date().toISOString(),
+        metadata: normalizedMetadata,
+        contentEncoding: 'base64',
+        content: buffer.toString('base64'),
+      };
+
+      getTenantEvidenceMap(tenantId).set(record.id, record);
+
+      res.status(201).json(serializeEvidenceRecord(record));
+    }),
+  );
+
+  app.get(
+    '/compliance',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const store = complianceStore.get(tenantId);
+      const items = store ? Array.from(store.values()).map((record) => serializeComplianceRecord(record)) : [];
+      res.json({ items });
+    }),
+  );
+
+  app.get(
+    '/compliance/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Uyum kaydı kimliği belirtilmelidir.');
+      }
+      const record = getTenantComplianceMap(tenantId).get(id);
+      if (!record) {
+        throw new HttpError(404, 'COMPLIANCE_NOT_FOUND', 'İstenen uyum kaydı bulunamadı.');
+      }
+      res.json(serializeComplianceRecord(record));
+    }),
+  );
+
+  app.post(
+    '/compliance',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const body = req.body as {
+        matrix?: unknown;
+        coverage?: unknown;
+        metadata?: unknown;
+        sha256?: unknown;
+      };
+
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+
+      if (typeof body.sha256 !== 'string' || !isValidSha256Hex(body.sha256)) {
+        throw new HttpError(400, 'INVALID_HASH', 'sha256 alanı geçerli bir SHA-256 hex değeri olmalıdır.');
+      }
+      const providedHash = body.sha256.toLowerCase();
+
+      if (!body.matrix || typeof body.matrix !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'matrix alanı zorunludur.');
+      }
+
+      const matrixRaw = body.matrix as Record<string, unknown>;
+      const summaryRaw = matrixRaw.summary;
+      if (!summaryRaw || typeof summaryRaw !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'matrix.summary alanı zorunludur.');
+      }
+
+      const summaryRecord = summaryRaw as Record<string, unknown>;
+      const parseSummaryValue = (key: keyof ComplianceSummary): number => {
+        const value = summaryRecord[key];
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          throw new HttpError(400, 'INVALID_SUMMARY', `matrix.summary.${key} sayısal olmalıdır.`);
+        }
+        const normalized = Math.trunc(numeric);
+        if (normalized < 0) {
+          throw new HttpError(400, 'INVALID_SUMMARY', `matrix.summary.${key} negatif olamaz.`);
+        }
+        return normalized;
+      };
+
+      const summary: ComplianceSummary = {
+        total: parseSummaryValue('total'),
+        covered: parseSummaryValue('covered'),
+        partial: parseSummaryValue('partial'),
+        missing: parseSummaryValue('missing'),
+      };
+
+      if (!Array.isArray(matrixRaw.requirements) || matrixRaw.requirements.length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'matrix.requirements en az bir öğe içermelidir.');
+      }
+
+      const allowedStatuses = new Set<ComplianceRequirementEntry['status']>(['covered', 'partial', 'missing']);
+      const tenantEvidence = getTenantEvidenceMap(tenantId);
+      const requirements: ComplianceRequirementEntry[] = matrixRaw.requirements.map((entry, index) => {
+        if (!entry || typeof entry !== 'object') {
+          throw new HttpError(400, 'INVALID_REQUEST', `matrix.requirements[${index}] geçerli bir nesne olmalıdır.`);
+        }
+        const record = entry as Record<string, unknown>;
+        const idValue = record.id;
+        if (typeof idValue !== 'string' || idValue.trim().length === 0) {
+          throw new HttpError(400, 'INVALID_REQUEST', `matrix.requirements[${index}].id zorunludur.`);
+        }
+        const statusValue = record.status;
+        if (typeof statusValue !== 'string' || !allowedStatuses.has(statusValue as ComplianceRequirementEntry['status'])) {
+          throw new HttpError(400, 'INVALID_REQUEST', `matrix.requirements[${index}].status geçerli değil.`);
+        }
+        const evidenceIdsRaw = record.evidenceIds;
+        const evidenceIds = Array.isArray(evidenceIdsRaw)
+          ? (evidenceIdsRaw as unknown[])
+              .map((value) => (typeof value === 'string' ? value.trim() : ''))
+              .filter((value): value is string => value.length > 0)
+          : [];
+        evidenceIds.forEach((evidenceId) => {
+          if (!tenantEvidence.has(evidenceId)) {
+            throw new HttpError(
+              400,
+              'EVIDENCE_NOT_FOUND',
+              `matrix.requirements[${index}].evidenceIds bilinmeyen kanıt içeriyor: ${evidenceId}.`,
+            );
+          }
+        });
+        const requirement: ComplianceRequirementEntry = {
+          id: idValue.trim(),
+          status: statusValue as ComplianceRequirementEntry['status'],
+          evidenceIds,
+        };
+        if (typeof record.title === 'string' && record.title.trim().length > 0) {
+          requirement.title = record.title.trim();
+        }
+        return requirement;
+      });
+
+      if (summary.total !== requirements.length) {
+        throw new HttpError(400, 'INVALID_SUMMARY', 'matrix.summary.total gereksinim sayısı ile eşleşmelidir.');
+      }
+
+      if (summary.covered + summary.partial + summary.missing > summary.total) {
+        throw new HttpError(
+          400,
+          'INVALID_SUMMARY',
+          'matrix.summary değerlerinin toplamı toplam sayısını aşamaz.',
+        );
+      }
+
+      if (!body.coverage || typeof body.coverage !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'coverage alanı zorunludur.');
+      }
+
+      const coverageRaw = body.coverage as Record<string, unknown>;
+      const parseCoverageValue = (key: keyof CoverageSummaryPayload): number | undefined => {
+        const value = coverageRaw[key as string];
+        if (value === undefined || value === null) {
+          return undefined;
+        }
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric < 0) {
+          throw new HttpError(400, 'INVALID_COVERAGE', `coverage.${String(key)} değeri geçerli bir sayı olmalıdır.`);
+        }
+        return Math.round(numeric * 1000) / 1000;
+      };
+
+      const coverage: CoverageSummaryPayload = {};
+      (['statements', 'branches', 'functions', 'lines'] as Array<keyof CoverageSummaryPayload>).forEach((key) => {
+        const value = parseCoverageValue(key);
+        if (value !== undefined) {
+          coverage[key] = value;
+        }
+      });
+
+      const metadataRaw = body.metadata;
+      const metadata =
+        metadataRaw && typeof metadataRaw === 'object'
+          ? (metadataRaw as Record<string, unknown>)
+          : undefined;
+
+      const project = typeof matrixRaw.project === 'string' ? matrixRaw.project : undefined;
+      const level = typeof matrixRaw.level === 'string' ? matrixRaw.level : undefined;
+      const generatedAt =
+        typeof matrixRaw.generatedAt === 'string' ? matrixRaw.generatedAt : undefined;
+
+      const canonicalMetadata: Record<string, unknown> = {};
+      if (metadata) {
+        Object.entries(metadata).forEach(([key, value]) => {
+          if (value !== undefined) {
+            canonicalMetadata[key] = value;
+          }
+        });
+      }
+
+      const canonicalPayload = {
+        matrix: {
+          project,
+          level,
+          generatedAt,
+          requirements,
+          summary,
+        },
+        coverage,
+        metadata: canonicalMetadata,
+      } satisfies {
+        matrix: ComplianceMatrixPayload;
+        coverage: CoverageSummaryPayload;
+        metadata: Record<string, unknown>;
+      };
+
+      const computedHash = computeObjectSha256(canonicalPayload);
+      if (computedHash !== providedHash) {
+        throw new HttpError(400, 'COMPLIANCE_HASH_MISMATCH', 'Gönderilen sha256 değeri hesaplanan özet ile eşleşmiyor.', {
+          expected: computedHash,
+          provided: providedHash,
+        });
+      }
+
+      const record: ComplianceRecord = {
+        id: randomUUID(),
+        tenantId,
+        sha256: computedHash,
+        createdAt: new Date().toISOString(),
+        matrix: { project, level, generatedAt, requirements, summary },
+        coverage,
+        metadata: Object.keys(canonicalMetadata).length > 0 ? canonicalMetadata : undefined,
+      };
+
+      getTenantComplianceMap(tenantId).set(record.id, record);
+
+      res.status(201).json(serializeComplianceRecord(record));
     }),
   );
 

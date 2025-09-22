@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import { promises as fs } from 'fs';
 import http from 'http';
@@ -19,6 +20,8 @@ import {
   runObjectivesList,
   runImport,
   runPack,
+  runIngestPipeline,
+  runIngestAndPackage,
   runReport,
   runVerify,
   __internal,
@@ -131,6 +134,82 @@ describe('@soipack/cli pipeline', () => {
     const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+  });
+
+  it('generates compliance and coverage summaries with runIngestPipeline', async () => {
+    const ingestOutput = path.join(tempRoot, 'ingest-dist');
+    const workingDir = path.join(tempRoot, 'ingest-work');
+
+    const result = await runIngestPipeline({
+      inputDir: fixturesDir,
+      outputDir: ingestOutput,
+      workingDir,
+      objectives: objectivesPath,
+      level: 'C',
+      projectName: 'Demo Avionics',
+      projectVersion: '1.0.0',
+    });
+
+    expect(result.reportsDir).toBe(path.join(ingestOutput, 'reports'));
+    expect(result.complianceSummary.total).toBeGreaterThan(0);
+    expect(result.complianceSummary.covered).toBeGreaterThan(0);
+    expect(result.coverageSummary).toEqual(expect.objectContaining({ statements: expect.any(Number) }));
+    const complianceStats = await fs.stat(result.compliancePath);
+    expect(complianceStats.isFile()).toBe(true);
+  });
+
+  it('packages demo data into a signed archive with consistent manifest hashes', async () => {
+    const packageOutput = path.join(tempRoot, 'ingest-package');
+
+    const result = await runIngestAndPackage({
+      inputDir: fixturesDir,
+      outputDir: packageOutput,
+      objectives: objectivesPath,
+      level: 'C',
+      projectName: 'Demo Avionics',
+      projectVersion: '1.0.0',
+      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      packageName: 'soi-pack.zip',
+    });
+
+    const archiveStats = await fs.stat(result.archivePath);
+    expect(archiveStats.isFile()).toBe(true);
+    expect(result.archivePath).toBe(path.join(packageOutput, 'soi-pack.zip'));
+
+    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as Manifest;
+    expect(manifest.files.length).toBeGreaterThan(0);
+
+    const firstEntry = manifest.files[0];
+    const assetPath = path.join(packageOutput, firstEntry.path);
+    const assetContent = await fs.readFile(assetPath);
+    const computedHash = createHash('sha256').update(assetContent).digest('hex');
+    expect(computedHash).toBe(firstEntry.sha256);
+
+    const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+  });
+
+  it('fails manifest verification when packaged data is tampered', async () => {
+    const tamperOutput = path.join(tempRoot, 'ingest-package-tamper');
+
+    const result = await runIngestAndPackage({
+      inputDir: fixturesDir,
+      outputDir: tamperOutput,
+      objectives: objectivesPath,
+      level: 'C',
+      projectName: 'Demo Avionics',
+      projectVersion: '1.0.0',
+      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      packageName: 'soi-pack.zip',
+    });
+
+    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as Manifest;
+    expect(manifest.files.length).toBeGreaterThan(0);
+    manifest.files[0].sha256 = '0'.repeat(64);
+    await fs.writeFile(result.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+    const signature = (await fs.readFile(path.join(tamperOutput, 'manifest.sig'), 'utf8')).trim();
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(false);
   });
 
   it('derives test-to-code mapping from coverage adapters', async () => {

@@ -1983,6 +1983,15 @@ const directoryExists = async (target: string): Promise<boolean> => {
   }
 };
 
+const fileExists = async (target: string): Promise<boolean> => {
+  try {
+    const stats = await fsPromises.stat(target);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+};
+
 const resolveReportDirectory = async (inputDir: string): Promise<string> => {
   const candidate = path.join(inputDir, 'reports');
   if (await directoryExists(candidate)) {
@@ -2062,6 +2071,213 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
 
   return { manifestPath, archivePath, manifestId };
+};
+
+interface CoverageSummaryTotals {
+  statements?: number;
+  branches?: number;
+  functions?: number;
+  lines?: number;
+}
+
+type CoverageSummaryKey = keyof CoverageSummaryTotals;
+
+interface CoverageTotalsEntry {
+  percentage?: unknown;
+  covered?: unknown;
+  total?: unknown;
+}
+
+type CoverageTotalsMap = Partial<Record<CoverageSummaryKey, CoverageTotalsEntry>>;
+
+export interface IngestPipelineOptions {
+  inputDir: string;
+  outputDir: string;
+  workingDir?: string;
+  objectives?: string;
+  level?: CertificationLevel;
+  projectName?: string;
+  projectVersion?: string;
+}
+
+export interface IngestPipelineResult {
+  workspaceDir: string;
+  analysisDir: string;
+  reportsDir: string;
+  compliancePath: string;
+  complianceSummary: { total: number; covered: number; partial: number; missing: number };
+  coverageSummary: CoverageSummaryTotals;
+  analyzeExitCode: number;
+  reportResult: ReportResult;
+}
+
+const resolveInputFile = async (inputDir: string, candidates: string[]): Promise<string | undefined> => {
+  for (const candidate of candidates) {
+    const fullPath = path.join(inputDir, candidate);
+    if (await fileExists(fullPath)) {
+      return fullPath;
+    }
+  }
+  return undefined;
+};
+
+const sanitizeSummaryValue = (value: unknown): number => {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return 0;
+  }
+  return Math.trunc(numeric);
+};
+
+const sanitizeCoveragePercentage = (value: unknown): number | undefined => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return undefined;
+  }
+  return Math.round(numeric * 1000) / 1000;
+};
+
+const buildCoverageSummary = (
+  summary?: CoverageSummaryTotals,
+  totals?: CoverageTotalsMap,
+): CoverageSummaryTotals => {
+  const result: CoverageSummaryTotals = {};
+  const keys: CoverageSummaryKey[] = ['statements', 'branches', 'functions', 'lines'];
+  keys.forEach((key) => {
+    const summaryValue = summary?.[key];
+    const sanitizedSummary = sanitizeCoveragePercentage(summaryValue);
+    if (sanitizedSummary !== undefined) {
+      result[key] = sanitizedSummary;
+      return;
+    }
+    const totalsEntry = totals?.[key];
+    if (!totalsEntry) {
+      return;
+    }
+    const totalsValue = sanitizeCoveragePercentage(totalsEntry.percentage);
+    if (totalsValue !== undefined) {
+      result[key] = totalsValue;
+      return;
+    }
+    const covered = Number(totalsEntry.covered);
+    const total = Number(totalsEntry.total);
+    if (Number.isFinite(covered) && Number.isFinite(total) && total > 0) {
+      const ratio = (covered / total) * 100;
+      const sanitizedRatio = sanitizeCoveragePercentage(ratio);
+      if (sanitizedRatio !== undefined) {
+        result[key] = sanitizedRatio;
+      }
+    }
+  });
+  return result;
+};
+
+export const runIngestPipeline = async (options: IngestPipelineOptions): Promise<IngestPipelineResult> => {
+  const resolvedInputDir = path.resolve(options.inputDir);
+  const resolvedOutputDir = path.resolve(options.outputDir);
+  const workingRoot = options.workingDir
+    ? path.resolve(options.workingDir)
+    : path.join(resolvedOutputDir, '..', '.soipack-work');
+
+  const workspaceDir = path.join(workingRoot, 'workspace');
+  const analysisDir = path.join(workingRoot, 'analysis');
+  const reportsDir = path.join(resolvedOutputDir, 'reports');
+
+  await ensureDirectory(workingRoot);
+  await ensureDirectory(resolvedOutputDir);
+
+  await runImport({
+    output: workspaceDir,
+    jira: await resolveInputFile(resolvedInputDir, ['issues.csv', 'jira.csv']),
+    reqif: await resolveInputFile(resolvedInputDir, ['spec.reqif', 'requirements.reqif']),
+    junit: await resolveInputFile(resolvedInputDir, ['results.xml', 'junit.xml']),
+    lcov: await resolveInputFile(resolvedInputDir, ['lcov.info']),
+    cobertura: await resolveInputFile(resolvedInputDir, ['coverage.xml']),
+    traceLinksCsv: await resolveInputFile(resolvedInputDir, ['trace-links.csv']),
+    traceLinksJson: await resolveInputFile(resolvedInputDir, ['trace-links.json']),
+    objectives: options.objectives,
+    level: options.level,
+    projectName: options.projectName,
+    projectVersion: options.projectVersion,
+  });
+
+  const analyzeResult = await runAnalyze({
+    input: workspaceDir,
+    output: analysisDir,
+    level: options.level,
+    objectives: options.objectives,
+    projectName: options.projectName,
+    projectVersion: options.projectVersion,
+  });
+
+  const reportResult = await runReport({
+    input: analysisDir,
+    output: reportsDir,
+  });
+
+  const complianceRaw = await fsPromises.readFile(reportResult.complianceJson, 'utf8');
+  const complianceData = JSON.parse(complianceRaw) as {
+    summary?: { total?: unknown; covered?: unknown; partial?: unknown; missing?: unknown };
+    stats?: {
+      objectives?: { total?: unknown; covered?: unknown; partial?: unknown; missing?: unknown };
+    };
+  };
+  const summarySource = complianceData.stats?.objectives ?? complianceData.summary ?? {};
+  const complianceSummary = {
+    total: sanitizeSummaryValue(summarySource.total),
+    covered: sanitizeSummaryValue(summarySource.covered),
+    partial: sanitizeSummaryValue(summarySource.partial),
+    missing: sanitizeSummaryValue(summarySource.missing),
+  };
+
+  const analysisPath = path.join(analysisDir, 'analysis.json');
+  const analysisRaw = await fsPromises.readFile(analysisPath, 'utf8');
+  const analysisData = JSON.parse(analysisRaw) as {
+    coverage?: { summary?: CoverageSummaryTotals; totals?: CoverageTotalsMap };
+  };
+  const coverageSummary = buildCoverageSummary(analysisData.coverage?.summary, analysisData.coverage?.totals);
+
+  return {
+    workspaceDir,
+    analysisDir,
+    reportsDir,
+    compliancePath: reportResult.complianceJson,
+    complianceSummary,
+    coverageSummary,
+    analyzeExitCode: analyzeResult.exitCode,
+    reportResult,
+  };
+};
+
+export interface PackagePipelineOptions extends IngestPipelineOptions {
+  signingKey: string;
+  packageName?: string;
+}
+
+export interface PackagePipelineResult extends IngestPipelineResult {
+  manifestPath: string;
+  archivePath: string;
+  manifestId: string;
+}
+
+export const runIngestAndPackage = async (
+  options: PackagePipelineOptions,
+): Promise<PackagePipelineResult> => {
+  const { signingKey, packageName, ...ingestOptions } = options;
+  const ingestResult = await runIngestPipeline(ingestOptions);
+  const packResult = await runPack({
+    input: path.resolve(options.outputDir),
+    output: path.resolve(options.outputDir),
+    packageName: packageName ?? 'soi-pack.zip',
+    signingKey,
+  });
+
+  return {
+    ...ingestResult,
+    manifestPath: packResult.manifestPath,
+    archivePath: packResult.archivePath,
+    manifestId: packResult.manifestId,
+  };
 };
 
 export interface VerifyOptions {
@@ -2774,6 +2990,98 @@ if (require.main === module) {
       },
     )
     .command(
+      'ingest',
+      'Girdi adaptörlerini çalıştırarak uyum ve kapsam raporları üretir.',
+      (y) =>
+        y
+          .option('input', {
+            alias: 'i',
+            describe: 'Girdi veri dizini.',
+            type: 'string',
+            default: './data/input',
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Çıktı raporlarının yazılacağı dizin.',
+            type: 'string',
+            default: './dist',
+          })
+          .option('objectives', {
+            describe: 'Uyum hedefleri JSON dosyası.',
+            type: 'string',
+          })
+          .option('level', {
+            describe: 'Hedef seviye (A-E).',
+            type: 'string',
+          })
+          .option('project-name', {
+            describe: 'Proje adı.',
+            type: 'string',
+          })
+          .option('project-version', {
+            describe: 'Proje sürümü.',
+            type: 'string',
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = {
+          command: 'ingest',
+          licensePath,
+          input: argv.input,
+          output: argv.output,
+        };
+
+        try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
+          const levelOption = Array.isArray(argv.level) ? argv.level[0] : (argv.level as string | undefined);
+          const normalizedLevel = levelOption
+            ? (levelOption.toUpperCase() as CertificationLevel | undefined)
+            : undefined;
+          if (normalizedLevel && !certificationLevels.includes(normalizedLevel)) {
+            throw new Error(`Geçersiz seviye değeri: ${levelOption}`);
+          }
+
+          const inputDir = Array.isArray(argv.input)
+            ? String(argv.input[0])
+            : (argv.input as string | undefined) ?? './data/input';
+          const outputDir = Array.isArray(argv.output)
+            ? String(argv.output[0])
+            : (argv.output as string | undefined) ?? './dist';
+
+          const result = await runIngestPipeline({
+            inputDir,
+            outputDir,
+            objectives: argv.objectives as string | undefined,
+            level: normalizedLevel,
+            projectName: argv.projectName as string | undefined,
+            projectVersion: argv.projectVersion as string | undefined,
+          });
+
+          logger.info(
+            {
+              ...context,
+              reportsDir: result.reportsDir,
+              compliance: result.complianceSummary,
+              coverage: result.coverageSummary,
+            },
+            'İçe aktarma ve raporlama tamamlandı.',
+          );
+
+          console.log(`Raporlar ${result.reportsDir} dizinine kaydedildi.`);
+          console.log(
+            `Uyum özeti: ${result.complianceSummary.covered}/${result.complianceSummary.total} hedef tamamen karşılandı.`,
+          );
+          process.exitCode = result.analyzeExitCode;
+        } catch (error) {
+          logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
       'pack',
       'Rapor klasörünü zip paketine dönüştürür.',
       (y) =>
@@ -2839,6 +3147,120 @@ if (require.main === module) {
             'Paket oluşturuldu.',
           );
           process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'package',
+      'İçe aktarma → analiz → rapor → paket sürecini tek adımda çalıştırır.',
+      (y) =>
+        y
+          .option('input', {
+            alias: 'i',
+            describe: 'Girdi veri dizini.',
+            type: 'string',
+            default: './data/input',
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'Çıktı paketinin yazılacağı dizin.',
+            type: 'string',
+            default: './dist',
+          })
+          .option('objectives', {
+            describe: 'Uyum hedefleri JSON dosyası.',
+            type: 'string',
+          })
+          .option('level', {
+            describe: 'Hedef seviye (A-E).',
+            type: 'string',
+          })
+          .option('project-name', {
+            describe: 'Proje adı.',
+            type: 'string',
+          })
+          .option('project-version', {
+            describe: 'Proje sürümü.',
+            type: 'string',
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('package-name', {
+            describe: 'Çıktı paketi dosya adı.',
+            type: 'string',
+            default: 'soi-pack.zip',
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const context = {
+          command: 'package',
+          licensePath,
+          input: argv.input,
+          output: argv.output,
+          packageName: argv.packageName,
+        } as Record<string, unknown>;
+
+        try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
+          const levelOption = Array.isArray(argv.level) ? argv.level[0] : (argv.level as string | undefined);
+          const normalizedLevel = levelOption
+            ? (levelOption.toUpperCase() as CertificationLevel | undefined)
+            : undefined;
+          if (normalizedLevel && !certificationLevels.includes(normalizedLevel)) {
+            throw new Error(`Geçersiz seviye değeri: ${levelOption}`);
+          }
+
+          const inputDir = Array.isArray(argv.input)
+            ? String(argv.input[0])
+            : (argv.input as string | undefined) ?? './data/input';
+          const outputDir = Array.isArray(argv.output)
+            ? String(argv.output[0])
+            : (argv.output as string | undefined) ?? './dist';
+          const packageName = Array.isArray(argv.packageName)
+            ? String(argv.packageName[0])
+            : (argv.packageName as string | undefined);
+
+          const signingKeyOption = Array.isArray(argv.signingKey)
+            ? argv.signingKey[0]
+            : argv.signingKey;
+          const signingKeyPath = path.resolve(String(signingKeyOption));
+          context.signingKeyPath = signingKeyPath;
+          context.packageName = packageName ?? 'soi-pack.zip';
+          const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+
+          const result = await runIngestAndPackage({
+            inputDir,
+            outputDir,
+            objectives: argv.objectives as string | undefined,
+            level: normalizedLevel,
+            projectName: argv.projectName as string | undefined,
+            projectVersion: argv.projectVersion as string | undefined,
+            signingKey,
+            packageName,
+          });
+
+          logger.info(
+            {
+              ...context,
+              archivePath: result.archivePath,
+              manifestPath: result.manifestPath,
+              manifestId: result.manifestId,
+            },
+            'Paket oluşturma tamamlandı.',
+          );
+
+          console.log(`Paket ${result.archivePath} olarak kaydedildi.`);
+          console.log(`Manifest ${result.manifestPath} dosyasına yazıldı.`);
+          process.exitCode = result.analyzeExitCode;
         } catch (error) {
           logCliError(logger, error, context);
           process.exitCode = exitCodes.error;

@@ -355,6 +355,7 @@ describe('@soipack/server REST API', () => {
       metricsRegistry,
       jsonBodyLimitBytes: 2 * 1024 * 1024,
       rateLimit: {
+        global: { windowMs: 60_000, max: 5_000 },
         ip: { windowMs: 60_000, max: 1_000 },
         tenant: { windowMs: 60_000, max: 1_000 },
       },
@@ -417,6 +418,187 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${healthcheckToken}`)
       .expect(200);
     expect(response.body).toEqual({ status: 'ok' });
+  });
+
+  it('sets helmet security headers on health responses', async () => {
+    const response = await request(app).get('/health').expect(200);
+    expect(response.headers['x-dns-prefetch-control']).toBe('off');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+  });
+
+  it('uploads evidence with SHA-256 validation', async () => {
+    const payload = 'integration evidence sample';
+    const buffer = Buffer.from(payload, 'utf8');
+    const sha = createHash('sha256').update(buffer).digest('hex');
+
+    const uploadResponse = await request(app)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        filename: 'artifact.log',
+        content: buffer.toString('base64'),
+        metadata: { sha256: sha, size: buffer.length, description: 'test artifact' },
+      })
+      .expect(201);
+
+    expect(uploadResponse.body).toMatchObject({
+      filename: 'artifact.log',
+      sha256: sha,
+      size: buffer.length,
+      metadata: expect.objectContaining({
+        sha256: sha,
+        size: buffer.length,
+        description: 'test artifact',
+      }),
+    });
+    expect(typeof uploadResponse.body.id).toBe('string');
+
+    const detail = await request(app)
+      .get(`/evidence/${uploadResponse.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(detail.body.contentEncoding).toBe('base64');
+    const decoded = Buffer.from(detail.body.content as string, 'base64').toString('utf8');
+    expect(decoded).toBe(payload);
+  });
+
+  it('rejects evidence uploads when the hash is incorrect', async () => {
+    const buffer = Buffer.from('mismatched evidence', 'utf8');
+    const wrongHash = createHash('sha256').update('different').digest('hex');
+
+    const response = await request(app)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        filename: 'broken.log',
+        content: buffer.toString('base64'),
+        metadata: { sha256: wrongHash, size: buffer.length },
+      })
+      .expect(400);
+
+    expect(response.body.error.code).toBe('HASH_MISMATCH');
+  });
+
+  it('creates compliance records that reference stored evidence', async () => {
+    const evidenceBuffer = Buffer.from('traceability report', 'utf8');
+    const evidenceHash = createHash('sha256').update(evidenceBuffer).digest('hex');
+    const evidenceUpload = await request(app)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        filename: 'report.pdf',
+        content: evidenceBuffer.toString('base64'),
+        metadata: { sha256: evidenceHash, size: evidenceBuffer.length },
+      })
+      .expect(201);
+
+    const matrix = {
+      project: 'Demo Avionics',
+      level: 'C',
+      generatedAt: new Date().toISOString(),
+      summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      requirements: [
+        {
+          id: 'REQ-1',
+          title: 'Autopilot engages',
+          status: 'covered',
+          evidenceIds: [evidenceUpload.body.id as string],
+        },
+      ],
+    };
+
+    const coverage = { statements: 96.5, branches: 88.2 };
+    const metadata = { build: '2024.09.21' };
+    const canonicalRequirements = matrix.requirements.map((entry) => {
+      const normalizedEvidence = (entry.evidenceIds ?? [])
+        .map((value) => (typeof value === 'string' ? value.trim() : ''))
+        .filter((value) => value.length > 0);
+      const normalized: Record<string, unknown> = {
+        id: entry.id.trim(),
+        status: entry.status,
+        evidenceIds: normalizedEvidence,
+      };
+      if (typeof entry.title === 'string' && entry.title.trim().length > 0) {
+        normalized.title = entry.title.trim();
+      }
+      return normalized;
+    });
+
+    const canonicalCoverage: Record<string, number> = {};
+    (['statements', 'branches', 'functions', 'lines'] as const).forEach((key) => {
+      const value = (coverage as Record<string, unknown>)[key];
+      if (value !== undefined && value !== null) {
+        const numeric = Number(value);
+        canonicalCoverage[key] = Math.round(numeric * 1000) / 1000;
+      }
+    });
+
+    const canonicalMetadata: Record<string, unknown> = {};
+    Object.entries(metadata).forEach(([key, value]) => {
+      if (value !== undefined) {
+        canonicalMetadata[key] = value;
+      }
+    });
+
+    const canonicalPayload = {
+      matrix: {
+        project: matrix.project,
+        level: matrix.level,
+        generatedAt: matrix.generatedAt,
+        requirements: canonicalRequirements,
+        summary: {
+          total: Math.trunc(matrix.summary.total),
+          covered: Math.trunc(matrix.summary.covered),
+          partial: Math.trunc(matrix.summary.partial),
+          missing: Math.trunc(matrix.summary.missing),
+        },
+      },
+      coverage: canonicalCoverage,
+      metadata: canonicalMetadata,
+    };
+    const complianceHash = createHash('sha256').update(JSON.stringify(canonicalPayload)).digest('hex');
+
+    const complianceResponse = await request(app)
+      .post('/compliance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ matrix, coverage, metadata, sha256: complianceHash });
+
+    expect(complianceResponse.status).toBe(201);
+    expect(complianceResponse.body).toMatchObject({
+      sha256: complianceHash,
+      matrix: expect.objectContaining({ project: 'Demo Avionics', summary: matrix.summary }),
+    });
+
+    const listResponse = await request(app)
+      .get('/compliance')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(listResponse.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: complianceResponse.body.id,
+          sha256: complianceHash,
+          matrix: expect.objectContaining({
+            requirements: [
+              expect.objectContaining({
+                id: 'REQ-1',
+                evidenceIds: [evidenceUpload.body.id],
+              }),
+            ],
+          }),
+        }),
+      ]),
+    );
+
+    const detailResponse = await request(app)
+      .get(`/compliance/${complianceResponse.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(detailResponse.body.sha256).toBe(complianceHash);
   });
 
   it('rejects health checks without or with an invalid token', async () => {
@@ -639,6 +821,23 @@ describe('@soipack/server REST API', () => {
     await request(throttledApp).get('/health').expect(200);
     const response = await request(throttledApp).get('/health').expect(429);
     expect(response.body.error.code).toBe('IP_RATE_LIMIT_EXCEEDED');
+    expect(response.headers['retry-after']).toBeDefined();
+  });
+
+  it('enforces the global rate limiter for consecutive requests', async () => {
+    const globallyLimitedApp = createServer({
+      ...baseConfig,
+      rateLimit: {
+        global: { windowMs: 1000, max: 1 },
+        ip: baseConfig.rateLimit?.ip,
+        tenant: baseConfig.rateLimit?.tenant,
+      },
+      metricsRegistry: new Registry(),
+    });
+
+    await request(globallyLimitedApp).get('/health').expect(200);
+    const response = await request(globallyLimitedApp).get('/health').expect(429);
+    expect(response.body.error.code).toBe('GLOBAL_RATE_LIMIT_EXCEEDED');
     expect(response.headers['retry-after']).toBeDefined();
   });
 
