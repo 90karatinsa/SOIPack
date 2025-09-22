@@ -125,6 +125,28 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
    }
    ```
 
+6. Aynı süreci tek komutta çalıştırmak için `ingest` komutunu kullanabilirsiniz:
+
+   ```bash
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key ingest \
+     --input examples/minimal \
+     --output dist
+   ```
+
+   Komut, belirtilen girdi dizinindeki artefaktları içe aktarır, uyum analizi gerçekleştirir ve raporları `dist/reports` altına kaydeder. Çıktı özetinde toplam/karşılanan hedef sayıları ve kapsam yüzdeleri görüntülenir.
+
+7. Manifest ve zip paketini tek adımda oluşturmak için `package` komutunu çalıştırın:
+
+   ```bash
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key package \
+     --input examples/minimal \
+     --output dist \
+     --signing-key path/to/signing-key.pem \
+     --package-name soi-pack.zip
+   ```
+
+   Bu komut, `ingest` adımlarını tekrar ederek raporları günceller, `manifest.json` ve `manifest.sig` dosyalarını üretir ve tüm kanıtları `dist/soi-pack.zip` arşivine sıkıştırır. Manifestte listelenen dosya karmaları ve imza, `verify` komutu ile doğrulanabilir.
+
    JSON anahtarları plan kimliklerini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder; her plan içinde `overview`, `sections` (plan şablonundaki bölüm kimlikleri) ve isteğe bağlı `additionalNotes` alanları HTML içeriği kabul eder.
 
 6. Dağıtım paketini hazırlayın:

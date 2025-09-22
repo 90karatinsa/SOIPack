@@ -1,0 +1,387 @@
+openapi: 3.1.0
+info:
+  title: SOIPack API
+  version: 0.1.0
+  description: >-
+    Uyum kanıtlarını toplamak ve rapor akışlarını doğrulamak için kullanılan SOIPack
+    REST API'sinin çekirdek uç noktaları. Tüm kimlik doğrulamalı istekler JWT
+    bearer belirteci gerektirir ve hız limitleri aşılırsa `429` yanıtı döner.
+servers:
+  - url: https://api.example.com
+    description: Örnek üretim sunucusu
+paths:
+  /health:
+    get:
+      summary: Sunucu sağlık durumu
+      description: Kimliği doğrulanmamış sağlık kontrolü uç noktası.
+      responses:
+        '200':
+          description: Sunucu çalışıyor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /evidence:
+    get:
+      summary: Yüklenen kanıtları listele
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Kanıt kayıtlarının listesi.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvidenceItem'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+  /evidence/upload:
+    post:
+      summary: Yeni kanıt yükle
+      description: >-
+        Base64 kodlu içeriği SHA-256 özetiyle birlikte yükleyerek yeni bir kanıt
+        kaydı oluşturur. `metadata.sha256` alanı, sunucunun hesapladığı özetle
+        eşleşmelidir.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceUploadRequest'
+      responses:
+        '201':
+          description: Kanıt başarıyla yüklendi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceItem'
+        '400':
+          description: Geçersiz gövde, hash uyuşmazlığı veya boyut tutarsızlığı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+  /evidence/{id}:
+    get:
+      summary: Kanıt ayrıntılarını getir
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Kanıt kimliği.
+      responses:
+        '200':
+          description: Kanıt kaydı döndürülür.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceItemWithContent'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Kanıt bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+  /compliance:
+    get:
+      summary: Uyum kayıtlarını listele
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Kaydedilmiş uyum kayıtlarının listesi.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ComplianceRecord'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+    post:
+      summary: Yeni uyum kaydı oluştur
+      description: >-
+        Uyum matrisi, kapsam özetleri ve SHA-256 doğrulamasıyla birlikte yeni bir
+        uyum kaydı oluşturur. Gereksinimlerde referans verilen kanıt kimliklerinin
+        mevcut olması gerekir.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceSubmission'
+      responses:
+        '201':
+          description: Uyum kaydı oluşturuldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceRecord'
+        '400':
+          description: Uyum verisi doğrulamayı geçemedi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+  /compliance/{id}:
+    get:
+      summary: Uyum kaydını getir
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Uyum kaydı kimliği.
+      responses:
+        '200':
+          description: Uyum kaydının ayrıntıları.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceRecord'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Kayıt bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    UnauthorizedError:
+      description: JWT kimlik doğrulaması başarısız oldu.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimitedError:
+      description: İstek hızı sınırı aşıldı.
+      headers:
+        Retry-After:
+          description: Saniye cinsinden önerilen bekleme süresi.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+    EvidenceMetadata:
+      type: object
+      description: Kullanıcı tarafından sağlanan key/value metaveri.
+      additionalProperties: true
+    EvidenceItem:
+      type: object
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        sha256:
+          type: string
+          description: İçerik için onaltılık SHA-256 özeti.
+        size:
+          type: integer
+          format: int64
+        uploadedAt:
+          type: string
+          format: date-time
+        metadata:
+          $ref: '#/components/schemas/EvidenceMetadata'
+        contentEncoding:
+          type: string
+          enum: [base64]
+      required:
+        - id
+        - filename
+        - sha256
+        - size
+        - uploadedAt
+        - metadata
+        - contentEncoding
+    EvidenceItemWithContent:
+      allOf:
+        - $ref: '#/components/schemas/EvidenceItem'
+        - type: object
+          properties:
+            content:
+              type: string
+              description: Base64 kodlu içerik.
+    EvidenceUploadRequest:
+      type: object
+      required:
+        - filename
+        - content
+        - metadata
+      properties:
+        filename:
+          type: string
+        content:
+          type: string
+          description: Base64 kodlu dosya içeriği.
+        metadata:
+          type: object
+          properties:
+            sha256:
+              type: string
+              description: İçerik için beklenen SHA-256 özeti.
+            size:
+              type: integer
+              description: Bayt cinsinden beklenen dosya boyutu.
+          additionalProperties: true
+    ComplianceRequirement:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [covered, partial, missing]
+        title:
+          type: string
+        evidenceIds:
+          type: array
+          items:
+            type: string
+    ComplianceSummary:
+      type: object
+      properties:
+        total:
+          type: integer
+        covered:
+          type: integer
+        partial:
+          type: integer
+        missing:
+          type: integer
+      required: [total, covered, partial, missing]
+    ComplianceMatrix:
+      type: object
+      properties:
+        project:
+          type: string
+        level:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        summary:
+          $ref: '#/components/schemas/ComplianceSummary'
+        requirements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceRequirement'
+      required: [summary, requirements]
+    CoverageSummary:
+      type: object
+      properties:
+        statements:
+          type: number
+        branches:
+          type: number
+        functions:
+          type: number
+        lines:
+          type: number
+    ComplianceRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        sha256:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        matrix:
+          $ref: '#/components/schemas/ComplianceMatrix'
+        coverage:
+          $ref: '#/components/schemas/CoverageSummary'
+        metadata:
+          type: object
+          additionalProperties: true
+      required:
+        - id
+        - sha256
+        - createdAt
+        - matrix
+        - coverage
+    ComplianceSubmission:
+      type: object
+      required:
+        - matrix
+        - coverage
+        - sha256
+      properties:
+        matrix:
+          $ref: '#/components/schemas/ComplianceMatrix'
+        coverage:
+          $ref: '#/components/schemas/CoverageSummary'
+        metadata:
+          type: object
+          additionalProperties: true
+        sha256:
+          type: string
