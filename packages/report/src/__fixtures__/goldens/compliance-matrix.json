@@ -5,8 +5,8 @@
   "stats": {
     "objectives": {
       "total": 5,
-      "covered": 2,
-      "partial": 2,
+      "covered": 1,
+      "partial": 3,
       "missing": 1
     },
     "requirements": {
@@ -77,7 +77,7 @@
     },
     {
       "id": "A-5-08",
-      "status": "covered",
+      "status": "partial",
       "table": "A-5",
       "name": "Yapısal Kapsam—Statement",
       "desc": "Kod satır kapsamı ölçüldü ve açıklandı.",
@@ -85,7 +85,9 @@
         "Satır Kapsamı",
         "Analiz"
       ],
-      "missingArtifacts": [],
+      "missingArtifacts": [
+        "Satır Kapsamı"
+      ],
       "evidenceRefs": [
         "coverage_stmt:reports/coverage-summary.json",
         "analysis:reports/safety-analysis.pdf"
@@ -125,6 +127,11 @@
           "covered": 12,
           "total": 18,
           "percentage": 66.67
+        },
+        "mcdc": {
+          "covered": 20,
+          "total": 32,
+          "percentage": 62.5
         }
       },
       "codePaths": [
@@ -151,6 +158,11 @@
           "covered": 12,
           "total": 18,
           "percentage": 66.67
+        },
+        "mcdc": {
+          "covered": 20,
+          "total": 32,
+          "percentage": 62.5
         }
       },
       "codePaths": [
@@ -164,6 +176,27 @@
       "status": "missing",
       "coverage": {},
       "codePaths": []
+    }
+  ],
+  "qualityFindings": [
+    {
+      "id": "REQ-AUTH-2-verified-failing-tests",
+      "severity": "error",
+      "category": "tests",
+      "message": "REQ-AUTH-2 doğrulandı olarak işaretli ancak başarısız testler mevcut.",
+      "requirementId": "REQ-AUTH-2",
+      "recommendation": "Başarısız testleri analiz edin ve gereksinim doğrulama kanıtını güncelleyin.",
+      "relatedTests": [
+        "TC-LOGIN-2"
+      ]
+    },
+    {
+      "id": "REQ-AUTH-2-coverage-partial",
+      "severity": "warn",
+      "category": "coverage",
+      "message": "REQ-AUTH-2 doğrulandı olarak işaretli ancak kapsam verisi kısmi.",
+      "requirementId": "REQ-AUTH-2",
+      "recommendation": "Eksik kapsamı tamamlayın veya gereksinim durumunu güncelleyin."
     }
   ],
   "git": {

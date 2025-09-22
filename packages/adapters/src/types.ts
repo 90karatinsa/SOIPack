@@ -79,6 +79,7 @@ export interface FileCoverageSummary {
   statements: CoverageMetric;
   branches?: CoverageMetric;
   functions?: CoverageMetric;
+  mcdc?: CoverageMetric;
 }
 
 export interface CoverageReport {
@@ -86,6 +87,7 @@ export interface CoverageReport {
     statements: CoverageMetric;
     branches?: CoverageMetric;
     functions?: CoverageMetric;
+    mcdc?: CoverageMetric;
   };
   files: FileCoverageSummary[];
   testMap?: Record<string, string[]>;

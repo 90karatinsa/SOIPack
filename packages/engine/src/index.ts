@@ -13,6 +13,7 @@ import {
   Requirement,
   TraceLink,
 } from '@soipack/core';
+import { evaluateQualityFindings, QualityFinding } from './quality';
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
@@ -30,6 +31,7 @@ export interface RequirementCoverageStatus {
     statements?: CoverageMetric;
     branches?: CoverageMetric;
     functions?: CoverageMetric;
+    mcdc?: CoverageMetric;
   };
   codePaths: CodePath[];
 }
@@ -124,11 +126,13 @@ export class TraceEngine {
     statements?: CoverageMetric;
     branches?: CoverageMetric;
     functions?: CoverageMetric;
+    mcdc?: CoverageMetric;
   } {
     const totals = {
       statements: { covered: 0, total: 0 },
       branches: { covered: 0, total: 0 },
       functions: { covered: 0, total: 0 },
+      mcdc: { covered: 0, total: 0 },
     };
 
     codePaths.forEach((code) => {
@@ -147,6 +151,10 @@ export class TraceEngine {
       if (coverage.functions) {
         totals.functions.covered += coverage.functions.covered;
         totals.functions.total += coverage.functions.total;
+      }
+      if (coverage.mcdc) {
+        totals.mcdc.covered += coverage.mcdc.covered;
+        totals.mcdc.total += coverage.mcdc.total;
       }
     });
 
@@ -171,6 +179,7 @@ export class TraceEngine {
       statements: finalize(totals.statements),
       branches: finalize(totals.branches),
       functions: finalize(totals.functions),
+      mcdc: finalize(totals.mcdc),
     };
   }
 
@@ -770,6 +779,7 @@ export interface ComplianceSnapshot {
   gaps: GapAnalysis;
   traceGraph: TraceGraph;
   requirementCoverage: RequirementCoverageStatus[];
+  qualityFindings: QualityFinding[];
 }
 
 const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
@@ -809,6 +819,10 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
   const objectiveCoverage = mapper.mapObjectives();
   const traceGraph = engine.getGraph();
   const requirementCoverage = engine.getRequirementCoverage();
+  const requirementTraces = bundle.requirements.map((requirement) =>
+    engine.getRequirementTrace(requirement.id),
+  );
+  const qualityFindings = evaluateQualityFindings(requirementTraces, requirementCoverage);
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
   const gapAnalysis = buildGapAnalysis(objectiveCoverage);
@@ -826,5 +840,8 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
     gaps: gapAnalysis,
     traceGraph,
     requirementCoverage,
+    qualityFindings,
   };
 };
+
+export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } from './quality';

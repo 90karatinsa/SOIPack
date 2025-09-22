@@ -13,6 +13,7 @@ interface FileAccumulator {
   statements: MetricAccumulator;
   branches: MetricAccumulator;
   functions: MetricAccumulator;
+  mcdc: MetricAccumulator;
 }
 
 const createAccumulator = (file: string): FileAccumulator => ({
@@ -20,6 +21,7 @@ const createAccumulator = (file: string): FileAccumulator => ({
   statements: { covered: 0, total: 0 },
   branches: { covered: 0, total: 0 },
   functions: { covered: 0, total: 0 },
+  mcdc: { covered: 0, total: 0 },
 });
 
 const toCoverageMetric = ({ covered, total }: MetricAccumulator): CoverageMetric => ({
@@ -51,13 +53,20 @@ const finalizeFile = (file: FileAccumulator): FileCoverageSummary => ({
   statements: toCoverageMetric(file.statements),
   branches: file.branches.total > 0 ? toCoverageMetric(file.branches) : undefined,
   functions: file.functions.total > 0 ? toCoverageMetric(file.functions) : undefined,
+  mcdc: file.mcdc.total > 0 ? toCoverageMetric(file.mcdc) : undefined,
 });
 
 const accumulateTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => {
-  const totals: { statements: MetricAccumulator; branches: MetricAccumulator; functions: MetricAccumulator } = {
+  const totals: {
+    statements: MetricAccumulator;
+    branches: MetricAccumulator;
+    functions: MetricAccumulator;
+    mcdc: MetricAccumulator;
+  } = {
     statements: { covered: 0, total: 0 },
     branches: { covered: 0, total: 0 },
     functions: { covered: 0, total: 0 },
+    mcdc: { covered: 0, total: 0 },
   };
 
   files.forEach((file) => {
@@ -73,12 +82,18 @@ const accumulateTotals = (files: FileCoverageSummary[]): CoverageReport['totals'
       totals.functions.covered += file.functions.covered;
       totals.functions.total += file.functions.total;
     }
+
+    if (file.mcdc) {
+      totals.mcdc.covered += file.mcdc.covered;
+      totals.mcdc.total += file.mcdc.total;
+    }
   });
 
   return {
     statements: toCoverageMetric(totals.statements),
     branches: totals.branches.total > 0 ? toCoverageMetric(totals.branches) : undefined,
     functions: totals.functions.total > 0 ? toCoverageMetric(totals.functions) : undefined,
+    mcdc: totals.mcdc.total > 0 ? toCoverageMetric(totals.mcdc) : undefined,
   };
 };
 

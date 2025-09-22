@@ -162,6 +162,10 @@ Sunucu yanıtları her durumda `error.code`, `error.message` ve (varsa) `error.d
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. Uyum (`compliance.html`/`compliance.json`), izlenebilirlik (`trace.html`) ve boşluk (`gaps.html`) çıktıları tarayıcıda açılarak inceleme yapılabilir; aynı klasörde `analysis.json`, `snapshot.json` ve `traces.json` çalışma zamanı verileri yer alır. `plans/` alt dizini ise PSAC, SDP, SVP, SCMP ve SQAP belgelerinin HTML/DOCX sürümlerini barındırır; Playwright Chromium mevcutsa aynı adlarla PDF kopyaları da oluşturulur. Pipeline paketleri bu dosyaları ve manifesti `release/soi-pack-*.zip` arşivine dahil eder.【F:docs/demo_script.md†L18-L31】
 
+Uyum matrisi artık yapısal kapsam metriklerini Satır/Dallanma/Fonksiyon değerlerinin yanında MC/DC yüzdeleriyle birlikte gösterir. Gereksinimlere ait kod izleri bu dört metriği toplu olarak hesaplar; `MC/DC: %` etiketi tüm raporlarda otomatik görünür. Aynı matriste yeni “Kalite Bulguları” bloğu yer alır. Bu bölüm, doğrulandı olarak işaretlenmiş ama teste izlenmemiş gereksinimler, başarısız doğrulama testleri veya eksik kapsam gibi çelişkileri listeler. Kritik (hata) ve uyarı seviyeleri farklı rozet renkleriyle vurgulanır; her bulgu ilgili gereksinim, etkilediği test kimlikleri ve önerilen düzeltici aksiyon ile birlikte sunulur.
+
+`analysis.json` çıktısı bu bulguları programatik olarak tüketebilmek için `qualityFindings` dizisini içerir. Dizideki her öğe; `severity` (error/warn/info), `category` (trace/tests/coverage), `message`, `requirementId`, `relatedTests` ve `recommendation` alanlarını taşır. CI/CD iş akışlarında bu alanları kullanarak örneğin doğrulandı durumda olup teste bağlanmamış gereksinimler için pipeline'ı başarısız sayabilir veya otomatik JIRA görevleri açabilirsiniz. Bir bulgu raporda belirdiyse, ilgili gereksinim durumunu gözden geçirmek, eksik test izlerini eklemek veya kapsam raporlarını güncellemek önerilir.
+
 ### Web arayüzü ile pipeline takibi
 
 SOIPack, REST API üzerinden yürütülen işleri gözlemlemek için React tabanlı bir arayüz sunar. Arayüzü başlatmak için repoda aşağıdaki komutu uygulayın:

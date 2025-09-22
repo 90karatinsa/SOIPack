@@ -16,6 +16,8 @@ interface LdraViolation {
 interface LdraCoverageEntry {
   path?: string;
   stmt?: { covered?: number; total?: number };
+  dec?: { covered?: number; total?: number };
+  mcdc?: { covered?: number; total?: number };
 }
 
 interface LdraReport {
@@ -60,6 +62,20 @@ const toFinding = (entry: LdraViolation): Finding | null => {
   };
 };
 
+const toCoverageMetric = (
+  metric: LdraCoverageEntry['stmt'],
+): { covered: number; total: number } | undefined => {
+  if (!metric) {
+    return undefined;
+  }
+  const covered = Number(metric.covered ?? 0);
+  const total = Number(metric.total ?? 0);
+  if (Number.isNaN(covered) || Number.isNaN(total)) {
+    return undefined;
+  }
+  return { covered, total };
+};
+
 const toCoverage = (entries: LdraCoverageEntry[] | undefined): CoverageSummary | undefined => {
   if (!entries || entries.length === 0) {
     return undefined;
@@ -69,11 +85,17 @@ const toCoverage = (entries: LdraCoverageEntry[] | undefined): CoverageSummary |
       if (!entry.path || !entry.stmt) {
         return undefined;
       }
-      const covered = Number(entry.stmt.covered ?? 0);
-      const total = Number(entry.stmt.total ?? 0);
+      const stmt = toCoverageMetric(entry.stmt);
+      if (!stmt) {
+        return undefined;
+      }
+      const dec = toCoverageMetric(entry.dec);
+      const mcdc = toCoverageMetric(entry.mcdc);
       return {
         path: entry.path,
-        stmt: { covered, total },
+        stmt,
+        ...(dec && dec.total > 0 ? { dec } : {}),
+        ...(mcdc && mcdc.total > 0 ? { mcdc } : {}),
       };
     })
     .filter((item): item is CoverageSummary['files'][number] => item !== undefined);
