@@ -33,6 +33,7 @@ import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom
 
 
 import { HttpError, toHttpError } from './errors';
+import { createApiKeyAuthorizer } from './middleware/auth';
 import { JobDetails, JobExecutionContext, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 import {
@@ -2582,6 +2583,11 @@ export const createServer = (config: ServerConfig): Express => {
   }
 
   app.use(express.json({ limit: jsonBodyLimit }));
+
+  const apiKeyAuthorizer = createApiKeyAuthorizer();
+  if (apiKeyAuthorizer.isEnabled()) {
+    app.use(apiKeyAuthorizer.require());
+  }
 
   const tenantRateLimiter = config.rateLimit?.tenant
     ? createSlidingWindowRateLimiter('tenant', config.rateLimit.tenant)

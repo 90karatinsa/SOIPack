@@ -17,6 +17,7 @@ import {
 import { evaluateQualityFindings, QualityFinding } from './quality';
 
 export * from './coverage';
+export * from './gaps';
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
