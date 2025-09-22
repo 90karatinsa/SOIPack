@@ -387,6 +387,37 @@ describe('@soipack/server REST API', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('rejects authenticated requests without API key when keys are configured', async () => {
+    process.env.SOIPACK_API_KEYS = 'demo-key:reader';
+    const securedApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+
+    try {
+      const response = await request(securedApp)
+        .get('/evidence')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401);
+      expect(response.body.error.code).toBe('UNAUTHORIZED');
+    } finally {
+      delete process.env.SOIPACK_API_KEYS;
+    }
+  });
+
+  it('allows access with a valid API key and matching role', async () => {
+    process.env.SOIPACK_API_KEYS = 'ops=demo-key:reader|maintainer';
+    const securedApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+
+    try {
+      const response = await request(securedApp)
+        .get('/evidence')
+        .set('Authorization', `Bearer ${token}`)
+        .set('x-api-key', 'demo-key')
+        .expect(200);
+      expect(Array.isArray(response.body.items)).toBe(true);
+    } finally {
+      delete process.env.SOIPACK_API_KEYS;
+    }
+  });
+
   it('throws when jwksUri is not HTTPS', () => {
     expect(() =>
       createServer({

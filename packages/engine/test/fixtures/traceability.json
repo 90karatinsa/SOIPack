@@ -1,0 +1,27 @@
+{
+  "requirements": [
+    { "id": "REQ-1", "name": "Flight control law", "designRefs": ["DES-1"] },
+    { "id": "REQ-2", "name": "Redundant sensors", "designRefs": ["DES-2"] },
+    { "id": "REQ-3", "name": "Telemetry feed", "designRefs": [] },
+    { "id": "REQ-4", "name": "Stall warning", "designRefs": ["DES-4"] }
+  ],
+  "designs": [
+    { "id": "DES-1", "name": "Control architecture", "requirementRefs": ["REQ-1"], "codeRefs": ["CODE-1"] },
+    { "id": "DES-2", "name": "Sensor redundancy", "requirementRefs": ["REQ-2"], "codeRefs": [] },
+    { "id": "DES-3", "name": "Legacy telemetry", "requirementRefs": [], "codeRefs": ["CODE-3"] },
+    { "id": "DES-4", "name": "Warning annunciator", "requirementRefs": ["REQ-4"], "codeRefs": ["CODE-4", "CODE-5"] }
+  ],
+  "code": [
+    { "id": "CODE-1", "name": "control.ts", "designRefs": ["DES-1"], "testRefs": ["TEST-1"] },
+    { "id": "CODE-2", "name": "drivers.ts", "designRefs": [], "testRefs": [] },
+    { "id": "CODE-3", "name": "telemetry.ts", "designRefs": ["DES-3"], "testRefs": [] },
+    { "id": "CODE-4", "name": "warning.ts", "designRefs": ["DES-4"], "testRefs": ["TEST-4"] },
+    { "id": "CODE-5", "name": "annunciator.ts", "designRefs": ["DES-4"], "testRefs": [] }
+  ],
+  "tests": [
+    { "id": "TEST-1", "name": "Control law happy path", "codeRefs": ["CODE-1"], "status": "passed" },
+    { "id": "TEST-2", "name": "Driver regression", "codeRefs": ["CODE-2"], "status": "failed" },
+    { "id": "TEST-ghost", "name": "Stale telemetry", "codeRefs": [], "status": "skipped" },
+    { "id": "TEST-4", "name": "Warning annunciator integration", "codeRefs": ["CODE-X"], "status": "passed" }
+  ]
+}
