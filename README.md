@@ -5,7 +5,7 @@ SOIPack, yazılım odaklı organizasyonların gereksinim, test, kod ve kalite ar
 ## Paketler
 
 - **@soipack/core** – Gereksinim ve test domain şemaları, ortak türler.
-- **@soipack/adapters** – Jira CSV, ReqIF, JUnit XML, LCOV/Cobertura ve Git gibi kaynaklardan veri bağdaştırıcılarının temel iskeleti.
+- **@soipack/adapters** – Jira CSV, ReqIF, JUnit XML, LCOV/Cobertura, Polyspace, LDRA, VectorCAST ve Git gibi kaynaklardan veri bağdaştırıcılarının temel iskeleti.
 - **@soipack/engine** – Hedef eşleme ve izlenebilirlik hesaplamalarını yöneten çekirdek motor.
 - **@soipack/packager** – Manifest ve Ed25519 imzası ile veri paketleri oluşturan yardımcılar.
 - **@soipack/report** – HTML/JSON rapor şablonları ve Playwright tabanlı PDF üretimi için yardımcılar.
@@ -52,6 +52,9 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      --junit examples/minimal/results.xml \
      --lcov examples/minimal/lcov.info \
      --cobertura examples/minimal/coverage.xml \
+     --import polyspace=examples/minimal/polyspace/report.json \
+     --import ldra=examples/minimal/ldra/tbvision.json \
+     --import vectorcast=examples/minimal/vectorcast/coverage.json \
      --git . \
      --project-name "SOIPack Demo Avionics" \
      --project-version "1.0.0" \
@@ -59,6 +62,11 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      --objectives data/objectives/do178c_objectives.min.json \
      -o .soipack/work
    ```
+
+   Çalışma alanı çıktısı `workspace.json`, test sonuçlarına ek olarak `findings`
+   (Polyspace/LDRA/VectorCAST bulguları) ve `structuralCoverage`
+   (VectorCAST/LDRA kapsam özetleri) alanlarını içerir. Bu bilgiler ilgili
+   hedeflere bağlanan kanıt kayıtlarıyla birlikte saklanır.
 
 3. Uyum analizini üretin:
 

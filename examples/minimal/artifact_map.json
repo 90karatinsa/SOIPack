@@ -19,6 +19,18 @@
     "title": "Statement Coverage Report",
     "path": "artifacts/coverage/lcov.info"
   },
+  "coverage_dec": {
+    "title": "Decision Coverage Report",
+    "path": "vectorcast/coverage.json"
+  },
+  "coverage_mcdc": {
+    "title": "MC/DC Coverage Report",
+    "path": "vectorcast/coverage.json"
+  },
+  "problem_report": {
+    "title": "Static Analysis Findings",
+    "path": "polyspace/report.json"
+  },
   "cm_record": {
     "title": "Configuration Baseline",
     "path": "artifacts/CM_Baseline.pdf"

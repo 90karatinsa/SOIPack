@@ -1,4 +1,4 @@
-import { CoverageSummary, TestResult } from '@soipack/adapters';
+import { CoverageReport, TestResult } from '@soipack/adapters';
 import {
   Evidence,
   EvidenceSource,
@@ -45,7 +45,7 @@ const buildEvidence = (
   timestamp: '2024-01-10T09:30:00Z',
 });
 
-const coverageFixture = (): CoverageSummary => ({
+const coverageFixture = (): CoverageReport => ({
   totals: {
     statements: { covered: 55, total: 80, percentage: 68.75 },
     branches: { covered: 22, total: 40, percentage: 55 },

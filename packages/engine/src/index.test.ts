@@ -1,4 +1,4 @@
-import { CoverageSummary, TestResult } from '@soipack/adapters';
+import { CoverageReport, TestResult, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import {
   Evidence,
   Objective,
@@ -8,7 +8,13 @@ import {
   createRequirement,
 } from '@soipack/core';
 
-import { ImportBundle, ObjectiveMapper, TraceEngine, generateComplianceSnapshot } from './index';
+import {
+  EvidenceIndex,
+  ImportBundle,
+  ObjectiveMapper,
+  TraceEngine,
+  generateComplianceSnapshot,
+} from './index';
 
 const evidence = (
   type: ObjectiveArtifactType,
@@ -27,7 +33,7 @@ const requirementFixture = (): Requirement[] => [
   createRequirement('REQ-3', 'Audit login attempts', { status: 'draft' }),
 ];
 
-const coverageFixture = (): CoverageSummary => ({
+const coverageFixture = (): CoverageReport => ({
   totals: {
     statements: { covered: 80, total: 100, percentage: 80 },
     branches: { covered: 30, total: 50, percentage: 60 },
@@ -46,6 +52,24 @@ const coverageFixture = (): CoverageSummary => ({
       functions: { covered: 3, total: 3, percentage: 100 },
     },
   ],
+});
+
+const structuralCoverageFixture = (): StructuralCoverageSummary => ({
+  tool: 'vectorcast',
+  files: [
+    {
+      path: 'src/auth/login.ts',
+      stmt: { covered: 60, total: 60 },
+      dec: { covered: 40, total: 50 },
+      mcdc: { covered: 30, total: 40 },
+    },
+    {
+      path: 'src/common/logger.ts',
+      stmt: { covered: 30, total: 30 },
+      dec: { covered: 20, total: 20 },
+    },
+  ],
+  objectiveLinks: ['A-5-08', 'A-5-09', 'A-5-10'],
 });
 
 const testResultsFixture = (): TestResult[] => [
@@ -163,6 +187,8 @@ const evidenceIndexFixture = () => ({
   test: [evidence('test', 'reports/junit.xml', 'junit')],
   trace: [evidence('trace', 'traces/requirements.csv', 'git')],
   coverage_stmt: [evidence('coverage_stmt', 'reports/lcov.info', 'lcov')],
+  coverage_dec: [evidence('coverage_dec', 'reports/vectorcast.json', 'vectorcast')],
+  coverage_mcdc: [evidence('coverage_mcdc', 'reports/vectorcast.json', 'vectorcast')],
 });
 
 const traceLinksFixture = (): TraceLink[] => [{ from: 'REQ-3', to: 'TC-4', type: 'verifies' }];
@@ -172,6 +198,7 @@ const bundleFixture = (): ImportBundle => ({
   objectives: objectivesFixture(),
   testResults: testResultsFixture(),
   coverage: coverageFixture(),
+  structuralCoverage: structuralCoverageFixture(),
   evidenceIndex: evidenceIndexFixture(),
   traceLinks: traceLinksFixture(),
   testToCodeMap: {
@@ -181,6 +208,7 @@ const bundleFixture = (): ImportBundle => ({
     'TC-4': ['src/common/logger.ts'],
   },
   generatedAt: '2024-02-01T10:00:00Z',
+  targetLevel: 'A',
 });
 
 describe('TraceEngine', () => {
@@ -279,6 +307,32 @@ describe('ObjectiveMapper', () => {
         'analysis:analysis/resources.md',
       ]),
     );
+  });
+
+  it('marks MC/DC objective missing when structural coverage evidence is absent', () => {
+    const evidence = evidenceIndexFixture();
+    delete (evidence as Partial<EvidenceIndex>).coverage_mcdc;
+
+    const mapper = new ObjectiveMapper(bundle.objectives, evidence, {
+      structuralCoverage: structuralCoverageFixture(),
+    });
+    const coverage = mapper.mapObjectives();
+    const mcDc = coverage.find((item) => item.objectiveId === 'A-5-10');
+    expect(mcDc?.status).toBe('missing');
+  });
+
+  it('treats MC/DC objective as missing when no metric data is available', () => {
+    const coverageSummary = structuralCoverageFixture();
+    const stripped: StructuralCoverageSummary = {
+      tool: coverageSummary.tool,
+      files: coverageSummary.files.map((file) => ({ path: file.path, stmt: file.stmt, dec: file.dec })),
+    };
+    const mapper = new ObjectiveMapper(bundle.objectives, evidenceIndexFixture(), {
+      structuralCoverage: stripped,
+    });
+    const coverage = mapper.mapObjectives();
+    const mcDc = coverage.find((item) => item.objectiveId === 'A-5-10');
+    expect(mcDc?.status).toBe('missing');
   });
 });
 

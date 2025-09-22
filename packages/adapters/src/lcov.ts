@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 
-import { CoverageMetric, CoverageSummary, FileCoverageSummary, ParseResult } from './types';
+import { CoverageMetric, CoverageReport, FileCoverageSummary, ParseResult } from './types';
 
 interface MetricAccumulator {
   covered: number;
@@ -53,7 +53,7 @@ const finalizeFile = (file: FileAccumulator): FileCoverageSummary => ({
   functions: file.functions.total > 0 ? toCoverageMetric(file.functions) : undefined,
 });
 
-const accumulateTotals = (files: FileCoverageSummary[]): CoverageSummary['totals'] => {
+const accumulateTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => {
   const totals: { statements: MetricAccumulator; branches: MetricAccumulator; functions: MetricAccumulator } = {
     statements: { covered: 0, total: 0 },
     branches: { covered: 0, total: 0 },
@@ -82,7 +82,7 @@ const accumulateTotals = (files: FileCoverageSummary[]): CoverageSummary['totals
   };
 };
 
-export const importLcov = async (filePath: string): Promise<ParseResult<CoverageSummary>> => {
+export const importLcov = async (filePath: string): Promise<ParseResult<CoverageReport>> => {
   const warnings: string[] = [];
   const location = path.resolve(filePath);
   const content = await fs.readFile(location, 'utf8');

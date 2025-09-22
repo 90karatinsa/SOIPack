@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 
-import { CoverageMetric, CoverageSummary, FileCoverageSummary, ParseResult } from './types';
+import { CoverageMetric, CoverageReport, FileCoverageSummary, ParseResult } from './types';
 import { parseXml } from './utils/xml';
 
 type UnknownRecord = Record<string, unknown>;
@@ -95,7 +95,7 @@ const registerTestFile = (
   map.set(normalizedTest, existing);
 };
 
-export const importCobertura = async (filePath: string): Promise<ParseResult<CoverageSummary>> => {
+export const importCobertura = async (filePath: string): Promise<ParseResult<CoverageReport>> => {
   const warnings: string[] = [];
   const location = path.resolve(filePath);
   const content = await fs.readFile(location, 'utf8');
@@ -194,7 +194,7 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
     });
   });
 
-  const totals = files.reduce<CoverageSummary['totals']>((acc, file) => {
+  const totals = files.reduce<CoverageReport['totals']>((acc, file) => {
     acc.statements = addMetric(acc.statements, { ...file.statements });
     if (file.branches) {
       acc.branches = addMetric(acc.branches, { ...file.branches });
@@ -203,9 +203,9 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
       acc.functions = addMetric(acc.functions, { ...file.functions });
     }
     return acc;
-  }, { statements: { covered: 0, total: 0, percentage: 0 } } as CoverageSummary['totals']);
+  }, { statements: { covered: 0, total: 0, percentage: 0 } } as CoverageReport['totals']);
 
-  const finalizedTotals: CoverageSummary['totals'] = {
+  const finalizedTotals: CoverageReport['totals'] = {
     statements: finalizeMetric(totals.statements)!,
     branches: finalizeMetric(totals.branches),
     functions: finalizeMetric(totals.functions),

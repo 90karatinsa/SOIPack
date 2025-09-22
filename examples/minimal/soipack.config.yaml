@@ -11,6 +11,9 @@ inputs:
   lcov: "lcov.info"
   cobertura: "coverage.xml"
   git: "../.."
+  polyspace: "polyspace/report.json"
+  ldra: "ldra/tbvision.json"
+  vectorcast: "vectorcast/coverage.json"
 output:
   work: ".soipack/work"
   analysis: ".soipack/out"
