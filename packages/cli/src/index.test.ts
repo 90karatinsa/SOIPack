@@ -16,6 +16,7 @@ import {
   downloadPackageArtifacts,
   exitCodes,
   runAnalyze,
+  runObjectivesList,
   runImport,
   runPack,
   runReport,
@@ -193,6 +194,28 @@ describe('@soipack/cli pipeline', () => {
 
     const derivedTrace = engine.getRequirementTrace('REQ-2');
     expect(derivedTrace.tests.map((test) => test.testId)).toContain('AuthTests#handles lockout');
+  });
+});
+
+describe('runObjectivesList', () => {
+  const objectivesPath = path.resolve(
+    __dirname,
+    '../../../data/objectives/do178c_objectives.min.json',
+  );
+
+  it('loads objectives from the given path', async () => {
+    const result = await runObjectivesList({ objectives: objectivesPath });
+    expect(result.sourcePath).toBe(objectivesPath);
+    expect(result.objectives.length).toBeGreaterThan(0);
+  });
+
+  it('filters objectives by certification level', async () => {
+    const all = await runObjectivesList({ objectives: objectivesPath, level: 'A' });
+    const levelC = await runObjectivesList({ objectives: objectivesPath, level: 'C' });
+
+    expect(all.objectives.every((objective) => objective.levels.A)).toBe(true);
+    expect(levelC.objectives.every((objective) => objective.levels.C)).toBe(true);
+    expect(levelC.objectives.length).toBeLessThan(all.objectives.length);
   });
 });
 
@@ -462,7 +485,7 @@ describe('downloadPackageArtifacts', () => {
       httpGet: getMock,
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(getMock).toHaveBeenCalledTimes(1);
     const request = requests[0];

@@ -10,7 +10,10 @@ the full DO-178C objective catalog at different certification levels:
 | Level C | `soipack.config.yaml` | Focuses on high/low level requirement verification without structural coverage objectives beyond statement level. |
 
 All scenarios reference the canonical objective catalog at
-`data/objectives/do178c_objectives.min.json`. The artifact map was updated to
+`data/objectives/do178c_objectives.min.json`. You can inspect the translated
+catalog directly with `npm run --workspace @soipack/cli build` followed by
+`node packages/cli/dist/index.js objectives list --license data/licenses/demo-license.key`.
+The artifact map was updated to
 match the new evidence vocabulary (`plan`, `analysis`, `test`, `trace`,
 `coverage_stmt`, `cm_record`, …). You can run a scenario with the CLI:
 

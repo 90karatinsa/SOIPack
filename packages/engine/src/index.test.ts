@@ -283,7 +283,9 @@ describe('TraceEngine', () => {
 
 describe('ObjectiveMapper', () => {
   const bundle = bundleFixture();
-  const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex);
+  const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex, {
+    structuralCoverage: bundle.structuralCoverage,
+  });
   const coverage = mapper.mapObjectives();
 
   it('returns coverage summaries for each objective', () => {
