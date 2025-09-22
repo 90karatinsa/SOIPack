@@ -94,12 +94,13 @@ const toCoverage = (entries: VectorcastCoverageEntry[] | undefined): CoverageSum
       }
       const dec = toCoverageMetric(entry.dec);
       const mcdc = toCoverageMetric(entry.mcdc);
-      return {
+      const fileEntry: CoverageSummary['files'][number] = {
         path: entry.path,
         stmt,
-        dec: dec && dec.total > 0 ? dec : undefined,
-        mcdc: mcdc && mcdc.total > 0 ? mcdc : undefined,
+        ...(dec && dec.total > 0 ? { dec } : {}),
+        ...(mcdc && mcdc.total > 0 ? { mcdc } : {}),
       };
+      return fileEntry;
     })
     .filter((item): item is CoverageSummary['files'][number] => item !== undefined);
 

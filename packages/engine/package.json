@@ -6,8 +6,8 @@
   "types": "dist/index.d.ts",
   "license": "MIT",
   "dependencies": {
-    "@soipack/adapters": "0.1.0",
-    "@soipack/core": "0.1.0"
+    "@soipack/adapters": "workspace:*",
+    "@soipack/core": "workspace:*"
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",

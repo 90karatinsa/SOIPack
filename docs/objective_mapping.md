@@ -1,7 +1,8 @@
 # Objective Mapping Rules
 
 The objective mapper evaluates every DO-178C Annex A objective defined in
-`data/objectives/do178c_objectives.min.json`. Each objective declares:
+`data/objectives/do178c_objectives.min.json`. CLI kullanıcıları kataloğu `objectives list`
+alt komutu ile seviyeye göre filtreleyebilir. Each objective declares:
 
 - `table`, `name`, and `desc` values describing its origin (A-3 … A-7) and
   intent.

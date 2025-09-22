@@ -27,6 +27,7 @@ import {
 } from '@soipack/adapters';
 import {
   CertificationLevel,
+  certificationLevels,
   Evidence,
   EvidenceSource,
   Manifest,
@@ -1174,6 +1175,96 @@ const filterObjectives = (objectives: Objective[], level: CertificationLevel): O
   return objectives.filter((objective) => objective.levels[level]);
 };
 
+const sortObjectives = (objectives: Objective[]): Objective[] => {
+  return [...objectives].sort((a, b) => a.id.localeCompare(b.id, 'en') || a.name.localeCompare(b.name, 'en'));
+};
+
+export interface ListObjectivesOptions {
+  objectives?: string;
+  level?: CertificationLevel;
+}
+
+export interface ListObjectivesResult {
+  sourcePath: string;
+  objectives: Objective[];
+}
+
+export const runObjectivesList = async (
+  options: ListObjectivesOptions = {},
+): Promise<ListObjectivesResult> => {
+  const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
+  const objectivesPathRaw = options.objectives ?? fallbackObjectivesPath;
+  const objectivesPath = path.resolve(objectivesPathRaw);
+  const allObjectives = await loadObjectives(objectivesPath);
+  const filtered = options.level ? filterObjectives(allObjectives, options.level) : allObjectives;
+  const sorted = sortObjectives(filtered);
+  return {
+    sourcePath: objectivesPath,
+    objectives: sorted,
+  };
+};
+
+const formatLevelApplicability = (levels: Objective['levels']): string => {
+  const applicable = certificationLevels.filter((level) => levels[level]);
+  return applicable.join(', ');
+};
+
+const formatObjectivesTable = (objectives: Objective[]): string => {
+  if (objectives.length === 0) {
+    return 'Seçilen filtre kriterleriyle eşleşen hedef bulunamadı.';
+  }
+
+  const columns = [
+    { key: 'id', label: 'ID', getter: (objective: Objective) => objective.id },
+    { key: 'table', label: 'Tablo', getter: (objective: Objective) => objective.table },
+    {
+      key: 'levels',
+      label: 'Seviyeler',
+      getter: (objective: Objective) => formatLevelApplicability(objective.levels),
+    },
+    {
+      key: 'independence',
+      label: 'Bağımsızlık',
+      getter: (objective: Objective) => objective.independence,
+    },
+    {
+      key: 'artifacts',
+      label: 'Artefaktlar',
+      getter: (objective: Objective) => objective.artifacts.join(', '),
+    },
+    { key: 'name', label: 'Başlık', getter: (objective: Objective) => objective.name },
+  ] as const;
+
+  const widths = columns.reduce<Record<string, number>>((acc, column) => {
+    const values = objectives.map((objective) => column.getter(objective));
+    const maxValue = Math.max(column.label.length, ...values.map((value) => value.length));
+    acc[column.key] = maxValue;
+    return acc;
+  }, {});
+
+  const header = columns.map((column) => column.label.padEnd(widths[column.key])).join('  ').trimEnd();
+  const separator = columns
+    .map((column) => ''.padEnd(Math.max(widths[column.key], column.label.length), '-'))
+    .join('  ')
+    .trimEnd();
+
+  const indent = columns.slice(0, columns.length - 1).reduce((acc, column) => acc + widths[column.key] + 2, 0);
+  const descriptionIndent = ' '.repeat(Math.max(indent, 0));
+
+  const lines: string[] = [header, separator];
+
+  objectives.forEach((objective) => {
+    const row = columns
+      .map((column) => column.getter(objective).padEnd(widths[column.key]))
+      .join('  ')
+      .trimEnd();
+    lines.push(row);
+    lines.push(`${descriptionIndent}  ${objective.desc}`.trimEnd());
+  });
+
+  return lines.join('\n');
+};
+
 const buildImportBundle = (
   workspace: ImportWorkspace,
   objectives: Objective[],
@@ -1281,7 +1372,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     objectives: Objective[];
     requirements: Requirement[];
     tests: TestResult[];
-    coverage?: CoverageSummary;
+    coverage?: CoverageReport;
     evidenceIndex: EvidenceIndex;
     git?: BuildInfo | null;
     inputs: ImportPaths;
@@ -1741,6 +1832,72 @@ if (require.main === module) {
     })
     .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
     .alias('version', 'V')
+    .command(
+      'objectives list',
+      'DO-178C hedef kataloğunu listeler.',
+      (y) =>
+        y
+          .option('objectives', {
+            describe: 'Uyum hedefleri JSON dosyası.',
+            type: 'string',
+          })
+          .option('level', {
+            describe: 'Seviye filtresi (A-E).',
+            type: 'string',
+            choices: certificationLevels as unknown as string[],
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+        const levelOption = argv.level as string | undefined;
+        const normalizedLevel = levelOption
+          ? (levelOption.toUpperCase() as CertificationLevel | undefined)
+          : undefined;
+        const context = {
+          command: 'objectives list',
+          licensePath,
+          objectives: argv.objectives,
+          level: normalizedLevel,
+        };
+
+        try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+
+          if (normalizedLevel && !certificationLevels.includes(normalizedLevel)) {
+            throw new Error(`Geçersiz seviye değeri: ${levelOption}`);
+          }
+
+          const result = await runObjectivesList({
+            objectives: argv.objectives ? String(argv.objectives) : undefined,
+            level: normalizedLevel,
+          });
+
+          if (result.objectives.length === 0) {
+            console.log('Seçilen kriterlere uygun hedef bulunamadı.');
+          } else {
+            console.log(formatObjectivesTable(result.objectives));
+            console.log('');
+            console.log(
+              `${result.objectives.length} hedef listelendi (kaynak: ${path.relative(process.cwd(), result.sourcePath)}).`,
+            );
+          }
+
+          logger.info(
+            {
+              ...context,
+              sourcePath: result.sourcePath,
+              count: result.objectives.length,
+            },
+            'Hedef kataloğu listelendi.',
+          );
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
     .command(
       'import',
       'Gereksinim, test ve kapsam kanıtlarını çalışma alanına aktarır.',

@@ -1,23 +1,19 @@
 {
   "name": "@soipack/report",
   "version": "0.1.0",
-  "description": "Reporting templates for SOIPack traceability insights.",
+  "description": "Compliance and traceability report generators.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
   "dependencies": {
-    "@soipack/core": "0.1.0",
-    "@soipack/engine": "0.1.0",
+    "@types/nunjucks": "^3.2.5",
+    "@soipack/core": "workspace:*",
+    "@soipack/engine": "workspace:*",
     "nunjucks": "^3.2.4",
-    "playwright": "^1.41.2"
+    "playwright": "^1.45.0"
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
-    "test": "jest --config ./jest.config.cjs",
-    "demo": "node -r ts-node/register src/demo.ts"
-  },
-  "devDependencies": {
-    "@types/nunjucks": "^3.2.6",
-    "ts-node": "^10.9.2"
+    "test": "jest --config ./jest.config.cjs"
   }
 }

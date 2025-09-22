@@ -475,6 +475,11 @@ const coverageArtifactMetrics: Partial<Record<ObjectiveArtifactType, 'stmt' | 'd
 export class ObjectiveMapper {
   private readonly structuralCoverage?: StructuralCoverageSummary;
   private readonly coverageTotals: Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>;
+  private readonly coverageTotalsByObjective: Map<
+    string,
+    Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>
+  >;
+  private readonly coverageUsesObjectiveLinks: boolean;
 
   constructor(
     private readonly objectives: Objective[],
@@ -482,7 +487,10 @@ export class ObjectiveMapper {
     options: { structuralCoverage?: StructuralCoverageSummary; targetLevel?: CertificationLevel } = {},
   ) {
     this.structuralCoverage = options.structuralCoverage;
-    this.coverageTotals = this.computeCoverageTotals(this.structuralCoverage);
+    const coverage = this.computeCoverageTotals(this.structuralCoverage);
+    this.coverageTotals = coverage.overall;
+    this.coverageTotalsByObjective = coverage.byObjective;
+    this.coverageUsesObjectiveLinks = coverage.usesObjectiveLinks;
   }
 
   public mapObjectives(): ObjectiveCoverage[] {
@@ -494,13 +502,15 @@ export class ObjectiveMapper {
     const missingArtifacts: ObjectiveArtifactType[] = [];
     const evidenceRefs: string[] = [];
     let hasPartialCoverage = false;
+    let hasCriticalMissing = false;
 
     objective.artifacts.forEach((artifactType) => {
       const evidenceItems = this.evidenceIndex[artifactType] ?? [];
       if (coverageArtifactMetrics[artifactType]) {
-        const coverageStatus = this.evaluateCoverageArtifact(artifactType);
+        const coverageStatus = this.evaluateCoverageArtifact(objective.id, artifactType);
         if (evidenceItems.length === 0) {
           missingArtifacts.push(artifactType);
+          hasCriticalMissing = true;
         } else if (coverageStatus === 'covered') {
           satisfiedArtifacts.push(artifactType);
         } else if (coverageStatus === 'partial') {
@@ -509,6 +519,7 @@ export class ObjectiveMapper {
           missingArtifacts.push(artifactType);
         } else {
           missingArtifacts.push(artifactType);
+          hasCriticalMissing = true;
         }
         evidenceItems.forEach((evidence) => {
           evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
@@ -529,7 +540,7 @@ export class ObjectiveMapper {
     let status: ObjectiveCoverageStatus;
     if (missingArtifacts.length === 0) {
       status = hasPartialCoverage ? 'partial' : 'covered';
-    } else if (satisfiedArtifacts.length === 0) {
+    } else if (hasCriticalMissing || satisfiedArtifacts.length === 0) {
       status = 'missing';
     } else {
       status = 'partial';
@@ -546,39 +557,96 @@ export class ObjectiveMapper {
 
   private computeCoverageTotals(
     summary?: StructuralCoverageSummary,
-  ): Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }> {
-    const totals = {
+  ): {
+    overall: Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>;
+    byObjective: Map<string, Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>>;
+    usesObjectiveLinks: boolean;
+  } {
+    const overall = {
       stmt: { covered: 0, total: 0 },
       dec: { covered: 0, total: 0 },
       mcdc: { covered: 0, total: 0 },
     };
 
+    const byObjective = new Map<
+      string,
+      Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>
+    >();
+
     if (!summary) {
-      return totals;
+      return { overall, byObjective, usesObjectiveLinks: false };
     }
 
+    const ensureObjectiveTotals = (
+      objectiveId: string,
+    ): Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }> => {
+      let entry = byObjective.get(objectiveId);
+      if (!entry) {
+        entry = {
+          stmt: { covered: 0, total: 0 },
+          dec: { covered: 0, total: 0 },
+          mcdc: { covered: 0, total: 0 },
+        };
+        byObjective.set(objectiveId, entry);
+      }
+      return entry;
+    };
+
+    const linkedObjectives = Array.isArray(summary.objectiveLinks)
+      ? summary.objectiveLinks.filter((item) => typeof item === 'string' && item.trim().length > 0)
+      : [];
+
     summary.files.forEach((file) => {
-      totals.stmt.covered += file.stmt.covered;
-      totals.stmt.total += file.stmt.total;
+      overall.stmt.covered += file.stmt.covered;
+      overall.stmt.total += file.stmt.total;
       if (file.dec) {
-        totals.dec.covered += file.dec.covered;
-        totals.dec.total += file.dec.total;
+        overall.dec.covered += file.dec.covered;
+        overall.dec.total += file.dec.total;
       }
       if (file.mcdc) {
-        totals.mcdc.covered += file.mcdc.covered;
-        totals.mcdc.total += file.mcdc.total;
+        overall.mcdc.covered += file.mcdc.covered;
+        overall.mcdc.total += file.mcdc.total;
       }
+
+      linkedObjectives.forEach((objectiveId) => {
+        const totals = ensureObjectiveTotals(objectiveId);
+        totals.stmt.covered += file.stmt.covered;
+        totals.stmt.total += file.stmt.total;
+        if (file.dec) {
+          totals.dec.covered += file.dec.covered;
+          totals.dec.total += file.dec.total;
+        }
+        if (file.mcdc) {
+          totals.mcdc.covered += file.mcdc.covered;
+          totals.mcdc.total += file.mcdc.total;
+        }
+      });
     });
 
-    return totals;
+    return {
+      overall,
+      byObjective,
+      usesObjectiveLinks: linkedObjectives.length > 0,
+    };
   }
 
-  private evaluateCoverageArtifact(artifact: ObjectiveArtifactType): 'missing' | 'partial' | 'covered' {
+  private evaluateCoverageArtifact(
+    objectiveId: string,
+    artifact: ObjectiveArtifactType,
+  ): 'missing' | 'partial' | 'covered' {
     const metric = coverageArtifactMetrics[artifact];
     if (!metric) {
       return 'missing';
     }
-    const totals = this.coverageTotals[metric];
+
+    let totals: { covered: number; total: number } | undefined;
+    if (this.coverageUsesObjectiveLinks) {
+      const objectiveTotals = this.coverageTotalsByObjective.get(objectiveId);
+      totals = objectiveTotals?.[metric];
+    } else {
+      totals = this.coverageTotals[metric];
+    }
+
     if (!totals || totals.total === 0) {
       return 'missing';
     }

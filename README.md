@@ -43,7 +43,16 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
    npm run --workspace @soipack/cli build
    ```
 
-2. Örnek artefaktları çalışma alanına aktarın:
+2. Hedef kataloğunu gözden geçirin (isteğe bağlı):
+
+   ```bash
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key objectives list --level C \
+     --objectives data/objectives/do178c_objectives.min.json
+   ```
+
+   Bu komut, yeni DO-178C hedef kataloğunu seviye filtresiyle birlikte listeler.
+
+3. Örnek artefaktları çalışma alanına aktarın:
 
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key import \
@@ -68,7 +77,7 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
    (VectorCAST/LDRA kapsam özetleri) alanlarını içerir. Bu bilgiler ilgili
    hedeflere bağlanan kanıt kayıtlarıyla birlikte saklanır.
 
-3. Uyum analizini üretin:
+4. Uyum analizini üretin:
 
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
@@ -80,19 +89,19 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      --project-version "1.0.0"
    ```
 
-4. Raporları oluşturun:
+5. Raporları oluşturun:
 
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
 
-5. Dağıtım paketini hazırlayın:
+6. Dağıtım paketini hazırlayın:
 
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
 
-6. Manifest imzasını doğrulayın:
+7. Manifest imzasını doğrulayın:
 
    ```bash
    node packages/cli/dist/index.js verify \

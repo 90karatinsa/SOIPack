@@ -35,7 +35,14 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
 
 > Not: Tüm CLI komutları lisans doğrulaması yapar. Örnek demo anahtarını `--license data/licenses/demo-license.key` argümanı ile ilettiğinizden emin olun.
 
-1. **Örnek veriyi içe aktarın**
+1. **Hedef kataloğunu gözden geçirin (isteğe bağlı)**
+   ```bash
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key objectives list --level C \
+     --objectives data/objectives/do178c_objectives.min.json
+   ```
+   DO-178C hedefleri tablo, seviye ve artefaktlara göre listelenir; `--level` bayrağı belirli sertifikasyon seviyelerini filtreler.
+
+2. **Örnek veriyi içe aktarın**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key import \
      --jira examples/minimal/issues.csv \
@@ -50,7 +57,7 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --objectives data/objectives/do178c_objectives.min.json \
      -o .soipack/work
    ```
-2. **Uyum analizini hesaplayın**
+3. **Uyum analizini hesaplayın**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
      -i .soipack/work \
@@ -60,11 +67,11 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --project-name "SOIPack Demo Avionics" \
      --project-version "1.0.0"
    ```
-3. **Raporları üretin**
+4. **Raporları üretin**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
-4. **Dağıtım paketini oluşturun**
+5. **Dağıtım paketini oluşturun**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
