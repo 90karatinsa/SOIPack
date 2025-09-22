@@ -57,6 +57,11 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --objectives data/objectives/do178c_objectives.min.json \
      -o .soipack/work
    ```
+   Polarion gereksinim/test kayıtlarını veya Jenkins build verisini otomatik
+   almak için sırasıyla `--polarion-url --polarion-project` ve `--jenkins-url
+   --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
+   CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
+   `polarion`/`jenkins` olarak işler.
 3. **Uyum analizini hesaplayın**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
@@ -71,6 +76,28 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
+   Çalıştırmanın ardından `dist/reports` dizininde uyum/izlenebilirlik HTML'lerinin yanında `plans/` klasörü oluşur. Bu klasörde PSAC, SDP, SVP, SCMP ve SQAP belgelerinin her biri için `*.html` ve `*.docx` çıktıları yer alır; Playwright Chromium bağımlılıkları kuruluysa aynı içerikler `*.pdf` olarak da üretilir. Playwright ortamı hazır değilse CLI `analysis.json` içine rapor uyarısı ekler ve plan PDF'lerini atlar.
+
+   Plan içeriklerini özelleştirmek için `--plan-config` parametresiyle HTML blokları içeren bir JSON dosyası verebilirsiniz. Örnek:
+
+   ```json
+   {
+     "psac": {
+       "overview": "<p>Program otoritesi ile mutabık kalınan PSAC özeti.</p>",
+       "sections": {
+         "schedule": "<p>Milestone M4 sonrası DER onayı planlanmıştır.</p>"
+       }
+     },
+     "sqap": {
+       "sections": {
+         "metrics": "<p>Kalite ekibi haftalık olarak hedef kapsam yüzdelerini raporlar.</p>"
+       },
+       "additionalNotes": "<p>QA notları kalite portalında tutulur.</p>"
+     }
+   }
+   ```
+
+   Her anahtar plan kimliğini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder. Planlar içinde `overview` başlığı ve `sections` altındaki bölüm kimlikleri (`introduction`, `softwareLifecycle`, `testingStrategy` vb.) HTML içeriği kabul eder; `additionalNotes` alanı ek not bloğu oluşturur.
 5. **Dağıtım paketini oluşturun**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
@@ -133,7 +160,7 @@ REST API, kimlik doğrulama ve kuyruk/depolama katmanında karşılaşılabilece
 Sunucu yanıtları her durumda `error.code`, `error.message` ve (varsa) `error.details` alanlarını içerir; istemciler bu alanları kullanarak UI bildirimlerini veya otomatik yeniden denemeleri tetikleyebilir.
 
 ### Raporları inceleme
-Raporlar `dist/reports/` altında toplanır. `compliance_matrix.html` ve `trace_matrix.html` tarayıcıda açılarak müşteriye canlı demo yapılabilir; `compliance_matrix.pdf` aynı dizinde yer alır ve denetim arşivi için hazırdır.【F:docs/demo_script.md†L18-L25】 Paket arşivi, HTML/PDF raporlarını ve manifest dosyalarını `release/soi-pack-*.zip` içinde taşır.【F:docs/demo_script.md†L26-L31】
+Raporlar `dist/reports/` altında toplanır. Uyum (`compliance.html`/`compliance.json`), izlenebilirlik (`trace.html`) ve boşluk (`gaps.html`) çıktıları tarayıcıda açılarak inceleme yapılabilir; aynı klasörde `analysis.json`, `snapshot.json` ve `traces.json` çalışma zamanı verileri yer alır. `plans/` alt dizini ise PSAC, SDP, SVP, SCMP ve SQAP belgelerinin HTML/DOCX sürümlerini barındırır; Playwright Chromium mevcutsa aynı adlarla PDF kopyaları da oluşturulur. Pipeline paketleri bu dosyaları ve manifesti `release/soi-pack-*.zip` arşivine dahil eder.【F:docs/demo_script.md†L18-L31】
 
 ### Web arayüzü ile pipeline takibi
 

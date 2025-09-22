@@ -36,6 +36,38 @@ export interface TestResult {
   requirementsRefs?: string[];
 }
 
+export interface RemoteRequirementRecord {
+  id: string;
+  title: string;
+  description?: string;
+  status?: string;
+  type?: string;
+  url?: string;
+}
+
+export interface RemoteTestRecord {
+  id: string;
+  name: string;
+  className?: string;
+  status: string;
+  durationMs?: number;
+  errorMessage?: string;
+  requirementIds?: string[];
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface RemoteBuildRecord {
+  id: string;
+  name?: string;
+  url?: string;
+  status?: string;
+  branch?: string;
+  revision?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
 export interface CoverageMetric {
   covered: number;
   total: number;

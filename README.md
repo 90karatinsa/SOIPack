@@ -70,12 +70,21 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      --level C \
      --objectives data/objectives/do178c_objectives.min.json \
      -o .soipack/work
-   ```
+  ```
 
    Çalışma alanı çıktısı `workspace.json`, test sonuçlarına ek olarak `findings`
    (Polyspace/LDRA/VectorCAST bulguları) ve `structuralCoverage`
    (VectorCAST/LDRA kapsam özetleri) alanlarını içerir. Bu bilgiler ilgili
    hedeflere bağlanan kanıt kayıtlarıyla birlikte saklanır.
+
+   Polarion ve Jenkins entegrasyonları için CLI'ya ek bayraklar geçebilirsiniz.
+   Örneğin Polarion gereksinimlerini ve test koşumlarını çekmek için `--polarion-url`,
+   `--polarion-project`, isteğe bağlı olarak `--polarion-username`/`--polarion-token`
+   ve gerekli uç nokta özelleştirmelerini ekleyin. Jenkins build ve test raporları
+   için benzer şekilde `--jenkins-url`, `--jenkins-job`, opsiyonel `--jenkins-build`
+   ile temel/Token kimlik doğrulama bilgilerini sağlayın. CLI bu kaynaklardan gelen
+   gereksinim, test ve build verilerini çalışma alanına ekleyip kanıt indeksine
+   `polarion` ve `jenkins` kaynaklı kayıtlar olarak işler.
 
 4. Uyum analizini üretin:
 
@@ -94,6 +103,29 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
    ```
+
+   Komut `dist/reports` altında HTML/JSON çıktılarıyla birlikte `plans/` klasöründe PSAC, SDP, SVP, SCMP ve SQAP şablonlarını HTML, DOCX ve (Playwright Chromium paketi yüklüyse) PDF olarak üretir. PDF oluşturma sırasında Playwright ortamı hazır değilse işlem uyarı mesajıyla atlanır.
+
+   Plan metinlerini özelleştirmek için `--plan-config` parametresine aşağıdaki gibi bir JSON dosyası verebilirsiniz:
+
+   ```json
+   {
+     "psac": {
+       "overview": "<p>Program otoritesi ile mutabık kalınan PSAC özeti.</p>",
+       "sections": {
+         "schedule": "<p>Milestone M4 sonrası DER onayı planlanmıştır.</p>"
+       }
+     },
+     "svp": {
+       "sections": {
+         "testingStrategy": "<p>Haftalık regresyonlar donanım-in-the-loop ortamında koşulur.</p>"
+       },
+       "additionalNotes": "<p>SVP değişiklikleri kalite ekibi tarafından onaylanmalıdır.</p>"
+     }
+   }
+   ```
+
+   JSON anahtarları plan kimliklerini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder; her plan içinde `overview`, `sections` (plan şablonundaki bölüm kimlikleri) ve isteğe bağlı `additionalNotes` alanları HTML içeriği kabul eder.
 
 6. Dağıtım paketini hazırlayın:
 

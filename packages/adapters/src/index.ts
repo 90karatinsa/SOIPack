@@ -11,6 +11,10 @@ export { importGitMetadata } from './git';
 export { fromPolyspace } from './polyspace';
 export { fromLDRA } from './ldra';
 export { fromVectorCAST } from './vectorcast';
+export { fetchPolarionArtifacts } from './polarion';
+export type { PolarionClientOptions } from './polarion';
+export { fetchJenkinsArtifacts } from './jenkins';
+export type { JenkinsClientOptions } from './jenkins';
 
 export interface AdapterMetadata {
   name: string;

@@ -1247,3 +1247,14 @@ export const generatePdf = async (page: PdfPage, html: string): Promise<Buffer> 
   await page.setContent(html);
   return page.pdf({ printBackground: true });
 };
+
+export {
+  renderPlanDocument,
+  planTemplateSections,
+  planTemplateTitles,
+  type PlanRenderOptions,
+  type PlanRenderResult,
+  type PlanTemplateId,
+  type PlanOverrideConfig,
+  type PlanSectionOverrides,
+} from './plans';

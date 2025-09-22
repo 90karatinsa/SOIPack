@@ -94,6 +94,26 @@ describe('@soipack/cli pipeline', () => {
     const complianceHtmlStats = await fs.stat(reportResult.complianceHtml);
     expect(complianceHtmlStats.isFile()).toBe(true);
 
+    expect(Object.keys(reportResult.plans)).toEqual(
+      expect.arrayContaining(['psac', 'sdp', 'svp', 'scmp', 'sqap']),
+    );
+    const psacPlan = reportResult.plans.psac;
+    const psacDocxStats = await fs.stat(psacPlan.docx);
+    expect(psacDocxStats.isFile()).toBe(true);
+    if (psacPlan.pdf) {
+      const psacPdfStats = await fs.stat(psacPlan.pdf);
+      expect(psacPdfStats.isFile()).toBe(true);
+    } else {
+      expect(reportResult.warnings.some((warning) => warning.includes('PDF generation'))).toBe(true);
+    }
+
+    const analysisWithPlans = JSON.parse(
+      await fs.readFile(path.join(reportsDir, 'analysis.json'), 'utf8'),
+    ) as { warnings: string[] };
+    reportResult.warnings.forEach((warning) => {
+      expect(analysisWithPlans.warnings).toContain(warning);
+    });
+
     const packResult = await runPack({
       input: distDir,
       output: releaseDir,
