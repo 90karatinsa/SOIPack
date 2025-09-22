@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { promises as fs } from 'fs';
+import { createWriteStream, promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
@@ -11,6 +11,9 @@ import {
   importJUnitXml,
   importLcov,
   importReqIF,
+  parseJUnitStream,
+  parseLcovStream,
+  parseReqifStream,
   registerAdapter,
   toRequirement,
 } from './index';
@@ -34,10 +37,82 @@ const createGitRepository = async (): Promise<string> => {
 
 describe('@soipack/adapters', () => {
   const tempRepos: string[] = [];
+  const tempDirs: string[] = [];
 
   afterAll(async () => {
-    await Promise.all(tempRepos.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+    const targets = [...tempRepos, ...tempDirs];
+    await Promise.all(targets.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
+
+  const createTempFilePath = async (prefix: string): Promise<string> => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempDirs.push(dir);
+    return path.join(dir, 'input');
+  };
+
+  const createLargeJUnitFile = async (testcaseCount: number): Promise<string> => {
+    const filePath = await createTempFilePath('soipack-junit-');
+    const stream = createWriteStream(filePath, { encoding: 'utf8' });
+    await new Promise<void>((resolve, reject) => {
+      stream.on('error', reject);
+      stream.write('<testsuite name="LargeSuite">\n');
+      for (let index = 0; index < testcaseCount; index += 1) {
+        const requirementId = String(index).padStart(5, '0');
+        const payload =
+          `<testcase classname="LargeSuite" name="case-${index}" time="0.1">` +
+          `<failure message="Assertion failed">Detailed failure message ${'X'.repeat(256)}</failure>` +
+          `<properties><property name="requirements">REQ-${requirementId}</property></properties>` +
+          '</testcase>\n';
+        stream.write(payload);
+      }
+      stream.write('</testsuite>');
+      stream.end(() => resolve());
+    });
+    return filePath;
+  };
+
+  const createLargeLcovFile = async (recordCount: number): Promise<string> => {
+    const filePath = await createTempFilePath('soipack-lcov-');
+    const stream = createWriteStream(filePath, { encoding: 'utf8' });
+    await new Promise<void>((resolve, reject) => {
+      stream.on('error', reject);
+      for (let index = 0; index < recordCount; index += 1) {
+        stream.write(`TN:Suite${Math.floor(index / 10)}\n`);
+        stream.write(`SF:/workspace/app/src/file${index}.ts\n`);
+        stream.write('LF:200\n');
+        stream.write('LH:150\n');
+        stream.write('BRF:40\n');
+        stream.write('BRH:20\n');
+        stream.write('FNF:10\n');
+        stream.write('FNH:7\n');
+        stream.write('DA:1,1\n'.repeat(25));
+        stream.write('end_of_record\n');
+      }
+      stream.end(() => resolve());
+    });
+    return filePath;
+  };
+
+  const createLargeReqifFile = async (objectCount: number): Promise<string> => {
+    const filePath = await createTempFilePath('soipack-reqif-');
+    const stream = createWriteStream(filePath, { encoding: 'utf8' });
+    await new Promise<void>((resolve, reject) => {
+      stream.on('error', reject);
+      stream.write('<REQ-IF><CORE-CONTENT><SPEC-OBJECTS>');
+      for (let index = 0; index < objectCount; index += 1) {
+        const payload = 'Requirement text ' + index + ' ' + 'detail '.repeat(60);
+        stream.write(
+          `<SPEC-OBJECT IDENTIFIER="REQ-${String(index).padStart(5, '0')}">` +
+            '<VALUES><ATTRIBUTE-VALUE-STRING><THE-VALUE>' +
+            payload +
+            '</THE-VALUE></ATTRIBUTE-VALUE-STRING></VALUES></SPEC-OBJECT>',
+        );
+      }
+      stream.write('</SPEC-OBJECTS></CORE-CONTENT></REQ-IF>');
+      stream.end(() => resolve());
+    });
+    return filePath;
+  };
 
   it('normalizes supported artifacts to lowercase', () => {
     const adapter = registerAdapter({
@@ -236,4 +311,52 @@ describe('@soipack/adapters', () => {
     expect(data?.dirty).toBe(true);
     expect(warnings).toContain('Repository has uncommitted changes.');
   });
+  describe('streaming converters', () => {
+    it('processes large JUnit XML files efficiently', async () => {
+      const filePath = await createLargeJUnitFile(28000);
+      const stats = await fs.stat(filePath);
+      expect(stats.size).toBeGreaterThan(5 * 1024 * 1024);
+      const { data, warnings } = await parseJUnitStream(filePath);
+      expect(data).toHaveLength(28000);
+      expect(warnings).toHaveLength(0);
+    });
+
+    it('rejects malformed JUnit XML with descriptive errors', async () => {
+      const filePath = await createTempFilePath('soipack-bad-junit-');
+      await fs.writeFile(filePath, '<testsuite><testcase></testsuite>', 'utf8');
+      await expect(parseJUnitStream(filePath)).rejects.toThrow(/Invalid JUnit XML/);
+    });
+
+    it('processes large LCOV reports without exhausting memory', async () => {
+      const filePath = await createLargeLcovFile(26000);
+      const stats = await fs.stat(filePath);
+      expect(stats.size).toBeGreaterThan(5 * 1024 * 1024);
+      const { data, warnings } = await parseLcovStream(filePath);
+      expect(data.files).toHaveLength(26000);
+      expect(data.totals.statements.total).toBe(26000 * 200);
+      expect(warnings).toHaveLength(0);
+    });
+
+    it('rejects malformed LCOV reports with actionable errors', async () => {
+      const filePath = await createTempFilePath('soipack-bad-lcov-');
+      await fs.writeFile(filePath, 'TN:Broken\nend_of_record\n', 'utf8');
+      await expect(parseLcovStream(filePath)).rejects.toThrow(/LCOV/);
+    });
+
+    it('processes large ReqIF packages without OOM', async () => {
+      const filePath = await createLargeReqifFile(15000);
+      const stats = await fs.stat(filePath);
+      expect(stats.size).toBeGreaterThan(5 * 1024 * 1024);
+      const { data, warnings } = await parseReqifStream(filePath);
+      expect(data).toHaveLength(15000);
+      expect(warnings.filter((warning) => warning.includes('THE-VALUE'))).toHaveLength(0);
+    });
+
+    it('rejects malformed ReqIF documents with descriptive errors', async () => {
+      const filePath = await createTempFilePath('soipack-bad-reqif-');
+      await fs.writeFile(filePath, '<REQ-IF><SPEC-OBJECTS><SPEC-OBJECT>', 'utf8');
+      await expect(parseReqifStream(filePath)).rejects.toThrow(/Invalid ReqIF XML/);
+    });
+  });
+
 });

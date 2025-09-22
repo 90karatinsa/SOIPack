@@ -21,7 +21,8 @@
     "demo": "bash examples/minimal/demo.sh",
     "demo:test": "node examples/minimal/verify-demo.js",
     "healthcheck:verify": "node scripts/verify-healthcheck.js",
-    "ui": "npm run dev --workspace @soipack/ui"
+    "ui": "npm run dev --workspace @soipack/ui",
+    "test:adapters": "npm run test --workspace @soipack/adapters"
   },
   "devDependencies": {
     "@redocly/cli": "^1.16.0",

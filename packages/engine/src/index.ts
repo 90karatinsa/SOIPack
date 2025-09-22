@@ -13,6 +13,7 @@ import {
   Requirement,
   TraceLink,
 } from '@soipack/core';
+
 import { evaluateQualityFindings, QualityFinding } from './quality';
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
@@ -845,3 +846,5 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
 };
 
 export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } from './quality';
+
+export * from './complianceMatrix';
