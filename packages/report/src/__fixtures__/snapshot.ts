@@ -45,7 +45,7 @@ const buildEvidence = (
   timestamp: '2024-01-10T09:30:00Z',
 });
 
-const coverageFixture = (): CoverageReport => ({
+export const coverageSummaryFixture = (): CoverageReport => ({
   totals: {
     statements: { covered: 55, total: 80, percentage: 68.75 },
     branches: { covered: 22, total: 40, percentage: 55 },
@@ -198,7 +198,7 @@ export const createReportFixture = (): ReportFixture => {
   const requirements = requirementFixture();
   const objectives = objectivesFixture();
   const testResults = testResultsFixture();
-  const coverage = coverageFixture();
+  const coverage = coverageSummaryFixture();
   const structuralCoverage = structuralCoverageFixture();
   const evidenceIndex = evidenceFixture();
   const bundle: ImportBundle = {

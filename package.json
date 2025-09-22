@@ -22,7 +22,8 @@
     "demo:test": "node examples/minimal/verify-demo.js",
     "healthcheck:verify": "node scripts/verify-healthcheck.js",
     "ui": "npm run dev --workspace @soipack/ui",
-    "test:adapters": "npm run test --workspace @soipack/adapters"
+    "test:adapters": "npm run test --workspace @soipack/adapters",
+    "test:report": "npm run test --workspace @soipack/report"
   },
   "devDependencies": {
     "@redocly/cli": "^1.16.0",
@@ -37,6 +38,7 @@
     "eslint": "^8.56.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.29.1",
+    "html-validator": "^6.0.1",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^30.1.2",
     "prettier": "^3.2.5",

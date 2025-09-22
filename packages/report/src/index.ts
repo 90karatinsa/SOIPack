@@ -1,4 +1,4 @@
-import type { BuildInfo, CoverageMetric } from '@soipack/adapters';
+import type { BuildInfo, CoverageMetric, CoverageReport } from '@soipack/adapters';
 import { Objective, ObjectiveArtifactType, Requirement, TestCase } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -11,6 +11,8 @@ import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
 
 import packageInfo from '../package.json';
+
+import { renderCoverageSummarySection } from './complianceReport.html';
 
 type PlaywrightModule = typeof import('playwright');
 
@@ -80,6 +82,13 @@ interface QualityFindingRow {
   relatedTests: string[];
 }
 
+interface ComplianceMatrixView {
+  objectives: ComplianceMatrixRow[];
+  requirementCoverage: RequirementCoverageRow[];
+  qualityFindings: QualityFindingRow[];
+  summaryMetrics: LayoutSummaryMetric[];
+}
+
 interface TraceMatrixRow {
   requirementId: string;
   requirementTitle: string;
@@ -147,6 +156,16 @@ export interface ComplianceMatrixJson {
 export interface ComplianceMatrixResult {
   html: string;
   json: ComplianceMatrixJson;
+}
+
+export interface ComplianceCoverageReportOptions extends ComplianceMatrixOptions {
+  coverageWarnings?: string[];
+}
+
+export interface ComplianceCoverageReportResult extends ComplianceMatrixResult {
+  json: ComplianceMatrixJson & { coverage: CoverageReport; coverageWarnings: string[] };
+  coverage: CoverageReport;
+  coverageWarnings: string[];
 }
 
 export interface PrintToPdfOptions extends BaseReportOptions {
@@ -992,23 +1011,13 @@ const buildSummaryMetrics = (
   return metrics;
 };
 
-const renderLayout = (context: LayoutContext): string => {
-  const version = context.version ?? packageInfo.version;
-  return layoutTemplate.render({
-    ...context,
-    generatedAt: formatDate(context.generatedAt ?? new Date().toISOString()),
-    version,
-    git: buildGitContext(context.git),
-  });
-};
-
-export const renderComplianceMatrix = (
+const buildComplianceMatrixView = (
   snapshot: ComplianceSnapshot,
-  options: ComplianceMatrixOptions = {},
-): ComplianceMatrixResult => {
+  options: ComplianceMatrixOptions,
+): ComplianceMatrixView => {
   const objectiveLookup = new Map(options.objectivesMetadata?.map((item) => [item.id, item]));
 
-  const rows: ComplianceMatrixRow[] = snapshot.objectives.map((objective) => {
+  const objectives: ComplianceMatrixRow[] = snapshot.objectives.map((objective) => {
     const metadata = objectiveLookup.get(objective.objectiveId);
     return {
       id: objective.objectiveId,
@@ -1029,7 +1038,7 @@ export const renderComplianceMatrix = (
     };
   });
 
-  const requirementCoverageRows: RequirementCoverageRow[] = snapshot.requirementCoverage.map((entry) => {
+  const requirementCoverage: RequirementCoverageRow[] = snapshot.requirementCoverage.map((entry) => {
     const meta = coverageStatusLabels[entry.status];
     return {
       requirementId: entry.requirement.id,
@@ -1041,7 +1050,7 @@ export const renderComplianceMatrix = (
     };
   });
 
-  const qualityRows: QualityFindingRow[] = snapshot.qualityFindings.map((finding) => {
+  const qualityFindings: QualityFindingRow[] = snapshot.qualityFindings.map((finding) => {
     const meta = qualitySeverityLabels[finding.severity] ?? { label: finding.severity, className: 'badge-soft' };
     return {
       id: finding.id,
@@ -1054,65 +1063,160 @@ export const renderComplianceMatrix = (
     };
   });
 
-  const html = renderLayout({
-    title: options.title ?? 'SOIPack Uyum Matrisi',
-    manifestId: options.manifestId ?? 'N/A',
-    generatedAt: options.generatedAt ?? snapshot.generatedAt,
-    version: options.version ?? packageInfo.version,
+  return {
+    objectives,
+    requirementCoverage,
+    qualityFindings,
     summaryMetrics: buildSummaryMetrics(
       snapshot.stats,
       snapshot.requirementCoverage,
       snapshot.qualityFindings,
     ),
+  };
+};
+
+const buildCoverageSummaryMetrics = (coverage: CoverageReport): LayoutSummaryMetric[] => {
+  const metrics: LayoutSummaryMetric[] = [
+    {
+      label: 'Satır Kapsamı',
+      value: `${coverage.totals.statements.percentage}%`,
+      accent: coverage.totals.statements.percentage === 100,
+    },
+  ];
+
+  if (coverage.totals.branches) {
+    metrics.push({
+      label: 'Dallanma',
+      value: `${coverage.totals.branches.percentage}%`,
+      accent: coverage.totals.branches.percentage === 100,
+    });
+  }
+
+  if (coverage.totals.mcdc) {
+    metrics.push({
+      label: 'MC/DC',
+      value: `${coverage.totals.mcdc.percentage}%`,
+      accent: coverage.totals.mcdc.percentage === 100,
+    });
+  }
+
+  return metrics;
+};
+
+const buildComplianceMatrixJson = (
+  snapshot: ComplianceSnapshot,
+  options: ComplianceMatrixOptions,
+  view: ComplianceMatrixView,
+): ComplianceMatrixJson => ({
+  manifestId: options.manifestId,
+  generatedAt: options.generatedAt ?? snapshot.generatedAt,
+  version: options.version ?? packageInfo.version,
+  stats: {
+    objectives: { ...snapshot.stats.objectives },
+    requirements: { ...snapshot.stats.requirements },
+    tests: { ...snapshot.stats.tests },
+    codePaths: { ...snapshot.stats.codePaths },
+  },
+  objectives: view.objectives.map((row) => ({
+    id: row.id,
+    status: row.status,
+    table: row.table,
+    name: row.name,
+    desc: row.desc,
+    satisfiedArtifacts: [...row.satisfiedArtifacts],
+    missingArtifacts: [...row.missingArtifacts],
+    evidenceRefs: [...row.evidenceRefs],
+  })),
+  requirementCoverage: snapshot.requirementCoverage.map((entry) => ({
+    requirementId: entry.requirement.id,
+    title: entry.requirement.title,
+    status: entry.status,
+    coverage: entry.coverage,
+    codePaths: entry.codePaths.map((code) => code.path),
+  })),
+  qualityFindings: snapshot.qualityFindings.map((finding) => ({
+    id: finding.id,
+    severity: finding.severity,
+    category: finding.category,
+    message: finding.message,
+    requirementId: finding.requirementId,
+    recommendation: finding.recommendation,
+    relatedTests: finding.relatedTests,
+  })),
+  git: options.git ?? null,
+});
+
+const renderLayout = (context: LayoutContext): string => {
+  const version = context.version ?? packageInfo.version;
+  return layoutTemplate.render({
+    ...context,
+    generatedAt: formatDate(context.generatedAt ?? new Date().toISOString()),
+    version,
+    git: buildGitContext(context.git),
+  });
+};
+
+export const renderComplianceMatrix = (
+  snapshot: ComplianceSnapshot,
+  options: ComplianceMatrixOptions = {},
+): ComplianceMatrixResult => {
+  const view = buildComplianceMatrixView(snapshot, options);
+
+  const html = renderLayout({
+    title: options.title ?? 'SOIPack Uyum Matrisi',
+    manifestId: options.manifestId ?? 'N/A',
+    generatedAt: options.generatedAt ?? snapshot.generatedAt,
+    version: options.version ?? packageInfo.version,
+    summaryMetrics: view.summaryMetrics,
     content: complianceTemplate.render({
-      objectives: rows,
-      requirementCoverage: requirementCoverageRows,
-      qualityFindings: qualityRows,
+      objectives: view.objectives,
+      requirementCoverage: view.requirementCoverage,
+      qualityFindings: view.qualityFindings,
     }),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
     git: options.git,
   });
 
-  const json: ComplianceMatrixJson = {
-    manifestId: options.manifestId,
-    generatedAt: options.generatedAt ?? snapshot.generatedAt,
-    version: options.version ?? packageInfo.version,
-    stats: {
-      objectives: { ...snapshot.stats.objectives },
-      requirements: { ...snapshot.stats.requirements },
-      tests: { ...snapshot.stats.tests },
-      codePaths: { ...snapshot.stats.codePaths },
-    },
-    objectives: rows.map((row) => ({
-      id: row.id,
-      status: row.status,
-      table: row.table,
-      name: row.name,
-      desc: row.desc,
-      satisfiedArtifacts: [...row.satisfiedArtifacts],
-      missingArtifacts: [...row.missingArtifacts],
-      evidenceRefs: [...row.evidenceRefs],
-    })),
-    requirementCoverage: snapshot.requirementCoverage.map((entry) => ({
-      requirementId: entry.requirement.id,
-      title: entry.requirement.title,
-      status: entry.status,
-      coverage: entry.coverage,
-      codePaths: entry.codePaths.map((code) => code.path),
-    })),
-    qualityFindings: snapshot.qualityFindings.map((finding) => ({
-      id: finding.id,
-      severity: finding.severity,
-      category: finding.category,
-      message: finding.message,
-      requirementId: finding.requirementId,
-      recommendation: finding.recommendation,
-      relatedTests: finding.relatedTests,
-    })),
-    git: options.git ?? null,
-  };
+  const json = buildComplianceMatrixJson(snapshot, options, view);
 
   return { html, json };
+};
+
+export const renderComplianceCoverageReport = (
+  snapshot: ComplianceSnapshot,
+  coverage: CoverageReport,
+  options: ComplianceCoverageReportOptions = {},
+): ComplianceCoverageReportResult => {
+  const view = buildComplianceMatrixView(snapshot, options);
+  const coverageWarnings = options.coverageWarnings ?? [];
+
+  const content = [
+    complianceTemplate.render({
+      objectives: view.objectives,
+      requirementCoverage: view.requirementCoverage,
+      qualityFindings: view.qualityFindings,
+    }),
+    renderCoverageSummarySection({ coverage, warnings: coverageWarnings }),
+  ].join('');
+
+  const html = renderLayout({
+    title: options.title ?? 'SOIPack Uyum ve Kapsam Raporu',
+    manifestId: options.manifestId ?? 'N/A',
+    generatedAt: options.generatedAt ?? snapshot.generatedAt,
+    version: options.version ?? packageInfo.version,
+    summaryMetrics: [...view.summaryMetrics, ...buildCoverageSummaryMetrics(coverage)],
+    content,
+    subtitle: 'Uyumluluk hedefleri ve yapısal kapsam özetleri',
+    git: options.git,
+  });
+
+  const json = {
+    ...buildComplianceMatrixJson(snapshot, options, view),
+    coverage,
+    coverageWarnings,
+  } as ComplianceCoverageReportResult['json'];
+
+  return { html, json, coverage, coverageWarnings };
 };
 
 export const renderTraceMatrix = (
