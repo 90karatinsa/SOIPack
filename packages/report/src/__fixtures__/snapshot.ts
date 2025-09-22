@@ -50,6 +50,7 @@ const coverageFixture = (): CoverageReport => ({
     statements: { covered: 55, total: 80, percentage: 68.75 },
     branches: { covered: 22, total: 40, percentage: 55 },
     functions: { covered: 18, total: 24, percentage: 75 },
+    mcdc: { covered: 20, total: 32, percentage: 62.5 },
   },
   files: [
     {
@@ -57,12 +58,14 @@ const coverageFixture = (): CoverageReport => ({
       statements: { covered: 28, total: 32, percentage: 87.5 },
       branches: { covered: 12, total: 16, percentage: 75 },
       functions: { covered: 8, total: 10, percentage: 80 },
+      mcdc: { covered: 12, total: 16, percentage: 75 },
     },
     {
       file: 'src/security/audit.ts',
       statements: { covered: 16, total: 32, percentage: 50 },
       branches: { covered: 6, total: 12, percentage: 50 },
       functions: { covered: 4, total: 8, percentage: 50 },
+      mcdc: { covered: 8, total: 16, percentage: 50 },
     },
   ],
 });
@@ -74,6 +77,7 @@ const structuralCoverageFixture = (): CoverageSummary => ({
       path: 'src/auth/login.ts',
       stmt: { covered: 55, total: 80 },
       dec: { covered: 22, total: 40 },
+      mcdc: { covered: 20, total: 32 },
     },
   ],
   objectiveLinks: ['A-5-08'],
@@ -168,7 +172,7 @@ const requirementFixture = () => [
     tags: ['security', 'auth'],
   }),
   createRequirement('REQ-AUTH-2', 'Başarısız girişler kaydedilmeli', {
-    status: 'implemented',
+    status: 'verified',
     tags: ['audit'],
   }),
   createRequirement('REQ-AUTH-3', 'Giriş ihlallerinde uyarı gönderilmeli', {
@@ -184,6 +188,9 @@ const evidenceFixture = (): ImportBundle['evidenceIndex'] => ({
   trace: [buildEvidence('trace', 'artifacts/trace-map.csv', 'İzlenebilirlik matrisi')],
   coverage_stmt: [
     buildEvidence('coverage_stmt', 'reports/coverage-summary.json', 'Satır kapsamı özeti'),
+  ],
+  coverage_mcdc: [
+    buildEvidence('coverage_mcdc', 'reports/vectorcast.json', 'MC/DC kapsam raporu'),
   ],
 });
 

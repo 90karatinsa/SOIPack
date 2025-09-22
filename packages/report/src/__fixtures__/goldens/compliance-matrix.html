@@ -303,6 +303,14 @@
             <span>Eksik/Kısmi Kapsam</span>
             <strong>2/1</strong>
           </div>
+          <div class="summary-card">
+            <span>Kalite Bulguları</span>
+            <strong>2</strong>
+          </div>
+          <div class="summary-card">
+            <span>Kritik/Uyarı</span>
+            <strong>1/1</strong>
+          </div>
       </div>
     </header>
     <main>
@@ -433,6 +441,31 @@ A-6 • Değişiklik Kontrolü                </div>
     </table>
   </section>
     <section class="section">
+      <h2>Kalite Bulguları</h2>
+      <p class="section-lead">
+        Gereksinim durumu, test sonuçları ve kapsam verileri arasındaki tutarsızlıkları vurgular. Bulgular düzeltici eylem gerektiren alanları önceliklendirmenizi sağlar.
+      </p>
+      <ul class="list">
+          <li>
+            <div>
+              <span class="badge status-missing">Kritik</span>
+              <span class="cell-title">REQ-AUTH-2 doğrulandı olarak işaretli ancak başarısız testler mevcut.</span>
+            </div>
+              <div class="muted">Gereksinim: REQ-AUTH-2</div>
+              <div class="muted">İlgili Testler: TC-LOGIN-2</div>
+              <div class="cell-description">Başarısız testleri analiz edin ve gereksinim doğrulama kanıtını güncelleyin.</div>
+          </li>
+          <li>
+            <div>
+              <span class="badge status-partial">Uyarı</span>
+              <span class="cell-title">REQ-AUTH-2 doğrulandı olarak işaretli ancak kapsam verisi kısmi.</span>
+            </div>
+              <div class="muted">Gereksinim: REQ-AUTH-2</div>
+              <div class="cell-description">Eksik kapsamı tamamlayın veya gereksinim durumunu güncelleyin.</div>
+          </li>
+      </ul>
+    </section>
+    <section class="section">
       <h2>Gereksinim Kapsamı</h2>
       <p class="section-lead">
         Testler ve kod izleri ile ilişkilendirilen gereksinimlerin kapsam durumunu gösterir. Yetersiz kapsama sahip alanları hızla tespit etmeyi sağlar.
@@ -453,7 +486,7 @@ A-6 • Değişiklik Kontrolü                </div>
               </td>
               <td>
                 <span class="badge status-partial">Kısmen Kaplandı</span>
-                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
               </td>
               <td>
                   <ul class="list">
@@ -469,7 +502,7 @@ A-6 • Değişiklik Kontrolü                </div>
               </td>
               <td>
                 <span class="badge status-partial">Kısmen Kaplandı</span>
-                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67%</div>
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
               </td>
               <td>
                   <ul class="list">

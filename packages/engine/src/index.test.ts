@@ -38,6 +38,7 @@ const coverageFixture = (): CoverageReport => ({
     statements: { covered: 80, total: 100, percentage: 80 },
     branches: { covered: 30, total: 50, percentage: 60 },
     functions: { covered: 12, total: 20, percentage: 60 },
+    mcdc: { covered: 18, total: 24, percentage: 75 },
   },
   files: [
     {
@@ -45,11 +46,13 @@ const coverageFixture = (): CoverageReport => ({
       statements: { covered: 30, total: 40, percentage: 75 },
       branches: { covered: 10, total: 16, percentage: 62.5 },
       functions: { covered: 5, total: 6, percentage: 83.33 },
+      mcdc: { covered: 12, total: 16, percentage: 75 },
     },
     {
       file: 'src/common/logger.ts',
       statements: { covered: 20, total: 20, percentage: 100 },
       functions: { covered: 3, total: 3, percentage: 100 },
+      mcdc: { covered: 6, total: 8, percentage: 75 },
     },
   ],
 });
@@ -250,8 +253,10 @@ describe('TraceEngine', () => {
 
     expect(req1?.status).toBe('partial');
     expect(req1?.coverage?.statements?.percentage).toBeCloseTo(83.33, 2);
+    expect(req1?.coverage?.mcdc?.percentage).toBe(75);
     expect(req3?.status).toBe('covered');
     expect(req3?.coverage?.statements?.percentage).toBe(100);
+    expect(req3?.coverage?.mcdc?.percentage).toBe(75);
   });
 
   it('links requirements directly to code paths defined via trace links', () => {
@@ -408,5 +413,82 @@ describe('Compliance snapshot generation', () => {
     expect(coverageByRequirement.get('REQ-1')?.status).toBe('partial');
     expect(coverageByRequirement.get('REQ-3')?.status).toBe('covered');
     expect(coverageByRequirement.get('REQ-3')?.coverage?.statements?.percentage).toBe(100);
+    expect(coverageByRequirement.get('REQ-1')?.coverage?.mcdc?.percentage).toBe(75);
+  });
+
+  it('does not emit quality findings when bundle is consistent', () => {
+    expect(snapshot.qualityFindings).toHaveLength(0);
+  });
+});
+
+describe('Quality checks', () => {
+  it('identifies verified requirements without supporting tests or coverage', () => {
+    const requirement = createRequirement('REQ-Q', 'Quality rule', { status: 'verified' });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: {},
+      generatedAt: '2024-03-01T08:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.qualityFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'REQ-Q-verified-no-tests', severity: 'error', category: 'trace' }),
+        expect.objectContaining({ id: 'REQ-Q-coverage-missing', severity: 'error', category: 'coverage' }),
+      ]),
+    );
+  });
+
+  it('reports failing verification tests and partial coverage', () => {
+    const requirement = createRequirement('REQ-F', 'Failing verification', { status: 'verified' });
+    const test: TestResult = {
+      testId: 'TC-F-1',
+      className: 'VerificationSuite',
+      name: 'should satisfy requirement',
+      status: 'failed',
+      duration: 5,
+      requirementsRefs: ['REQ-F'],
+    };
+    const coverage: CoverageReport = {
+      totals: {
+        statements: { covered: 1, total: 2, percentage: 50 },
+        mcdc: { covered: 0, total: 2, percentage: 0 },
+      },
+      files: [
+        {
+          file: 'src/control/module.c',
+          statements: { covered: 1, total: 2, percentage: 50 },
+          mcdc: { covered: 0, total: 2, percentage: 0 },
+        },
+      ],
+    };
+
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [test],
+      coverage,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: { 'TC-F-1': ['src/control/module.c'] },
+      generatedAt: '2024-03-02T09:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.qualityFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'REQ-F-verified-failing-tests', severity: 'error', category: 'tests' }),
+        expect.objectContaining({ id: 'REQ-F-coverage-partial', severity: 'warn', category: 'coverage' }),
+      ]),
+    );
   });
 });

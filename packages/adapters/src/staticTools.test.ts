@@ -52,6 +52,8 @@ describe('Static analysis adapters', () => {
     expect(data.coverage?.files[0]).toEqual({
       path: 'src/foo.c',
       stmt: { covered: 50, total: 60 },
+      dec: { covered: 30, total: 40 },
+      mcdc: { covered: 28, total: 40 },
     });
     expect(data.coverage?.objectiveLinks).toEqual(['A-5-08']);
   });

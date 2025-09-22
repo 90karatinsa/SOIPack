@@ -202,13 +202,19 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
     if (file.functions) {
       acc.functions = addMetric(acc.functions, { ...file.functions });
     }
+    if (file.mcdc) {
+      acc.mcdc = addMetric(acc.mcdc, { ...file.mcdc });
+    }
     return acc;
-  }, { statements: { covered: 0, total: 0, percentage: 0 } } as CoverageReport['totals']);
+  }, {
+    statements: { covered: 0, total: 0, percentage: 0 },
+  } as CoverageReport['totals']);
 
   const finalizedTotals: CoverageReport['totals'] = {
     statements: finalizeMetric(totals.statements)!,
     branches: finalizeMetric(totals.branches),
     functions: finalizeMetric(totals.functions),
+    mcdc: finalizeMetric(totals.mcdc),
   };
   const testMapEntries = Array.from(testFiles.entries()).map(([test, filesForTest]) => [test, Array.from(filesForTest)]);
   const testMap = testMapEntries.length > 0 ? Object.fromEntries(testMapEntries) : undefined;

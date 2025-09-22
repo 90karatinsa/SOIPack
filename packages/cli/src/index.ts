@@ -1668,6 +1668,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     git: workspace.git,
     inputs: workspace.metadata.inputs,
     warnings: workspace.metadata.warnings,
+    qualityFindings: snapshot.qualityFindings,
   });
 
   const hasMissingEvidence = snapshot.objectives.some(
@@ -1810,6 +1811,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     git?: BuildInfo | null;
     inputs: ImportPaths;
     warnings: string[];
+    qualityFindings: ComplianceSnapshot['qualityFindings'];
   }>(analysisPath);
   const snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
   const traces = await readJsonFile<RequirementTrace[]>(tracePath);

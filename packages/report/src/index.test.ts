@@ -49,12 +49,14 @@ describe('@soipack/report', () => {
     expect(result.json.requirementCoverage).toHaveLength(
       fixture.snapshot.requirementCoverage.length,
     );
+    expect(result.json.qualityFindings.length).toBeGreaterThan(0);
     expect(result.json.git).toEqual(gitFixture);
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
     expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
     expect(result.html).toContain('Kanıt Manifest ID');
     expect(result.html).toContain('Commit:');
+    expect(result.html).toContain('Kalite Bulguları');
   });
 
   it('renders trace matrix with trace information', () => {

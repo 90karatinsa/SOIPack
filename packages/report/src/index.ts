@@ -70,6 +70,16 @@ interface RequirementCoverageRow {
   codePaths: string[];
 }
 
+interface QualityFindingRow {
+  id: string;
+  severityLabel: string;
+  severityClass: string;
+  message: string;
+  requirementId?: string;
+  recommendation?: string;
+  relatedTests: string[];
+}
+
 interface TraceMatrixRow {
   requirementId: string;
   requirementTitle: string;
@@ -122,6 +132,15 @@ export interface ComplianceMatrixJson {
     coverage?: RequirementCoverageStatus['coverage'];
     codePaths: string[];
   }>;
+  qualityFindings: Array<{
+    id: string;
+    severity: string;
+    category: string;
+    message: string;
+    requirementId?: string;
+    recommendation?: string;
+    relatedTests?: string[];
+  }>;
   git?: BuildInfo | null;
 }
 
@@ -162,6 +181,15 @@ const coverageStatusLabels: Record<CoverageStatus, { label: string; className: s
   covered: { label: 'Tam Kaplandı', className: 'status-covered' },
   partial: { label: 'Kısmen Kaplandı', className: 'status-partial' },
   missing: { label: 'Kapsam Yok', className: 'status-missing' },
+};
+
+const qualitySeverityLabels: Record<
+  ComplianceSnapshot['qualityFindings'][number]['severity'],
+  { label: string; className: string }
+> = {
+  error: { label: 'Kritik', className: 'status-missing' },
+  warn: { label: 'Uyarı', className: 'status-partial' },
+  info: { label: 'Bilgi', className: 'badge-soft' },
 };
 
 const gapLabels: Record<GapCategoryKey, string> = {
@@ -219,6 +247,7 @@ const formatCoverageMetrics = (
   const statements = coverage.statements?.percentage;
   const branches = coverage.branches?.percentage;
   const functions = coverage.functions?.percentage;
+  const mcdc = coverage.mcdc?.percentage;
 
   if (typeof statements === 'number') {
     segments.push(`Satır: ${statements}%`);
@@ -228,6 +257,9 @@ const formatCoverageMetrics = (
   }
   if (typeof functions === 'number') {
     segments.push(`Fonksiyon: ${functions}%`);
+  }
+  if (typeof mcdc === 'number') {
+    segments.push(`MC/DC: ${mcdc}%`);
   }
 
   return segments.length ? segments.join(' | ') : undefined;
@@ -240,6 +272,7 @@ const aggregateCoverageFromCode = (
     statements: { covered: 0, total: 0 },
     branches: { covered: 0, total: 0 },
     functions: { covered: 0, total: 0 },
+    mcdc: { covered: 0, total: 0 },
   };
 
   code.forEach((entry) => {
@@ -259,6 +292,10 @@ const aggregateCoverageFromCode = (
       totals.functions.covered += coverage.functions.covered;
       totals.functions.total += coverage.functions.total;
     }
+    if (coverage.mcdc) {
+      totals.mcdc.covered += coverage.mcdc.covered;
+      totals.mcdc.total += coverage.mcdc.total;
+    }
   });
 
   const finalize = ({ covered, total }: { covered: number; total: number }): CoverageMetric | undefined => {
@@ -276,6 +313,7 @@ const aggregateCoverageFromCode = (
     statements: finalize(totals.statements),
     branches: finalize(totals.branches),
     functions: finalize(totals.functions),
+    mcdc: finalize(totals.mcdc),
   };
 };
 
@@ -676,6 +714,33 @@ const complianceTemplate = nunjucks.compile(
       </tbody>
     </table>
   </section>
+  {% if qualityFindings.length %}
+    <section class="section">
+      <h2>Kalite Bulguları</h2>
+      <p class="section-lead">
+        Gereksinim durumu, test sonuçları ve kapsam verileri arasındaki tutarsızlıkları vurgular. Bulgular düzeltici eylem gerektiren alanları önceliklendirmenizi sağlar.
+      </p>
+      <ul class="list">
+        {% for finding in qualityFindings %}
+          <li>
+            <div>
+              <span class="badge {{ finding.severityClass }}">{{ finding.severityLabel }}</span>
+              <span class="cell-title">{{ finding.message }}</span>
+            </div>
+            {% if finding.requirementId %}
+              <div class="muted">Gereksinim: {{ finding.requirementId }}</div>
+            {% endif %}
+            {% if finding.relatedTests.length %}
+              <div class="muted">İlgili Testler: {{ finding.relatedTests | join(', ') }}</div>
+            {% endif %}
+            {% if finding.recommendation %}
+              <div class="cell-description">{{ finding.recommendation }}</div>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
   {% if requirementCoverage.length %}
     <section class="section">
       <h2>Gereksinim Kapsamı</h2>
@@ -877,6 +942,7 @@ const formatArtifact = (artifact: ObjectiveArtifactType): string =>
 const buildSummaryMetrics = (
   stats: ComplianceStatistics,
   requirementCoverage: RequirementCoverageStatus[] = [],
+  qualityFindings: ComplianceSnapshot['qualityFindings'] = [],
 ): LayoutSummaryMetric[] => {
   const metrics: LayoutSummaryMetric[] = [
     { label: 'Hedefler', value: stats.objectives.total.toString() },
@@ -905,6 +971,21 @@ const buildSummaryMetrics = (
       label: 'Eksik/Kısmi Kapsam',
       value: `${coverageCounts.partial}/${coverageCounts.missing}`,
       accent: coverageCounts.partial + coverageCounts.missing > 0,
+    });
+  }
+
+  if (qualityFindings.length > 0) {
+    const criticalCount = qualityFindings.filter((finding) => finding.severity === 'error').length;
+    const warningCount = qualityFindings.filter((finding) => finding.severity === 'warn').length;
+    metrics.push({
+      label: 'Kalite Bulguları',
+      value: qualityFindings.length.toString(),
+      accent: true,
+    });
+    metrics.push({
+      label: 'Kritik/Uyarı',
+      value: `${criticalCount}/${warningCount}`,
+      accent: criticalCount > 0,
     });
   }
 
@@ -960,13 +1041,34 @@ export const renderComplianceMatrix = (
     };
   });
 
+  const qualityRows: QualityFindingRow[] = snapshot.qualityFindings.map((finding) => {
+    const meta = qualitySeverityLabels[finding.severity] ?? { label: finding.severity, className: 'badge-soft' };
+    return {
+      id: finding.id,
+      severityLabel: meta.label,
+      severityClass: meta.className,
+      message: finding.message,
+      requirementId: finding.requirementId,
+      recommendation: finding.recommendation,
+      relatedTests: finding.relatedTests ?? [],
+    };
+  });
+
   const html = renderLayout({
     title: options.title ?? 'SOIPack Uyum Matrisi',
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? snapshot.generatedAt,
     version: options.version ?? packageInfo.version,
-    summaryMetrics: buildSummaryMetrics(snapshot.stats, snapshot.requirementCoverage),
-    content: complianceTemplate.render({ objectives: rows, requirementCoverage: requirementCoverageRows }),
+    summaryMetrics: buildSummaryMetrics(
+      snapshot.stats,
+      snapshot.requirementCoverage,
+      snapshot.qualityFindings,
+    ),
+    content: complianceTemplate.render({
+      objectives: rows,
+      requirementCoverage: requirementCoverageRows,
+      qualityFindings: qualityRows,
+    }),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
     git: options.git,
   });
@@ -997,6 +1099,15 @@ export const renderComplianceMatrix = (
       status: entry.status,
       coverage: entry.coverage,
       codePaths: entry.codePaths.map((code) => code.path),
+    })),
+    qualityFindings: snapshot.qualityFindings.map((finding) => ({
+      id: finding.id,
+      severity: finding.severity,
+      category: finding.category,
+      message: finding.message,
+      requirementId: finding.requirementId,
+      recommendation: finding.recommendation,
+      relatedTests: finding.relatedTests,
     })),
     git: options.git ?? null,
   };
@@ -1037,6 +1148,7 @@ export const renderTraceMatrix = (
           statements: code.coverage?.statements,
           branches: code.coverage?.branches,
           functions: code.coverage?.functions,
+          mcdc: code.coverage?.mcdc,
         }),
       })),
       coverage: {
