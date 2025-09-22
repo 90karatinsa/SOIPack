@@ -118,6 +118,8 @@ export const evidenceSources = [
   'lcov',
   'cobertura',
   'git',
+  'polarion',
+  'jenkins',
   'polyspace',
   'ldra',
   'vectorcast',

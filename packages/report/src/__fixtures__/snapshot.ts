@@ -1,4 +1,4 @@
-import { CoverageReport, TestResult } from '@soipack/adapters';
+import { CoverageReport, CoverageSummary, TestResult } from '@soipack/adapters';
 import {
   Evidence,
   EvidenceSource,
@@ -65,6 +65,18 @@ const coverageFixture = (): CoverageReport => ({
       functions: { covered: 4, total: 8, percentage: 50 },
     },
   ],
+});
+
+const structuralCoverageFixture = (): CoverageSummary => ({
+  tool: 'vectorcast',
+  files: [
+    {
+      path: 'src/auth/login.ts',
+      stmt: { covered: 55, total: 80 },
+      dec: { covered: 22, total: 40 },
+    },
+  ],
+  objectiveLinks: ['A-5-08'],
 });
 
 const testResultsFixture = (): TestResult[] => [
@@ -180,12 +192,14 @@ export const createReportFixture = (): ReportFixture => {
   const objectives = objectivesFixture();
   const testResults = testResultsFixture();
   const coverage = coverageFixture();
+  const structuralCoverage = structuralCoverageFixture();
   const evidenceIndex = evidenceFixture();
   const bundle: ImportBundle = {
     requirements,
     objectives,
     testResults,
     coverage,
+    structuralCoverage,
     evidenceIndex,
     testToCodeMap: {
       'TC-LOGIN-1': ['src/auth/login.ts'],

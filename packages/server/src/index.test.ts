@@ -1166,6 +1166,7 @@ describe('@soipack/server REST API', () => {
         traceLinks: [],
         testToCodeMap: {},
         evidenceIndex: {},
+        builds: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],
@@ -1246,6 +1247,7 @@ describe('@soipack/server REST API', () => {
         traceLinks: [],
         testToCodeMap: {},
         evidenceIndex: {},
+        builds: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],
@@ -1411,6 +1413,7 @@ describe('@soipack/server REST API', () => {
         traceLinks: [],
         testToCodeMap: {},
         evidenceIndex: {},
+        builds: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],

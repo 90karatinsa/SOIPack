@@ -13,6 +13,8 @@ import {
   importJiraCsv,
   importJUnitXml,
   importLcov,
+  fetchJenkinsArtifacts,
+  fetchPolarionArtifacts,
   importReqIF,
   fromLDRA,
   fromPolyspace,
@@ -22,8 +24,14 @@ import {
   type CoverageSummary as StructuralCoverageSummary,
   type Finding,
   type JiraRequirement,
+  type JenkinsClientOptions,
+  type PolarionClientOptions,
+  type RemoteBuildRecord,
+  type RemoteRequirementRecord,
+  type RemoteTestRecord,
   type ReqIFRequirement,
   type TestResult,
+  type TestStatus,
 } from '@soipack/adapters';
 import {
   CertificationLevel,
@@ -48,7 +56,18 @@ import {
   generateComplianceSnapshot,
 } from '@soipack/engine';
 import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
-import { renderComplianceMatrix, renderGaps, renderTraceMatrix } from '@soipack/report';
+import {
+  renderComplianceMatrix,
+  renderGaps,
+  renderTraceMatrix,
+  renderPlanDocument,
+  planTemplateSections,
+  planTemplateTitles,
+  printToPDF,
+  type PlanTemplateId,
+  type PlanOverrideConfig,
+  type PlanSectionOverrides,
+} from '@soipack/report';
 import YAML from 'yaml';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -90,15 +109,19 @@ interface ImportPaths {
   polyspace?: string;
   ldra?: string;
   vectorcast?: string;
+  polarion?: string;
+  jenkins?: string;
 }
 
-export interface ImportOptions extends ImportPaths {
+export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins'> & {
   output: string;
   objectives?: string;
   level?: CertificationLevel;
   projectName?: string;
   projectVersion?: string;
-}
+  polarion?: PolarionClientOptions;
+  jenkins?: JenkinsClientOptions;
+};
 
 export interface ImportWorkspace {
   requirements: Requirement[];
@@ -110,6 +133,7 @@ export interface ImportWorkspace {
   evidenceIndex: EvidenceIndex;
   git?: BuildInfo | null;
   findings: Finding[];
+  builds: ExternalBuildRecord[];
   metadata: {
     generatedAt: string;
     warnings: string[];
@@ -120,6 +144,7 @@ export interface ImportWorkspace {
     };
     targetLevel?: CertificationLevel;
     objectivesPath?: string;
+    sources?: ExternalSourceMetadata;
   };
 }
 
@@ -167,6 +192,9 @@ const uniqueTraceLinks = (links: TraceLink[]): TraceLink[] => {
 };
 
 const normalizeRelativePath = (filePath: string): string => {
+  if (/^[a-z]+:\/\//iu.test(filePath) || filePath.startsWith('remote:')) {
+    return filePath;
+  }
   const absolute = path.resolve(filePath);
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
@@ -175,6 +203,61 @@ const normalizeRelativePath = (filePath: string): string => {
 
 const staticAnalysisTools = ['polyspace', 'ldra', 'vectorcast'] as const;
 type StaticAnalysisTool = (typeof staticAnalysisTools)[number];
+
+const coerceOptionalString = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const parseJenkinsBuildIdentifier = (value: unknown): string | number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const numeric = Number.parseInt(trimmed, 10);
+    if (!Number.isNaN(numeric) && String(numeric) === trimmed) {
+      return numeric;
+    }
+    return trimmed;
+  }
+  return undefined;
+};
+
+export interface ExternalBuildRecord {
+  provider: 'polarion' | 'jenkins';
+  id: string;
+  name?: string;
+  url?: string;
+  status?: string;
+  branch?: string;
+  revision?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+interface ExternalSourceMetadata {
+  polarion?: {
+    baseUrl: string;
+    projectId: string;
+    requirements: number;
+    tests: number;
+    builds: number;
+  };
+  jenkins?: {
+    baseUrl: string;
+    job: string;
+    build?: string;
+    tests: number;
+    builds: number;
+  };
+}
 
 const parseAdapterImportArgs = (
   value: unknown,
@@ -208,6 +291,52 @@ const parseAdapterImportArgs = (
   });
 
   return imports;
+};
+
+const buildPolarionOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): PolarionClientOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.polarionUrl);
+  const projectId = coerceOptionalString(raw.polarionProject);
+
+  if (!baseUrl || !projectId) {
+    return undefined;
+  }
+
+  return {
+    baseUrl,
+    projectId,
+    username: coerceOptionalString(raw.polarionUsername),
+    password: coerceOptionalString(raw.polarionPassword),
+    token: coerceOptionalString(raw.polarionToken),
+    requirementsEndpoint: coerceOptionalString(raw.polarionRequirementsEndpoint),
+    testRunsEndpoint: coerceOptionalString(raw.polarionTestsEndpoint),
+    buildsEndpoint: coerceOptionalString(raw.polarionBuildsEndpoint),
+  };
+};
+
+const buildJenkinsOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): JenkinsClientOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.jenkinsUrl);
+  const job = coerceOptionalString(raw.jenkinsJob);
+
+  if (!baseUrl || !job) {
+    return undefined;
+  }
+
+  return {
+    baseUrl,
+    job,
+    build: parseJenkinsBuildIdentifier(raw.jenkinsBuild),
+    username: coerceOptionalString(raw.jenkinsUsername),
+    password: coerceOptionalString(raw.jenkinsPassword),
+    token: coerceOptionalString(raw.jenkinsToken),
+    buildEndpoint: coerceOptionalString(raw.jenkinsBuildEndpoint),
+    testReportEndpoint: coerceOptionalString(raw.jenkinsTestsEndpoint),
+  };
 };
 
 const parseContentDispositionFileName = (value: string | string[] | undefined): string | undefined => {
@@ -818,6 +947,67 @@ const toRequirementFromReqif = (entry: ReqIFRequirement): Requirement =>
     status: 'draft',
   });
 
+const requirementStatusFromPolarion = (status: string | undefined): RequirementStatus => {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) {
+    return 'draft';
+  }
+  if (/(verify|validated|accepted|closed|done)/u.test(normalized)) {
+    return 'verified';
+  }
+  if (/(implement|in progress|development|coding)/u.test(normalized)) {
+    return 'implemented';
+  }
+  if (/(review|approved|baseline)/u.test(normalized)) {
+    return 'approved';
+  }
+  return 'draft';
+};
+
+const toRequirementFromPolarion = (entry: RemoteRequirementRecord): Requirement =>
+  createRequirement(entry.id, entry.title || entry.id, {
+    description: entry.description,
+    status: requirementStatusFromPolarion(entry.status),
+    tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
+  });
+
+const remoteTestStatusToTestResult = (status: string): TestStatus => {
+  const normalized = status.trim().toLowerCase();
+  if (!normalized) {
+    return 'skipped';
+  }
+  if (['passed', 'pass', 'success', 'succeeded', 'ok'].includes(normalized)) {
+    return 'passed';
+  }
+  if (['skipped', 'blocked', 'not_run', 'not run', 'ignored', 'disabled'].includes(normalized)) {
+    return 'skipped';
+  }
+  return 'failed';
+};
+
+const durationFromMilliseconds = (durationMs: number | undefined): number => {
+  if (typeof durationMs !== 'number' || Number.isNaN(durationMs)) {
+    return 0;
+  }
+  if (!Number.isFinite(durationMs)) {
+    return 0;
+  }
+  return durationMs / 1000;
+};
+
+const toTestResultFromRemote = (
+  entry: RemoteTestRecord,
+  provider: 'polarion' | 'jenkins',
+): TestResult => ({
+  testId: entry.id,
+  className: entry.className ?? provider,
+  name: entry.name ?? entry.id,
+  status: remoteTestStatusToTestResult(entry.status),
+  duration: durationFromMilliseconds(entry.durationMs),
+  errorMessage: entry.errorMessage,
+  requirementsRefs: entry.requirementIds,
+});
+
 const mergeRequirements = (sources: Requirement[][]): Requirement[] => {
   const merged = new Map<string, Requirement>();
   sources.forEach((list) => {
@@ -848,6 +1038,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   let gitMetadata: BuildInfo | null | undefined;
   const testResults: TestResult[] = [];
   const findings: Finding[] = [];
+  const builds: ExternalBuildRecord[] = [];
+  const sourceMetadata: ExternalSourceMetadata = {};
   const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
@@ -863,6 +1055,10 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     polyspace: options.polyspace ? normalizeRelativePath(options.polyspace) : undefined,
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
     vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
+    polarion: options.polarion ? `${options.polarion.baseUrl}#${options.polarion.projectId}` : undefined,
+    jenkins: options.jenkins
+      ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
+      : undefined,
   };
   const normalizedObjectivesPath = options.objectives
     ? path.resolve(options.objectives)
@@ -1079,6 +1275,135 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
   }
 
+  if (options.polarion) {
+    const polarionResult = await fetchPolarionArtifacts(options.polarion);
+    warnings.push(...polarionResult.warnings);
+    const polarionRequirements = polarionResult.data.requirements ?? [];
+    const polarionTests = polarionResult.data.tests ?? [];
+    const polarionBuilds = polarionResult.data.builds ?? [];
+
+    if (polarionRequirements.length > 0) {
+      requirements.push(polarionRequirements.map(toRequirementFromPolarion));
+      mergeEvidence(
+        evidenceIndex,
+        'trace',
+        createEvidence(
+          'trace',
+          'polarion',
+          `remote:polarion:${options.polarion.projectId}`,
+          'Polarion gereksinim kataloğu',
+        ).evidence,
+      );
+    }
+
+    if (polarionTests.length > 0) {
+      testResults.push(
+        ...polarionTests.map((entry) => toTestResultFromRemote(entry, 'polarion')),
+      );
+      mergeEvidence(
+        evidenceIndex,
+        'test',
+        createEvidence(
+          'test',
+          'polarion',
+          `remote:polarion:${options.polarion.projectId}`,
+          'Polarion test çalıştırmaları',
+        ).evidence,
+      );
+    }
+
+    if (polarionBuilds.length > 0) {
+      polarionBuilds.forEach((build) => {
+        builds.push({
+          provider: 'polarion',
+          id: build.id,
+          name: build.name,
+          url: build.url,
+          status: build.status,
+          branch: build.branch,
+          revision: build.revision,
+          startedAt: build.startedAt,
+          completedAt: build.completedAt,
+        });
+      });
+      mergeEvidence(
+        evidenceIndex,
+        'cm_record',
+        createEvidence(
+          'cm_record',
+          'polarion',
+          `remote:polarion:${options.polarion.projectId}`,
+          'Polarion yapı kayıtları',
+        ).evidence,
+      );
+    }
+
+    sourceMetadata.polarion = {
+      baseUrl: options.polarion.baseUrl,
+      projectId: options.polarion.projectId,
+      requirements: polarionRequirements.length,
+      tests: polarionTests.length,
+      builds: polarionBuilds.length,
+    };
+  }
+
+  if (options.jenkins) {
+    const jenkinsResult = await fetchJenkinsArtifacts(options.jenkins);
+    warnings.push(...jenkinsResult.warnings);
+    const jenkinsTests = jenkinsResult.data.tests ?? [];
+    const jenkinsBuilds = jenkinsResult.data.builds ?? [];
+
+    if (jenkinsTests.length > 0) {
+      testResults.push(
+        ...jenkinsTests.map((entry) => toTestResultFromRemote(entry, 'jenkins')),
+      );
+      mergeEvidence(
+        evidenceIndex,
+        'test',
+        createEvidence(
+          'test',
+          'jenkins',
+          `remote:jenkins:${options.jenkins.job}`,
+          'Jenkins test raporları',
+        ).evidence,
+      );
+    }
+
+    if (jenkinsBuilds.length > 0) {
+      jenkinsBuilds.forEach((build) => {
+        builds.push({
+          provider: 'jenkins',
+          id: build.id,
+          name: build.name,
+          url: build.url,
+          status: build.status,
+          branch: build.branch,
+          revision: build.revision,
+          startedAt: build.startedAt,
+          completedAt: build.completedAt,
+        });
+      });
+      mergeEvidence(
+        evidenceIndex,
+        'cm_record',
+        createEvidence(
+          'cm_record',
+          'jenkins',
+          `remote:jenkins:${options.jenkins.job}`,
+          'Jenkins build metaverisi',
+        ).evidence,
+      );
+    }
+
+    sourceMetadata.jenkins = {
+      baseUrl: options.jenkins.baseUrl,
+      job: options.jenkins.job,
+      build: options.jenkins.build ? String(options.jenkins.build) : undefined,
+      tests: jenkinsTests.length,
+      builds: jenkinsBuilds.length,
+    };
+  }
+
   if (options.traceLinksJson) {
     const result = await importTraceLinksJson(options.traceLinksJson);
     warnings.push(...result.warnings);
@@ -1116,6 +1441,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     evidenceIndex,
     git: gitMetadata,
     findings,
+    builds,
     metadata: {
       generatedAt: getCurrentTimestamp(),
       warnings,
@@ -1129,6 +1455,10 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
           : undefined,
       targetLevel: options.level,
       objectivesPath: normalizedObjectivesPath,
+      sources:
+        Object.keys(sourceMetadata).length > 0
+          ? sourceMetadata
+          : undefined,
     },
   };
 
@@ -1352,6 +1682,16 @@ export interface ReportOptions {
   input: string;
   output: string;
   manifestId?: string;
+  planConfig?: string;
+  planOverrides?: PlanSectionOverrides;
+}
+
+export interface GeneratedPlanOutput {
+  id: PlanTemplateId;
+  title: string;
+  html: string;
+  docx: string;
+  pdf?: string;
 }
 
 export interface ReportResult {
@@ -1359,7 +1699,100 @@ export interface ReportResult {
   complianceJson: string;
   traceHtml: string;
   gapsHtml: string;
+  plans: Record<PlanTemplateId, GeneratedPlanOutput>;
+  warnings: string[];
 }
+
+const planTemplateIdList = Object.keys(planTemplateSections) as PlanTemplateId[];
+
+const isPlanTemplateId = (value: string): value is PlanTemplateId =>
+  (planTemplateSections as Record<string, unknown>)[value] !== undefined;
+
+const mergePlanOverrideEntry = (
+  base: PlanOverrideConfig | undefined,
+  incoming: PlanOverrideConfig,
+): PlanOverrideConfig => {
+  const result: PlanOverrideConfig = { ...(base ?? {}) };
+
+  if (incoming.overview !== undefined) {
+    result.overview = incoming.overview;
+  }
+
+  if (incoming.additionalNotes !== undefined) {
+    result.additionalNotes = incoming.additionalNotes;
+  }
+
+  if (incoming.sections) {
+    result.sections = { ...(base?.sections ?? {}), ...incoming.sections };
+  }
+
+  return result;
+};
+
+const mergePlanOverrides = (
+  base: PlanSectionOverrides | undefined,
+  incoming?: PlanSectionOverrides,
+): PlanSectionOverrides | undefined => {
+  if (!incoming) {
+    return base;
+  }
+
+  const result: PlanSectionOverrides = { ...(base ?? {}) };
+
+  Object.entries(incoming).forEach(([planId, override]) => {
+    if (!override || !isPlanTemplateId(planId)) {
+      return;
+    }
+    const typedId = planId as PlanTemplateId;
+    result[typedId] = mergePlanOverrideEntry(result[typedId], override);
+  });
+
+  return Object.keys(result).length > 0 ? result : undefined;
+};
+
+const parsePlanOverrides = (data: unknown): PlanSectionOverrides => {
+  if (!data || typeof data !== 'object') {
+    return {};
+  }
+
+  const overrides: PlanSectionOverrides = {};
+
+  Object.entries(data as Record<string, unknown>).forEach(([planId, rawOverride]) => {
+    if (!isPlanTemplateId(planId) || !rawOverride || typeof rawOverride !== 'object') {
+      return;
+    }
+
+    const typedId = planId as PlanTemplateId;
+    const entry = rawOverride as Record<string, unknown>;
+    const override: PlanOverrideConfig = {};
+
+    if (typeof entry.overview === 'string') {
+      override.overview = entry.overview;
+    }
+
+    if (typeof entry.additionalNotes === 'string') {
+      override.additionalNotes = entry.additionalNotes;
+    }
+
+    if (entry.sections && typeof entry.sections === 'object') {
+      const sections: Record<string, string> = {};
+      Object.entries(entry.sections as Record<string, unknown>).forEach(([sectionId, value]) => {
+        if (typeof value === 'string') {
+          sections[sectionId] = value;
+        }
+      });
+      if (Object.keys(sections).length > 0) {
+        override.sections = sections;
+      }
+    }
+
+    if (Object.keys(override).length > 0) {
+      overrides[typedId] = override;
+    }
+  });
+
+  return overrides;
+};
 
 export const runReport = async (options: ReportOptions): Promise<ReportResult> => {
   const inputDir = path.resolve(options.input);
@@ -1380,6 +1813,11 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   }>(analysisPath);
   const snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
   const traces = await readJsonFile<RequirementTrace[]>(tracePath);
+  const planConfigPath = options.planConfig ? path.resolve(options.planConfig) : undefined;
+  const configOverrides = planConfigPath
+    ? parsePlanOverrides(await readJsonFile<unknown>(planConfigPath))
+    : undefined;
+  const planOverrides = mergePlanOverrides(configOverrides, options.planOverrides);
 
   const compliance = renderComplianceMatrix(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -1423,13 +1861,68 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   await writeJsonFile(complianceJsonPath, compliance.json);
   await fsPromises.writeFile(traceHtmlPath, traceHtml, 'utf8');
   await fsPromises.writeFile(gapsHtmlPath, gapsHtml, 'utf8');
-  await writeJsonFile(path.join(outputDir, 'analysis.json'), analysis);
+
+  const plansDir = path.join(outputDir, 'plans');
+  await ensureDirectory(plansDir);
+
+  const planWarnings: string[] = [];
+  const plans = {} as Record<PlanTemplateId, GeneratedPlanOutput>;
+
+  for (const planId of planTemplateIdList) {
+    const override = planOverrides?.[planId];
+    const planDocument = await renderPlanDocument(planId, {
+      snapshot,
+      objectivesMetadata: analysis.objectives,
+      manifestId: options.manifestId,
+      project: analysis.metadata.project,
+      level: analysis.metadata.level,
+      generatedAt: analysis.metadata.generatedAt,
+      overview: override?.overview,
+      sections: override?.sections,
+      additionalNotes: override?.additionalNotes,
+    });
+
+    const baseName = planId;
+    const htmlPath = path.join(plansDir, `${baseName}.html`);
+    const docxPath = path.join(plansDir, `${baseName}.docx`);
+    await fsPromises.writeFile(htmlPath, planDocument.html, 'utf8');
+    await fsPromises.writeFile(docxPath, planDocument.docx);
+
+    let pdfPath: string | undefined;
+    try {
+      const pdfBuffer = await printToPDF(planDocument.html, {
+        manifestId: options.manifestId,
+        generatedAt: analysis.metadata.generatedAt,
+      });
+      pdfPath = path.join(plansDir, `${baseName}.pdf`);
+      await fsPromises.writeFile(pdfPath, pdfBuffer);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      planWarnings.push(`PDF generation for ${planTemplateTitles[planId]} failed: ${message}`);
+    }
+
+    plans[planId] = {
+      id: planId,
+      title: planTemplateTitles[planId],
+      html: htmlPath,
+      docx: docxPath,
+      pdf: pdfPath,
+    };
+  }
+
+  const analysisWithPlanWarnings =
+    planWarnings.length > 0
+      ? { ...analysis, warnings: [...analysis.warnings, ...planWarnings] }
+      : analysis;
+  await writeJsonFile(path.join(outputDir, 'analysis.json'), analysisWithPlanWarnings);
 
   return {
     complianceHtml: complianceHtmlPath,
     complianceJson: complianceJsonPath,
     traceHtml: traceHtmlPath,
     gapsHtml: gapsHtmlPath,
+    plans,
+    warnings: planWarnings,
   };
 };
 
@@ -1639,6 +2132,9 @@ interface RunConfig {
     name?: string;
     input?: string;
   };
+  report?: {
+    planConfig?: string;
+  };
 }
 
 export const runPipeline = async (
@@ -1699,10 +2195,20 @@ export const runPipeline = async (
     projectVersion: config.project?.version,
   });
 
+  const planConfigFromConfig = config.report?.planConfig
+    ? path.resolve(baseDir, config.report.planConfig)
+    : undefined;
   const reportResult = await runReport({
     input: analysisDir,
     output: reportDir,
+    planConfig: planConfigFromConfig,
   });
+
+  if (reportResult.warnings.length > 0) {
+    reportResult.warnings.forEach((warning) => {
+      logger?.warn({ command: 'report', warning }, 'Plan generation warning.');
+    });
+  }
 
   const packInput = config.pack?.input
     ? path.resolve(baseDir, config.pack.input)
@@ -1927,6 +2433,74 @@ if (require.main === module) {
             describe: 'Git deposu kök dizini.',
             type: 'string',
           })
+          .option('polarion-url', {
+            describe: 'Polarion REST API temel adresi (ör. https://polarion.example.com).',
+            type: 'string',
+          })
+          .option('polarion-project', {
+            describe: 'Polarion proje kimliği.',
+            type: 'string',
+          })
+          .option('polarion-username', {
+            describe: 'Polarion kullanıcı adı (opsiyonel).',
+            type: 'string',
+          })
+          .option('polarion-password', {
+            describe: 'Polarion parolası (opsiyonel, yalnızca temel kimlik doğrulama için).',
+            type: 'string',
+          })
+          .option('polarion-token', {
+            describe: 'Polarion erişim tokenı (opsiyonel).',
+            type: 'string',
+          })
+          .option('polarion-requirements-endpoint', {
+            describe:
+              'Gereksinimleri döndüren uç nokta (varsayılan: /polarion/api/v2/projects/:projectId/workitems).',
+            type: 'string',
+          })
+          .option('polarion-tests-endpoint', {
+            describe:
+              'Test çalıştırmalarını döndüren uç nokta (varsayılan: /polarion/api/v2/projects/:projectId/test-runs).',
+            type: 'string',
+          })
+          .option('polarion-builds-endpoint', {
+            describe: 'Yapı metaverisini döndüren uç nokta (varsayılan: /polarion/api/v2/projects/:projectId/builds).',
+            type: 'string',
+          })
+          .option('jenkins-url', {
+            describe: 'Jenkins sunucusunun temel adresi (ör. https://ci.example.com).',
+            type: 'string',
+          })
+          .option('jenkins-job', {
+            describe: 'Jenkins iş adı veya yol ifadesi (ör. avionics/build).',
+            type: 'string',
+          })
+          .option('jenkins-build', {
+            describe: 'Belirli bir build numarası veya etiketi (varsayılan: lastCompletedBuild).',
+            type: 'string',
+          })
+          .option('jenkins-username', {
+            describe: 'Jenkins kullanıcı adı (opsiyonel).',
+            type: 'string',
+          })
+          .option('jenkins-password', {
+            describe: 'Jenkins parolası (opsiyonel, yalnızca temel kimlik doğrulama için).',
+            type: 'string',
+          })
+          .option('jenkins-token', {
+            describe: 'Jenkins API tokenı (opsiyonel).',
+            type: 'string',
+          })
+          .option('jenkins-build-endpoint', {
+            describe:
+              'Build detaylarını döndüren uç nokta (varsayılan: /job/:job/:build/api/json).',
+            type: 'string',
+          })
+          .option('jenkins-tests-endpoint', {
+            describe:
+              'JUnit test raporunu döndüren uç nokta (varsayılan: /job/:job/:build/testReport/api/json).',
+            type: 'string',
+          })
           .option('import', {
             describe: 'Statik analiz ve kapsam raporları (polyspace=, ldra=, vectorcast=).',
             type: 'array',
@@ -1987,6 +2561,8 @@ if (require.main === module) {
             polyspace: adapterImports.polyspace,
             ldra: adapterImports.ldra,
             vectorcast: adapterImports.vectorcast,
+            polarion: buildPolarionOptions(argv),
+            jenkins: buildJenkinsOptions(argv),
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,
@@ -2154,6 +2730,10 @@ if (require.main === module) {
             describe: 'Raporların yazılacağı dizin.',
             type: 'string',
             demandOption: true,
+          })
+          .option('plan-config', {
+            describe: 'Plan şablonlarına ait özelleştirmeleri tanımlayan JSON dosyası.',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -2172,7 +2752,14 @@ if (require.main === module) {
           const result = await runReport({
             input: argv.input,
             output: argv.output,
+            planConfig: argv['plan-config'] as string | undefined,
           });
+
+          if (result.warnings.length > 0) {
+            result.warnings.forEach((warning) => {
+              logger.warn({ ...context, warning }, 'Plan generation warning.');
+            });
+          }
 
           logger.info(
             { ...context, complianceHtml: result.complianceHtml },
