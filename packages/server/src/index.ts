@@ -1813,6 +1813,7 @@ export const createServer = (config: ServerConfig): Express => {
   const licenseCache = new Map<string, LicenseCacheEntry>();
   const jobLicenses = new Map<string, VerifiedLicense>();
   const knownTenants = new Set<string>();
+  const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
 
   interface EvidenceRecord {
     id: string;
@@ -1871,6 +1872,50 @@ export const createServer = (config: ServerConfig): Express => {
   const evidenceHashIndex = new Map<string, Map<string, string>>();
   const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
   const tenantSnapshotVersions = new Map<string, SnapshotVersion>();
+  const tenantDataRoot = path.join(directories.base, 'tenants');
+  const TENANT_EVIDENCE_FILE = 'evidence.json';
+  const TENANT_COMPLIANCE_FILE = 'compliance.json';
+  const TENANT_SNAPSHOT_FILE = 'snapshot.json';
+
+  const readPersistedJson = <T>(filePath: string): T | undefined => {
+    try {
+      if (!fs.existsSync(filePath)) {
+        return undefined;
+      }
+      const content = fs.readFileSync(filePath, 'utf8');
+      return JSON.parse(content) as T;
+    } catch (error) {
+      logger.warn({ err: error, filePath }, 'Persisted tenant data could not be read.');
+      return undefined;
+    }
+  };
+
+  const writePersistedJson = (tenantId: string, fileName: string, data: unknown): void => {
+    const tenantDir = path.join(tenantDataRoot, tenantId);
+    fs.mkdirSync(tenantDir, { recursive: true });
+    const targetPath = path.join(tenantDir, fileName);
+    fs.writeFileSync(targetPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  };
+
+  const persistTenantEvidence = (tenantId: string): void => {
+    const store = evidenceStore.get(tenantId);
+    if (!store) {
+      return;
+    }
+    writePersistedJson(tenantId, TENANT_EVIDENCE_FILE, Array.from(store.values()));
+  };
+
+  const persistTenantCompliance = (tenantId: string): void => {
+    const store = complianceStore.get(tenantId);
+    if (!store) {
+      return;
+    }
+    writePersistedJson(tenantId, TENANT_COMPLIANCE_FILE, Array.from(store.values()));
+  };
+
+  const persistTenantSnapshotVersion = (tenantId: string, version: SnapshotVersion): void => {
+    writePersistedJson(tenantId, TENANT_SNAPSHOT_FILE, version);
+  };
   const isValidSha256Hex = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
   const computeObjectSha256 = (value: unknown): string =>
     createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -1921,8 +1966,78 @@ export const createServer = (config: ServerConfig): Express => {
     const now = new Date().toISOString();
     const version = createSnapshotVersion(computeTenantEvidenceFingerprint(tenantId), { createdAt: now });
     tenantSnapshotVersions.set(tenantId, version);
+    persistTenantSnapshotVersion(tenantId, version);
     return version;
   };
+
+  const loadPersistedTenantData = (): void => {
+    try {
+      fs.mkdirSync(tenantDataRoot, { recursive: true });
+    } catch (error) {
+      logger.error({ err: error }, 'Failed to ensure tenant data directory.');
+      throw error;
+    }
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(tenantDataRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const tenantId = entry.name;
+      const tenantDir = path.join(tenantDataRoot, tenantId);
+      try {
+        const evidenceRecords =
+          readPersistedJson<EvidenceRecord[]>(path.join(tenantDir, TENANT_EVIDENCE_FILE)) ?? [];
+        if (evidenceRecords.length > 0) {
+          const store = new Map<string, EvidenceRecord>();
+          const hashIndex = new Map<string, string>();
+          evidenceRecords.forEach((record) => {
+            store.set(record.id, record);
+            hashIndex.set(record.sha256, record.id);
+          });
+          evidenceStore.set(tenantId, store);
+          evidenceHashIndex.set(tenantId, hashIndex);
+        }
+
+        const complianceRecords =
+          readPersistedJson<ComplianceRecord[]>(path.join(tenantDir, TENANT_COMPLIANCE_FILE)) ?? [];
+        if (complianceRecords.length > 0) {
+          const store = new Map<string, ComplianceRecord>();
+          complianceRecords.forEach((record) => {
+            store.set(record.id, record);
+          });
+          complianceStore.set(tenantId, store);
+        }
+
+        const persistedVersion = readPersistedJson<SnapshotVersion>(
+          path.join(tenantDir, TENANT_SNAPSHOT_FILE),
+        );
+        if (persistedVersion) {
+          tenantSnapshotVersions.set(tenantId, persistedVersion);
+        } else if (evidenceRecords.length > 0) {
+          const fingerprint = deriveFingerprint(evidenceRecords.map((record) => record.sha256));
+          const fallbackVersion = createSnapshotVersion(fingerprint, { createdAt: new Date().toISOString() });
+          tenantSnapshotVersions.set(tenantId, fallbackVersion);
+          persistTenantSnapshotVersion(tenantId, fallbackVersion);
+        }
+
+        knownTenants.add(tenantId);
+      } catch (error) {
+        logger.error({ err: error, tenantId }, 'Failed to load persisted tenant data.');
+      }
+    }
+  };
+
+  loadPersistedTenantData();
 
   const getTenantComplianceMap = (tenantId: string): Map<string, ComplianceRecord> => {
     let store = complianceStore.get(tenantId);
@@ -2069,7 +2184,6 @@ export const createServer = (config: ServerConfig): Express => {
     return Math.floor((length * 3) / 4);
   };
 
-  const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
   const metricsRegistry = config.metricsRegistry ?? new Registry();
   const registryWithMark = metricsRegistry as Registry & { [DEFAULT_METRICS_MARK]?: boolean };
   if (!registryWithMark[DEFAULT_METRICS_MARK]) {
@@ -3055,7 +3169,9 @@ export const createServer = (config: ServerConfig): Express => {
       const tenantEvidence = getTenantEvidenceMap(tenantId);
       tenantEvidence.set(record.id, record);
       hashIndex.set(computedHash, record.id);
-      updateTenantSnapshotVersion(tenantId, uploadedAt);
+      const version = updateTenantSnapshotVersion(tenantId, uploadedAt);
+      persistTenantEvidence(tenantId);
+      persistTenantSnapshotVersion(tenantId, version);
 
       res.status(201).json(serializeEvidenceRecord(record));
     }),
@@ -3073,6 +3189,7 @@ export const createServer = (config: ServerConfig): Express => {
       }
       const frozen = freezeSnapshotVersion(current, { frozenAt: new Date().toISOString() });
       tenantSnapshotVersions.set(tenantId, frozen);
+      persistTenantSnapshotVersion(tenantId, frozen);
       res.json({ version: frozen });
     }),
   );
@@ -3294,6 +3411,7 @@ export const createServer = (config: ServerConfig): Express => {
       };
 
       getTenantComplianceMap(tenantId).set(record.id, record);
+      persistTenantCompliance(tenantId);
 
       res.status(201).json(serializeComplianceRecord(record));
     }),
