@@ -182,6 +182,75 @@ const createDeferred = <T = void>() => {
   };
 };
 
+type ComplianceRequirementInput = {
+  id: string;
+  status: 'covered' | 'partial' | 'missing';
+  title?: string;
+  evidenceIds: string[];
+};
+
+const buildCanonicalCompliancePayload = (
+  matrix: {
+    project?: string;
+    level?: string;
+    generatedAt?: string;
+    requirements: ComplianceRequirementInput[];
+    summary: { total: number; covered: number; partial: number; missing: number };
+  },
+  coverage: Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>,
+  metadata?: Record<string, unknown>,
+) => {
+  const canonicalRequirements = matrix.requirements.map((requirement) => {
+    const evidenceIds = (requirement.evidenceIds ?? [])
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .filter((value): value is string => value.length > 0);
+    const canonical: Record<string, unknown> = {
+      id: requirement.id.trim(),
+      status: requirement.status,
+      evidenceIds,
+    };
+    if (typeof requirement.title === 'string' && requirement.title.trim().length > 0) {
+      canonical.title = requirement.title.trim();
+    }
+    return canonical;
+  });
+
+  const canonicalSummary = {
+    total: Math.trunc(matrix.summary.total),
+    covered: Math.trunc(matrix.summary.covered),
+    partial: Math.trunc(matrix.summary.partial),
+    missing: Math.trunc(matrix.summary.missing),
+  };
+
+  const canonicalCoverage: Record<string, number> = {};
+  (['statements', 'branches', 'functions', 'lines'] as const).forEach((key) => {
+    const value = coverage[key];
+    if (value !== undefined && value !== null) {
+      const numeric = Number(value);
+      canonicalCoverage[key] = Math.round(numeric * 1000) / 1000;
+    }
+  });
+
+  const canonicalMetadata: Record<string, unknown> = {};
+  Object.entries(metadata ?? {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      canonicalMetadata[key] = value;
+    }
+  });
+
+  return {
+    matrix: {
+      project: typeof matrix.project === 'string' ? matrix.project : undefined,
+      level: typeof matrix.level === 'string' ? matrix.level : undefined,
+      generatedAt: typeof matrix.generatedAt === 'string' ? matrix.generatedAt : undefined,
+      requirements: canonicalRequirements,
+      summary: canonicalSummary,
+    },
+    coverage: canonicalCoverage,
+    metadata: canonicalMetadata,
+  };
+};
+
 const waitForCondition = async (predicate: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -521,6 +590,107 @@ describe('@soipack/server REST API', () => {
     expect(decoded).toBe(payload);
     expect(detail.body.snapshotId).toBe(uploadResponse.body.snapshotId);
     expect(detail.body.snapshotVersion.isFrozen).toBe(false);
+  });
+
+  it('persists evidence, compliance, and frozen snapshot versions across restarts', async () => {
+    const persistentDir = await fsPromises.mkdtemp(path.join(storageDir, 'persistence-test-'));
+    const restartConfig: ServerConfig = {
+      ...baseConfig,
+      storageDir: persistentDir,
+      metricsRegistry: new Registry(),
+    };
+    const firstApp = createServer(restartConfig);
+    const restartToken = await createAccessToken();
+
+    const artifactBuffer = Buffer.from('persistent artifact payload', 'utf8');
+    const artifactHash = createHash('sha256').update(artifactBuffer).digest('hex');
+
+    const uploadResponse = await request(firstApp)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .send({
+        filename: 'persist.log',
+        content: artifactBuffer.toString('base64'),
+        metadata: {
+          sha256: artifactHash,
+          size: artifactBuffer.length,
+          description: 'persistence test artifact',
+        },
+      })
+      .expect(201);
+
+    const evidenceId = uploadResponse.body.id as string;
+    expect(evidenceId).toBeDefined();
+
+    const matrix = {
+      project: 'Persistence Demo',
+      level: 'A',
+      generatedAt: '2024-09-21T10:00:00Z',
+      requirements: [
+        {
+          id: 'REQ-1',
+          status: 'covered' as const,
+          title: 'Persist state',
+          evidenceIds: [evidenceId],
+        },
+      ],
+      summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+    };
+
+    const coverageInput = { statements: 97.5, lines: 100 };
+    const metadata = { reviewer: 'qa' };
+
+    const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverageInput, metadata);
+    const complianceHash = createHash('sha256')
+      .update(JSON.stringify(canonicalPayload))
+      .digest('hex');
+
+    const complianceResponse = await request(firstApp)
+      .post('/compliance')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .send({
+        sha256: complianceHash,
+        matrix,
+        coverage: coverageInput,
+        metadata,
+      })
+      .expect(201);
+
+    expect(complianceResponse.body.sha256).toBe(complianceHash);
+
+    const freezeResponse = await request(firstApp)
+      .post('/v1/config/freeze')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .expect(200);
+
+    expect(freezeResponse.body.version.isFrozen).toBe(true);
+
+    const restartedApp = createServer({ ...restartConfig, metricsRegistry: new Registry() });
+
+    const evidenceList = await request(restartedApp)
+      .get('/evidence')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .expect(200);
+
+    expect(evidenceList.body.items).toHaveLength(1);
+    expect(evidenceList.body.items[0]).toMatchObject({ id: evidenceId, sha256: artifactHash });
+
+    const complianceList = await request(restartedApp)
+      .get('/compliance')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .expect(200);
+
+    expect(complianceList.body.items).toHaveLength(1);
+    expect(complianceList.body.items[0].sha256).toBe(complianceHash);
+
+    const freezeAfterRestart = await request(restartedApp)
+      .post('/v1/config/freeze')
+      .set('Authorization', `Bearer ${restartToken}`)
+      .expect(200);
+
+    expect(freezeAfterRestart.body.version).toEqual(freezeResponse.body.version);
+
+    await fsPromises.rm(persistentDir, { recursive: true, force: true });
   });
 
   it('returns existing records when identical evidence is uploaded twice', async () => {

@@ -172,6 +172,8 @@ Sunucu `SIGTERM` veya `SIGINT` aldığında yeni bağlantıları durdurur, bekle
 
 Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Aynı dizin altında oluşturulan `.queue/` klasörü, durdurulup yeniden başlatılan örneklerin kuyruk durumunu (bekleyen, çalışan veya tamamlanan işler) kalıcı olarak saklar; bu sayede bekleyen işler yeniden kuyruğa alınmadan devam eder. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
+Kanıt yüklemeleri, uyum kayıtları ve dondurulmuş konfigürasyon sürümleri de aynı kalıcı dizinde `tenants/<tenantId>/` altındaki JSON dosyalarına yazılır. Sunucunun yeniden başlatılması durumunda aynı `SOIPACK_STORAGE_DIR` yolu yeniden bağlanırsa REST API bu dosyaları okuyarak önceki kanıtları, uyum raporlarını ve dondurulmuş snapshot sürümlerini otomatik olarak geri yükler. Kalıcı depolama ayrılmadığında veya dizin temizlendiğinde bu veriler kaybolur; bu nedenle üretim ortamlarında depolamanın dışarıya (örneğin bir volume ya da ağ paylaşımı) kalıcı şekilde bağlandığından emin olun.
+
 ## 3. Örnek Pipeline Çağrısı
 
 Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak uçtan uca PDF raporu oluşturur. Komutları çalıştırmadan önce geçerli bir JWT üretip `TOKEN` değişkenini ayarlayın:
