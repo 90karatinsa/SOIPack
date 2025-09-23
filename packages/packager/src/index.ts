@@ -1,10 +1,19 @@
-import { createHash, sign, verify } from 'crypto';
+import { createHash } from 'crypto';
 import { promises as fsPromises, createReadStream, createWriteStream } from 'fs';
 import path from 'path';
 import { finished } from 'stream/promises';
 
 import { Manifest } from '@soipack/core';
 import { ZipFile } from 'yazl';
+
+import {
+  ManifestSignatureBundle,
+  SecuritySignerOptions,
+  VerificationOptions,
+  VerificationResult,
+  signManifestWithSecuritySigner,
+  verifyManifestSignatureWithSecuritySigner,
+} from './security/signer';
 
 const { readdir, stat, readFile, mkdir } = fsPromises;
 
@@ -25,21 +34,6 @@ const canonicalizeManifest = (manifest: Manifest): Manifest => ({
   createdAt: manifest.createdAt,
   toolVersion: manifest.toolVersion,
 });
-
-const base64UrlEncode = (input: Buffer | string): string => {
-  const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8');
-  return buffer
-    .toString('base64')
-    .replace(/=/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
-};
-
-const base64UrlDecode = (input: string): Buffer => {
-  const padding = input.length % 4 === 0 ? '' : '='.repeat(4 - (input.length % 4));
-  const normalized = input.replace(/-/g, '+').replace(/_/g, '/') + padding;
-  return Buffer.from(normalized, 'base64');
-};
 
 const hashFile = async (filePath: string): Promise<string> => {
   const hash = createHash('sha256');
@@ -159,48 +153,41 @@ export const buildManifest = async ({
   return { manifest, files };
 };
 
-export const signManifest = (manifest: Manifest, privateKeyPem: string): string => {
-  const canonical = canonicalizeManifest(manifest);
-  const headerJson = JSON.stringify({ alg: 'EdDSA', typ: 'SOIManifest' });
-  const payloadJson = JSON.stringify(canonical);
-  const encodedHeader = base64UrlEncode(headerJson);
-  const encodedPayload = base64UrlEncode(payloadJson);
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = sign(null, Buffer.from(signingInput, 'utf8'), privateKeyPem);
-  const encodedSignature = base64UrlEncode(signature);
-  return `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
+export const signManifest = (
+  manifest: Manifest,
+  privateKeyPemOrOptions: string | SecuritySignerOptions,
+): string => {
+  const options: SecuritySignerOptions =
+    typeof privateKeyPemOrOptions === 'string'
+      ? { privateKeyPem: privateKeyPemOrOptions }
+      : privateKeyPemOrOptions;
+  const bundle = signManifestWithSecuritySigner(manifest, options);
+  return bundle.signature;
 };
+
+export const signManifestBundle = (
+  manifest: Manifest,
+  options?: SecuritySignerOptions,
+): ManifestSignatureBundle => signManifestWithSecuritySigner(manifest, options);
 
 export const verifyManifestSignature = (
   manifest: Manifest,
   signature: string,
-  publicKeyPem: string,
+  publicKeyOrOptions: string | VerificationOptions,
 ): boolean => {
-  const segments = signature.split('.');
-  if (segments.length !== 3) {
-    return false;
-  }
-
-  const [encodedHeader, encodedPayload, encodedSignature] = segments;
-  try {
-    const header = JSON.parse(base64UrlDecode(encodedHeader).toString('utf8')) as { alg?: string };
-    if (header.alg !== 'EdDSA') {
-      return false;
-    }
-
-    const payloadBuffer = base64UrlDecode(encodedPayload);
-    const payloadManifest = canonicalizeManifest(JSON.parse(payloadBuffer.toString('utf8')) as Manifest);
-    const providedManifest = canonicalizeManifest(manifest);
-
-    if (JSON.stringify(payloadManifest) !== JSON.stringify(providedManifest)) {
-      return false;
-    }
-
-    return verify(null, Buffer.from(`${encodedHeader}.${encodedPayload}`, 'utf8'), publicKeyPem, base64UrlDecode(encodedSignature));
-  } catch (error) {
-    return false;
-  }
+  const options: VerificationOptions =
+    typeof publicKeyOrOptions === 'string'
+      ? { certificatePem: publicKeyOrOptions }
+      : publicKeyOrOptions;
+  const result = verifyManifestSignatureWithSecuritySigner(manifest, signature, options);
+  return result.valid;
 };
+
+export const verifyManifestSignatureDetailed = (
+  manifest: Manifest,
+  signature: string,
+  options?: VerificationOptions,
+): VerificationResult => verifyManifestSignatureWithSecuritySigner(manifest, signature, options);
 
 const formatTimestamp = (date: Date): string => {
   const year = date.getUTCFullYear();
@@ -216,7 +203,7 @@ export interface PackageCreationOptions {
   evidenceDirs?: string[];
   outputDir?: string;
   toolVersion: string;
-  privateKeyPath: string;
+  credentialsPath: string;
   now?: Date;
   packageName?: string;
 }
@@ -232,7 +219,7 @@ export const createSoiDataPack = async ({
   evidenceDirs = [],
   outputDir,
   toolVersion,
-  privateKeyPath,
+  credentialsPath,
   now,
   packageName,
 }: PackageCreationOptions): Promise<PackageCreationResult> => {
@@ -250,8 +237,14 @@ export const createSoiDataPack = async ({
     now: timestamp,
   });
 
-  const privateKeyPem = await readFile(path.resolve(privateKeyPath), 'utf8');
-  const signature = signManifest(manifest, privateKeyPem);
+  const credentialsPem = await readFile(path.resolve(credentialsPath), 'utf8');
+  const bundle = signManifestBundle(manifest, { bundlePem: credentialsPem });
+  const signature = bundle.signature;
+  const verification = verifyManifestSignatureDetailed(manifest, signature);
+  if (!verification.valid) {
+    const reason = verification.reason ?? 'bilinmeyen';
+    throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
+  }
 
   const finalName = packageName ?? `soi-pack-${formatTimestamp(timestamp)}.zip`;
   const outputPath = path.join(targetOutputDir, finalName);
@@ -274,3 +267,19 @@ export const createSoiDataPack = async ({
 
   return { manifest, signature, outputPath };
 };
+
+export type {
+  ManifestDigest,
+  ManifestSignatureBundle,
+  SecuritySignerOptions,
+  VerificationFailureReason,
+  VerificationOptions,
+  VerificationResult,
+} from './security/signer';
+
+export {
+  assertValidManifestSignature,
+  computeManifestDigestHex,
+  signManifestWithSecuritySigner,
+  verifyManifestSignatureWithSecuritySigner,
+} from './security/signer';

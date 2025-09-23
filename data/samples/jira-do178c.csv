@@ -1,0 +1,4 @@
+"Issue key","Summary","Status","Issue Type","Priority","Assignee","Labels"
+"AV-101","Implement flight guidance module","Done","Story","High","alice","software"
+"AV-205","Derive DAL C verification objectives","In Progress","Task","Medium","bob","planning"
+"AV-312","Update system safety assessment","To Do","Story","High","carol","safety"

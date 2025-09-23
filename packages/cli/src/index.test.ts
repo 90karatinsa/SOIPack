@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
-import { promises as fs } from 'fs';
+import { promises as fs, readFileSync } from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
@@ -8,7 +8,7 @@ import { PassThrough } from 'stream';
 
 import { Manifest } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
-import { signManifest, verifyManifestSignature } from '@soipack/packager';
+import { signManifestBundle, verifyManifestSignature } from '@soipack/packager';
 
 import type { LicensePayload } from './license';
 import type { Logger } from './logging';
@@ -27,15 +27,16 @@ import {
   __internal,
 } from './index';
 
-const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
------END PRIVATE KEY-----
-`;
-
-const TEST_SIGNING_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
------END PUBLIC KEY-----
-`;
+const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
+const TEST_SIGNING_BUNDLE = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
+const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+const TEST_SIGNING_CERTIFICATE = (() => {
+  const match = TEST_SIGNING_BUNDLE.match(CERTIFICATE_PATTERN);
+  if (!match) {
+    throw new Error('Test sertifika demeti geçersiz.');
+  }
+  return match[0];
+})();
 
 describe('@soipack/cli pipeline', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
@@ -121,7 +122,7 @@ describe('@soipack/cli pipeline', () => {
       input: distDir,
       output: releaseDir,
       packageName: 'demo.zip',
-      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      signingKey: TEST_SIGNING_BUNDLE,
     });
 
     const archiveStats = await fs.stat(packResult.archivePath);
@@ -133,7 +134,7 @@ describe('@soipack/cli pipeline', () => {
 
     const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
   });
 
   it('generates compliance and coverage summaries with runIngestPipeline', async () => {
@@ -168,7 +169,7 @@ describe('@soipack/cli pipeline', () => {
       level: 'C',
       projectName: 'Demo Avionics',
       projectVersion: '1.0.0',
-      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      signingKey: TEST_SIGNING_BUNDLE,
       packageName: 'soi-pack.zip',
     });
 
@@ -186,7 +187,7 @@ describe('@soipack/cli pipeline', () => {
     expect(computedHash).toBe(firstEntry.sha256);
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
   });
 
   it('fails manifest verification when packaged data is tampered', async () => {
@@ -199,7 +200,7 @@ describe('@soipack/cli pipeline', () => {
       level: 'C',
       projectName: 'Demo Avionics',
       projectVersion: '1.0.0',
-      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      signingKey: TEST_SIGNING_BUNDLE,
       packageName: 'soi-pack.zip',
     });
 
@@ -209,7 +210,7 @@ describe('@soipack/cli pipeline', () => {
     await fs.writeFile(result.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
     const signature = (await fs.readFile(path.join(tamperOutput, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(false);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(false);
   });
 
   it('derives test-to-code mapping from coverage adapters', async () => {
@@ -345,7 +346,7 @@ describe('runPack package name validation', () => {
       input: distDir,
       output: releaseDir,
       packageName: 'release.zip',
-      signingKey: TEST_SIGNING_PRIVATE_KEY,
+      signingKey: TEST_SIGNING_BUNDLE,
     });
 
     expect(path.basename(result.archivePath)).toBe('release.zip');
@@ -362,7 +363,7 @@ describe('runPack package name validation', () => {
         input: distDir,
         output: releaseDir,
         packageName,
-        signingKey: TEST_SIGNING_PRIVATE_KEY,
+        signingKey: TEST_SIGNING_BUNDLE,
       }),
     ).rejects.toThrow(/packageName/);
   });
@@ -403,15 +404,16 @@ describe('runVerify', () => {
   ): Promise<{ manifestPath: string; signaturePath: string; publicKeyPath: string }> => {
     const manifestPath = path.join(tempDir, 'manifest.json');
     const signaturePath = path.join(tempDir, 'manifest.sig');
-    const publicKeyPath = path.join(tempDir, 'public.pem');
+    const publicKeyPath = path.join(tempDir, 'certificate.pem');
 
     const manifestJson = overrides.manifestJson ?? `${JSON.stringify(manifest, null, 2)}\n`;
     await fs.writeFile(manifestPath, manifestJson, 'utf8');
 
-    const signatureValue = overrides.signature ?? signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
+    const signatureValue =
+      overrides.signature ?? signManifestBundle(manifest, { bundlePem: TEST_SIGNING_BUNDLE }).signature;
     await fs.writeFile(signaturePath, `${signatureValue}\n`, 'utf8');
 
-    await fs.writeFile(publicKeyPath, TEST_SIGNING_PUBLIC_KEY, 'utf8');
+    await fs.writeFile(publicKeyPath, TEST_SIGNING_CERTIFICATE, 'utf8');
 
     return { manifestPath, signaturePath, publicKeyPath };
   };
@@ -428,7 +430,7 @@ describe('runVerify', () => {
 
   it('flags tampered manifests as invalid', async () => {
     const manifest = createManifest();
-    const originalSignature = signManifest(manifest, TEST_SIGNING_PRIVATE_KEY);
+    const originalSignature = signManifestBundle(manifest, { bundlePem: TEST_SIGNING_BUNDLE }).signature;
     const tamperedManifest = {
       ...manifest,
       files: [

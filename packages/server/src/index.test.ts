@@ -23,15 +23,16 @@ import type { FileScanner } from './scanner';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
 
-const TEST_SIGNING_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEICiI0Jsw2AjCiWk2uBb89bIQkOH18XHytA2TtblwFzgQ
------END PRIVATE KEY-----
-`;
-
-const TEST_SIGNING_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAOCPbC2Pxenbum50JoDbus/HoZnN2okit05G+z44CvK8=
------END PUBLIC KEY-----
-`;
+const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
+const TEST_SIGNING_BUNDLE = fs.readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
+const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+const TEST_SIGNING_CERTIFICATE = (() => {
+  const match = TEST_SIGNING_BUNDLE.match(CERTIFICATE_PATTERN);
+  if (!match) {
+    throw new Error('Test sertifika demeti bulunamadı.');
+  }
+  return match[0];
+})();
 
 const LICENSE_PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
 
@@ -309,7 +310,7 @@ describe('@soipack/server REST API', () => {
   beforeAll(async () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
     signingKeyPath = path.join(storageDir, 'signing-key.pem');
-    await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
+    await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_BUNDLE, 'utf8');
     licensePublicKeyPath = path.join(storageDir, 'license.pub');
     await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
     const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
@@ -2056,7 +2057,7 @@ describe('@soipack/server REST API', () => {
     const signaturePath = path.join(manifestDir, 'manifest.sig');
     const manifest = JSON.parse(await fsPromises.readFile(manifestPath, 'utf8')) as Manifest;
     const signature = (await fsPromises.readFile(signaturePath, 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
 
     const packFilter = await request(app)
       .get('/v1/jobs')
@@ -2434,7 +2435,7 @@ describe('@soipack/server REST API', () => {
   it('emits metrics and logs when a job fails', async () => {
     const failingStorageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-fail-test-'));
     const failingSigningKeyPath = path.join(failingStorageDir, 'signing-key.pem');
-    await fsPromises.writeFile(failingSigningKeyPath, TEST_SIGNING_PRIVATE_KEY, 'utf8');
+    await fsPromises.writeFile(failingSigningKeyPath, TEST_SIGNING_BUNDLE, 'utf8');
 
     const failingLogCapture = createLogCapture();
     const failingRegistry = new Registry();

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<REQ-IF xmlns="http://www.omg.org/spec/ReqIF/20110401/reqif.xsd" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <CORE-CONTENT>
+    <SPEC-OBJECTS>
+      <SPEC-OBJECT IDENTIFIER="REQ-C-001">
+        <VALUES>
+          <ATTRIBUTE-VALUE-XHTML>
+            <THE-VALUE>
+              <xhtml:div>The software shall command pitch hold within 2 seconds of pilot request.</xhtml:div>
+            </THE-VALUE>
+          </ATTRIBUTE-VALUE-XHTML>
+        </VALUES>
+      </SPEC-OBJECT>
+      <SPEC-OBJECT IDENTIFIER="REQ-C-002">
+        <VALUES>
+          <ATTRIBUTE-VALUE-STRING>
+            <THE-VALUE>The system shall record mode transitions to the maintenance log.</THE-VALUE>
+          </ATTRIBUTE-VALUE-STRING>
+        </VALUES>
+      </SPEC-OBJECT>
+    </SPEC-OBJECTS>
+  </CORE-CONTENT>
+</REQ-IF>
