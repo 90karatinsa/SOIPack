@@ -72,3 +72,80 @@ describe('JobQueue persistence', () => {
     }
   });
 });
+
+describe('JobQueue streaming and ephemeral mode', () => {
+  it('allows disabling persistence for ephemeral processing', async () => {
+    const baseDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-queue-ephemeral-'));
+    try {
+      const queue = new JobQueue(2, {
+        directory: baseDir,
+        createRunner: () => async () => undefined,
+        persistJobs: false,
+      });
+
+      const tenantId = 'tenant-ephemeral';
+      queue.enqueue({
+        tenantId,
+        id: 'job-ephemeral',
+        kind: 'import',
+        hash: 'hash-ephemeral',
+        payload: { value: 1 },
+      });
+      await queue.waitForIdle();
+
+      const entries = await fsPromises.readdir(baseDir);
+      expect(entries).toEqual([]);
+    } finally {
+      await fsPromises.rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('streams job summaries for a tenant without allocating intermediate arrays', async () => {
+    const baseDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-queue-stream-'));
+    try {
+      const queue = new JobQueue(1, {
+        directory: baseDir,
+        createRunner: () => async () => undefined,
+        persistJobs: false,
+      });
+
+      const tenantId = 'tenant-stream';
+      const total = 25;
+      const createdAt = new Date().toISOString();
+      for (let index = 0; index < total; index += 1) {
+        queue.adoptCompleted({
+          tenantId,
+          id: `job-${index.toString().padStart(5, '0')}`,
+          kind: 'analyze',
+          hash: `hash-${index}`,
+          createdAt,
+          result: { ok: index },
+        });
+      }
+
+      const firstFive: string[] = [];
+      let streamedCount = 0;
+      for (const summary of queue.stream(tenantId)) {
+        streamedCount += 1;
+        firstFive.push(summary.id);
+        if (streamedCount === 5) {
+          break;
+        }
+      }
+
+      expect(firstFive).toEqual([
+        'job-00000',
+        'job-00001',
+        'job-00002',
+        'job-00003',
+        'job-00004',
+      ]);
+
+      const collected = Array.from(queue.stream(tenantId));
+      expect(collected).toHaveLength(total);
+      expect(collected[collected.length - 1].id).toBe('job-00024');
+    } finally {
+      await fsPromises.rm(baseDir, { recursive: true, force: true });
+    }
+  });
+});

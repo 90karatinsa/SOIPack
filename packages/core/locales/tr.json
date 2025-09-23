@@ -1,0 +1,9 @@
+{
+  "errors.unexpected": "Beklenmeyen bir hata oluştu.",
+  "errors.server.unexpected": "Beklenmeyen bir sunucu hatası oluştu.",
+  "errors.server.payloadTooLarge": "JSON gövde boyutu izin verilen sınırı aşıyor.",
+  "errors.server.globalRateLimitExceeded": "Global istek limiti aşıldı.",
+  "errors.request.invalidId": "Kimlik değeri geçerli değil.",
+  "cli.errors.unexpected": "Beklenmeyen bir hata oluştu.",
+  "cli.warnings.missingEvidence": "Analiz hedefleri için eksik kanıt bulundu. Paket uyarı ile tamamlandı."
+}

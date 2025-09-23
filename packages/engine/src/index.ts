@@ -453,19 +453,23 @@ export class TraceEngine {
     };
   }
 
-  public getRequirementCoverage(): RequirementCoverageStatus[] {
-    return this.bundle.requirements.map((requirement) => {
+  public *streamRequirementCoverage(): IterableIterator<RequirementCoverageStatus> {
+    for (const requirement of this.bundle.requirements) {
       const trace = this.getRequirementTrace(requirement.id);
       const coverage = this.aggregateCoverageMetrics(trace.code);
       const status = this.determineCoverageStatus(trace.code, coverage);
 
-      return {
+      yield {
         requirement,
         status,
         coverage,
         codePaths: trace.code,
       };
-    });
+    }
+  }
+
+  public getRequirementCoverage(): RequirementCoverageStatus[] {
+    return Array.from(this.streamRequirementCoverage());
   }
 }
 

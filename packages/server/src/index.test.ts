@@ -403,6 +403,24 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('localizes error responses based on the Accept-Language header', async () => {
+    const invalidJobId = 'not-a-valid-id';
+
+    const englishResponse = await request(app)
+      .get(`/v1/jobs/${invalidJobId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Accept-Language', 'en-US,en;q=0.9')
+      .expect(400);
+    expect(englishResponse.body.error.message).toBe('The identifier value is not valid.');
+
+    const turkishResponse = await request(app)
+      .get(`/v1/jobs/${invalidJobId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Accept-Language', 'tr-TR,tr;q=0.9')
+      .expect(400);
+    expect(turkishResponse.body.error.message).toBe('Kimlik değeri geçerli değil.');
+  });
+
   it('allows access with a valid API key and matching role', async () => {
     process.env.SOIPACK_API_KEYS = 'ops=demo-key:reader|maintainer';
     const securedApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });

@@ -72,6 +72,7 @@ export interface JobExecutionContext<TPayload = unknown> {
 export interface JobQueueOptions {
   directory: string;
   createRunner: (context: JobExecutionContext) => () => Promise<unknown>;
+  persistJobs?: boolean;
 }
 
 interface PersistedJob {
@@ -104,15 +105,25 @@ export class JobQueue {
 
   private readonly createRunner: (context: JobExecutionContext) => () => Promise<unknown>;
 
+  private readonly persistJobs: boolean;
+
   constructor(concurrency = 1, options: JobQueueOptions) {
     this.concurrency = Math.max(1, concurrency);
     this.directory = options.directory;
     this.createRunner = options.createRunner;
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o750 });
-    this.loadPersistedJobs();
+    this.persistJobs = options.persistJobs ?? true;
+
+    if (this.persistJobs) {
+      fs.mkdirSync(this.directory, { recursive: true, mode: 0o750 });
+      this.loadPersistedJobs();
+    }
   }
 
   private loadPersistedJobs(): void {
+    if (!this.persistJobs) {
+      return;
+    }
+
     const tenantDirs = fs
       .readdirSync(this.directory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -191,7 +202,7 @@ export class JobQueue {
       createdAt,
       updatedAt: createdAt,
       payload,
-      filePath: this.getJobFilePath(tenantId, id),
+      filePath: this.resolveJobFilePath(tenantId, id),
     };
 
     job.run = this.createRunner(this.toExecutionContext(job));
@@ -235,7 +246,7 @@ export class JobQueue {
       createdAt: created,
       updatedAt: updated,
       result,
-      filePath: this.getJobFilePath(tenantId, id),
+      filePath: this.resolveJobFilePath(tenantId, id),
     };
 
     this.jobs.set(key, job);
@@ -246,6 +257,14 @@ export class JobQueue {
 
   public list(tenantId: string): JobSummary[] {
     return this.order.filter((job) => job.tenantId === tenantId).map((job) => this.toSummary(job));
+  }
+
+  public *stream(tenantId: string): IterableIterator<JobSummary> {
+    for (const job of this.order) {
+      if (job.tenantId === tenantId) {
+        yield this.toSummary(job);
+      }
+    }
   }
 
   public get<T = unknown>(tenantId: string, id: string): JobDetails<T> | undefined {
@@ -374,13 +393,19 @@ export class JobQueue {
     };
   }
 
-  private getJobFilePath(tenantId: string, id: string): string {
+  private resolveJobFilePath(tenantId: string, id: string): string {
+    if (!this.persistJobs) {
+      return path.join(this.directory, tenantId, `${id}.json`);
+    }
     const tenantDir = path.join(this.directory, tenantId);
     fs.mkdirSync(tenantDir, { recursive: true, mode: 0o750 });
     return path.join(tenantDir, `${id}.json`);
   }
 
   private saveJob(job: InternalJob<unknown>): void {
+    if (!this.persistJobs) {
+      return;
+    }
     const serialized: PersistedJob = {
       tenantId: job.tenantId,
       id: job.id,
@@ -397,6 +422,9 @@ export class JobQueue {
   }
 
   private deleteJobFile(job: InternalJob<unknown>): void {
+    if (!this.persistJobs) {
+      return;
+    }
     try {
       fs.rmSync(job.filePath, { force: true });
       const tenantDir = path.dirname(job.filePath);

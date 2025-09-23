@@ -25,7 +25,8 @@
     "healthcheck:verify": "node scripts/verify-healthcheck.js",
     "ui": "npm run dev --workspace @soipack/ui",
     "test:adapters": "npm run test --workspace @soipack/adapters",
-    "test:report": "npm run test --workspace @soipack/report"
+    "test:report": "npm run test --workspace @soipack/report",
+    "benchmark": "npx --yes tsx scripts/benchmark.ts"
   },
   "devDependencies": {
     "@redocly/cli": "^1.16.0",
