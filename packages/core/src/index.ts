@@ -58,6 +58,7 @@ export interface Evidence {
   hash?: string;
   timestamp: string;
   snapshotId: string;
+  independent?: boolean;
 }
 
 export const evidenceSchema: z.ZodType<Evidence> = z.object({
@@ -72,6 +73,7 @@ export const evidenceSchema: z.ZodType<Evidence> = z.object({
   snapshotId: z
     .string()
     .regex(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{7,}$/i, 'Evidence snapshotId must look like 20240101T000000Z-deadbeef.'),
+  independent: z.boolean().optional(),
 });
 
 export const traceLinkTypes = ['satisfies', 'verifies', 'implements'] as const;

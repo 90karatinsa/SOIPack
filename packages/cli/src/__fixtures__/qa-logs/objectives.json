@@ -1,0 +1,20 @@
+[
+  {
+    "id": "A-7-01",
+    "table": "A-7",
+    "name": "QA program established",
+    "desc": "Quality assurance reviews the plans and standards.",
+    "artifacts": ["qa_record"],
+    "levels": { "A": true, "B": true, "C": true, "D": true, "E": false },
+    "independence": "none"
+  },
+  {
+    "id": "A-7-02",
+    "table": "A-7",
+    "name": "QA audits performed",
+    "desc": "Quality assurance audits activities and captures results.",
+    "artifacts": ["qa_record"],
+    "levels": { "A": true, "B": true, "C": true, "D": true, "E": false },
+    "independence": "none"
+  }
+]

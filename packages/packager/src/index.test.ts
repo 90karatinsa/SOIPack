@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, X509Certificate } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -23,13 +23,15 @@ const computeSha256 = (filePath: string): string => {
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
 
-const loadDevCredentials = (): { bundlePem: string; certificatePem: string } => {
+const loadDevCredentials = (): { bundlePem: string; certificatePem: string; publicKeyPem: string } => {
   const bundlePem = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
   const certificateMatch = bundlePem.match(CERTIFICATE_PATTERN);
   if (!certificateMatch) {
     throw new Error('Dev sertifikası bulunamadı.');
   }
-  return { bundlePem, certificatePem: certificateMatch[0] };
+  const certificate = new X509Certificate(certificateMatch[0]);
+  const publicKeyPem = certificate.publicKey.export({ format: 'pem', type: 'spki' }).toString();
+  return { bundlePem, certificatePem: certificateMatch[0], publicKeyPem };
 };
 
 describe('packager', () => {
@@ -74,11 +76,12 @@ describe('packager', () => {
     expect(manifestResult.manifest).toEqual(expectedManifest);
   });
 
-  it('signs and verifies manifests with RSA certificates', () => {
-    const { bundlePem, certificatePem } = loadDevCredentials();
+  it('signs and verifies manifests with Ed25519 credentials', () => {
+    const { bundlePem, certificatePem, publicKeyPem } = loadDevCredentials();
 
     const signature = signManifestBundle(manifestResult.manifest, { bundlePem }).signature;
     expect(verifyManifestSignature(manifestResult.manifest, signature, certificatePem)).toBe(true);
+    expect(verifyManifestSignature(manifestResult.manifest, signature, publicKeyPem)).toBe(true);
 
     const tamperedManifest: Manifest = {
       ...manifestResult.manifest,
@@ -95,7 +98,7 @@ describe('packager', () => {
   it('packages reports and evidence into a signed archive', async () => {
     const workDir = mkdtempSync(path.join(tmpdir(), 'soipack-packager-'));
     const bundlePath = path.join(workDir, 'dev.pem');
-    const { bundlePem, certificatePem } = loadDevCredentials();
+    const { bundlePem, certificatePem, publicKeyPem } = loadDevCredentials();
     writeFileSync(bundlePath, bundlePem, 'utf8');
 
     try {
@@ -112,6 +115,7 @@ describe('packager', () => {
       expect(existsSync(result.outputPath)).toBe(true);
       expect(result.manifest).toEqual(expectedManifest);
       expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
+      expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }

@@ -6,6 +6,7 @@ import {
   FileCoverageSummary,
   TestResult,
   CoverageSummary as StructuralCoverageSummary,
+  type Finding,
 } from '@soipack/adapters';
 import {
   CertificationLevel,
@@ -20,6 +21,7 @@ import {
 } from '@soipack/core';
 
 import { evaluateQualityFindings, QualityFinding } from './quality';
+import { generateTraceSuggestions, type TraceSuggestion } from './traceSuggestions';
 
 export * from './coverage';
 export * from './gaps';
@@ -48,6 +50,7 @@ const computeBundleFingerprint = (bundle: ImportBundle): string => {
     evidenceIndex: bundle.evidenceIndex,
     traceLinks: bundle.traceLinks ?? [],
     testToCodeMap: bundle.testToCodeMap ?? {},
+    findings: bundle.findings ?? [],
     targetLevel: bundle.targetLevel ?? null,
   };
   const serialized = canonicalStringify(canonical);
@@ -89,6 +92,7 @@ export interface ImportBundle {
   generatedAt?: string;
   targetLevel?: CertificationLevel;
   snapshot?: SnapshotVersion;
+  findings?: Finding[];
 }
 
 interface InternalNodeBase {
@@ -557,36 +561,65 @@ export class ObjectiveMapper {
     let hasPartialCoverage = false;
     let hasCriticalMissing = false;
 
+    const addSatisfied = (artifact: ObjectiveArtifactType): void => {
+      if (!satisfiedArtifacts.includes(artifact)) {
+        satisfiedArtifacts.push(artifact);
+      }
+    };
+
+    const addMissingArtifact = (artifact: ObjectiveArtifactType, critical = false): void => {
+      if (!missingArtifacts.includes(artifact)) {
+        missingArtifacts.push(artifact);
+      }
+      if (critical) {
+        hasCriticalMissing = true;
+      }
+    };
+
+    const independenceLevel = objective.independence;
+    const requiresIndependence = independenceLevel !== 'none';
+    const independenceRequired = independenceLevel === 'required';
+
     objective.artifacts.forEach((artifactType) => {
       const evidenceItems = this.evidenceIndex[artifactType] ?? [];
+      const hasEvidence = evidenceItems.length > 0;
+      const independenceDeficient =
+        requiresIndependence && hasEvidence && !this.hasIndependentEvidence(evidenceItems);
+
       if (coverageArtifactMetrics[artifactType]) {
-        const coverageStatus = this.evaluateCoverageArtifact(objective.id, artifactType);
-        if (evidenceItems.length === 0) {
-          missingArtifacts.push(artifactType);
-          hasCriticalMissing = true;
-        } else if (coverageStatus === 'covered') {
-          satisfiedArtifacts.push(artifactType);
-        } else if (coverageStatus === 'partial') {
-          satisfiedArtifacts.push(artifactType);
-          hasPartialCoverage = true;
-          missingArtifacts.push(artifactType);
+        if (!hasEvidence) {
+          addMissingArtifact(artifactType, true);
         } else {
-          missingArtifacts.push(artifactType);
-          hasCriticalMissing = true;
+          const coverageStatus = this.evaluateCoverageArtifact(objective.id, artifactType);
+          if (coverageStatus === 'covered') {
+            addSatisfied(artifactType);
+          } else if (coverageStatus === 'partial') {
+            addSatisfied(artifactType);
+            hasPartialCoverage = true;
+            addMissingArtifact(artifactType);
+          } else {
+            addMissingArtifact(artifactType, true);
+          }
+          if (independenceDeficient) {
+            addMissingArtifact(artifactType, independenceRequired);
+          }
+          evidenceItems.forEach((evidence) => {
+            evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
+          });
+        }
+        return;
+      }
+
+      if (hasEvidence) {
+        addSatisfied(artifactType);
+        if (independenceDeficient) {
+          addMissingArtifact(artifactType, independenceRequired);
         }
         evidenceItems.forEach((evidence) => {
           evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
         });
-        return;
-      }
-
-      if (evidenceItems.length > 0) {
-        satisfiedArtifacts.push(artifactType);
-        evidenceItems.forEach((evidence) => {
-          evidenceRefs.push(this.createEvidenceRef(artifactType, evidence));
-        });
       } else {
-        missingArtifacts.push(artifactType);
+        addMissingArtifact(artifactType);
       }
     });
 
@@ -712,6 +745,10 @@ export class ObjectiveMapper {
   private createEvidenceRef(type: ObjectiveArtifactType, evidence: Evidence): string {
     return `${type}:${evidence.path}`;
   }
+
+  private hasIndependentEvidence(evidenceItems: Evidence[]): boolean {
+    return evidenceItems.some((item) => item.independent === true);
+  }
 }
 
 export interface GapItem {
@@ -825,6 +862,7 @@ export interface ComplianceSnapshot {
   traceGraph: TraceGraph;
   requirementCoverage: RequirementCoverageStatus[];
   qualityFindings: QualityFinding[];
+  traceSuggestions: TraceSuggestion[];
 }
 
 const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
@@ -878,7 +916,16 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
   const requirementTraces = bundle.requirements.map((requirement) =>
     engine.getRequirementTrace(requirement.id),
   );
-  const qualityFindings = evaluateQualityFindings(requirementTraces, requirementCoverage);
+  const traceSuggestions = generateTraceSuggestions(
+    requirementTraces,
+    bundle.testResults,
+    bundle.testToCodeMap ?? {},
+  );
+  const qualityFindings = evaluateQualityFindings(
+    requirementTraces,
+    requirementCoverage,
+    bundle.findings ?? [],
+  );
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
   const gapAnalysis = buildGapAnalysis(objectiveCoverage);
@@ -898,9 +945,11 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
     traceGraph,
     requirementCoverage,
     qualityFindings,
+    traceSuggestions,
   };
 };
 
 export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } from './quality';
+export type { TraceSuggestion, TraceSuggestionConfidence, TraceSuggestionType } from './traceSuggestions';
 
 export * from './complianceMatrix';

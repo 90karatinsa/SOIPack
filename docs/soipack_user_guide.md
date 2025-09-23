@@ -62,6 +62,20 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
    CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
    `polarion`/`jenkins` olarak işler.
+   Bağımsız inceleme gereksinimleri için `--independent-source junit` veya
+   `--independent-artifact analysis=reports/safety-analysis.pdf` gibi bayrakları
+   ekleyerek belirli kanıt kayıtlarını bağımsız olarak işaretleyebilirsiniz;
+   aksi halde DO-178C’de bağımsızlık zorunlu olan hedefler analiz sırasında
+   otomatik olarak boşluk olarak listelenir.
+   CLI, yerel dosya sisteminden okunan her artefakt için kanıt kaydına
+   SHA-256 `hash` değeri ekler; bu alan `workspace.json` içinde tutulur ve
+   sonradan yeniden içe aktarımda tutarlılık kontrolü sağlar. `--import`
+   bayrağı, DO-178C artefakt anahtarları (`plan`, `standard`, `qa_record` vb.)
+   üzerinden manuel dosyaları kanıt indeksine eklerken `--qa` denetim imza
+   CSV'lerini satır bazlı QA kayıtlarına dönüştürür. Yeni `--jira-defects`
+   bayrağı ise Jira CSV dosyalarındaki `Issue Type` sütununu kullanarak
+   `problem_report` kanıtı oluşturur, açık/kapanmış kayıt sayılarını çalışma
+   alanı metaverisine yazar.
 3. **Uyum analizini hesaplayın**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
@@ -102,6 +116,16 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
    ```
+
+6. **Manifest imzasını ve paket içeriğini doğrulayın**
+   ```bash
+   node packages/cli/dist/index.js verify \
+     --manifest release/manifest.json \
+     --signature release/manifest.sig \
+     --package release/soipack-demo.zip \
+     --public-key data/certs/demo-signing.pub.pem
+   ```
+   Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini de doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır.
 
 ### Paket artefaktlarını indirme
 
@@ -162,9 +186,13 @@ Sunucu yanıtları her durumda `error.code`, `error.message` ve (varsa) `error.d
 ### Raporları inceleme
 Raporlar `dist/reports/` altında toplanır. Uyum (`compliance.html`/`compliance.json`), izlenebilirlik (`trace.html`) ve boşluk (`gaps.html`) çıktıları tarayıcıda açılarak inceleme yapılabilir; aynı klasörde `analysis.json`, `snapshot.json` ve `traces.json` çalışma zamanı verileri yer alır. `plans/` alt dizini ise PSAC, SDP, SVP, SCMP ve SQAP belgelerinin HTML/DOCX sürümlerini barındırır; Playwright Chromium mevcutsa aynı adlarla PDF kopyaları da oluşturulur. Pipeline paketleri bu dosyaları ve manifesti `release/soi-pack-*.zip` arşivine dahil eder.【F:docs/demo_script.md†L18-L31】
 
-Uyum matrisi artık yapısal kapsam metriklerini Satır/Dallanma/Fonksiyon değerlerinin yanında MC/DC yüzdeleriyle birlikte gösterir. Gereksinimlere ait kod izleri bu dört metriği toplu olarak hesaplar; `MC/DC: %` etiketi tüm raporlarda otomatik görünür. Aynı matriste yeni “Kalite Bulguları” bloğu yer alır. Bu bölüm, doğrulandı olarak işaretlenmiş ama teste izlenmemiş gereksinimler, başarısız doğrulama testleri veya eksik kapsam gibi çelişkileri listeler. Kritik (hata) ve uyarı seviyeleri farklı rozet renkleriyle vurgulanır; her bulgu ilgili gereksinim, etkilediği test kimlikleri ve önerilen düzeltici aksiyon ile birlikte sunulur.
+Uyum matrisi artık yapısal kapsam metriklerini Satır/Dallanma/Fonksiyon değerlerinin yanında MC/DC yüzdeleriyle birlikte gösterir. Gereksinimlere ait kod izleri bu dört metriği toplu olarak hesaplar; `MC/DC: %` etiketi tüm raporlarda otomatik görünür. Aynı matriste yeni “Kalite Bulguları” bloğu yer alır. Bu bölüm, doğrulandı olarak işaretlenmiş ama teste izlenmemiş gereksinimler, başarısız doğrulama testleri, eksik kapsam veya statik analiz araçlarının raporladığı açık bulgular gibi çelişkileri listeler. Kritik (hata) ve uyarı seviyeleri farklı rozet renkleriyle vurgulanır; her bulgu ilgili gereksinim, etkilediği test kimlikleri ve önerilen düzeltici aksiyon ile birlikte sunulur.
 
-`analysis.json` çıktısı bu bulguları programatik olarak tüketebilmek için `qualityFindings` dizisini içerir. Dizideki her öğe; `severity` (error/warn/info), `category` (trace/tests/coverage), `message`, `requirementId`, `relatedTests` ve `recommendation` alanlarını taşır. CI/CD iş akışlarında bu alanları kullanarak örneğin doğrulandı durumda olup teste bağlanmamış gereksinimler için pipeline'ı başarısız sayabilir veya otomatik JIRA görevleri açabilirsiniz. Bir bulgu raporda belirdiyse, ilgili gereksinim durumunu gözden geçirmek, eksik test izlerini eklemek veya kapsam raporlarını güncellemek önerilir.
+Statik analiz raporlarını CLI'ya `--polyspace`, `--ldra` ve `--vectorcast` bayraklarıyla aktarabilirsiniz. SOIPack bu dosyaları işlediğinde araçların bulduğu `error`/`warning` bulgularını `analysis` kategorisinde raporlar, toplam bulgu sayısını çalışma alanı metaverisine ekler ve `problem_report` kanıtı olarak kaydeder. LDRA ve VectorCAST çıktıları aynı zamanda yapısal kapsam metriklerini güncellerken, Polyspace çıktıları doğrulama kayıtlarını `review` kanıtı olarak zenginleştirir.
+
+`analysis.json` çıktısı bu bulguları programatik olarak tüketebilmek için `qualityFindings` dizisini içerir. Dizideki her öğe; `severity` (error/warn/info), `category` (trace/tests/coverage/analysis), `message`, `requirementId`, `relatedTests` ve `recommendation` alanlarını taşır. CI/CD iş akışlarında bu alanları kullanarak örneğin doğrulandı durumda olup teste bağlanmamış gereksinimler veya kapatılmamış statik analiz uyarıları için pipeline'ı başarısız sayabilir ya da otomatik JIRA görevleri açabilirsiniz. Bir bulgu raporda belirdiyse, ilgili gereksinim durumunu gözden geçirmek, eksik test izlerini eklemek, kapsam raporlarını güncellemek veya statik analiz bulgusunu kapatmak önerilir.
+
+SOIPack analiz adımı ayrıca gereksinimler ile testler/kod dosyaları arasında tutarlı kimlikler ve anahtar kelimeler arayarak yeni iz bağlantıları önerir. `analysis.json` içindeki `traceSuggestions` dizisi, her öneri için hedef kimliği, güven seviyesi ve önerinin gerekçesini bildirir. `trace.html` raporu “Önerilen İz Bağlantıları” bölümünde bu kayıtları göstererek gözden geçirenlerin hızlıca onaylayabileceği veya reddedebileceği bir kontrol listesi sunar.
 
 ### Web arayüzü ile pipeline takibi
 

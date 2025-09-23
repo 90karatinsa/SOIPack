@@ -6,6 +6,7 @@ import https from 'https';
 import path from 'path';
 import process from 'process';
 import { pipeline as streamPipeline } from 'stream/promises';
+import { inflateRawSync } from 'zlib';
 
 import {
   importCobertura,
@@ -13,6 +14,7 @@ import {
   importJiraCsv,
   importJUnitXml,
   importLcov,
+  importQaLogs,
   fetchJenkinsArtifacts,
   fetchPolarionArtifacts,
   importReqIF,
@@ -37,9 +39,11 @@ import {
   certificationLevels,
   Evidence,
   EvidenceSource,
+  evidenceSources,
   Manifest,
   Objective,
   ObjectiveArtifactType,
+  objectiveArtifactTypes,
   Requirement,
   RequirementStatus,
   SnapshotVersion,
@@ -110,6 +114,7 @@ const getCurrentTimestamp = (): string => getCurrentDate().toISOString();
 
 interface ImportPaths {
   jira?: string;
+  jiraDefects?: string[];
   reqif?: string;
   junit?: string;
   lcov?: string;
@@ -122,6 +127,8 @@ interface ImportPaths {
   vectorcast?: string;
   polarion?: string;
   jenkins?: string;
+  manualArtifacts?: Partial<Record<ObjectiveArtifactType, string[]>>;
+  qaLogs?: string[];
 }
 
 export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins'> & {
@@ -132,6 +139,8 @@ export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins'> & {
   projectVersion?: string;
   polarion?: PolarionClientOptions;
   jenkins?: JenkinsClientOptions;
+  independentSources?: Array<EvidenceSource | string>;
+  independentArtifacts?: string[];
 };
 
 export interface ImportWorkspace {
@@ -203,8 +212,11 @@ const uniqueTraceLinks = (links: TraceLink[]): TraceLink[] => {
   return result;
 };
 
+const isRemotePath = (filePath: string): boolean =>
+  /^[a-z]+:\/\//iu.test(filePath) || filePath.startsWith('remote:');
+
 const normalizeRelativePath = (filePath: string): string => {
-  if (/^[a-z]+:\/\//iu.test(filePath) || filePath.startsWith('remote:')) {
+  if (isRemotePath(filePath)) {
     return filePath;
   }
   const absolute = path.resolve(filePath);
@@ -213,8 +225,136 @@ const normalizeRelativePath = (filePath: string): string => {
   return normalized.split(path.sep).join('/');
 };
 
+const computeEvidenceHash = async (filePath: string): Promise<string | undefined> => {
+  if (isRemotePath(filePath)) {
+    return undefined;
+  }
+
+  const absolutePath = path.resolve(filePath);
+  const stats = await fsPromises.stat(absolutePath);
+  if (!stats.isFile()) {
+    return undefined;
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = fs.createReadStream(absolutePath);
+
+    stream.on('error', reject);
+    hash.on('error', reject);
+
+    stream.on('data', (chunk) => {
+      hash.update(chunk);
+    });
+
+    stream.on('end', () => {
+      resolve(hash.digest('hex'));
+    });
+  });
+};
+
+interface EvidenceIndependenceConfig {
+  sources: Set<EvidenceSource>;
+  artifactTypes: Set<ObjectiveArtifactType>;
+  artifacts: Set<string>;
+}
+
+const isEvidenceSourceValue = (value: string): value is EvidenceSource =>
+  (evidenceSources as readonly string[]).includes(value as EvidenceSource);
+
+const isObjectiveArtifactTypeValue = (value: string): value is ObjectiveArtifactType =>
+  (objectiveArtifactTypes as readonly string[]).includes(value as ObjectiveArtifactType);
+
+const parseIndependentSources = (
+  sources: Array<EvidenceSource | string> | undefined,
+): Set<EvidenceSource> => {
+  const result = new Set<EvidenceSource>();
+  if (!sources) {
+    return result;
+  }
+
+  sources.forEach((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error('--independent-source değerleri kaynak adı olmalıdır.');
+    }
+    const normalized = entry.trim();
+    if (!normalized) {
+      return;
+    }
+    if (!isEvidenceSourceValue(normalized)) {
+      throw new Error(
+        `Geçersiz bağımsız kaynak: ${entry}. Desteklenen değerler: ${evidenceSources.join(', ')}.`,
+      );
+    }
+    result.add(normalized as EvidenceSource);
+  });
+
+  return result;
+};
+
+const parseIndependentArtifacts = (
+  entries: string[] | undefined,
+): { artifactTypes: Set<ObjectiveArtifactType>; artifacts: Set<string> } => {
+  const artifactTypes = new Set<ObjectiveArtifactType>();
+  const artifacts = new Set<string>();
+
+  if (!entries) {
+    return { artifactTypes, artifacts };
+  }
+
+  entries.forEach((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error('--independent-artifact değerleri artifact[=path] biçiminde olmalıdır.');
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return;
+    }
+    const [rawArtifact, ...rest] = trimmed.split('=');
+    const artifactName = rawArtifact.trim();
+    if (!artifactName) {
+      throw new Error(
+        `Geçersiz --independent-artifact değeri: ${entry}. Beklenen biçim artifact[=path].`,
+      );
+    }
+    if (!isObjectiveArtifactTypeValue(artifactName)) {
+      throw new Error(
+        `Desteklenmeyen artefakt türü: ${artifactName}. Desteklenen değerler: ${objectiveArtifactTypes.join(', ')}.`,
+      );
+    }
+    const typedArtifact = artifactName as ObjectiveArtifactType;
+    if (rest.length === 0) {
+      artifactTypes.add(typedArtifact);
+      return;
+    }
+    const rawPath = rest.join('=').trim();
+    if (!rawPath) {
+      throw new Error(`--independent-artifact ${artifactName} için dosya yolu belirtilmelidir.`);
+    }
+    const normalizedPath = normalizeRelativePath(rawPath);
+    artifacts.add(`${typedArtifact}:${normalizedPath}`);
+  });
+
+  return { artifactTypes, artifacts };
+};
+
+const buildEvidenceIndependenceConfig = (
+  options: Pick<ImportOptions, 'independentSources' | 'independentArtifacts'>,
+): EvidenceIndependenceConfig => {
+  const sources = parseIndependentSources(options.independentSources);
+  const { artifactTypes, artifacts } = parseIndependentArtifacts(options.independentArtifacts);
+  return { sources, artifactTypes, artifacts };
+};
+
 const staticAnalysisTools = ['polyspace', 'ldra', 'vectorcast'] as const;
 type StaticAnalysisTool = (typeof staticAnalysisTools)[number];
+
+type ManualArtifactImports = Partial<Record<ObjectiveArtifactType, string[]>>;
+
+interface ParsedImportArguments {
+  adapters: Partial<Record<StaticAnalysisTool, string>>;
+  manualArtifacts: ManualArtifactImports;
+}
 
 const coerceOptionalString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
@@ -269,40 +409,122 @@ interface ExternalSourceMetadata {
     tests: number;
     builds: number;
   };
+  jira?: {
+    requirements?: number;
+    problemReports?: number;
+    openProblems?: number;
+    reports?: Array<{ file: string; total: number; open: number }>;
+  };
 }
 
-const parseAdapterImportArgs = (
-  value: unknown,
-): Partial<Record<StaticAnalysisTool, string>> => {
+const parseImportArguments = (value: unknown): ParsedImportArguments => {
   if (!value) {
-    return {};
+    return { adapters: {}, manualArtifacts: {} };
   }
 
   const entries = Array.isArray(value) ? value : [value];
-  const imports: Partial<Record<StaticAnalysisTool, string>> = {};
+  const adapters: Partial<Record<StaticAnalysisTool, string>> = {};
+  const manualArtifacts: ManualArtifactImports = {};
 
   entries.forEach((entry) => {
     if (typeof entry !== 'string') {
-      throw new Error('--import seçenekleri tool=path biçiminde olmalıdır.');
+      throw new Error('--import seçenekleri anahtar=dosya yolu biçiminde olmalıdır.');
     }
-    const [toolName, ...rest] = entry.split('=');
-    if (!toolName || rest.length === 0) {
-      throw new Error(`Geçersiz --import değeri: ${entry}. Beklenen biçim tool=path.`);
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return;
     }
-    const normalizedTool = toolName.trim().toLowerCase() as StaticAnalysisTool;
-    if (!staticAnalysisTools.includes(normalizedTool)) {
-      throw new Error(
-        `Desteklenmeyen --import aracı: ${toolName}. (polyspace, ldra, vectorcast)`,
-      );
+    const [rawKey, ...rest] = trimmed.split('=');
+    const key = rawKey.trim();
+    if (!key || rest.length === 0) {
+      throw new Error(`Geçersiz --import değeri: ${entry}. Beklenen biçim anahtar=dosya.`);
     }
-    const resolvedPath = rest.join('=').trim();
-    if (!resolvedPath) {
-      throw new Error(`--import ${normalizedTool} için dosya yolu belirtilmelidir.`);
+    const filePath = rest.join('=').trim();
+    if (!filePath) {
+      throw new Error(`--import ${key} için dosya yolu belirtilmelidir.`);
     }
-    imports[normalizedTool] = resolvedPath;
+
+      const normalizedKey = key.toLowerCase();
+      if ((staticAnalysisTools as readonly string[]).includes(normalizedKey)) {
+        adapters[normalizedKey as StaticAnalysisTool] = filePath;
+        return;
+      }
+
+      if (!isObjectiveArtifactTypeValue(normalizedKey)) {
+        throw new Error(
+          `Desteklenmeyen --import anahtarı: ${key}. Geçerli değerler: ${[...staticAnalysisTools, ...objectiveArtifactTypes]
+            .map((item) => item)
+            .join(', ')}.`,
+        );
+      }
+
+    const artifactKey = normalizedKey as ObjectiveArtifactType;
+    const existing = manualArtifacts[artifactKey] ?? [];
+    manualArtifacts[artifactKey] = [...existing, filePath];
   });
 
-  return imports;
+  return { adapters, manualArtifacts };
+};
+
+const parseStringArrayOption = (
+  value: unknown,
+  optionName: string,
+): string[] | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const entries = Array.isArray(value) ? value : [value];
+  const result: string[] = [];
+
+  entries.forEach((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error(`${optionName} değerleri dosya yolu olmalıdır.`);
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) {
+      result.push(trimmed);
+    }
+  });
+
+  return result.length > 0 ? result : undefined;
+};
+
+const normalizeIssueType = (value: string | undefined): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  return value.trim().toLowerCase().replace(/[\s/_-]+/g, '');
+};
+
+const problemReportTypes = new Set([
+  'bug',
+  'defect',
+  'problemreport',
+  'issue',
+  'anomaly',
+  'failure',
+  'nonconformance',
+  'pr',
+  'nc',
+]);
+
+const isProblemReportIssue = (issueType: string | undefined): boolean => {
+  const normalized = normalizeIssueType(issueType);
+  if (!normalized) {
+    return false;
+  }
+  return problemReportTypes.has(normalized);
+};
+
+const isClosedProblemStatus = (status: string | undefined): boolean => {
+  if (!status) {
+    return false;
+  }
+  const normalized = status.trim().toLowerCase();
+  return /\b(done|closed|resolved|fixed|complete|completed|verified|accepted|released|cancelled|canceled)\b/u.test(
+    normalized,
+  );
 };
 
 const buildPolarionOptions = (
@@ -1058,24 +1280,47 @@ const computeEvidenceFingerprint = (index: EvidenceIndex): string => {
   return deriveFingerprint(values);
 };
 
-const createEvidence = (
+const isEvidenceIndependent = (
+  config: EvidenceIndependenceConfig | undefined,
+  artifact: ObjectiveArtifactType,
+  source: EvidenceSource,
+  normalizedPath: string,
+): boolean => {
+  if (!config) {
+    return false;
+  }
+  return (
+    config.sources.has(source) ||
+    config.artifactTypes.has(artifact) ||
+    config.artifacts.has(`${artifact}:${normalizedPath}`)
+  );
+};
+
+const createEvidence = async (
   artifact: ObjectiveArtifactType,
   source: EvidenceSource,
   filePath: string,
   summary: string,
-): { artifact: ObjectiveArtifactType; evidence: Evidence } => ({
-  artifact,
-  evidence: (() => {
-    const timestamp = getCurrentTimestamp();
-    return {
-      source,
-      path: normalizeRelativePath(filePath),
-      summary,
-      timestamp,
-      snapshotId: buildEvidenceSnapshotId(artifact, source, filePath, summary, timestamp),
-    };
-  })(),
-});
+  independence?: EvidenceIndependenceConfig,
+): Promise<{ artifact: ObjectiveArtifactType; evidence: Evidence }> => {
+  const normalizedPath = normalizeRelativePath(filePath);
+  const hash = await computeEvidenceHash(filePath);
+  const timestamp = getCurrentTimestamp();
+  const evidence: Evidence = {
+    source,
+    path: normalizedPath,
+    summary,
+    timestamp,
+    snapshotId: buildEvidenceSnapshotId(artifact, source, filePath, summary, timestamp, hash),
+  };
+  if (hash) {
+    evidence.hash = hash;
+  }
+  if (isEvidenceIndependent(independence, artifact, source, normalizedPath)) {
+    evidence.independent = true;
+  }
+  return { artifact, evidence };
+};
 
 const mergeEvidence = (
   index: EvidenceIndex,
@@ -1204,6 +1449,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const warnings: string[] = [];
   const requirements: Requirement[][] = [];
   const evidenceIndex: EvidenceIndex = {};
+  const independence = buildEvidenceIndependenceConfig(options);
   let coverage: CoverageReport | undefined;
   let structuralCoverage: StructuralCoverageSummary | undefined;
   let gitMetadata: BuildInfo | null | undefined;
@@ -1214,6 +1460,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
+    jiraDefects: options.jiraDefects?.map((filePath) => normalizeRelativePath(filePath)),
     reqif: options.reqif ? normalizeRelativePath(options.reqif) : undefined,
     junit: options.junit ? normalizeRelativePath(options.junit) : undefined,
     lcov: options.lcov ? normalizeRelativePath(options.lcov) : undefined,
@@ -1230,34 +1477,100 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     jenkins: options.jenkins
       ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
       : undefined,
+    manualArtifacts: options.manualArtifacts
+      ? Object.fromEntries(
+          Object.entries(options.manualArtifacts).map(([artifact, entries]) => [
+            artifact,
+            (entries ?? []).map((filePath) => normalizeRelativePath(filePath)),
+          ]),
+        )
+      : undefined,
+    qaLogs: options.qaLogs?.map((filePath) => normalizeRelativePath(filePath)),
   };
   const normalizedObjectivesPath = options.objectives
     ? path.resolve(options.objectives)
     : undefined;
   const manualTraceLinks: TraceLink[] = [];
 
+  const appendEvidence = async (
+    artifact: ObjectiveArtifactType,
+    source: EvidenceSource,
+    filePath: string,
+    summary: string,
+  ): Promise<void> => {
+    const { evidence } = await createEvidence(artifact, source, filePath, summary, independence);
+    mergeEvidence(evidenceIndex, artifact, evidence);
+  };
+
   if (options.jira) {
     const result = await importJiraCsv(options.jira);
     warnings.push(...result.warnings);
     if (result.data.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'trace',
-        createEvidence('trace', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı').evidence,
-      );
+      await appendEvidence('trace', 'jiraCsv', options.jira!, 'Jira gereksinim dışa aktarımı');
     }
     requirements.push(result.data.map(toRequirementFromJira));
+    if (result.data.length > 0) {
+      const jiraSummary = sourceMetadata.jira ?? {};
+      jiraSummary.requirements = (jiraSummary.requirements ?? 0) + result.data.length;
+      sourceMetadata.jira = jiraSummary;
+    }
+  }
+
+  if (options.jiraDefects) {
+    for (const jiraPath of options.jiraDefects) {
+      const result = await importJiraCsv(jiraPath);
+      warnings.push(...result.warnings);
+      const issues = result.data;
+      const recognized = issues.filter((item) => isProblemReportIssue(item.issueType));
+      const openCount = recognized.filter((item) => !isClosedProblemStatus(item.status)).length;
+      const hasIssueType = issues.some((item) => item.issueType && item.issueType.trim().length > 0);
+      const baseName = path.basename(jiraPath);
+      if (issues.length === 0) {
+        warnings.push(`Jira CSV ${baseName} satır içermiyor; problem raporu oluşturulamadı.`);
+      } else if (!hasIssueType) {
+        warnings.push(
+          `Jira CSV ${baseName} içinde 'Issue Type' sütunu bulunamadı; tüm satırlar problem raporu olarak doğrulanamadı.`,
+        );
+      } else if (recognized.length === 0) {
+        warnings.push(`Jira CSV ${baseName} içinde tanınan problem raporu türü bulunamadı.`);
+      }
+
+      const summaryDetail =
+        recognized.length > 0
+          ? `${openCount} açık / ${recognized.length} kayıt`
+          : issues.length > 0
+            ? 'problem raporu dışa aktarımı (eşleşme yok)'
+            : 'boş dışa aktarım';
+      await appendEvidence(
+        'problem_report',
+        'jiraCsv',
+        jiraPath,
+        `Jira problem raporu (${baseName}): ${summaryDetail}`,
+      );
+
+      const jiraSummary = sourceMetadata.jira ?? {};
+      if (recognized.length > 0) {
+        jiraSummary.problemReports = (jiraSummary.problemReports ?? 0) + recognized.length;
+        jiraSummary.openProblems = (jiraSummary.openProblems ?? 0) + openCount;
+      }
+      const reports = jiraSummary.reports ?? [];
+      jiraSummary.reports = [
+        ...reports,
+        {
+          file: normalizeRelativePath(jiraPath),
+          total: recognized.length,
+          open: openCount,
+        },
+      ];
+      sourceMetadata.jira = jiraSummary;
+    }
   }
 
   if (options.reqif) {
     const result = await importReqIF(options.reqif);
     warnings.push(...result.warnings);
     if (result.data.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'trace',
-        createEvidence('trace', 'reqif', options.reqif, 'ReqIF gereksinim paketi').evidence,
-      );
+      await appendEvidence('trace', 'reqif', options.reqif, 'ReqIF gereksinim paketi');
     }
     requirements.push(result.data.map(toRequirementFromReqif));
   }
@@ -1267,11 +1580,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     warnings.push(...result.warnings);
     testResults.push(...result.data);
     if (result.data.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'test',
-        createEvidence('test', 'junit', options.junit, 'JUnit test sonuçları').evidence,
-      );
+      await appendEvidence('test', 'junit', options.junit, 'JUnit test sonuçları');
     }
   }
 
@@ -1283,11 +1592,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.lcov) });
     }
     if (result.data.files.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'coverage_stmt',
-        createEvidence('coverage_stmt', 'lcov', options.lcov, 'LCOV kapsam raporu').evidence,
-      );
+      await appendEvidence('coverage_stmt', 'lcov', options.lcov, 'LCOV kapsam raporu');
     }
   }
 
@@ -1299,12 +1604,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
     }
     if (result.data.files.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'coverage_stmt',
-        createEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
-          .evidence,
-      );
+      await appendEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu');
     }
   } else if (options.cobertura) {
     const result = await importCobertura(options.cobertura);
@@ -1313,12 +1613,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
     }
     if (result.data.files.length > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'coverage_stmt',
-        createEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu')
-          .evidence,
-      );
+      await appendEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu');
     }
   }
 
@@ -1329,18 +1624,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       findings.push(...result.data.findings);
     }
     if ((result.data.findings?.length ?? 0) > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'review',
-        createEvidence('review', 'polyspace', options.polyspace, 'Polyspace statik analiz raporu')
-          .evidence,
-      );
-      mergeEvidence(
-        evidenceIndex,
-        'problem_report',
-        createEvidence('problem_report', 'polyspace', options.polyspace, 'Polyspace bulgu listesi')
-          .evidence,
-      );
+      await appendEvidence('review', 'polyspace', options.polyspace, 'Polyspace statik analiz raporu');
+      await appendEvidence('problem_report', 'polyspace', options.polyspace, 'Polyspace bulgu listesi');
     }
   }
 
@@ -1352,23 +1637,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
     if (result.data.coverage) {
       structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
-      mergeEvidence(
-        evidenceIndex,
-        'coverage_stmt',
-        createEvidence('coverage_stmt', 'ldra', options.ldra, 'LDRA kapsam özeti').evidence,
-      );
+      await appendEvidence('coverage_stmt', 'ldra', options.ldra, 'LDRA kapsam özeti');
     }
     if ((result.data.findings?.length ?? 0) > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'review',
-        createEvidence('review', 'ldra', options.ldra, 'LDRA kural ihlalleri').evidence,
-      );
-      mergeEvidence(
-        evidenceIndex,
-        'problem_report',
-        createEvidence('problem_report', 'ldra', options.ldra, 'LDRA ihlal raporu').evidence,
-      );
+      await appendEvidence('review', 'ldra', options.ldra, 'LDRA kural ihlalleri');
+      await appendEvidence('problem_report', 'ldra', options.ldra, 'LDRA ihlal raporu');
     }
   }
 
@@ -1380,42 +1653,17 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
     if (result.data.coverage) {
       structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
-      mergeEvidence(
-        evidenceIndex,
-        'coverage_stmt',
-        createEvidence('coverage_stmt', 'vectorcast', options.vectorcast, 'VectorCAST kapsam raporu')
-          .evidence,
-      );
+      await appendEvidence('coverage_stmt', 'vectorcast', options.vectorcast, 'VectorCAST kapsam raporu');
       if (structuralCoverageHasMetric(result.data.coverage, 'dec')) {
-        mergeEvidence(
-          evidenceIndex,
-          'coverage_dec',
-          createEvidence('coverage_dec', 'vectorcast', options.vectorcast, 'VectorCAST karar kapsamı')
-            .evidence,
-        );
+        await appendEvidence('coverage_dec', 'vectorcast', options.vectorcast, 'VectorCAST karar kapsamı');
       }
       if (structuralCoverageHasMetric(result.data.coverage, 'mcdc')) {
-        mergeEvidence(
-          evidenceIndex,
-          'coverage_mcdc',
-          createEvidence('coverage_mcdc', 'vectorcast', options.vectorcast, 'VectorCAST MC/DC kapsamı')
-            .evidence,
-        );
+        await appendEvidence('coverage_mcdc', 'vectorcast', options.vectorcast, 'VectorCAST MC/DC kapsamı');
       }
     }
     if ((result.data.findings?.length ?? 0) > 0) {
-      mergeEvidence(
-        evidenceIndex,
-        'test',
-        createEvidence('test', 'vectorcast', options.vectorcast, 'VectorCAST test değerlendirmeleri')
-          .evidence,
-      );
-      mergeEvidence(
-        evidenceIndex,
-        'analysis',
-        createEvidence('analysis', 'vectorcast', options.vectorcast, 'VectorCAST sonuç analizi')
-          .evidence,
-      );
+      await appendEvidence('test', 'vectorcast', options.vectorcast, 'VectorCAST test değerlendirmeleri');
+      await appendEvidence('analysis', 'vectorcast', options.vectorcast, 'VectorCAST sonuç analizi');
     }
   }
 
@@ -1424,11 +1672,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     warnings.push(...result.warnings);
     gitMetadata = result.data;
     if (result.data) {
-      mergeEvidence(
-        evidenceIndex,
-        'cm_record',
-        createEvidence('cm_record', 'git', options.git, 'Git depo başlığı').evidence,
-      );
+      await appendEvidence('cm_record', 'git', options.git, 'Git depo başlığı');
     }
   }
 
@@ -1437,12 +1681,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     warnings.push(...result.warnings);
     if (result.links.length > 0) {
       manualTraceLinks.push(...result.links);
-      mergeEvidence(
-        evidenceIndex,
-        'trace',
-        createEvidence('trace', 'other', options.traceLinksCsv, 'Manuel izlenebilirlik eşlemeleri (CSV)')
-          .evidence,
-      );
+      await appendEvidence('trace', 'other', options.traceLinksCsv, 'Manuel izlenebilirlik eşlemeleri (CSV)');
     }
   }
 
@@ -1455,15 +1694,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
 
     if (polarionRequirements.length > 0) {
       requirements.push(polarionRequirements.map(toRequirementFromPolarion));
-      mergeEvidence(
-        evidenceIndex,
+      await appendEvidence(
         'trace',
-        createEvidence(
-          'trace',
-          'polarion',
-          `remote:polarion:${options.polarion.projectId}`,
-          'Polarion gereksinim kataloğu',
-        ).evidence,
+        'polarion',
+        `remote:polarion:${options.polarion.projectId}`,
+        'Polarion gereksinim kataloğu',
       );
     }
 
@@ -1471,15 +1706,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       testResults.push(
         ...polarionTests.map((entry) => toTestResultFromRemote(entry, 'polarion')),
       );
-      mergeEvidence(
-        evidenceIndex,
+      await appendEvidence(
         'test',
-        createEvidence(
-          'test',
-          'polarion',
-          `remote:polarion:${options.polarion.projectId}`,
-          'Polarion test çalıştırmaları',
-        ).evidence,
+        'polarion',
+        `remote:polarion:${options.polarion.projectId}`,
+        'Polarion test çalıştırmaları',
       );
     }
 
@@ -1497,15 +1728,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
           completedAt: build.completedAt,
         });
       });
-      mergeEvidence(
-        evidenceIndex,
+      await appendEvidence(
         'cm_record',
-        createEvidence(
-          'cm_record',
-          'polarion',
-          `remote:polarion:${options.polarion.projectId}`,
-          'Polarion yapı kayıtları',
-        ).evidence,
+        'polarion',
+        `remote:polarion:${options.polarion.projectId}`,
+        'Polarion yapı kayıtları',
       );
     }
 
@@ -1528,15 +1755,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       testResults.push(
         ...jenkinsTests.map((entry) => toTestResultFromRemote(entry, 'jenkins')),
       );
-      mergeEvidence(
-        evidenceIndex,
+      await appendEvidence(
         'test',
-        createEvidence(
-          'test',
-          'jenkins',
-          `remote:jenkins:${options.jenkins.job}`,
-          'Jenkins test raporları',
-        ).evidence,
+        'jenkins',
+        `remote:jenkins:${options.jenkins.job}`,
+        'Jenkins test raporları',
       );
     }
 
@@ -1554,15 +1777,11 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
           completedAt: build.completedAt,
         });
       });
-      mergeEvidence(
-        evidenceIndex,
+      await appendEvidence(
         'cm_record',
-        createEvidence(
-          'cm_record',
-          'jenkins',
-          `remote:jenkins:${options.jenkins.job}`,
-          'Jenkins build metaverisi',
-        ).evidence,
+        'jenkins',
+        `remote:jenkins:${options.jenkins.job}`,
+        'Jenkins build metaverisi',
       );
     }
 
@@ -1575,17 +1794,66 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     };
   }
 
+  if (options.manualArtifacts) {
+    for (const [artifactKey, entries] of Object.entries(options.manualArtifacts)) {
+      if (!entries || entries.length === 0) {
+        continue;
+      }
+      if (!isObjectiveArtifactTypeValue(artifactKey)) {
+        continue;
+      }
+      const artifactType = artifactKey as ObjectiveArtifactType;
+      for (const filePath of entries) {
+        const summary = `Manuel ${artifactType} kanıtı (${path.basename(filePath)})`;
+        await appendEvidence(artifactType, 'other', filePath, summary);
+      }
+    }
+  }
+
+  if (options.qaLogs) {
+    for (const qaPath of options.qaLogs) {
+      const result = await importQaLogs(qaPath);
+      warnings.push(...result.warnings);
+      if (result.data.length === 0) {
+        const summary = `QA denetim kaydı (${path.basename(qaPath)})`;
+        await appendEvidence('qa_record', 'other', qaPath, summary);
+        continue;
+      }
+
+      let row = 2;
+      for (const entry of result.data) {
+        const details: string[] = [];
+        if (entry.objectiveId) {
+          details.push(`hedef ${entry.objectiveId}`);
+        }
+        if (entry.artifact) {
+          details.push(`artefakt ${entry.artifact}`);
+        }
+        if (entry.status) {
+          details.push(`durum ${entry.status}`);
+        }
+        if (entry.reviewer) {
+          details.push(`denetçi ${entry.reviewer}`);
+        }
+        if (entry.completedAt) {
+          details.push(`tarih ${entry.completedAt}`);
+        }
+        const baseSummary = details.length > 0 ? details.join(', ') : `satır ${row}`;
+        const summary = entry.notes
+          ? `QA log kaydı (${baseSummary}; not: ${entry.notes})`
+          : `QA log kaydı (${baseSummary})`;
+        await appendEvidence('qa_record', 'other', qaPath, summary);
+        row += 1;
+      }
+    }
+  }
+
   if (options.traceLinksJson) {
     const result = await importTraceLinksJson(options.traceLinksJson);
     warnings.push(...result.warnings);
     if (result.links.length > 0) {
       manualTraceLinks.push(...result.links);
-      mergeEvidence(
-        evidenceIndex,
-        'trace',
-        createEvidence('trace', 'other', options.traceLinksJson, 'Manuel izlenebilirlik eşlemeleri (JSON)')
-          .evidence,
-      );
+      await appendEvidence('trace', 'other', options.traceLinksJson, 'Manuel izlenebilirlik eşlemeleri (JSON)');
     }
   }
 
@@ -1785,6 +2053,7 @@ const buildImportBundle = (
   evidenceIndex: workspace.evidenceIndex,
   traceLinks: uniqueTraceLinks(workspace.traceLinks ?? []),
   testToCodeMap: workspace.testToCodeMap,
+  findings: workspace.findings,
   generatedAt: workspace.metadata.generatedAt,
   targetLevel: level,
   snapshot: workspace.metadata.version,
@@ -1841,6 +2110,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   await writeJsonFile(analysisPath, {
     metadata: analysisMetadata,
     objectives: filteredObjectives,
+    objectiveCoverage: snapshot.objectives,
+    gaps: snapshot.gaps,
     requirements: workspace.requirements,
     tests: workspace.testResults,
     coverage: workspace.coverage,
@@ -1849,6 +2120,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     inputs: workspace.metadata.inputs,
     warnings: workspace.metadata.warnings,
     qualityFindings: snapshot.qualityFindings,
+    traceSuggestions: snapshot.traceSuggestions,
   });
 
   const hasMissingEvidence = snapshot.objectives.some(
@@ -2204,6 +2476,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     inputs: ImportPaths;
     warnings: string[];
     qualityFindings: ComplianceSnapshot['qualityFindings'];
+    traceSuggestions: ComplianceSnapshot['traceSuggestions'];
   }>(analysisPath);
   const snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
   const traces = await readJsonFile<RequirementTrace[]>(tracePath);
@@ -2230,6 +2503,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
       ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
       : 'SOIPack İzlenebilirlik Matrisi',
     coverage: snapshot.requirementCoverage,
+    suggestions: snapshot.traceSuggestions,
     git: analysis.git,
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
@@ -2689,11 +2963,13 @@ export interface VerifyOptions {
   manifestPath: string;
   signaturePath: string;
   publicKeyPath: string;
+  packagePath?: string;
 }
 
 export interface VerifyResult {
   isValid: boolean;
   manifestId: string;
+  packageIssues: string[];
 }
 
 const readUtf8File = async (filePath: string, errorMessage: string): Promise<string> => {
@@ -2703,6 +2979,144 @@ const readUtf8File = async (filePath: string, errorMessage: string): Promise<str
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${errorMessage}: ${reason}`);
   }
+};
+
+const normalizeArchivePath = (value: string): string => value.replace(/\\/g, '/');
+
+interface ZipEntryMetadata {
+  compressionMethod: number;
+  compressedSize: number;
+  localHeaderOffset: number;
+}
+
+const ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+
+const findCentralDirectory = (archive: Buffer): { offset: number; totalEntries: number } => {
+  const minSize = 22;
+  const maxCommentLength = 0xffff;
+  const start = Math.max(0, archive.length - (minSize + maxCommentLength));
+
+  for (let index = archive.length - minSize; index >= start; index -= 1) {
+    if (archive.readUInt32LE(index) === ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+      const totalEntries = archive.readUInt16LE(index + 10);
+      const offset = archive.readUInt32LE(index + 16);
+      return { offset, totalEntries };
+    }
+  }
+
+  throw new Error('ZIP arşivinde merkez dizin son kaydı bulunamadı.');
+};
+
+const readCentralDirectoryEntries = (archive: Buffer): Map<string, ZipEntryMetadata> => {
+  const { offset: startOffset, totalEntries } = findCentralDirectory(archive);
+  const entries = new Map<string, ZipEntryMetadata>();
+
+  let offset = startOffset;
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (offset + 46 > archive.length) {
+      throw new Error('ZIP arşivi bozuk: merkez dizin girişi eksik.');
+    }
+
+    const signature = archive.readUInt32LE(offset);
+    if (signature !== ZIP_CENTRAL_DIRECTORY_SIGNATURE) {
+      throw new Error('ZIP arşivi bozuk: merkez dizin imzası okunamadı.');
+    }
+
+    const compressionMethod = archive.readUInt16LE(offset + 10);
+    const compressedSize = archive.readUInt32LE(offset + 20);
+    const fileNameLength = archive.readUInt16LE(offset + 28);
+    const extraFieldLength = archive.readUInt16LE(offset + 30);
+    const commentLength = archive.readUInt16LE(offset + 32);
+    const localHeaderOffset = archive.readUInt32LE(offset + 42);
+
+    const nameStart = offset + 46;
+    const nameEnd = nameStart + fileNameLength;
+    if (nameEnd > archive.length) {
+      throw new Error('ZIP arşivi bozuk: dosya adı sınırları aşıldı.');
+    }
+
+    const rawName = archive.subarray(nameStart, nameEnd).toString('utf8');
+    const normalizedName = normalizeArchivePath(rawName);
+
+    entries.set(normalizedName, {
+      compressionMethod,
+      compressedSize,
+      localHeaderOffset,
+    });
+
+    offset = nameEnd + extraFieldLength + commentLength;
+  }
+
+  return entries;
+};
+
+const readEntryData = (archive: Buffer, entry: ZipEntryMetadata): Buffer => {
+  if (entry.localHeaderOffset + 30 > archive.length) {
+    throw new Error('ZIP arşivi bozuk: yerel dosya başlığı eksik.');
+  }
+
+  const signature = archive.readUInt32LE(entry.localHeaderOffset);
+  if (signature !== ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+    throw new Error('ZIP arşivi bozuk: yerel dosya başlığı imzası okunamadı.');
+  }
+
+  const fileNameLength = archive.readUInt16LE(entry.localHeaderOffset + 26);
+  const extraFieldLength = archive.readUInt16LE(entry.localHeaderOffset + 28);
+  const dataStart = entry.localHeaderOffset + 30 + fileNameLength + extraFieldLength;
+  const dataEnd = dataStart + entry.compressedSize;
+
+  if (dataEnd > archive.length) {
+    throw new Error('ZIP arşivi bozuk: sıkıştırılmış veri eksik.');
+  }
+
+  const compressed = archive.subarray(dataStart, dataEnd);
+
+  switch (entry.compressionMethod) {
+    case 0:
+      return compressed;
+    case 8:
+      return inflateRawSync(compressed);
+    default:
+      throw new Error(`Desteklenmeyen ZIP sıkıştırma yöntemi: ${entry.compressionMethod}`);
+  }
+};
+
+const verifyPackageAgainstManifest = async (
+  packagePath: string,
+  manifest: Manifest,
+): Promise<string[]> => {
+  const expected = new Map<string, string>();
+  for (const file of manifest.files) {
+    expected.set(normalizeArchivePath(file.path), file.sha256.toLowerCase());
+  }
+
+  const archive = await fsPromises.readFile(packagePath);
+  const entries = readCentralDirectoryEntries(archive);
+
+  const issues: string[] = [];
+
+  for (const [filePath, expectedHash] of expected.entries()) {
+    const entry = entries.get(filePath);
+    if (!entry) {
+      issues.push(`Manifest dosyası paket içinde bulunamadı: ${filePath}`);
+      continue;
+    }
+
+    try {
+      const data = readEntryData(archive, entry);
+      const digest = createHash('sha256').update(data).digest('hex');
+      if (digest !== expectedHash) {
+        issues.push(`Dosya karması uyuşmuyor: ${filePath} (beklenen ${expectedHash}, bulunan ${digest})`);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      issues.push(`Dosya okunamadı: ${filePath} (${reason})`);
+    }
+  }
+
+  return issues;
 };
 
 export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> => {
@@ -2726,12 +3140,38 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
     throw new Error('Manifest imza dosyası boş.');
   }
 
-  const publicKey = await readUtf8File(publicKeyPath, 'Genel anahtar dosyası okunamadı');
+  const verifierPem = await readUtf8File(
+    publicKeyPath,
+    'Doğrulama anahtarı dosyası okunamadı (sertifika veya kamu anahtarı).',
+  );
 
   const manifestId = createHash('sha256').update(manifestRaw).digest('hex').slice(0, 12);
-  const isValid = verifyManifestSignature(manifest, signature, publicKey);
+  const isValid = verifyManifestSignature(manifest, signature, verifierPem);
 
-  return { isValid, manifestId };
+  let packageIssues: string[] = [];
+  if (options.packagePath) {
+    const packagePath = path.resolve(options.packagePath);
+    let stats: fs.Stats;
+    try {
+      stats = await fsPromises.stat(packagePath);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Paket arşivi okunamadı: ${reason}`);
+    }
+
+    if (!stats.isFile()) {
+      throw new Error('Paket arşivi bir dosya olmalıdır.');
+    }
+
+    try {
+      packageIssues = await verifyPackageAgainstManifest(packagePath, manifest);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Paket içeriği doğrulanamadı: ${reason}`);
+    }
+  }
+
+  return { isValid, manifestId, packageIssues };
 };
 
 interface RunConfig {
@@ -3048,6 +3488,10 @@ if (require.main === module) {
             describe: 'Jira CSV dışa aktarımının yolu.',
             type: 'string',
           })
+          .option('jira-defects', {
+            describe: 'Jira CSV dışa aktarımından problem raporları (--jira-defects dosya.csv).',
+            type: 'array',
+          })
           .option('reqif', {
             describe: 'ReqIF gereksinim paketi yolu.',
             type: 'string',
@@ -3137,7 +3581,12 @@ if (require.main === module) {
             type: 'string',
           })
           .option('import', {
-            describe: 'Statik analiz ve kapsam raporları (polyspace=, ldra=, vectorcast=).',
+            describe:
+              'Plan, standart, QA kaydı gibi artefaktlar ve araç çıktıları (plan=, standard=, qa_record=, polyspace=, ...).',
+            type: 'array',
+          })
+          .option('qa', {
+            describe: 'QA denetim imza CSV dosyaları (--qa dosya.csv).',
             type: 'array',
           })
           .option('trace-links-csv', {
@@ -3147,6 +3596,16 @@ if (require.main === module) {
           .option('trace-links-json', {
             describe: 'Manuel gereksinim izlenebilirlik bağlantıları JSON dosyası.',
             type: 'string',
+          })
+          .option('independent-source', {
+            describe:
+              'Belirtilen kanıt kaynaklarını bağımsız incelemeden geçmiş kabul eder (ör. junit, vectorcast).',
+            type: 'array',
+          })
+          .option('independent-artifact', {
+            describe:
+              'Artefakt türlerini veya belirli dosyaları bağımsız olarak işaretler (ör. analysis veya analysis=rapor.md).',
+            type: 'array',
           })
           .option('objectives', {
             describe: 'Uyum hedefleri JSON dosyası.',
@@ -3179,13 +3638,17 @@ if (require.main === module) {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
 
-          const adapterImports = parseAdapterImportArgs(
-            (argv as Record<string, unknown>)['import'],
+          const importArguments = parseImportArguments((argv as Record<string, unknown>)['import']);
+          const qaLogs = parseStringArrayOption((argv as Record<string, unknown>).qa, '--qa');
+          const jiraDefects = parseStringArrayOption(
+            (argv as Record<string, unknown>).jiraDefects,
+            '--jira-defects',
           );
 
           const result = await runImport({
             output: argv.output,
             jira: argv.jira,
+            jiraDefects,
             reqif: argv.reqif,
             junit: argv.junit,
             lcov: argv.lcov,
@@ -3193,15 +3656,19 @@ if (require.main === module) {
             git: argv.git,
             traceLinksCsv: argv.traceLinksCsv as string | undefined,
             traceLinksJson: argv.traceLinksJson as string | undefined,
-            polyspace: adapterImports.polyspace,
-            ldra: adapterImports.ldra,
-            vectorcast: adapterImports.vectorcast,
+            polyspace: importArguments.adapters.polyspace,
+            ldra: importArguments.adapters.ldra,
+            vectorcast: importArguments.adapters.vectorcast,
+            manualArtifacts: importArguments.manualArtifacts,
+            qaLogs,
             polarion: buildPolarionOptions(argv),
             jenkins: buildJenkinsOptions(argv),
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
+            independentSources: argv.independentSource as Array<string> | undefined,
+            independentArtifacts: argv.independentArtifact as Array<string> | undefined,
           });
 
           if (result.warnings.length > 0) {
@@ -3741,25 +4208,32 @@ if (require.main === module) {
             demandOption: true,
           })
           .option('public-key', {
-            describe: 'Ed25519 kamu anahtarı PEM dosyası.',
+            describe: 'Ed25519 kamu anahtarı veya X.509 sertifika PEM dosyası.',
             type: 'string',
             demandOption: true,
+          })
+          .option('package', {
+            describe: 'Manifestte listelenen dosyaları içeren ZIP arşivi.',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
         const manifestOption = Array.isArray(argv.manifest) ? argv.manifest[0] : argv.manifest;
         const signatureOption = Array.isArray(argv.signature) ? argv.signature[0] : argv.signature;
         const publicKeyOption = Array.isArray(argv.publicKey) ? argv.publicKey[0] : argv.publicKey;
+        const packageOption = Array.isArray(argv.package) ? argv.package[0] : argv.package;
 
         const manifestPath = path.resolve(manifestOption as string);
         const signaturePath = path.resolve(signatureOption as string);
         const publicKeyPath = path.resolve(publicKeyOption as string);
+        const packagePath = packageOption ? path.resolve(String(packageOption)) : undefined;
 
         const context = {
           command: 'verify',
           manifestPath,
           signaturePath,
           publicKeyPath,
+          packagePath,
         };
 
         try {
@@ -3767,22 +4241,38 @@ if (require.main === module) {
             manifestPath,
             signaturePath,
             publicKeyPath,
+            packagePath,
           });
+          const hasPackageIssues = result.packageIssues.length > 0;
 
-          if (result.isValid) {
+          if (hasPackageIssues || !result.isValid) {
+            if (hasPackageIssues) {
+              logger.error(
+                { ...context, manifestId: result.manifestId, issues: result.packageIssues },
+                'Paket içeriği manifest ile eşleşmiyor.',
+              );
+              console.error(`Paket doğrulaması başarısız oldu (ID: ${result.manifestId}).`);
+              for (const issue of result.packageIssues) {
+                console.error(` - ${issue}`);
+              }
+            }
+
+            if (!result.isValid) {
+              logger.warn(
+                { ...context, manifestId: result.manifestId },
+                'Manifest imzası doğrulanamadı.',
+              );
+              console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
+            }
+
+            process.exitCode = exitCodes.verificationFailed;
+          } else {
             logger.info(
               { ...context, manifestId: result.manifestId },
               'Manifest imzası doğrulandı.',
             );
             console.log(`Manifest imzası doğrulandı (ID: ${result.manifestId}).`);
             process.exitCode = exitCodes.success;
-          } else {
-            logger.warn(
-              { ...context, manifestId: result.manifestId },
-              'Manifest imzası doğrulanamadı.',
-            );
-            console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
-            process.exitCode = exitCodes.verificationFailed;
           }
         } catch (error) {
           logCliError(logger, error, context);

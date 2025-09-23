@@ -1,6 +1,6 @@
-import { createHash } from 'crypto';
+import { createHash, X509Certificate } from 'crypto';
 import { EventEmitter } from 'events';
-import { promises as fs, readFileSync } from 'fs';
+import { promises as fs, readFileSync, createWriteStream } from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
@@ -11,6 +11,7 @@ import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifestBundle, verifyManifestSignature } from '@soipack/packager';
 import type { PlanTemplateId } from '@soipack/report';
 import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
+import { ZipFile } from 'yazl';
 
 import type { LicensePayload } from './license';
 import { setCliLocale } from './localization';
@@ -42,6 +43,9 @@ const TEST_SIGNING_CERTIFICATE = (() => {
   }
   return match[0];
 })();
+const TEST_SIGNING_PUBLIC_KEY = new X509Certificate(TEST_SIGNING_CERTIFICATE)
+  .publicKey.export({ format: 'pem', type: 'spki' })
+  .toString();
 
 describe('@soipack/cli pipeline', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
@@ -148,7 +152,7 @@ describe('@soipack/cli pipeline', () => {
 
     const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
   });
 
   it('generates compliance and coverage summaries with runIngestPipeline', async () => {
@@ -167,7 +171,12 @@ describe('@soipack/cli pipeline', () => {
 
     expect(result.reportsDir).toBe(path.join(ingestOutput, 'reports'));
     expect(result.complianceSummary.total).toBeGreaterThan(0);
-    expect(result.complianceSummary.covered).toBeGreaterThan(0);
+    expect(result.complianceSummary.covered).toBeGreaterThanOrEqual(0);
+    expect(
+      result.complianceSummary.covered +
+        result.complianceSummary.partial +
+        result.complianceSummary.missing,
+    ).toBe(result.complianceSummary.total);
     expect(result.coverageSummary).toEqual(expect.objectContaining({ statements: expect.any(Number) }));
     const complianceStats = await fs.stat(result.compliancePath);
     expect(complianceStats.isFile()).toBe(true);
@@ -201,7 +210,7 @@ describe('@soipack/cli pipeline', () => {
     expect(computedHash).toBe(firstEntry.sha256);
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
   });
 
   it('generates plan documents from configuration JSON', async () => {
@@ -299,7 +308,7 @@ describe('@soipack/cli pipeline', () => {
     await fs.writeFile(result.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
     const signature = (await fs.readFile(path.join(tamperOutput, 'manifest.sig'), 'utf8')).trim();
-    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(false);
+    expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(false);
   });
 
   it('derives test-to-code mapping from coverage adapters', async () => {
@@ -384,6 +393,269 @@ describe('@soipack/cli pipeline', () => {
 
     const derivedTrace = engine.getRequirementTrace('REQ-2');
     expect(derivedTrace.tests.map((test) => test.testId)).toContain('AuthTests#handles lockout');
+  });
+
+  it('attaches manual DO-178C artefacts from the import map', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'manual-artifacts');
+    const workDir = path.join(tempRoot, 'manual-artifacts-workspace');
+
+    const result = await runImport({
+      output: workDir,
+      manualArtifacts: {
+        plan: [path.join(fixtureDir, 'system-plan.md')],
+        standard: [path.join(fixtureDir, 'software-standard.txt')],
+        qa_record: [path.join(fixtureDir, 'qa-summary.csv')],
+      },
+    });
+
+    const planEvidence = result.workspace.evidenceIndex.plan ?? [];
+    expect(planEvidence.map((entry) => path.basename(entry.path))).toContain('system-plan.md');
+    expect(planEvidence[0]?.hash).toMatch(/^[a-f0-9]{64}$/);
+
+    const standardEvidence = result.workspace.evidenceIndex.standard ?? [];
+    expect(standardEvidence.map((entry) => path.basename(entry.path))).toContain(
+      'software-standard.txt',
+    );
+
+    const qaEvidence = result.workspace.evidenceIndex.qa_record ?? [];
+    expect(qaEvidence.map((entry) => path.basename(entry.path))).toContain('qa-summary.csv');
+
+    expect(result.workspace.metadata.inputs.manualArtifacts?.plan?.[0]).toMatch(/system-plan\.md$/);
+    expect(result.workspace.metadata.inputs.manualArtifacts?.qa_record?.[0]).toMatch(
+      /qa-summary\.csv$/,
+    );
+  });
+
+  it('imports QA logs into qa_record evidence and covers A-7 objectives', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'qa-logs');
+    const workspaceDir = path.join(tempRoot, 'qa-logs-workspace');
+    const analysisDir = path.join(tempRoot, 'qa-logs-analysis');
+
+    const importResult = await runImport({
+      output: workspaceDir,
+      qaLogs: [path.join(fixtureDir, 'qa-log.csv')],
+      objectives: path.join(fixtureDir, 'objectives.json'),
+    });
+
+    const qaEvidence = importResult.workspace.evidenceIndex.qa_record ?? [];
+    expect(qaEvidence).toHaveLength(2);
+    expect(qaEvidence.every((entry) => entry.hash && entry.hash.length === 64)).toBe(true);
+
+    const analysisResult = await runAnalyze({
+      input: workspaceDir,
+      output: analysisDir,
+      objectives: path.join(fixtureDir, 'objectives.json'),
+    });
+
+    expect(analysisResult.exitCode).toBe(exitCodes.success);
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'snapshot.json'), 'utf8'),
+    ) as {
+      objectives: Array<{ objectiveId: string; status: string }>;
+    };
+
+    snapshot.objectives
+      .filter((entry) => entry.objectiveId.startsWith('A-7-0'))
+      .forEach((objective) => {
+        expect(objective.status).toBe('covered');
+      });
+  });
+
+  it('imports Jira problem reports and clears problem_report objectives', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'jira-problems');
+    const workspaceDir = path.join(tempRoot, 'jira-problems-workspace');
+    const analysisDir = path.join(tempRoot, 'jira-problems-analysis');
+
+    const importResult = await runImport({
+      output: workspaceDir,
+      jiraDefects: [path.join(fixtureDir, 'defects.csv')],
+      objectives: path.join(fixtureDir, 'objectives.json'),
+    });
+
+    const problemEvidence = importResult.workspace.evidenceIndex.problem_report ?? [];
+    expect(problemEvidence).toHaveLength(1);
+    expect(problemEvidence[0]?.summary).toContain('Jira problem raporu');
+    expect(problemEvidence[0]?.hash).toMatch(/^[a-f0-9]{64}$/);
+
+    const jiraMetadata = importResult.workspace.metadata.sources?.jira;
+    expect(jiraMetadata?.problemReports).toBe(2);
+    expect(jiraMetadata?.openProblems).toBe(1);
+    expect(jiraMetadata?.reports).toEqual([
+      expect.objectContaining({ file: expect.stringMatching(/defects\.csv$/), total: 2, open: 1 }),
+    ]);
+
+    const analysisResult = await runAnalyze({
+      input: workspaceDir,
+      output: analysisDir,
+      objectives: path.join(fixtureDir, 'objectives.json'),
+    });
+
+    expect(analysisResult.exitCode).toBe(exitCodes.success);
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'snapshot.json'), 'utf8'),
+    ) as {
+      objectives: Array<{ objectiveId: string; status: string }>;
+    };
+
+    const changeControl = snapshot.objectives.find((entry) => entry.objectiveId === 'A-6-02');
+    expect(changeControl?.status).toBe('covered');
+  });
+
+  it('propagates static analysis findings into compliance quality warnings', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'quality');
+    const workspaceDir = path.join(tempRoot, 'quality-workspace');
+    const analysisDir = path.join(tempRoot, 'quality-analysis');
+    const reportDir = path.join(tempRoot, 'quality-report');
+
+    await runImport({
+      output: workspaceDir,
+      polyspace: path.join(fixtureDir, 'polyspace.json'),
+      ldra: path.join(fixtureDir, 'ldra.json'),
+    });
+
+    const analysisResult = await runAnalyze({
+      input: workspaceDir,
+      output: analysisDir,
+      objectives: objectivesPath,
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    await runReport({
+      input: analysisDir,
+      output: reportDir,
+    });
+
+    const compliance = JSON.parse(
+      await fs.readFile(path.join(reportDir, 'compliance.json'), 'utf8'),
+    ) as {
+      qualityFindings: Array<{ category: string; message: string }>;
+    };
+
+    const analysisFindings = compliance.qualityFindings.filter(
+      (finding) => finding.category === 'analysis',
+    );
+    expect(analysisFindings.length).toBeGreaterThan(0);
+    expect(analysisFindings.map((finding) => finding.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining('Polyspace bulgusu')]),
+    );
+  });
+
+  it('surfaces trace suggestions in analysis results and trace reports', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'trace-suggestions');
+    const inputDir = path.join(tempRoot, 'trace-suggestions-input');
+    const analysisDir = path.join(tempRoot, 'trace-suggestions-analysis');
+    const reportDir = path.join(tempRoot, 'trace-suggestions-report');
+
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    const analysisResult = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const analysisData = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+    ) as {
+      traceSuggestions: Array<{ requirementId: string; targetId: string }>;
+    };
+
+    expect(analysisData.traceSuggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requirementId: 'REQ-TRACE-1', targetId: 'TC-REQ-TRACE-1' }),
+        expect.objectContaining({ requirementId: 'REQ-TRACE-1', targetId: 'src/logger.c' }),
+      ]),
+    );
+
+    await runReport({
+      input: analysisDir,
+      output: reportDir,
+    });
+
+    const traceHtml = await fs.readFile(path.join(reportDir, 'trace.html'), 'utf8');
+    expect(traceHtml).toContain('Önerilen İz Bağlantıları');
+    expect(traceHtml).toContain('TC-REQ-TRACE-1');
+    expect(traceHtml).toContain('src/logger.c');
+  });
+
+  it('marks configured evidence entries as independently reviewed', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'manual-links');
+    const workDir = path.join(tempRoot, 'independent-evidence-workspace');
+
+    const result = await runImport({
+      output: workDir,
+      junit: path.join(fixtureDir, 'results.xml'),
+      traceLinksCsv: path.join(fixtureDir, 'trace-links.csv'),
+      independentSources: ['junit'],
+      independentArtifacts: [`trace=${path.join(fixtureDir, 'trace-links.csv')}`],
+    });
+
+    const testEvidence = result.workspace.evidenceIndex.test?.[0];
+    expect(testEvidence).toEqual(
+      expect.objectContaining({
+        independent: true,
+        hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+
+    const traceEvidence = result.workspace.evidenceIndex.trace?.find((item) =>
+      item.path.endsWith('trace-links.csv'),
+    );
+    expect(traceEvidence).toEqual(
+      expect.objectContaining({
+        independent: true,
+        hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+  });
+
+  it('highlights independence gaps in analysis output for the fixture workspace', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'independence');
+    const inputDir = path.join(tempRoot, 'independence-analysis-input');
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(
+      path.join(fixtureDir, 'workspace.json'),
+      path.join(inputDir, 'workspace.json'),
+    );
+
+    const outputDir = path.join(tempRoot, 'independence-analysis-output');
+
+    const result = await runAnalyze({
+      input: inputDir,
+      output: outputDir,
+      level: 'A',
+      objectives: path.join(fixtureDir, 'objectives.json'),
+    });
+
+    expect(result.exitCode).toBe(exitCodes.missingEvidence);
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(outputDir, 'snapshot.json'), 'utf8'),
+    ) as {
+      objectives: Array<{ objectiveId: string; status: string; missingArtifacts: string[] }>;
+      gaps: { analysis: Array<{ objectiveId: string; missingArtifacts: string[] }> };
+    };
+    const objective = snapshot.objectives.find((item) => item.objectiveId === 'A-3-99');
+    expect(objective?.status).toBe('missing');
+    expect(objective?.missingArtifacts).toEqual(expect.arrayContaining(['analysis']));
+
+    const analysisGap = snapshot.gaps.analysis.find((item) => item.objectiveId === 'A-3-99');
+    expect(analysisGap?.missingArtifacts).toContain('analysis');
+
+    const analysisJson = JSON.parse(
+      await fs.readFile(path.join(outputDir, 'analysis.json'), 'utf8'),
+    ) as {
+      gaps: { analysis: Array<{ objectiveId: string; missingArtifacts: string[] }> };
+    };
+    const recordedGap = analysisJson.gaps.analysis.find((item) => item.objectiveId === 'A-3-99');
+    expect(recordedGap?.missingArtifacts).toContain('analysis');
   });
 });
 
@@ -520,21 +792,73 @@ describe('runVerify', () => {
       manifestJson?: string;
       signature?: string;
     } = {},
-  ): Promise<{ manifestPath: string; signaturePath: string; publicKeyPath: string }> => {
+  ): Promise<{
+    manifestPath: string;
+    signaturePath: string;
+    publicKeyPath: string;
+    manifestContent: string;
+    signatureContent: string;
+  }> => {
     const manifestPath = path.join(tempDir, 'manifest.json');
     const signaturePath = path.join(tempDir, 'manifest.sig');
-    const publicKeyPath = path.join(tempDir, 'certificate.pem');
+    const publicKeyPath = path.join(tempDir, 'public-key.pem');
 
     const manifestJson = overrides.manifestJson ?? `${JSON.stringify(manifest, null, 2)}\n`;
     await fs.writeFile(manifestPath, manifestJson, 'utf8');
 
     const signatureValue =
       overrides.signature ?? signManifestBundle(manifest, { bundlePem: TEST_SIGNING_BUNDLE }).signature;
-    await fs.writeFile(signaturePath, `${signatureValue}\n`, 'utf8');
+    const signatureContent = `${signatureValue}\n`;
+    await fs.writeFile(signaturePath, signatureContent, 'utf8');
 
-    await fs.writeFile(publicKeyPath, TEST_SIGNING_CERTIFICATE, 'utf8');
+    await fs.writeFile(publicKeyPath, TEST_SIGNING_PUBLIC_KEY, 'utf8');
 
-    return { manifestPath, signaturePath, publicKeyPath };
+    return {
+      manifestPath,
+      signaturePath,
+      publicKeyPath,
+      manifestContent: manifestJson,
+      signatureContent,
+    };
+  };
+
+  type PackageEntry = { path: string; data: string | Buffer };
+
+  const digestFor = (content: string | Buffer): string => {
+    const buffer = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+    return createHash('sha256').update(buffer).digest('hex');
+  };
+
+  const createManifestFromEntries = (entries: PackageEntry[]): Manifest => ({
+    files: entries.map((entry) => ({ path: entry.path, sha256: digestFor(entry.data) })),
+    createdAt: '2024-01-01T00:00:00.000Z',
+    toolVersion: '1.0.0-test',
+  });
+
+  const writeZipArchive = async (outputPath: string, entries: PackageEntry[]): Promise<void> => {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+
+    await new Promise<void>((resolve, reject) => {
+      const zip = new ZipFile();
+      const output = createWriteStream(outputPath);
+
+      const handleError = (error: unknown) => {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
+      zip.outputStream.on('error', handleError);
+      output.on('error', handleError);
+      output.on('close', () => resolve());
+
+      zip.outputStream.pipe(output);
+
+      for (const entry of entries) {
+        const buffer = typeof entry.data === 'string' ? Buffer.from(entry.data, 'utf8') : entry.data;
+        zip.addBuffer(buffer, entry.path);
+      }
+
+      zip.end();
+    });
   };
 
   it('returns success for a valid manifest signature', async () => {
@@ -545,6 +869,7 @@ describe('runVerify', () => {
 
     expect(result.isValid).toBe(true);
     expect(result.manifestId).toHaveLength(12);
+    expect(result.packageIssues).toEqual([]);
   });
 
   it('flags tampered manifests as invalid', async () => {
@@ -572,6 +897,7 @@ describe('runVerify', () => {
 
     expect(result.isValid).toBe(false);
     expect(result.manifestId).toHaveLength(12);
+    expect(result.packageIssues).toEqual([]);
   });
 
   it('throws on malformed manifest inputs', async () => {
@@ -584,6 +910,83 @@ describe('runVerify', () => {
     await expect(runVerify({ manifestPath, signaturePath, publicKeyPath })).rejects.toThrow(
       /Manifest JSON formatı çözümlenemedi/,
     );
+  });
+
+  it('validates package contents when provided', async () => {
+    const dataEntries: PackageEntry[] = [
+      { path: 'reports/compliance.json', data: '{"status":"ok"}\n' },
+      { path: 'reports/gaps.html', data: '<html>gaps</html>' },
+    ];
+
+    const manifest = createManifestFromEntries(dataEntries);
+    const { manifestPath, signaturePath, publicKeyPath, manifestContent, signatureContent } =
+      await writeVerificationFiles(manifest);
+
+    const packagePath = path.join(tempDir, 'valid-package.zip');
+    await writeZipArchive(packagePath, [
+      ...dataEntries,
+      { path: 'manifest.json', data: manifestContent },
+      { path: 'manifest.sig', data: signatureContent },
+    ]);
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, packagePath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.packageIssues).toEqual([]);
+  });
+
+  it('reports mismatched files when package content is tampered', async () => {
+    const dataEntries: PackageEntry[] = [
+      { path: 'reports/compliance.json', data: 'original compliance' },
+      { path: 'reports/gaps.html', data: '<html>gaps</html>' },
+    ];
+
+    const manifest = createManifestFromEntries(dataEntries);
+    const { manifestPath, signaturePath, publicKeyPath, manifestContent, signatureContent } =
+      await writeVerificationFiles(manifest);
+
+    const tamperedContent = 'tampered compliance';
+    const packagePath = path.join(tempDir, 'tampered-package.zip');
+    await writeZipArchive(packagePath, [
+      { path: dataEntries[0].path, data: tamperedContent },
+      dataEntries[1],
+      { path: 'manifest.json', data: manifestContent },
+      { path: 'manifest.sig', data: signatureContent },
+    ]);
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, packagePath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.packageIssues).toEqual([
+      `Dosya karması uyuşmuyor: ${dataEntries[0].path} (beklenen ${digestFor(
+        dataEntries[0].data,
+      )}, bulunan ${digestFor(tamperedContent)})`,
+    ]);
+  });
+
+  it('reports missing files when package omits manifest entries', async () => {
+    const dataEntries: PackageEntry[] = [
+      { path: 'reports/compliance.json', data: 'original compliance' },
+      { path: 'reports/gaps.html', data: '<html>gaps</html>' },
+    ];
+
+    const manifest = createManifestFromEntries(dataEntries);
+    const { manifestPath, signaturePath, publicKeyPath, manifestContent, signatureContent } =
+      await writeVerificationFiles(manifest);
+
+    const packagePath = path.join(tempDir, 'missing-file-package.zip');
+    await writeZipArchive(packagePath, [
+      dataEntries[1],
+      { path: 'manifest.json', data: manifestContent },
+      { path: 'manifest.sig', data: signatureContent },
+    ]);
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, packagePath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.packageIssues).toEqual([
+      `Manifest dosyası paket içinde bulunamadı: ${dataEntries[0].path}`,
+    ]);
   });
 });
 

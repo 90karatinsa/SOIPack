@@ -1,0 +1,25 @@
+{
+  "project": "drv_ctrl",
+  "results": [
+    {
+      "id": "PS-001",
+      "file": "src/foo.c",
+      "func": "foo",
+      "line": 42,
+      "class": "MISRA-C:2012 12.3",
+      "severity": "error",
+      "status": "unproved",
+      "message": "possible overflow"
+    },
+    {
+      "id": "PS-002",
+      "file": "src/bar.c",
+      "func": "bar",
+      "line": 10,
+      "class": "Rule 14.4",
+      "severity": "warn",
+      "status": "justified",
+      "message": "dead code (justified:R-123)"
+    }
+  ]
+}

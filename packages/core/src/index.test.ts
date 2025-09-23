@@ -9,6 +9,7 @@ import {
   normalizeTag,
   objectiveCatalog,
   objectiveCatalogById,
+  evidenceSchema,
 } from './index';
 
 describe('@soipack/core', () => {
@@ -25,6 +26,20 @@ describe('@soipack/core', () => {
 
   it('normalizes tags', () => {
     expect(normalizeTag('  Critical ')).toBe('critical');
+  });
+
+  it('validates evidence independence flags', () => {
+    const timestamp = '2024-06-19T12:00:00.000Z';
+    const snapshotId = createSnapshotIdentifier(timestamp, 'abcdef0123456789');
+    const parsed = evidenceSchema.parse({
+      source: 'git',
+      path: 'artifacts/report.md',
+      summary: 'Repository snapshot',
+      timestamp,
+      snapshotId,
+      independent: true,
+    });
+    expect(parsed.independent).toBe(true);
   });
 
   describe('DO-178C objective catalog', () => {

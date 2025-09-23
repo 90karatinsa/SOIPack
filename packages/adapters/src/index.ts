@@ -14,6 +14,7 @@ export { importGitMetadata } from './git';
 export { fromPolyspace } from './polyspace';
 export { fromLDRA } from './ldra';
 export { fromVectorCAST } from './vectorcast';
+export { importQaLogs } from './qaLogs';
 export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions } from './polarion';
 export { fetchJenkinsArtifacts } from './jenkins';

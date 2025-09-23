@@ -177,7 +177,9 @@ export const verifyManifestSignature = (
 ): boolean => {
   const options: VerificationOptions =
     typeof publicKeyOrOptions === 'string'
-      ? { certificatePem: publicKeyOrOptions }
+      ? publicKeyOrOptions.includes('BEGIN CERTIFICATE')
+        ? { certificatePem: publicKeyOrOptions }
+        : { publicKeyPem: publicKeyOrOptions }
       : publicKeyOrOptions;
   const result = verifyManifestSignatureWithSecuritySigner(manifest, signature, options);
   return result.valid;

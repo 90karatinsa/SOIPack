@@ -1,9 +1,10 @@
+import type { Finding } from '@soipack/adapters';
 import type { Requirement } from '@soipack/core';
 
 import type { RequirementCoverageStatus, RequirementTrace } from './index';
 
 export type QualityFindingSeverity = 'info' | 'warn' | 'error';
-export type QualityFindingCategory = 'trace' | 'tests' | 'coverage';
+export type QualityFindingCategory = 'trace' | 'tests' | 'coverage' | 'analysis';
 
 export interface QualityFinding {
   id: string;
@@ -29,6 +30,9 @@ const skippedTests = (trace: RequirementTrace): RequirementTrace['tests'] =>
 const buildFindingId = (requirement: Requirement, suffix: string): string =>
   `${requirement.id}-${suffix}`;
 
+const buildAnalysisFindingId = (tool: Finding['tool'], id: string): string =>
+  `analysis-${tool}-${id}`;
+
 const ensureUnique = (findings: QualityFinding[]): QualityFinding[] => {
   const seen = new Set<string>();
   const result: QualityFinding[] = [];
@@ -40,6 +44,53 @@ const ensureUnique = (findings: QualityFinding[]): QualityFinding[] => {
     result.push(finding);
   });
   return result;
+};
+
+const resolvedFindingStatuses = new Set(['closed', 'justified', 'proved']);
+
+const isResolvedAnalysisFinding = (status: Finding['status']): boolean => {
+  if (!status) {
+    return false;
+  }
+  return resolvedFindingStatuses.has(status.trim().toLowerCase());
+};
+
+const toolLabels: Record<Finding['tool'], string> = {
+  polyspace: 'Polyspace',
+  ldra: 'LDRA',
+  vectorcast: 'VectorCAST',
+};
+
+const normalizeAnalysisMessage = (finding: Finding): string => {
+  const message = finding.message?.trim();
+  if (message && message.length > 0) {
+    return message;
+  }
+  return 'Detay sağlanmadı.';
+};
+
+const evaluateAnalysisFindings = (findings: Finding[]): QualityFinding[] => {
+  return findings
+    .filter((finding) => {
+      const severity = finding.severity?.toLowerCase();
+      if (severity !== 'error' && severity !== 'warn') {
+        return false;
+      }
+      if (isResolvedAnalysisFinding(finding.status)) {
+        return false;
+      }
+      return true;
+    })
+    .map((finding) => {
+      const severity = finding.severity === 'error' ? 'error' : 'warn';
+      return {
+        id: buildAnalysisFindingId(finding.tool, finding.id),
+        severity,
+        category: 'analysis' as const,
+        message: `${toolLabels[finding.tool]} bulgusu ${finding.id} (${finding.severity ?? 'bilinmiyor'}) açık durumda: ${normalizeAnalysisMessage(finding)}`,
+        recommendation: 'Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.',
+      } satisfies QualityFinding;
+    });
 };
 
 const evaluateRequirement = ({ trace, coverage }: RequirementQualityContext): QualityFinding[] => {
@@ -127,14 +178,16 @@ const evaluateRequirement = ({ trace, coverage }: RequirementQualityContext): Qu
 export const evaluateQualityFindings = (
   traces: RequirementTrace[],
   coverage: RequirementCoverageStatus[],
+  analysisFindings: Finding[] = [],
 ): QualityFinding[] => {
   const coverageByRequirement = new Map<string, RequirementCoverageStatus>(
     coverage.map((entry) => [entry.requirement.id, entry]),
   );
 
-  const findings = traces.flatMap((trace) =>
+  const traceFindings = traces.flatMap((trace) =>
     evaluateRequirement({ trace, coverage: coverageByRequirement.get(trace.requirement.id) }),
   );
+  const analysisQuality = evaluateAnalysisFindings(analysisFindings);
 
-  return ensureUnique(findings);
+  return ensureUnique([...traceFindings, ...analysisQuality]);
 };

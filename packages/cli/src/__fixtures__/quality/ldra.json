@@ -1,0 +1,33 @@
+{
+  "project": "drv_ctrl",
+  "violations": [
+    {
+      "id": "L-100",
+      "file": "src/foo.c",
+      "func": "foo",
+      "line": 7,
+      "rule": "MISRA 8.7",
+      "sev": "error",
+      "msg": "external object not referenced"
+    },
+    {
+      "id": "L-200",
+      "file": "src/baz.c",
+      "func": "baz",
+      "line": 99,
+      "rule": "MISRA 17.7",
+      "sev": "warn",
+      "msg": "side effects in macro"
+    }
+  ],
+  "unit_tests": {
+    "files": [
+      {
+        "path": "src/foo.c",
+        "stmt": { "covered": 50, "total": 60 },
+        "dec": { "covered": 30, "total": 40 },
+        "mcdc": { "covered": 28, "total": 40 }
+      }
+    ]
+  }
+}

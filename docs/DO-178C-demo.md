@@ -23,7 +23,7 @@ Demo scripti ayrıca `data/objectives/do178c_objectives.min.json` hedef tablosun
    dosyasında toplanır.
 2. **Analiz:** `runAnalyze` gereksinim karşılama ve kapsam metriklerini hesaplar. Sonuçlar `analysis/` dizininde tutulur.
 3. **Raporlama:** `runReport` HTML ve doküman çıktıları üretir; `dist/reports/` altında compliance, trace ve gap raporları oluşur.
-4. **Paketleme:** `runPack` manifest dosyasını oluşturur, `test/certs/dev.pem` ile RS256 JWS imzası üretir ve `do178c-demo.zip`
+4. **Paketleme:** `runPack` manifest dosyasını oluşturur, `test/certs/dev.pem` ile Ed25519 JWS imzası üretir ve `do178c-demo.zip`
    arşivini yaratır. İmzalama sonrası doğrulama başarısız olursa süreç durdurulur.
 
 Tüm adımları otomatik olarak çalıştırmak için aşağıdaki komutu kullanın:
@@ -38,7 +38,10 @@ sonlanır ve tüm geçici dizinler temizlenir.
 ### Manuel Kontroller
 
 - `release/manifest.json` içeriğini gözden geçirerek `files` listesinin ve SHA-256 karmalarının oluşturulduğunu doğrulayın.
-- `manifest.sig` dosyasını `soipack verify --manifest ...` komutuyla doğrulayarak JWS imzasının geçerli olduğunu teyit edin.
+- `workspace.json` içindeki `evidenceIndex` kayıtlarının yerel artefaktlar için `hash`
+  alanı taşıdığını ve değerlerin 64 karakterlik SHA-256 karmaları olduğunu kontrol edin.
+- `manifest.sig` dosyasını `soipack verify --manifest ...` komutuyla doğrulayarak Ed25519 JWS imzasının geçerli olduğunu teyit
+  edin.
 - Oluşan `do178c-demo.zip` arşivinin içeriğinde raporlar ve manifest dosyalarının bulunduğunu kontrol edin.
 
 Bu demo, gerçek verilerle aynı pipeline’ı kullanır; daha büyük veri kümeleri için dosyaları kendi gereksinim kayıtlarınızla

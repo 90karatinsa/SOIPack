@@ -1,4 +1,4 @@
-import { createHash, createSign, createVerify, X509Certificate } from 'node:crypto';
+import { createHash, sign as signData, verify as verifySignature, X509Certificate } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -34,6 +34,7 @@ export type VerificationFailureReason =
 
 export interface VerificationOptions {
   certificatePem?: string;
+  publicKeyPem?: string;
   now?: Date;
 }
 
@@ -151,38 +152,6 @@ const formatCertificateFromDer = (derBase64: string): string => {
   return ['-----BEGIN CERTIFICATE-----', ...chunks, '-----END CERTIFICATE-----', ''].join('\n').trim();
 };
 
-const resolveCertificateForVerification = (
-  encodedHeader: string,
-  options: VerificationOptions,
-): { certificatePem?: string; headerCertificateInfo?: { subject: string; validFrom: string; validTo: string } } => {
-  const headerJson = base64UrlDecode(encodedHeader).toString('utf8');
-  let header: { alg?: string; x5c?: string[] };
-  try {
-    header = JSON.parse(headerJson) as { alg?: string; x5c?: string[] };
-  } catch (error) {
-    throw new Error('JWS başlığı çözümlenemedi.');
-  }
-
-  let certificatePem = options.certificatePem;
-  if (!certificatePem && header.x5c?.length) {
-    certificatePem = formatCertificateFromDer(header.x5c[0]);
-  }
-
-  if (!certificatePem) {
-    return { certificatePem: undefined };
-  }
-
-  const x509 = new X509Certificate(certificatePem);
-  return {
-    certificatePem,
-    headerCertificateInfo: {
-      subject: x509.subject,
-      validFrom: x509.validFrom,
-      validTo: x509.validTo,
-    },
-  };
-};
-
 export const signManifestWithSecuritySigner = (
   manifest: Manifest,
   options: SecuritySignerOptions = {},
@@ -192,7 +161,7 @@ export const signManifestWithSecuritySigner = (
 
   const x509 = new X509Certificate(credentials.certificatePem);
   const header = {
-    alg: 'RS256',
+    alg: 'EdDSA',
     typ: 'SOIManifest',
     x5c: [x509.raw.toString('base64')],
   };
@@ -204,13 +173,11 @@ export const signManifestWithSecuritySigner = (
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(signingInput);
-  signer.end();
-  const signature = signer.sign(credentials.privateKeyPem, 'base64url');
+  const signatureBuffer = signData(null, Buffer.from(signingInput, 'utf8'), credentials.privateKeyPem);
+  const encodedSignature = base64UrlEncode(signatureBuffer);
 
   return {
-    signature: `${signingInput}.${signature}`,
+    signature: `${signingInput}.${encodedSignature}`,
     certificate: credentials.certificatePem.trim(),
     manifestDigest: digest,
   };
@@ -228,14 +195,18 @@ export const verifyManifestSignatureWithSecuritySigner = (
 
   const [encodedHeader, encodedPayload, encodedSignature] = segments;
 
-  let header: { alg?: string; typ?: string };
+  let header: { alg?: string; typ?: string; x5c?: string[] };
   try {
-    header = JSON.parse(base64UrlDecode(encodedHeader).toString('utf8')) as { alg?: string; typ?: string };
+    header = JSON.parse(base64UrlDecode(encodedHeader).toString('utf8')) as {
+      alg?: string;
+      typ?: string;
+      x5c?: string[];
+    };
   } catch (error) {
     return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
-  if (header.alg !== 'RS256') {
+  if (header.alg !== 'EdDSA') {
     return { valid: false, reason: 'UNSUPPORTED_ALGORITHM' };
   }
 
@@ -256,43 +227,72 @@ export const verifyManifestSignatureWithSecuritySigner = (
 
   let certificatePem = options.certificatePem;
   let certificateInfo: VerificationResult['certificateInfo'];
-  if (!certificatePem) {
+  let verificationKey: Parameters<typeof verifySignature>[2] | undefined = options.publicKeyPem;
+
+  const loadCertificate = (pem: string): X509Certificate | undefined => {
     try {
-      const resolved = resolveCertificateForVerification(encodedHeader, options);
-      certificatePem = resolved.certificatePem;
-      certificateInfo = resolved.headerCertificateInfo;
+      return new X509Certificate(pem);
+    } catch (error) {
+      return undefined;
+    }
+  };
+
+  let certificate: X509Certificate | undefined;
+
+  if (certificatePem) {
+    certificate = loadCertificate(certificatePem);
+    if (!certificate) {
+      return { valid: false, reason: 'FORMAT_INVALID' };
+    }
+  } else if (!verificationKey && header.x5c?.length) {
+    try {
+      certificatePem = formatCertificateFromDer(header.x5c[0]);
     } catch (error) {
       return { valid: false, reason: 'FORMAT_INVALID' };
     }
-  } else {
-    const x509 = new X509Certificate(certificatePem);
-    certificateInfo = {
-      subject: x509.subject,
-      validFrom: x509.validFrom,
-      validTo: x509.validTo,
-    };
+
+    certificate = loadCertificate(certificatePem);
+    if (!certificate) {
+      return { valid: false, reason: 'FORMAT_INVALID' };
+    }
   }
 
-  if (!certificatePem) {
+  if (certificate) {
+    certificateInfo = {
+      subject: certificate.subject,
+      validFrom: certificate.validFrom,
+      validTo: certificate.validTo,
+    };
+
+    const now = options.now ?? new Date();
+    const notBefore = new Date(certificate.validFrom);
+    const notAfter = new Date(certificate.validTo);
+    if (now < notBefore || now > notAfter) {
+      return {
+        valid: false,
+        reason: 'CERT_EXPIRED',
+        certificateInfo,
+      };
+    }
+
+    verificationKey = certificate.publicKey;
+  }
+
+  if (!verificationKey) {
     return { valid: false, reason: 'CERTIFICATE_MISSING' };
   }
 
-  const certificate = new X509Certificate(certificatePem);
-  const now = options.now ?? new Date();
-  const notBefore = new Date(certificate.validFrom);
-  const notAfter = new Date(certificate.validTo);
-  if (now < notBefore || now > notAfter) {
-    return {
-      valid: false,
-      reason: 'CERT_EXPIRED',
-      certificateInfo,
-    };
+  let isValid: boolean;
+  try {
+    isValid = verifySignature(
+      null,
+      Buffer.from(`${encodedHeader}.${encodedPayload}`, 'utf8'),
+      verificationKey,
+      base64UrlDecode(encodedSignature),
+    );
+  } catch (error) {
+    return { valid: false, reason: 'FORMAT_INVALID', certificateInfo };
   }
-
-  const verifier = createVerify('RSA-SHA256');
-  verifier.update(`${encodedHeader}.${encodedPayload}`);
-  verifier.end();
-  const isValid = verifier.verify(certificatePem, base64UrlDecode(encodedSignature));
 
   if (!isValid) {
     return { valid: false, reason: 'SIGNATURE_INVALID', certificateInfo };

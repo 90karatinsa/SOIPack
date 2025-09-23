@@ -64,6 +64,10 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      --import polyspace=examples/minimal/polyspace/report.json \
      --import ldra=examples/minimal/ldra/tbvision.json \
      --import vectorcast=examples/minimal/vectorcast/coverage.json \
+     --import plan=docs/system-plan.md \
+     --import standard=docs/software-standard.txt \
+     --import qa_record=records/qa-summary.csv \
+     --qa records/qa/audit-log.csv \
      --git . \
      --project-name "SOIPack Demo Avionics" \
      --project-version "1.0.0" \
@@ -72,10 +76,20 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
      -o .soipack/work
   ```
 
-   Çalışma alanı çıktısı `workspace.json`, test sonuçlarına ek olarak `findings`
-   (Polyspace/LDRA/VectorCAST bulguları) ve `structuralCoverage`
-   (VectorCAST/LDRA kapsam özetleri) alanlarını içerir. Bu bilgiler ilgili
-   hedeflere bağlanan kanıt kayıtlarıyla birlikte saklanır.
+  Çalışma alanı çıktısı `workspace.json`, test sonuçlarına ek olarak `findings`
+  (Polyspace/LDRA/VectorCAST bulguları) ve `structuralCoverage`
+  (VectorCAST/LDRA kapsam özetleri) alanlarını içerir. `--import` bayrağı
+  DO-178C artefakt türleriyle eşleştirilen plan, standart veya QA kayıtları gibi
+  dosyaları doğrudan kanıt indeksine eklemenizi sağlar. `--qa` bayrağı ile
+  sağlanan denetim imza CSV'leri satır bazlı QA kayıtlarına dönüştürülür ve A-7
+  hedeflerini otomatik olarak kapatır. `--jira-defects` bayrağı ise Jira CSV
+  dışa aktarımındaki `Issue Type` sütununda `Bug`/`Defect` olarak işaretlenen
+  kayıtları `problem_report` kanıtı olarak ekler ve açık/kapanmış durum
+  sayımlarını çalışma alanı metaverisine işler. Statik analiz `findings`
+  girdileri uyumluluk analizinde otomatik olarak `analysis` kategorisinde kalite
+  uyarılarına dönüştürülür. Bu bilgiler ilgili hedeflere bağlanan kanıt
+  kayıtlarıyla birlikte saklanır ve analiz aşamasında önerilen iz
+  bağlantılarıyla (trace suggestions) desteklenir.
 
    Polarion ve Jenkins entegrasyonları için CLI'ya ek bayraklar geçebilirsiniz.
    Örneğin Polarion gereksinimlerini ve test koşumlarını çekmek için `--polarion-url`,
@@ -89,20 +103,26 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
 4. Uyum analizini üretin:
 
    ```bash
-   node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
-     -i .soipack/work \
-     -o .soipack/out \
-     --level C \
-     --objectives data/objectives/do178c_objectives.min.json \
-     --project-name "SOIPack Demo Avionics" \
-     --project-version "1.0.0"
-   ```
+  node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \
+    -i .soipack/work \
+    -o .soipack/out \
+    --level C \
+    --objectives data/objectives/do178c_objectives.min.json \
+    --project-name "SOIPack Demo Avionics" \
+    --project-version "1.0.0"
+  ```
+
+  Analiz çıktısı `analysis.json`, statik analizden gelen açık bulguları `qualityFindings`
+  altında `analysis` kategorisinde listeler ve `traceSuggestions` alanında gereksinim →
+  test/kod eşleşmeleri için öneriler sunar. Bu öneriler, uyumluluk raporlarında
+  "Önerilen İz Bağlantıları" bölümü olarak görüntülenir ve izlenebilirlikte gözden
+  geçirilmesi gereken bağlantıları vurgular.
 
 5. Raporları oluşturun:
 
-   ```bash
-   node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
-   ```
+  ```bash
+  node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports
+  ```
 
    Komut `dist/reports` altında HTML/JSON çıktılarıyla birlikte `plans/` klasöründe PSAC, SDP, SVP, SCMP ve SQAP şablonlarını HTML, DOCX ve (Playwright Chromium paketi yüklüyse) PDF olarak üretir. PDF oluşturma sırasında Playwright ortamı hazır değilse işlem uyarı mesajıyla atlanır.
 
@@ -181,10 +201,11 @@ Veri versiyonlama sürecinin tamamı, snapshot kimlik formatları ve freeze akı
    node packages/cli/dist/index.js verify \
      --manifest release/manifest.json \
      --signature release/manifest.sig \
+     --package release/soi-pack.zip \
      --public-key path/to/ed25519_public.pem
-   ```
+  ```
 
-   Çıktı `Manifest imzası doğrulandı (ID: …)` şeklinde ise paket teslimat için hazırdır.
+  Çıktı `Manifest imzası doğrulandı (ID: …)` şeklinde ise paket teslimat için hazırdır. PEM dosyası, Ed25519 kamu anahtarını veya imzalama sırasında kullanılan X.509 sertifikasını içerebilir. `--package` bayrağı, imzası doğrulanan manifestte listelenen her dosyanın ZIP arşivinde bulunup bulunmadığını ve SHA-256 karmalarının eşleştiğini de denetler; eksik ya da değiştirilmiş dosyalar CLI tarafından doğrulama hatası olarak raporlanır.
 
 Tek komutla tüm adımların çalıştığı pipeline için örnek yapılandırmayı kullanabilirsiniz:
 
