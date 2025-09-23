@@ -187,3 +187,9 @@ openssl genpkey -algorithm Ed25519 -out ed25519_private.pem
 ## Lisans
 
 Bu proje [MIT Lisansı](./LICENSE) ile lisanslanmıştır.
+
+## DO-178C Demo
+
+DO-178C seviyesinde küçük bir veri seti ile uçtan uca süreci denemek için [DO-178C Uçtan Uca Demo](docs/DO-178C-demo.md)
+rehberini izleyin. Belge, örnek artefaktların konumunu açıklar ve `npm run demo:test` komutuyla çalıştırılabilen bir duman testi
+sunur.

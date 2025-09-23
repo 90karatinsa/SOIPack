@@ -6,7 +6,7 @@ module.exports = {
   rootDir: __dirname,
   testMatch: ['<rootDir>/src/**/*.test.ts'],
   moduleNameMapper: {
-    '^@soipack/(.*)$': '<rootDir>/../$1/src',
+    '^@soipack/([^/]+)(.*)$': '<rootDir>/../$1/src$2',
     '^zod$': '<rootDir>/../core/node_modules/zod'
   },
   transform: {

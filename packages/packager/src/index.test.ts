@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from 'crypto';
+import { createHash } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -6,17 +6,30 @@ import path from 'path';
 import { Manifest } from '@soipack/core';
 
 import {
+  ManifestBuildResult,
   buildManifest,
   createSoiDataPack,
-  signManifest,
+  signManifestBundle,
   verifyManifestSignature,
-  ManifestBuildResult,
+  verifyManifestSignatureDetailed,
 } from './index';
 
 const computeSha256 = (filePath: string): string => {
   const hash = createHash('sha256');
   hash.update(readFileSync(filePath));
   return hash.digest('hex');
+};
+
+const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
+const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+
+const loadDevCredentials = (): { bundlePem: string; certificatePem: string } => {
+  const bundlePem = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
+  const certificateMatch = bundlePem.match(CERTIFICATE_PATTERN);
+  if (!certificateMatch) {
+    throw new Error('Dev sertifikası bulunamadı.');
+  }
+  return { bundlePem, certificatePem: certificateMatch[0] };
 };
 
 describe('packager', () => {
@@ -61,13 +74,11 @@ describe('packager', () => {
     expect(manifestResult.manifest).toEqual(expectedManifest);
   });
 
-  it('signs and verifies manifests with Ed25519 keys', () => {
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-    const privateKeyPem = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
-    const publicKeyPem = publicKey.export({ format: 'pem', type: 'spki' }).toString();
+  it('signs and verifies manifests with RSA certificates', () => {
+    const { bundlePem, certificatePem } = loadDevCredentials();
 
-    const signature = signManifest(manifestResult.manifest, privateKeyPem);
-    expect(verifyManifestSignature(manifestResult.manifest, signature, publicKeyPem)).toBe(true);
+    const signature = signManifestBundle(manifestResult.manifest, { bundlePem }).signature;
+    expect(verifyManifestSignature(manifestResult.manifest, signature, certificatePem)).toBe(true);
 
     const tamperedManifest: Manifest = {
       ...manifestResult.manifest,
@@ -76,24 +87,23 @@ describe('packager', () => {
       ),
     };
 
-    expect(verifyManifestSignature(tamperedManifest, signature, publicKeyPem)).toBe(false);
+    const detailed = verifyManifestSignatureDetailed(tamperedManifest, signature, { certificatePem });
+    expect(detailed.valid).toBe(false);
+    expect(detailed.reason).toBe('DIGEST_MISMATCH');
   });
 
   it('packages reports and evidence into a signed archive', async () => {
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-    const privateKeyPem = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
-    const publicKeyPem = publicKey.export({ format: 'pem', type: 'spki' }).toString();
-
     const workDir = mkdtempSync(path.join(tmpdir(), 'soipack-packager-'));
-    const keyPath = path.join(workDir, 'ed25519.pem');
-    writeFileSync(keyPath, privateKeyPem, 'utf8');
+    const bundlePath = path.join(workDir, 'dev.pem');
+    const { bundlePem, certificatePem } = loadDevCredentials();
+    writeFileSync(bundlePath, bundlePem, 'utf8');
 
     try {
       const result = await createSoiDataPack({
         reportDir,
         evidenceDirs: [evidenceDir],
         toolVersion,
-        privateKeyPath: keyPath,
+        credentialsPath: bundlePath,
         outputDir: workDir,
         now: timestamp,
       });
@@ -101,7 +111,7 @@ describe('packager', () => {
       expect(path.basename(result.outputPath)).toBe('soi-pack-20240201_1015.zip');
       expect(existsSync(result.outputPath)).toBe(true);
       expect(result.manifest).toEqual(expectedManifest);
-      expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
+      expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }

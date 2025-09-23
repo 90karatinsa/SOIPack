@@ -43,3 +43,19 @@ API anahtarına tanımlanan roller JWT kapsamları ile birlikte değerlendirilir
 ## İzleme ve Günlükleme
 
 Başarılı doğrulamalarda anahtarın parmak izi (`tokenHash`) ve isteğe bağlı etiketi uygulama günlüklerine eklenir. Gerçek anahtar değerleri hiçbir zaman loglara yazılmaz.
+
+## Kanıt Manifesti İmzalama
+
+SOIPack CLI ve sunucusu, kanıt manifestlerini SHA-256 karması üzerinden JWS (JSON Web Signature) formatında imzalar:
+
+1. Manifest dosyası kanonik biçime dönüştürülür; tüm dosya girdileri yol adına göre sıralanır.
+2. Kanonik JSON içeriğinin SHA-256 karması hesaplanır ve `manifestDigest` olarak kaydedilir.
+3. Varsayılan geliştirme sertifikası (`test/certs/dev.pem`) veya kullanıcı tarafından sağlanan X.509 sertifika demeti kullanılarak
+   RS256 algoritmasıyla JWS oluşturulur. JWS başlığına (`x5c`) sertifikanın DER çıktısı eklenir.
+4. İmza dosyası (`manifest.sig`) JWS dizgesi olarak yazılır ve manifest ile paketlenir.
+5. Doğrulama aşamasında JWS imzası kontrol edilir, sertifika geçerlilik süresi (`validFrom`/`validTo`) kontrol edilir ve karmanın
+   manifest içeriğiyle eşleştiği doğrulanır.
+
+`soipack pack` ve sunucu paketleme kuyruğu imza üretiminden hemen sonra doğrulama yapar. Doğrulama başarısız olursa işlem
+sonlandırılır ve zip arşivi oluşturulmaz. `soipack verify` komutu JWS içindeki sertifikayı veya komut satırından verilen sertifikayı
+kullanarak imzayı doğrular; süre sonu veya imza uyuşmazlığı durumlarında `verificationFailed` koduyla sonlanır.

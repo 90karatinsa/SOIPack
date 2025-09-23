@@ -19,7 +19,7 @@
     "format": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --write",
     "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check",
     "demo": "bash examples/minimal/demo.sh",
-    "demo:test": "node examples/minimal/verify-demo.js",
+    "demo:test": "npx --yes tsx scripts/demo-smoke.ts",
     "test:server": "npm run test --workspace @soipack/server",
     "test:cli": "npm run test --workspace @soipack/cli",
     "healthcheck:verify": "node scripts/verify-healthcheck.js",

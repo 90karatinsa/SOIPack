@@ -54,7 +54,12 @@ import {
   TraceEngine,
   generateComplianceSnapshot,
 } from '@soipack/engine';
-import { buildManifest, signManifest, verifyManifestSignature } from '@soipack/packager';
+import {
+  buildManifest,
+  signManifestBundle,
+  verifyManifestSignature,
+  verifyManifestSignatureDetailed,
+} from '@soipack/packager';
 import {
   renderComplianceMatrix,
   renderGaps,
@@ -2054,7 +2059,13 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   });
 
   const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
-  const signature = signManifest(manifest, options.signingKey);
+  const signatureBundle = signManifestBundle(manifest, { bundlePem: options.signingKey });
+  const signature = signatureBundle.signature;
+  const verification = verifyManifestSignatureDetailed(manifest, signature);
+  if (!verification.valid) {
+    const reason = verification.reason ?? 'bilinmeyen';
+    throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
+  }
   const manifestHash = createHash('sha256').update(manifestSerialized).digest('hex');
   const manifestId = manifestHash.slice(0, 12);
 
