@@ -68,6 +68,7 @@ describe('@soipack/report', () => {
       fixture.snapshot.requirementCoverage.length,
     );
     expect(result.json.qualityFindings.length).toBeGreaterThan(0);
+    expect(Array.isArray(result.json.traceSuggestions)).toBe(true);
     expect(result.json.git).toEqual(gitFixture);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
@@ -125,6 +126,31 @@ describe('@soipack/report', () => {
     expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
     expect(html).toContain('Gereksinim → Test → Kod');
     expect(html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
+  });
+
+  it('renders suggestion blocks when trace recommendations are present', () => {
+    const fixture = createReportFixture();
+    const html = renderTraceMatrix(fixture.traces, {
+      manifestId: fixture.manifestId,
+      generatedAt: fixture.snapshot.generatedAt,
+      coverage: fixture.snapshot.requirementCoverage,
+      git: gitFixture,
+      snapshotId: fixture.snapshot.version.id,
+      snapshotVersion: fixture.snapshot.version,
+      suggestions: [
+        {
+          requirementId: fixture.traces[0].requirement.id,
+          type: 'test' as const,
+          targetId: 'TC-SUGGEST',
+          targetName: 'TC-SUGGEST',
+          confidence: 'high' as const,
+          reason: 'Test kimliği gereksinim kodunu içeriyor.',
+        },
+      ],
+    });
+
+    expect(html).toContain('Önerilen İz Bağlantıları');
+    expect(html).toContain('TC-SUGGEST');
   });
 
   it('renders gap analysis with objective metadata', () => {

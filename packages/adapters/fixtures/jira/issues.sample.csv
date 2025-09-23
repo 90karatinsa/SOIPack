@@ -1,4 +1,4 @@
-"Issue key","Summary","Status","Priority","Component/s","Labels","Epic Link","Description","Issue Links","Attachment","Parent","Story Points","QA Owner"
-"PROJ-1","Implement login","In Progress","High","Authentication","backend;critical","","Authentication epic covering login","PROJ-2;PROJ-3","LoginSpec.docx;Sequence.png","","8","qa@example.com"
-"PROJ-2","Write API tests","Done","Medium","API","backend;testing","PROJ-1","API coverage for login flows","PROJ-1","","","5","qa.lead@example.com"
-"PROJ-3","Design UI","To Do","Low","","ui","PROJ-1","Design the login user interface","PROJ-1","Wireframe.png","PROJ-2","3","designer@example.com"
+"Issue key","Summary","Status","Issue Type","Priority","Component/s","Labels","Epic Link","Description","Issue Links","Attachment","Parent","Story Points","QA Owner"
+"PROJ-1","Implement login","In Progress","Epic","High","Authentication","backend;critical","","Authentication epic covering login","PROJ-2;PROJ-3","LoginSpec.docx;Sequence.png","","8","qa@example.com"
+"PROJ-2","Write API tests","Done","Story","Medium","API","backend;testing","PROJ-1","API coverage for login flows","PROJ-1","","","5","qa.lead@example.com"
+"PROJ-3","Design UI","To Do","Sub-task","Low","","ui","PROJ-1","Design the login user interface","PROJ-1","Wireframe.png","PROJ-2","3","designer@example.com"

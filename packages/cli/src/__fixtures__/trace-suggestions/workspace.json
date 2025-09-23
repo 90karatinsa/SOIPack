@@ -1,0 +1,41 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-TRACE-1",
+      "title": "Logger captures failures",
+      "description": "System shall log critical failures for post-flight review.",
+      "status": "approved",
+      "tags": []
+    }
+  ],
+  "testResults": [
+    {
+      "testId": "TC-REQ-TRACE-1",
+      "className": "LoggerSuite",
+      "name": "REQ-TRACE-1 verifies logging",
+      "status": "passed",
+      "duration": 4
+    }
+  ],
+  "coverage": null,
+  "structuralCoverage": null,
+  "traceLinks": [],
+  "testToCodeMap": {
+    "TC-REQ-TRACE-1": ["src/logger.c"]
+  },
+  "evidenceIndex": {},
+  "git": null,
+  "findings": [],
+  "builds": [],
+  "metadata": {
+    "generatedAt": "2024-04-01T10:00:00.000Z",
+    "warnings": [],
+    "inputs": {},
+    "version": {
+      "id": "20240401T100000Z-trace001",
+      "createdAt": "2024-04-01T10:00:00.000Z",
+      "fingerprint": "1234567890abcdef1234567890abcdef",
+      "isFrozen": false
+    }
+  }
+}

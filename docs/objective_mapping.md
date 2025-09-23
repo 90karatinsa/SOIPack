@@ -15,14 +15,27 @@ alt komutu ile seviyeye göre filtreleyebilir. Each objective declares:
   `coverage_dec`, `coverage_mcdc`, `trace`, `cm_record`, `qa_record`,
   `problem_report`, `conformity`.
 
-The mapper inspects the bundle's `evidenceIndex` for each artifact type. The
-resulting coverage status follows these rules:
+The mapper inspects the bundle's `evidenceIndex` for each artifact type. Local
+artifacts captured through the CLI include a `hash` field containing the
+artifact's SHA-256 digest so downstream tools can detect tampering when evidence
+is re-ingested. The resulting coverage status follows these rules:
 
 | Condition | Status | Notes |
 | --- | --- | --- |
-| Every required artifact type has at least one matching evidence entry | `covered` | Evidence references are recorded as `<artifactType>:<path>` strings. |
-| Some artifact types have evidence but others are missing | `partial` | Gap analysis groups the missing artifacts by category (plans, reviews, coverage, configuration, etc.). |
-| None of the required artifacts are present | `missing` | The objective is reported as missing and highlighted in every relevant gap bucket. |
+| Every required artifact type has at least one matching evidence entry with the expected independence level | `covered` | Evidence references are recorded as `<artifactType>:<path>` strings. |
+| Some artifact types have evidence but others are missing or lack independent review | `partial` | Gap analysis groups the missing artifacts by category (plans, reviews, coverage, configuration, etc.). Recommended independence shortfalls fall into this bucket. |
+| None of the required artifacts are present or required independence is missing | `missing` | The objective is reported as missing and highlighted in every relevant gap bucket. |
+
+## Independence handling
+
+Objectives annotated with `independence: 'recommended'` or `'required'` expect at
+least one evidence entry per artifact to carry `independent: true`. Operators mark
+evidence as independently reviewed with the CLI's `--independent-source` (applies to
+every artifact emitted by a source such as `junit`, `polyspace`, or `vectorcast`) and
+`--independent-artifact` (applies to either a whole artifact type or a specific
+`artifact=path` pair). Recommended independence gaps add the artifact to the objective's
+`missingArtifacts` list but keep the status at `partial`, while required independence gaps
+promote the objective to `missing`.
 
 ## Example
 
@@ -44,13 +57,34 @@ const bundle = {
   ],
   evidenceIndex: {
     test: [
-      { source: 'junit', path: 'reports/junit.xml', summary: 'Test yürütmesi', timestamp: '2024-01-10T10:00:00Z' },
+      {
+        source: 'junit',
+        path: 'reports/junit.xml',
+        summary: 'Test yürütmesi',
+        timestamp: '2024-01-10T10:00:00Z',
+        hash: '0a4b...f9c3',
+        independent: true,
+      },
     ],
     trace: [
-      { source: 'git', path: 'artifacts/trace-map.csv', summary: 'İzlenebilirlik matrisi', timestamp: '2024-01-10T10:00:00Z' },
+      {
+        source: 'git',
+        path: 'artifacts/trace-map.csv',
+        summary: 'İzlenebilirlik matrisi',
+        timestamp: '2024-01-10T10:00:00Z',
+        hash: '9b2e...41ad',
+        independent: true,
+      },
     ],
     analysis: [
-      { source: 'other', path: 'reports/safety-analysis.pdf', summary: 'Güvenlik analizi', timestamp: '2024-01-10T10:00:00Z' },
+      {
+        source: 'other',
+        path: 'reports/safety-analysis.pdf',
+        summary: 'Güvenlik analizi',
+        timestamp: '2024-01-10T10:00:00Z',
+        hash: 'f1c9...0b72',
+        independent: true,
+      },
     ],
   },
 };
@@ -78,3 +112,9 @@ analysis, which now exposes separate buckets for plans, reviews, analysis,
 tests, coverage, traceability, configuration management, quality assurance,
 problem tracking, and conformity evidence so remediation can be assigned to the
 right teams.
+
+If the same evidence were present but the CLI skipped the independence flags,
+the objective would still reference the files yet be downgraded to `missing`
+because `A-5-06` requires independent verification. The analysis gap report
+would list `missingArtifacts: ['test']`, signaling that an independent QA
+review is outstanding even though the test report exists.

@@ -1,0 +1,4 @@
+Quality Standard
+================
+
+Coding and verification standards approved by QA.

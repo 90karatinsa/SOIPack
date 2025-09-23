@@ -1,0 +1,4 @@
+"Issue key","Summary","Status","Issue Type","Priority","Description"
+"BUG-1","Logging failure breaks audit","To Do","Bug","High","Open defect impacting audit logging"
+"BUG-2","Checklist typo","Done","Bug","Low","Typographical issue resolved"
+"TASK-3","Update documentation","In Progress","Task","Medium","Not a defect entry"

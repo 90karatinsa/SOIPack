@@ -34,6 +34,36 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - Eksik `THE-VALUE` alanları uyarı üretir; ciddi biçim bozuklukları hata fırlatır.
 - Üst düzey API `importReqIF`, hataları yakalayarak kullanıcıya boş veri kümesi ve uyarı mesajı döndürür.
 
+## Manuel DO-178C artefakt eşlemeleri
+
+- `--import artefakt=dosya` sözdizimi tüm DO-178C artefakt türleri için geçerlidir (ör. `plan`, `standard`, `qa_record`, `conformity`).
+- CLI her eşlemeyi kanıt indeksine `source=other` olarak kaydeder ve SHA-256 karmasını hesaplar.
+- Birden fazla dosya aynı artefakt türüne eşlenebilir; her dosya ayrı kanıt kaydı üretir.
+
+## Jira gereksinimleri ve problem raporları
+
+- `importJiraCsv(path)` gereksinim CSV dışa aktarımındaki temel sütunları (`Issue key`, `Summary`, `Status`) okuyarak `JiraRequirement` listesi üretir.
+- `Issue Type` sütunu opsiyoneldir ancak `Bug`, `Defect`, `Problem Report` gibi türleri tespit ettiğinde kayıt `issueType` alanına yazılır.
+- CLI `--jira` bayrağıyla verilen dosyaları `trace` kanıtı olarak kaydeder ve gereksinimleri çalışma alanına ekler.
+- `--jira-defects` bayrağı aynı dönüştürücüyü kullanarak `Issue Type` değeri `Bug`/`Defect` olan satırları `problem_report` kanıtı olarak ekler, açık (`Status` ≠ `Done/Closed/Resolved`) ve toplam kayıt sayılarını çalışma alanı metaverisine işler.
+- Eksik `Issue Type` sütunları veya eşleşmeyen satırlar kullanıcıya uyarı olarak iletilir; yine de CSV dosyasının tamamı kanıt olarak saklanır.
+
+## QA denetim kayıtları
+
+Dosya: `packages/adapters/src/qaLogs.ts`
+
+- `importQaLogs(path)` fonksiyonu QA denetim imza CSV'lerini satır bazlı olarak işler.
+- Gerekli sütunlar: `Objective` (veya `Objective ID`) ve `Status`. Opsiyonel sütunlar `Artifact`, `Reviewer`, `Completed At`, `Notes` olarak eşleştirilir.
+- Her satır `qa_record` kanıt özeti üretir; boş satırlar atlanır, eksik sütunlar uyarı olarak döndürülür.
+- CLI `--qa` bayrağıyla verilen dosyaları okuyup QA kayıtlarını A-7 hedeflerine otomatik olarak bağlar.
+
+## Statik analiz bulguları
+
+- `fromPolyspace(path)` JSON raporlarındaki hata/uyarı kayıtlarını okuyarak `analysis` kategorisinde bulgular üretir, aynı dosyayı `review` ve `problem_report` kanıtı olarak işaretler.
+- `fromLDRA(path)` kapsam metrikleriyle birlikte kural ihlallerini döndürür; CLI bu çıktıları `coverage_stmt` ve `problem_report` artefaktlarına dağıtır.
+- `fromVectorCAST(path)` kapsam özetlerini ve test bazlı bulguları ayrıştırır; MC/DC gibi metrikler tespit edilirse ilgili DO-178C artefaktlarına kanıt eklenir.
+- Üretilen `Finding` kayıtları uyum analizine aktarılır ve `analysis` kategorisinde kalite uyarıları olarak raporlanır.
+
 ## Test ve doğrulama
 
 - `npm run test:adapters` komutu yalnızca adapter birim testlerini çalıştırır.

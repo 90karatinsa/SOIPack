@@ -1,0 +1,34 @@
+{
+  "requirements": [],
+  "testResults": [],
+  "coverage": null,
+  "structuralCoverage": null,
+  "traceLinks": [],
+  "testToCodeMap": {},
+  "evidenceIndex": {
+    "analysis": [
+      {
+        "source": "other",
+        "path": "artifacts/analysis.md",
+        "summary": "Manual analysis report",
+        "timestamp": "2024-04-01T10:00:00.000Z",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "snapshotId": "20240401T100000Z-deadbeefcafe"
+      }
+    ]
+  },
+  "git": null,
+  "findings": [],
+  "builds": [],
+  "metadata": {
+    "generatedAt": "2024-04-01T10:00:00.000Z",
+    "warnings": [],
+    "inputs": {},
+    "version": {
+      "id": "20240401T100000Z-cafebabecafe",
+      "createdAt": "2024-04-01T10:00:00.000Z",
+      "fingerprint": "0123456789abcdef0123456789abcdef",
+      "isFrozen": false
+    }
+  }
+}

@@ -25,6 +25,7 @@ const evidence = (
   type: ObjectiveArtifactType,
   path: string,
   source: Evidence['source'],
+  options: { independent?: boolean } = {},
 ): Evidence => ({
   source,
   path,
@@ -34,6 +35,7 @@ const evidence = (
     '2024-01-10T10:00:00Z',
     createHash('sha256').update(`${type}:${path}`).digest('hex'),
   ),
+  ...(options.independent ? { independent: true } : {}),
 });
 
 const requirementFixture = (): Requirement[] => [
@@ -193,15 +195,18 @@ const objectivesFixture = (): Objective[] => [
   },
 ];
 
-const evidenceIndexFixture = () => ({
-  plan: [evidence('plan', 'plans/plan.md', 'git')],
-  analysis: [evidence('analysis', 'analysis/resources.md', 'git')],
-  test: [evidence('test', 'reports/junit.xml', 'junit')],
-  trace: [evidence('trace', 'traces/requirements.csv', 'git')],
-  coverage_stmt: [evidence('coverage_stmt', 'reports/lcov.info', 'lcov')],
-  coverage_dec: [evidence('coverage_dec', 'reports/vectorcast.json', 'vectorcast')],
-  coverage_mcdc: [evidence('coverage_mcdc', 'reports/vectorcast.json', 'vectorcast')],
-});
+const evidenceIndexFixture = () => {
+  const independent = { independent: true } as const;
+  return {
+    plan: [evidence('plan', 'plans/plan.md', 'git', independent)],
+    analysis: [evidence('analysis', 'analysis/resources.md', 'git', independent)],
+    test: [evidence('test', 'reports/junit.xml', 'junit', independent)],
+    trace: [evidence('trace', 'traces/requirements.csv', 'git', independent)],
+    coverage_stmt: [evidence('coverage_stmt', 'reports/lcov.info', 'lcov', independent)],
+    coverage_dec: [evidence('coverage_dec', 'reports/vectorcast.json', 'vectorcast', independent)],
+    coverage_mcdc: [evidence('coverage_mcdc', 'reports/vectorcast.json', 'vectorcast', independent)],
+  };
+};
 
 const traceLinksFixture = (): TraceLink[] => [{ from: 'REQ-3', to: 'TC-4', type: 'verifies' }];
 
@@ -360,6 +365,23 @@ describe('ObjectiveMapper', () => {
     const coverage = mapper.mapObjectives();
     const mcDc = coverage.find((item) => item.objectiveId === 'A-5-10');
     expect(mcDc?.status).toBe('missing');
+  });
+
+  it('downgrades objectives that lack independent evidence for required artifacts', () => {
+    const evidence = evidenceIndexFixture();
+    if (evidence.test) {
+      evidence.test = evidence.test.map(({ independent: _ignored, ...rest }) => ({
+        ...rest,
+      })) as Evidence[];
+    }
+
+    const mapper = new ObjectiveMapper(bundle.objectives, evidence, {
+      structuralCoverage: bundle.structuralCoverage,
+    });
+    const coverage = mapper.mapObjectives();
+    const verification = coverage.find((item) => item.objectiveId === 'A-5-06');
+    expect(verification?.status).toBe('missing');
+    expect(verification?.missingArtifacts).toEqual(expect.arrayContaining(['test']));
   });
 });
 
@@ -525,6 +547,92 @@ describe('Quality checks', () => {
       expect.arrayContaining([
         expect.objectContaining({ id: 'REQ-F-verified-failing-tests', severity: 'error', category: 'tests' }),
         expect.objectContaining({ id: 'REQ-F-coverage-partial', severity: 'warn', category: 'coverage' }),
+      ]),
+    );
+  });
+
+  it('flags unresolved static analysis findings as quality alerts', () => {
+    const requirement = createRequirement('REQ-SA', 'Static analysis watch', { status: 'draft' });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: {},
+      generatedAt: '2024-03-02T09:00:00Z',
+      findings: [
+        {
+          tool: 'polyspace',
+          id: 'PS-900',
+          severity: 'error',
+          status: 'unproved',
+          message: 'potential overflow in guidance logic',
+        },
+        {
+          tool: 'ldra',
+          id: 'L-210',
+          severity: 'warn',
+          status: 'closed',
+          message: 'style deviation resolved',
+        },
+      ],
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.qualityFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'analysis-polyspace-PS-900',
+          category: 'analysis',
+          severity: 'error',
+        }),
+      ]),
+    );
+    expect(snapshot.qualityFindings.find((finding) => finding.id === 'analysis-ldra-L-210')).toBeUndefined();
+  });
+
+  it('suggests trace links from test identifiers and coverage maps', () => {
+    const requirement = createRequirement('REQ-LOG-1', 'Logging requirement', { status: 'draft' });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [
+        {
+          testId: 'TC-REQ-LOG-1',
+          className: 'LoggingSuite',
+          name: 'REQ-LOG-1 ensures logging',
+          status: 'passed',
+          duration: 5,
+        },
+      ],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: { 'TC-REQ-LOG-1': ['src/logging/logger.c'] },
+      generatedAt: '2024-03-02T09:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.traceSuggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          requirementId: 'REQ-LOG-1',
+          type: 'test',
+          targetId: 'TC-REQ-LOG-1',
+          confidence: 'high',
+        }),
+        expect.objectContaining({
+          requirementId: 'REQ-LOG-1',
+          type: 'code',
+          targetId: 'src/logging/logger.c',
+          viaTestId: 'TC-REQ-LOG-1',
+        }),
       ]),
     );
   });

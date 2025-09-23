@@ -5,7 +5,7 @@ export {
   signManifestWithSecuritySigner,
   verifyManifestSignatureDetailed,
   verifyManifestSignatureWithSecuritySigner,
-} from '../../../report/src/security/signer';
+} from '@soipack/packager';
 
 export type {
   ManifestDigest,
@@ -14,4 +14,4 @@ export type {
   VerificationFailureReason,
   VerificationOptions,
   VerificationResult,
-} from '../../../report/src/security/signer';
+} from '@soipack/packager';

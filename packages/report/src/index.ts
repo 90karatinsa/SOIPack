@@ -6,6 +6,7 @@ import {
   RequirementTrace,
   RequirementCoverageStatus,
   CoverageStatus,
+  type TraceSuggestion,
 } from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
@@ -46,6 +47,7 @@ export interface ComplianceMatrixOptions extends BaseReportOptions {
 
 export interface TraceMatrixOptions extends BaseReportOptions {
   coverage?: RequirementCoverageStatus[];
+  suggestions?: TraceSuggestion[];
 }
 
 export interface GapReportOptions extends BaseReportOptions {
@@ -113,6 +115,21 @@ interface TraceMatrixRow {
   };
 }
 
+interface TraceSuggestionEntryView {
+  typeLabel: string;
+  targetId: string;
+  targetName: string;
+  reason: string;
+  confidenceLabel: string;
+  confidenceClass: string;
+}
+
+interface TraceSuggestionGroup {
+  requirementId: string;
+  requirementTitle: string;
+  entries: TraceSuggestionEntryView[];
+}
+
 interface GapReportRow {
   objectiveId: string;
   table?: string;
@@ -153,6 +170,15 @@ export interface ComplianceMatrixJson {
     requirementId?: string;
     recommendation?: string;
     relatedTests?: string[];
+  }>;
+  traceSuggestions: Array<{
+    requirementId: string;
+    type: TraceSuggestion['type'];
+    targetId: string;
+    targetName?: string;
+    confidence: TraceSuggestion['confidence'];
+    reason: string;
+    viaTestId?: string;
   }>;
   git?: BuildInfo | null;
 }
@@ -213,6 +239,17 @@ const qualitySeverityLabels: Record<
   error: { label: 'Kritik', className: 'status-missing' },
   warn: { label: 'Uyarı', className: 'status-partial' },
   info: { label: 'Bilgi', className: 'badge-soft' },
+};
+
+const suggestionConfidenceLabels: Record<TraceSuggestion['confidence'], { label: string; className: string }> = {
+  high: { label: 'Yüksek', className: 'status-covered' },
+  medium: { label: 'Orta', className: 'status-partial' },
+  low: { label: 'Düşük', className: 'badge-soft' },
+};
+
+const suggestionTypeLabels: Record<TraceSuggestion['type'], string> = {
+  test: 'Test',
+  code: 'Kod',
 };
 
 const gapLabels: Record<GapCategoryKey, string> = {
@@ -884,6 +921,32 @@ const traceTemplate = nunjucks.compile(
         {% endfor %}
       </tbody>
     </table>
+    {% if suggestions.length %}
+      <div class="suggestion-block">
+        <h3>Önerilen İz Bağlantıları</h3>
+        <p class="section-lead">
+          Metin ve kapsam analizinden türetilen öneriler potansiyel eksik bağlantıları vurgular. Onaylanmadan önce proje ekipleri tarafından gözden geçirilmelidir.
+        </p>
+        <ul class="list">
+          {% for group in suggestions %}
+            <li>
+              <div class="cell-title">{{ group.requirementId }}</div>
+              <div class="cell-description">{{ group.requirementTitle }}</div>
+              <ul class="list">
+                {% for entry in group.entries %}
+                  <li>
+                    <span class="badge {{ entry.confidenceClass }}">{{ entry.confidenceLabel }}</span>
+                    <div class="cell-title">{{ entry.typeLabel }} → {{ entry.targetName }}</div>
+                    <div class="muted">{{ entry.targetId }}</div>
+                    <div class="cell-description">{{ entry.reason }}</div>
+                  </li>
+                {% endfor %}
+              </ul>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
   </section>`,
   env,
 );
@@ -1155,6 +1218,15 @@ const buildComplianceMatrixJson = (
     recommendation: finding.recommendation,
     relatedTests: finding.relatedTests,
   })),
+  traceSuggestions: snapshot.traceSuggestions.map((suggestion) => ({
+    requirementId: suggestion.requirementId,
+    type: suggestion.type,
+    targetId: suggestion.targetId,
+    targetName: suggestion.targetName,
+    confidence: suggestion.confidence,
+    reason: suggestion.reason,
+    viaTestId: suggestion.viaTestId,
+  })),
   git: options.git ?? null,
 });
 
@@ -1312,6 +1384,61 @@ export const renderTraceMatrix = (
     });
   }
 
+  const suggestionGroups: TraceSuggestionGroup[] = (() => {
+    const result: TraceSuggestionGroup[] = [];
+    const suggestions = options.suggestions ?? [];
+    if (suggestions.length === 0) {
+      return result;
+    }
+    const requirementTitles = new Map(rows.map((row) => [row.requirementId, row.requirementTitle]));
+    const grouped = new Map<string, TraceSuggestionGroup>();
+
+    suggestions.forEach((suggestion) => {
+      const existing = grouped.get(suggestion.requirementId);
+      const confidenceMeta =
+        suggestionConfidenceLabels[suggestion.confidence] ??
+        ({ label: suggestion.confidence, className: 'badge-soft' } as const);
+      const entry: TraceSuggestionEntryView = {
+        typeLabel: suggestionTypeLabels[suggestion.type] ?? suggestion.type,
+        targetId: suggestion.targetId,
+        targetName: suggestion.targetName ?? suggestion.targetId,
+        reason: suggestion.reason,
+        confidenceLabel: confidenceMeta.label,
+        confidenceClass: confidenceMeta.className,
+      };
+      if (existing) {
+        existing.entries.push(entry);
+        return;
+      }
+      grouped.set(suggestion.requirementId, {
+        requirementId: suggestion.requirementId,
+        requirementTitle:
+          requirementTitles.get(suggestion.requirementId) ?? suggestion.requirementId,
+        entries: [entry],
+      });
+    });
+
+    grouped.forEach((group) => {
+      group.entries.sort((a, b) => a.targetId.localeCompare(b.targetId));
+      result.push(group);
+    });
+
+    result.sort((a, b) => a.requirementId.localeCompare(b.requirementId));
+    return result;
+  })();
+
+  if (suggestionGroups.length > 0) {
+    const totalSuggestions = suggestionGroups.reduce(
+      (acc, group) => acc + group.entries.length,
+      0,
+    );
+    summaryMetrics.push({
+      label: 'Önerilen Bağlantılar',
+      value: totalSuggestions.toString(),
+      accent: true,
+    });
+  }
+
   return renderLayout({
     title: options.title ?? 'SOIPack İzlenebilirlik Matrisi',
     manifestId: options.manifestId ?? 'N/A',
@@ -1320,7 +1447,7 @@ export const renderTraceMatrix = (
     snapshotId: options.snapshotId,
     snapshotVersion: options.snapshotVersion,
     summaryMetrics,
-    content: traceTemplate.render({ rows }),
+    content: traceTemplate.render({ rows, suggestions: suggestionGroups }),
     subtitle: 'Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü',
     git: options.git,
   });

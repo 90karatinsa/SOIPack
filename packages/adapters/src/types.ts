@@ -7,6 +7,7 @@ export interface JiraRequirement {
   id: string;
   summary: string;
   status: string;
+  issueType?: string;
   priority?: string;
   description?: string;
   components?: string[];

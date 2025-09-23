@@ -8,6 +8,7 @@ const HEADER_CANDIDATES = {
   id: ['Issue key', 'Key', 'ID'],
   summary: ['Summary', 'Title'],
   status: ['Status', 'State'],
+  issueType: ['Issue Type', 'Type'],
   priority: ['Priority'],
   links: ['Issue Links', 'Linked Issues'],
   components: ['Component/s', 'Components'],
@@ -151,6 +152,9 @@ export const importJiraCsv = async (
       headerIndexes.summary !== undefined ? normalizedRow[headerIndexes.summary] : undefined,
     );
     const status = normalizeValue(headerIndexes.status !== undefined ? normalizedRow[headerIndexes.status] : undefined);
+    const issueType = normalizeValue(
+      headerIndexes.issueType !== undefined ? normalizedRow[headerIndexes.issueType] : undefined,
+    );
     if (!id) {
       warnings.push(`Row ${rowIndex + 2} is missing an id and was skipped.`);
       return;
@@ -196,6 +200,10 @@ export const importJiraCsv = async (
       priority: priority || undefined,
       links,
     };
+
+    if (issueType) {
+      requirement.issueType = issueType;
+    }
 
     if (description) {
       requirement.description = description;

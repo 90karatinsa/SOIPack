@@ -1,0 +1,11 @@
+[
+  {
+    "id": "A-3-99",
+    "table": "A-3",
+    "name": "Bağımsız analiz değerlendirmesi",
+    "desc": "Analiz çıktısı bağımsız uzman tarafından gözden geçirilmelidir.",
+    "artifacts": ["analysis"],
+    "levels": { "A": true, "B": true, "C": true, "D": true, "E": false },
+    "independence": "required"
+  }
+]

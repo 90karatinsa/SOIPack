@@ -1,0 +1,11 @@
+[
+  {
+    "id": "A-6-02",
+    "table": "A-6",
+    "name": "Problem reports tracked",
+    "desc": "Defects and problem reports are logged, analyzed, and dispositioned.",
+    "artifacts": ["problem_report"],
+    "levels": { "A": true, "B": true, "C": true, "D": true, "E": false },
+    "independence": "none"
+  }
+]

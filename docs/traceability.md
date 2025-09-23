@@ -42,3 +42,26 @@ console.log(report.summary.highPriorityRequirements);
 ```
 
 `report` nesnesi gereksinim boşluklarını, yetim varlıkları ve çatışma kayıtlarını içerir. Çıktı, doğrulama planlarına beslenerek eksik kanıtların kapatılmasını sağlar.
+
+## Öneri motoru ile bağlantı kapatma
+
+Boşluk raporlarını desteklemek için SOIPack Engine `generateTraceSuggestions` fonksiyonunu sağlar. Bu modül, gereksinim tanımlarını, mevcut test sonuçlarını ve test→kod kapsam haritalarını tarayarak gözden geçiricilere sunulacak olası bağlantıları üretir. Öneri motoru aşağıdaki sezgileri kullanır:
+
+- Gereksinim kimliğini veya normalize edilmiş anahtar kelimeleri doğrudan içeren test kimlikleri yüksek güvenle önerilir.
+- Gereksinim ve test açıklamalarındaki ortak kelimeler orta/düşük güvenli eşleşmeler olarak listelenir.
+- Testlerin kapsadığı ancak gereksinimde izlenmeyen kod yolları, ilgili test üzerinden kod bağlantısı önerisi olarak eklenir.
+
+Her öneri `TraceSuggestion` arayüzünü takip eder ve `requirementId`, `type` (`test` veya `code`), `targetId`, `confidence` ile `reason` alanlarını içerir. CLI `analyze` komutu bu diziyi `analysis.json` içine `traceSuggestions` alanında ekler; `report` komutu ise `trace.html` içinde “Önerilen İz Bağlantıları” tablosunu üretir. İnceleme ekipleri bu listeyi kullanarak gereksinim kayıtlarını veya test/coderef eşleştirmelerini güncelleyebilir.
+
+Programatik kullanım için modülü doğrudan içe aktarabilirsiniz:
+
+```ts
+import { generateTraceSuggestions } from '@soipack/engine';
+
+const suggestions = generateTraceSuggestions(traceReport.traces, testResults, coverageMap);
+suggestions
+  .filter((item) => item.confidence !== 'low')
+  .forEach((suggestion) => console.log(suggestion.reason));
+```
+
+Bu çıktı, gözden geçirme toplantılarında hızlıca tartışılacak bağlantı adaylarını veya otomatik JIRA görevleri açmak için kullanılabilir. Önerilerin kabul edilmesi, sonraki analiz çalıştırmalarında ilgili boşlukların kapanmasını sağlar.
