@@ -21,7 +21,7 @@ import {
   verifyLicenseFile,
   type LicensePayload,
 } from '@soipack/cli';
-import { CertificationLevel } from '@soipack/core';
+import { CertificationLevel, DEFAULT_LOCALE, resolveLocale, translate } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
 import helmet from 'helmet';
@@ -61,7 +61,13 @@ const JOB_ID_PATTERN = /^[a-f0-9]{16}$/;
 
 const assertJobId = (id: string): void => {
   if (!JOB_ID_PATTERN.test(id)) {
-    throw new HttpError(400, 'INVALID_REQUEST', 'Kimlik değeri geçerli değil.');
+    throw new HttpError(
+      400,
+      'INVALID_REQUEST',
+      translate('errors.request.invalidId', { locale: DEFAULT_LOCALE }),
+      undefined,
+      { messageKey: 'errors.request.invalidId' },
+    );
   }
 };
 
@@ -100,6 +106,8 @@ interface RequestContext {
   startedAtNs: bigint;
 }
 
+const REQUEST_LOCALE_SYMBOL = Symbol('soipack:locale');
+
 const SERVER_CONTEXT_SYMBOL = Symbol('soipack:server');
 
 export interface ServerLifecycle {
@@ -116,6 +124,15 @@ const setRequestContext = (req: Request, context: RequestContext): void => {
 
 const getRequestContext = (req: Request): RequestContext | undefined =>
   Reflect.get(req, REQUEST_CONTEXT_SYMBOL) as RequestContext | undefined;
+
+const setRequestLocale = (req: Request, locale: string): void => {
+  Reflect.set(req, REQUEST_LOCALE_SYMBOL, locale);
+};
+
+const getRequestLocale = (req: Request): string => {
+  const locale = Reflect.get(req, REQUEST_LOCALE_SYMBOL) as string | undefined;
+  return locale ?? DEFAULT_LOCALE;
+};
 
 export const getServerLifecycle = (app: Express): ServerLifecycle => {
   const context = Reflect.get(app, SERVER_CONTEXT_SYMBOL) as ServerLifecycle | undefined;
@@ -140,6 +157,23 @@ const getRouteLabel = (req: Request): string => {
     return req.path;
   }
   return req.url ?? 'unknown';
+};
+
+const parseAcceptLanguage = (header: string | string[] | undefined): string | undefined => {
+  if (!header) {
+    return undefined;
+  }
+  const raw = Array.isArray(header) ? header.join(',') : header;
+  const candidates = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      const [tag] = entry.split(';', 1);
+      return tag?.trim();
+    })
+    .filter((entry): entry is string => Boolean(entry && entry.length > 0));
+  return candidates[0];
 };
 
 const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenantId}:${jobId}`;
@@ -2494,6 +2528,13 @@ export const createServer = (config: ServerConfig): Express => {
     throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);
   }) as unknown as typeof app.listen);
 
+  app.use((req, _res, next) => {
+    const preferred = parseAcceptLanguage(req.headers['accept-language']);
+    const locale = resolveLocale(preferred);
+    setRequestLocale(req, locale);
+    next();
+  });
+
   app.use((req, res, next) => {
     const requestContext = { id: randomUUID(), startedAtNs: process.hrtime.bigint() };
     setRequestContext(req, requestContext);
@@ -2555,12 +2596,18 @@ export const createServer = (config: ServerConfig): Express => {
         handler: (_req, _res, nextHandler, options) => {
           const retryAfterSeconds = Math.max(1, Math.ceil(options.windowMs / 1000));
           nextHandler(
-            new HttpError(429, 'GLOBAL_RATE_LIMIT_EXCEEDED', 'Global istek limiti aşıldı.', {
-              scope: 'global',
-              windowMs: options.windowMs,
-              limit: options.max,
-              retryAfterSeconds,
-            }),
+            new HttpError(
+              429,
+              'GLOBAL_RATE_LIMIT_EXCEEDED',
+              translate('errors.server.globalRateLimitExceeded', { locale: DEFAULT_LOCALE }),
+              {
+                scope: 'global',
+                windowMs: options.windowMs,
+                limit: options.max,
+                retryAfterSeconds,
+              },
+              { messageKey: 'errors.server.globalRateLimitExceeded' },
+            ),
           );
         },
       }),
@@ -3814,7 +3861,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     const isPayloadTooLargeError =
       error !== null &&
       typeof error === 'object' &&
@@ -3825,12 +3872,24 @@ export const createServer = (config: ServerConfig): Express => {
       error instanceof HttpError
         ? error
         : isPayloadTooLargeError
-          ? new HttpError(413, 'PAYLOAD_TOO_LARGE', 'JSON gövde boyutu sınırını aştı.', {
-              limit: jsonBodyLimit,
-            })
-          : new HttpError(500, 'UNEXPECTED_ERROR', 'Beklenmeyen bir sunucu hatası oluştu.', {
-              cause: error instanceof Error ? error.message : String(error),
-            });
+          ? new HttpError(
+              413,
+              'PAYLOAD_TOO_LARGE',
+              translate('errors.server.payloadTooLarge', { locale: DEFAULT_LOCALE }),
+              { limit: jsonBodyLimit },
+              { messageKey: 'errors.server.payloadTooLarge' },
+            )
+          : new HttpError(
+              500,
+              'UNEXPECTED_ERROR',
+              translate('errors.server.unexpected', { locale: DEFAULT_LOCALE }),
+              {
+                cause: error instanceof Error ? error.message : String(error),
+              },
+              { messageKey: 'errors.server.unexpected' },
+            );
+
+    const locale = getRequestLocale(req);
 
     if (normalized.statusCode === 429 && normalized.details && typeof normalized.details === 'object') {
       const retryAfterSeconds = (normalized.details as { retryAfterSeconds?: unknown }).retryAfterSeconds;
@@ -3838,10 +3897,17 @@ export const createServer = (config: ServerConfig): Express => {
         res.set('Retry-After', `${Math.ceil(retryAfterSeconds)}`);
       }
     }
+    const localizedMessage =
+      normalized.messageKey
+        ? translate(normalized.messageKey, {
+            locale,
+            values: normalized.messageParams,
+          })
+        : normalized.message;
     res.status(normalized.statusCode).json({
       error: {
         code: normalized.code,
-        message: normalized.message,
+        message: localizedMessage,
         details: normalized.details ?? undefined,
       },
     });

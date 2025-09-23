@@ -87,6 +87,7 @@ import {
   type LicensePayload,
   type VerifyLicenseOptions,
 } from './license';
+import { getCliAvailableLocales, getCliLocale, setCliLocale, translateCli } from './localization';
 import { createLogger } from './logging';
 import type { Logger } from './logging';
 import { formatVersion } from './version';
@@ -441,7 +442,7 @@ const requestStream = (
       response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
       response.on('end', () => {
         const message = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : response.statusMessage;
-        reject(new Error(`HTTP ${statusCode ?? 0}: ${message ?? 'Beklenmeyen sunucu hatası'}`));
+        reject(new Error(`HTTP ${statusCode ?? 0}: ${message ?? translateCli('errors.server.unexpected')}`));
       });
     });
     request.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
@@ -2465,7 +2466,7 @@ export const runPipeline = async (
   if (analyzeResult.exitCode === exitCodes.missingEvidence) {
     logger?.warn(
       { command: 'run' },
-      'Analiz hedefleri için eksik kanıt bulundu. Paket uyarı ile tamamlandı.',
+      translateCli('cli.warnings.missingEvidence'),
     );
     return exitCodes.missingEvidence;
   }
@@ -2477,6 +2478,7 @@ interface GlobalArguments {
   verbose?: boolean;
   license?: string;
   allowInsecureHttp?: boolean;
+  locale?: string;
 }
 
 let sharedLogger: Logger | undefined;
@@ -2538,7 +2540,7 @@ const logCliError = (
       ...context,
       error: { message: String(error) },
     },
-    'Beklenmeyen bir hata oluştu.',
+    translateCli('cli.errors.unexpected'),
   );
 };
 
@@ -2564,6 +2566,19 @@ if (require.main === module) {
       global: true,
       default: false,
     })
+    .option('locale', {
+      describe: 'CLI mesajları için tercih edilen dil (örnek: en veya tr).',
+      type: 'string',
+      global: true,
+      choices: getCliAvailableLocales(),
+      default: getCliLocale(),
+    })
+    .middleware((argv) => {
+      const localeOption = argv.locale;
+      const value = Array.isArray(localeOption) ? localeOption[0] : (localeOption as string | undefined);
+      setCliLocale(value);
+      return {};
+    }, true)
     .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
     .alias('version', 'V')
     .command(
@@ -3400,6 +3415,7 @@ if (require.main === module) {
 
 export const __internal = {
   logLicenseValidated,
+  logCliError,
 };
 
 export {

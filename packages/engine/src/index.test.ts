@@ -260,6 +260,17 @@ describe('TraceEngine', () => {
     expect(req3?.coverage?.mcdc?.percentage).toBe(75);
   });
 
+  it('streams requirement coverage lazily to support large datasets', () => {
+    const iterator = engine.streamRequirementCoverage();
+    const first = iterator.next();
+    expect(first.done).toBe(false);
+    const remaining = Array.from(iterator);
+    expect(remaining.length).toBe(bundle.requirements.length - 1);
+
+    const reconstructed = first.value ? [first.value, ...remaining] : remaining;
+    expect(reconstructed).toEqual(engine.getRequirementCoverage());
+  });
+
   it('links requirements directly to code paths defined via trace links', () => {
     const manualRequirement = createRequirement('REQ-Manual', 'Manual coverage mapping', {
       status: 'draft',

@@ -1,0 +1,9 @@
+{
+  "errors.unexpected": "An unexpected error occurred.",
+  "errors.server.unexpected": "An unexpected server error occurred.",
+  "errors.server.payloadTooLarge": "The JSON body exceeds the allowed size limit.",
+  "errors.server.globalRateLimitExceeded": "The global request rate limit has been exceeded.",
+  "errors.request.invalidId": "The identifier value is not valid.",
+  "cli.errors.unexpected": "An unexpected error occurred.",
+  "cli.warnings.missingEvidence": "Missing evidence for the requested objectives. Package completed with warnings."
+}

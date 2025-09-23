@@ -32,6 +32,7 @@ export const createRequirement = (
 export const normalizeTag = (tag: string): string => tag.trim().toLowerCase();
 
 export * from './objectives';
+export * from './i18n';
 
 export const evidenceSources = [
   'jiraCsv',

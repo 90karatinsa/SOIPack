@@ -11,6 +11,7 @@ import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifestBundle, verifyManifestSignature } from '@soipack/packager';
 
 import type { LicensePayload } from './license';
+import { setCliLocale } from './localization';
 import type { Logger } from './logging';
 
 import {
@@ -294,6 +295,35 @@ describe('@soipack/cli pipeline', () => {
 
     const derivedTrace = engine.getRequirementTrace('REQ-2');
     expect(derivedTrace.tests.map((test) => test.testId)).toContain('AuthTests#handles lockout');
+  });
+});
+
+describe('CLI localization', () => {
+  afterEach(() => {
+    setCliLocale('en');
+  });
+
+  it('localizes unexpected errors using the active locale', () => {
+    const messages: string[] = [];
+    const logger = {
+      error: (_context: unknown, message?: unknown) => {
+        if (typeof _context === 'string' && message === undefined) {
+          messages.push(_context);
+          return;
+        }
+        if (typeof message === 'string') {
+          messages.push(message);
+        }
+      },
+    } as unknown as Logger;
+
+    setCliLocale('en');
+    __internal.logCliError(logger, 42);
+    expect(messages.pop()).toBe('An unexpected error occurred.');
+
+    setCliLocale('tr');
+    __internal.logCliError(logger, 42);
+    expect(messages.pop()).toBe('Beklenmeyen bir hata oluştu.');
   });
 });
 
