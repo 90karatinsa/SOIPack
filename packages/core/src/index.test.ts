@@ -1,6 +1,10 @@
 import {
   CertificationLevel,
   createRequirement,
+  createSnapshotIdentifier,
+  createSnapshotVersion,
+  deriveFingerprint,
+  freezeSnapshotVersion,
   getObjectivesForLevel,
   normalizeTag,
   objectiveCatalog,
@@ -45,6 +49,31 @@ describe('@soipack/core', () => {
       expect(mcdc).toBeDefined();
       expect(mcdc?.levels).toEqual({ A: true, B: false, C: false, D: false, E: false });
       expect(mcdc?.artifacts).toEqual(['coverage_mcdc', 'analysis']);
+    });
+  });
+
+  describe('snapshot versioning', () => {
+    it('creates deterministic snapshot identifiers from timestamp and hash', () => {
+      const id = createSnapshotIdentifier('2024-06-19T12:34:56.000Z', 'abcdef0123456789');
+      expect(id).toBe('20240619T123456Z-abcdef012345');
+    });
+
+    it('creates and freezes snapshot versions', () => {
+      const fingerprint = deriveFingerprint(['alpha', 'beta', 'gamma']);
+      const version = createSnapshotVersion(fingerprint, { createdAt: '2024-01-01T00:00:00Z' });
+      expect(version).toEqual(
+        expect.objectContaining({
+          id: expect.stringMatching(/^20240101T000000Z-[a-f0-9]{12}$/),
+          fingerprint,
+          isFrozen: false,
+        }),
+      );
+
+      const frozen = freezeSnapshotVersion(version, { frozenAt: '2024-01-02T00:00:00Z' });
+      expect(frozen.isFrozen).toBe(true);
+      expect(frozen.frozenAt).toBe('2024-01-02T00:00:00.000Z');
+      expect(frozen.id.startsWith('20240102T000000Z-')).toBe(true);
+      expect(freezeSnapshotVersion(frozen)).toBe(frozen);
     });
   });
 });

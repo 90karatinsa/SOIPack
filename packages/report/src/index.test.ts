@@ -30,7 +30,13 @@ describe('@soipack/report', () => {
   const mockedValidator = htmlValidator as jest.MockedFunction<typeof htmlValidator>;
   const goldenDir = path.resolve(__dirname, '__fixtures__', 'goldens');
   const sanitizeHtml = (value: string): string => value.replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ').trim();
-  const hashHtml = (value: string): string => createHash('sha256').update(sanitizeHtml(value)).digest('hex');
+  const hashHtml = (value: string): string => {
+    const normalized = sanitizeHtml(value).replace(
+      /<p class="report-meta">Snapshot:.*?<\/p>/,
+      '',
+    );
+    return createHash('sha256').update(normalized).digest('hex');
+  };
   const gitFixture: BuildInfo = {
     hash: '1234567890abcdef1234567890abcdef12345678',
     author: 'Example Dev',
@@ -63,12 +69,15 @@ describe('@soipack/report', () => {
     );
     expect(result.json.qualityFindings.length).toBeGreaterThan(0);
     expect(result.json.git).toEqual(gitFixture);
+    expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
+    expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
     expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
     expect(result.html).toContain('Kanıt Manifest ID');
     expect(result.html).toContain('Commit:');
     expect(result.html).toContain('Kalite Bulguları');
+    expect(result.html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
@@ -90,6 +99,8 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('MC/DC');
     expect(result.json.coverage).toEqual(coverage);
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
+    expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
+    expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
 
     mockedValidator.mockResolvedValueOnce({ messages: [] });
     const validation = await htmlValidator({ data: result.html, format: 'json' });
@@ -106,11 +117,14 @@ describe('@soipack/report', () => {
       generatedAt: fixture.snapshot.generatedAt,
       coverage: fixture.snapshot.requirementCoverage,
       git: gitFixture,
+      snapshotId: fixture.snapshot.version.id,
+      snapshotVersion: fixture.snapshot.version,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');
     expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
     expect(html).toContain('Gereksinim → Test → Kod');
+    expect(html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
   });
 
   it('renders gap analysis with objective metadata', () => {
@@ -120,11 +134,14 @@ describe('@soipack/report', () => {
       objectivesMetadata: fixture.objectives,
       title: 'Uyum Boşlukları',
       git: gitFixture,
+      snapshotId: fixture.snapshot.version.id,
+      snapshotVersion: fixture.snapshot.version,
     });
 
     const goldenHtml = readFileSync(path.join(goldenDir, 'gaps.html'), 'utf-8');
     expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
     expect(html).toContain('Boşluk');
+    expect(html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
   });
 
   it('prints combined report PDF using Playwright with coverage warnings listed', async () => {

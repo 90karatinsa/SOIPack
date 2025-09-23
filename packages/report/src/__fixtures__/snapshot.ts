@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import { CoverageReport, CoverageSummary, TestResult } from '@soipack/adapters';
 import {
   Evidence,
@@ -5,6 +7,7 @@ import {
   Objective,
   ObjectiveArtifactType,
   createRequirement,
+  createSnapshotIdentifier,
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -38,12 +41,19 @@ const buildEvidence = (
   artifact: ObjectiveArtifactType,
   path: string,
   summary: string,
-): Evidence => ({
-  source: evidenceSourceMap[artifact] ?? 'other',
-  path,
-  summary,
-  timestamp: '2024-01-10T09:30:00Z',
-});
+): Evidence => {
+  const timestamp = '2024-01-10T09:30:00Z';
+  const fingerprint = createHash('sha256')
+    .update(`${artifact}:${path}:${summary}`)
+    .digest('hex');
+  return {
+    source: evidenceSourceMap[artifact] ?? 'other',
+    path,
+    summary,
+    timestamp,
+    snapshotId: createSnapshotIdentifier(timestamp, fingerprint),
+  };
+};
 
 export const coverageSummaryFixture = (): CoverageReport => ({
   totals: {

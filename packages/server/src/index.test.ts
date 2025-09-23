@@ -8,7 +8,7 @@ import { Writable } from 'stream';
 import tls from 'tls';
 
 import * as cli from '@soipack/cli';
-import { Manifest } from '@soipack/core';
+import { Manifest, createSnapshotVersion } from '@soipack/core';
 import { verifyManifestSignature } from '@soipack/packager';
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import pino from 'pino';
@@ -35,6 +35,9 @@ const TEST_SIGNING_CERTIFICATE = (() => {
 })();
 
 const LICENSE_PUBLIC_KEY_BASE64 = 'mXRQccwM4wyv+mmIQZjJWAqDDvD6wYn+c/DpB1w/x20=';
+
+const buildSnapshotVersion = (fingerprint = 'cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe') =>
+  createSnapshotVersion(fingerprint, { createdAt: '2024-06-19T12:34:56Z' });
 
 const TEST_CA_CERT = `-----BEGIN CERTIFICATE-----
 MIIDFTCCAf2gAwIBAgIUOrBbV6ZFBaLvne/UffpWm90JGXEwDQYJKoZIhvcNAQEL
@@ -503,6 +506,10 @@ describe('@soipack/server REST API', () => {
       }),
     });
     expect(typeof uploadResponse.body.id).toBe('string');
+    expect(uploadResponse.body.snapshotId).toMatch(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/);
+    expect(uploadResponse.body.snapshotVersion).toEqual(
+      expect.objectContaining({ fingerprint: sha, isFrozen: false }),
+    );
 
     const detail = await request(app)
       .get(`/evidence/${uploadResponse.body.id}`)
@@ -512,6 +519,29 @@ describe('@soipack/server REST API', () => {
     expect(detail.body.contentEncoding).toBe('base64');
     const decoded = Buffer.from(detail.body.content as string, 'base64').toString('utf8');
     expect(decoded).toBe(payload);
+    expect(detail.body.snapshotId).toBe(uploadResponse.body.snapshotId);
+    expect(detail.body.snapshotVersion.isFrozen).toBe(false);
+  });
+
+  it('returns existing records when identical evidence is uploaded twice', async () => {
+    const payload = 'duplicate evidence payload';
+    const buffer = Buffer.from(payload, 'utf8');
+    const sha = createHash('sha256').update(buffer).digest('hex');
+
+    const first = await request(app)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ filename: 'duplicate.txt', content: buffer.toString('base64'), metadata: { sha256: sha } })
+      .expect(201);
+
+    const second = await request(app)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ filename: 'duplicate.txt', content: buffer.toString('base64'), metadata: { sha256: sha } })
+      .expect(200);
+
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body.snapshotId).toBe(first.body.snapshotId);
   });
 
   it('rejects evidence uploads when the hash is incorrect', async () => {
@@ -529,6 +559,38 @@ describe('@soipack/server REST API', () => {
       .expect(400);
 
     expect(response.body.error.code).toBe('HASH_MISMATCH');
+  });
+
+  it('rejects evidence uploads after configuration freeze', async () => {
+    const buffer = Buffer.from('freeze evidence', 'utf8');
+    const sha = createHash('sha256').update(buffer).digest('hex');
+
+    const freezeLog = createLogCapture();
+    const freezeApp = createServer({ ...baseConfig, logger: freezeLog.logger, metricsRegistry: new Registry() });
+    const freezeToken = await createAccessToken();
+
+    await request(freezeApp)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${freezeToken}`)
+      .send({ filename: 'frozen.log', content: buffer.toString('base64'), metadata: { sha256: sha } })
+      .expect(201);
+
+    const freezeResponse = await request(freezeApp)
+      .post('/v1/config/freeze')
+      .set('Authorization', `Bearer ${freezeToken}`)
+      .expect(200);
+
+    expect(freezeResponse.body.version).toEqual(
+      expect.objectContaining({ isFrozen: true, id: expect.any(String) }),
+    );
+
+    const rejection = await request(freezeApp)
+      .post('/evidence/upload')
+      .set('Authorization', `Bearer ${freezeToken}`)
+      .send({ filename: 'frozen-again.log', content: buffer.toString('base64'), metadata: { sha256: sha } })
+      .expect(409);
+
+    expect(rejection.body.error.code).toBe('CONFIG_FROZEN');
   });
 
   it('creates compliance records that reference stored evidence', async () => {
@@ -1421,6 +1483,7 @@ describe('@soipack/server REST API', () => {
           generatedAt: new Date().toISOString(),
           warnings: [],
           inputs: {},
+          version: buildSnapshotVersion(),
         },
       };
       return {
@@ -1503,6 +1566,7 @@ describe('@soipack/server REST API', () => {
           generatedAt: new Date().toISOString(),
           warnings: [],
           inputs: {},
+          version: buildSnapshotVersion(),
         },
       };
       return {
@@ -1670,6 +1734,7 @@ describe('@soipack/server REST API', () => {
           generatedAt: new Date().toISOString(),
           warnings: [],
           inputs: {},
+          version: buildSnapshotVersion(),
         },
       };
       return {
@@ -2643,7 +2708,12 @@ describe('@soipack/server REST API', () => {
         evidenceIndex: {},
         findings: [],
         builds: [],
-        metadata: { generatedAt: new Date().toISOString(), warnings: [], inputs: {} },
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+          version: buildSnapshotVersion(),
+        },
       },
       workspacePath: 'workspace.json',
       warnings: [],

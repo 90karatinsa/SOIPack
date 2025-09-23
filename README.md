@@ -149,6 +149,26 @@ CLI paketini derleyip minimal örnek verilerle uçtan uca bir paket oluşturmak 
 
    JSON anahtarları plan kimliklerini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder; her plan içinde `overview`, `sections` (plan şablonundaki bölüm kimlikleri) ve isteğe bağlı `additionalNotes` alanları HTML içeriği kabul eder.
 
+Plan şablonlarını rapor akışından bağımsız üretmek istediğinizde `generate-plans` komutunu kullanabilirsiniz. Bu komut,
+JSON konfigürasyonu okuyarak listedeki her plan için DOCX ve PDF çıktıları üretir ve oluşan karmaları `plans-manifest.json`
+dosyasına yazar:
+
+```bash
+node packages/cli/dist/index.js generate-plans --config config/plans.json
+```
+
+Alanların ayrıntıları ve örnek bir konfigürasyon için [docs/plans.md](docs/plans.md) dosyasına göz atın.
+
+Sunucu tarafında toplanan kanıtları dondurmak ve yeni yüklemeleri engellemek için `freeze` komutunu kullanabilirsiniz. Komut, API üzerinden `/v1/config/freeze` uç noktasına istek gönderir ve aktif snapshot kimliğini çıktıda gösterir:
+
+```bash
+node packages/cli/dist/index.js freeze \
+  --api http://localhost:3000 \
+  --token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+```
+
+Veri versiyonlama sürecinin tamamı, snapshot kimlik formatları ve freeze akışının ayrıntıları [docs/versioning.md](docs/versioning.md) belgesinde açıklanmaktadır.
+
 6. Dağıtım paketini hazırlayın:
 
    ```bash

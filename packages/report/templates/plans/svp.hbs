@@ -1,0 +1,23 @@
+@@overview
+{{paragraph "The Software Verification Plan (SVP) for " projectLabel " captures the verification scope, independence, and coverage objectives needed for " levelNarrative " certification."}}
+{{paragraph "Current data shows " coveragePercent "% objective coverage with " testTotal " verification cases executing against the " requirementTotal " baseline requirements."}}
+
+@@section verificationScope
+{{paragraph "Verification encompasses reviews, analyses, and testing across all life-cycle phases."}}
+{{paragraph testTotal " cases cover functionality, interface behaviour, and robustness with independence applied according to DO-178C."}}
+
+@@section reviewsAndAnalysis
+{{paragraph "Structured reviews confirm traceability and correctness of requirements, design, code, and test artefacts."}}
+{{paragraph "Static analyses and walkthroughs provide supplemental evidence to justify coverage gaps and anomalous conditions."}}
+
+@@section testingStrategy
+{{paragraph "Dynamic testing includes requirements-based, interface, and regression campaigns."}}
+{{paragraph passedTests " tests have passed, " failedTests " have outstanding findings, and " skippedTests " are awaiting data or dependencies."}}
+
+@@section coverageAssessment
+{{paragraph "Structural coverage and requirements completeness are monitored continuously."}}
+{{paragraph coveragePercent "% of objectives are satisfied; remaining partial (" partialCount ") and missing (" missingCount ") objectives drive targeted verification tasks."}}
+
+@@section anomalyResolution
+{{paragraph "Problem reports, change requests, and discrepancy tracking ensure anomalies are recorded and dispositioned."}}
+{{paragraph "Outstanding items (" outstandingCount ") are assessed for safety impact and resolved before final qualification."}}

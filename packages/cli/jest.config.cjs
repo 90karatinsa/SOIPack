@@ -9,6 +9,9 @@ module.exports = {
     '^@soipack/([^/]+)(.*)$': '<rootDir>/../$1/src$2'
   },
   transform: {
-    '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]
+    '^.+\\.(ts|tsx)$': [
+      'ts-jest',
+      { tsconfig: '<rootDir>/tsconfig.test.json', diagnostics: false }
+    ]
   }
 };

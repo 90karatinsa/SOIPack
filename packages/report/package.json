@@ -6,16 +6,23 @@
   "types": "dist/index.d.ts",
   "license": "MIT",
   "dependencies": {
-    "@types/nunjucks": "^3.2.5",
     "@soipack/core": "workspace:*",
     "@soipack/engine": "workspace:*",
+    "@types/handlebars": "^4.1.0",
+    "@types/nunjucks": "^3.2.5",
     "docx": "^8.5.0",
+    "handlebars": "^4.7.8",
     "nunjucks": "^3.2.4",
+    "pdfmake": "^0.2.20",
     "playwright": "^1.45.0"
   },
   "devDependencies": {
     "html-validator": "^6.0.1"
   },
+  "files": [
+    "dist",
+    "templates"
+  ],
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
     "test": "jest --config ./jest.config.cjs"

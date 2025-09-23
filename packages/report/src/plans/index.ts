@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import type {
   CertificationLevel,
   Objective,
@@ -16,20 +19,71 @@ import {
   TextRun,
   WidthType,
 } from 'docx';
-import nunjucks from 'nunjucks';
+import Handlebars from 'handlebars';
+import type { HelperOptions } from 'handlebars';
+import PdfPrinter from 'pdfmake';
+import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces';
 
 import packageInfo from '../../package.json';
 
-import { basePlanTemplate, planTemplateDefinitions } from './templates';
+import { planTemplateDefinitions } from './templates';
 import type { PlanTemplateDefinition, PlanTemplateId } from './types';
 
 type ParagraphAlignment = (typeof AlignmentType)[keyof typeof AlignmentType];
 
-const templateEnv = new nunjucks.Environment(undefined, {
-  autoescape: true,
-  trimBlocks: true,
-  lstripBlocks: true,
+const planTemplatesDir = path.resolve(__dirname, '..', '..', 'templates', 'plans');
+
+const planHandlebars = Handlebars.create();
+
+planHandlebars.registerHelper('paragraph', function paragraphHelper(
+  ...args: unknown[]
+) {
+  const options = args.pop() as HelperOptions;
+  void options;
+  const text = args
+    .map((value) => {
+      if (value === undefined || value === null) {
+        return '';
+      }
+      if (typeof value === 'string') {
+        return value;
+      }
+      return String(value);
+    })
+    .join('');
+
+  return new Handlebars.SafeString(paragraph(text));
 });
+
+planHandlebars.registerHelper('join', (items: unknown, separator: string) => {
+  if (!Array.isArray(items)) {
+    return '';
+  }
+
+  const normalizedSeparator = typeof separator === 'string' ? separator : ', ';
+  const parts = items
+    .map((item) => {
+      if (item === undefined || item === null) {
+        return '';
+      }
+      const value = String(item).trim();
+      return value;
+    })
+    .filter((value) => value.length > 0);
+
+  return parts.join(normalizedSeparator);
+});
+
+const pdfFonts = {
+  Helvetica: {
+    normal: 'Helvetica',
+    bold: 'Helvetica-Bold',
+    italics: 'Helvetica-Oblique',
+    bolditalics: 'Helvetica-BoldOblique',
+  },
+};
+
+const pdfPrinter = new PdfPrinter(pdfFonts);
 
 const statusLabels = {
   covered: 'Covered',
@@ -79,6 +133,7 @@ interface DefaultContentContext {
   objectiveTotal: number;
   codePaths: number;
   generatedAt: string;
+  outstandingCount: number;
 }
 
 interface DefaultPlanContent {
@@ -99,160 +154,151 @@ interface PlanObjectiveRow {
   evidenceRefs: string[];
 }
 
+interface PlanHtmlTemplateContext {
+  planDefinition: PlanTemplateDefinition;
+  projectLabel: string;
+  levelLabel: string;
+  manifestId?: string;
+  generatedAt: string;
+  overview: string;
+  sections: Record<string, string>;
+  sectionDefinitions: PlanTemplateDefinition['sections'];
+  coverageSummary: PlanRenderResult['coverageSummary'];
+  stats: ComplianceSnapshot['stats'];
+  tableSummary: Array<{ table: string; total: number; covered: number; partial: number; missing: number }>;
+  objectiveRows: PlanObjectiveRow[];
+  openObjectives: PlanObjectiveRow[];
+  openSummary: string;
+  additionalNotes?: string;
+  packageVersion: string;
+}
+
+type PlanContentTemplate = Handlebars.TemplateDelegate<DefaultContentContext>;
+type PlanHtmlTemplate = Handlebars.TemplateDelegate<PlanHtmlTemplateContext>;
+
+const planContentTemplates: Partial<Record<PlanTemplateId, PlanContentTemplate>> = {};
+let cachedPlanHtmlTemplate: PlanHtmlTemplate | undefined;
+
+const getPlanHtmlTemplate = (): PlanHtmlTemplate => {
+  if (!cachedPlanHtmlTemplate) {
+    const templatePath = path.join(planTemplatesDir, 'base.hbs');
+    const source = fs.readFileSync(templatePath, 'utf8');
+    cachedPlanHtmlTemplate = planHandlebars.compile<PlanHtmlTemplateContext>(source);
+  }
+  return cachedPlanHtmlTemplate;
+};
+
+const getPlanContentTemplate = (templateId: PlanTemplateId): PlanContentTemplate => {
+  const cached = planContentTemplates[templateId];
+  if (cached) {
+    return cached;
+  }
+
+  const templatePath = path.join(planTemplatesDir, `${templateId}.hbs`);
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`Plan template '${templateId}' could not be found at ${templatePath}`);
+  }
+
+  const source = fs.readFileSync(templatePath, 'utf8');
+  const compiled = planHandlebars.compile<DefaultContentContext>(source);
+  planContentTemplates[templateId] = compiled;
+  return compiled;
+};
+
+const parsePlanTemplateOutput = (rendered: string): DefaultPlanContent => {
+  const lines = rendered.split(/\r?\n/);
+  let currentSection: string | null = null;
+  let overview = '';
+  const sections: Record<string, string> = {};
+  const buffer: string[] = [];
+
+  const flush = () => {
+    if (!currentSection) {
+      return;
+    }
+
+    const content = buffer.join('\n').trim();
+    buffer.length = 0;
+
+    if (content.length === 0) {
+      return;
+    }
+
+    if (currentSection === 'overview') {
+      overview = content;
+    } else {
+      sections[currentSection] = content;
+    }
+  };
+
+  const markerPattern = /^@@(overview|section)(?:\s+([\w-]+))?$/i;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const markerMatch = line.trim().match(markerPattern);
+    if (markerMatch) {
+      flush();
+      const markerType = markerMatch[1];
+      if (markerType.toLowerCase() === 'overview') {
+        currentSection = 'overview';
+      } else {
+        const sectionId = markerMatch[2];
+        if (!sectionId) {
+          throw new Error('Section marker missing identifier.');
+        }
+        currentSection = sectionId;
+      }
+      continue;
+    }
+
+    if (!currentSection) {
+      if (line.trim().length === 0) {
+        continue;
+      }
+      throw new Error('Unexpected content before first section marker in plan template.');
+    }
+
+    buffer.push(line);
+  }
+
+  flush();
+
+  if (!overview) {
+    throw new Error('Plan template did not produce an overview section.');
+  }
+
+  return { overview, sections };
+};
+
+const createPdfBuffer = (docDefinition: TDocumentDefinitions): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    const doc = pdfPrinter.createPdfKitDocument(docDefinition);
+    const chunks: Buffer[] = [];
+
+    doc.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    doc.on('end', () => {
+      resolve(Buffer.concat(chunks));
+    });
+    doc.on('error', (error: Error) => {
+      reject(error);
+    });
+
+    doc.end();
+  });
+
 const buildDefaultContent = (
   templateId: PlanTemplateId,
   ctx: DefaultContentContext,
 ): DefaultPlanContent => {
-  const outstandingCount = ctx.partialCount + ctx.missingCount;
-
-  switch (templateId) {
-    case 'psac':
-      return {
-        overview: paragraph(
-          `The Plan for Software Aspects of Certification (PSAC) for ${ctx.projectLabel} establishes the activities, approvals, and evidence required to achieve ${ctx.levelNarrative} compliance with DO-178C.`,
-          `As of ${ctx.generatedAt}, ${ctx.coveredCount} of ${ctx.objectiveTotal} objectives (${ctx.coveragePercent}%) are fully satisfied, supported by ${ctx.testTotal} verification cases that demonstrate the ${ctx.requirementTotal} tracked requirements.`,
-        ),
-        sections: {
-          introduction: paragraph(
-            `${ctx.projectLabel} targets ${ctx.levelNarrative} certification.`,
-            'The applicant coordinates with designated engineering representatives and the certification authority to review plans, track issue resolutions, and approve baseline data for each life-cycle phase.',
-          ),
-          softwareLifecycle: paragraph(
-            'The software life cycle follows a requirements-driven approach covering planning, development, verification, and configuration management.',
-            `${ctx.requirementTotal} high-level requirements are baselined with traceability to design data and ${ctx.testTotal} verification cases to demonstrate completion.`,
-          ),
-          developmentEnvironment: paragraph(
-            'Development activities leverage configuration-controlled repositories, code generation, static analysis, and automated build services.',
-            `${ctx.codePaths} controlled code elements are maintained with peer review records and tool qualification evidence where required.`,
-          ),
-          complianceStrategy: paragraph(
-            'Each DO-178C objective is mapped to specific plans, analyses, tests, and configuration data.',
-            `${ctx.coveragePercent}% of objectives are fully covered, with ${ctx.partialCount} partial and ${ctx.missingCount} missing items tracked in the compliance gap log until closure.`,
-          ),
-          schedule: paragraph(
-            'Certification data is generated incrementally with continuous authority engagement.',
-            `Remaining findings (${outstandingCount}) are scheduled for targeted reviews, regression testing, and approvals prior to final certification submission.`,
-          ),
-        },
-      };
-    case 'sdp':
-      return {
-        overview: paragraph(
-          `The Software Development Plan (SDP) for ${ctx.projectLabel} defines the engineering processes, methods, and resources that guide development towards ${ctx.levelNarrative} compliance.`,
-          `${ctx.requirementTotal} functional requirements and ${ctx.testTotal} verification cases provide the baseline managed under configuration control as of ${ctx.generatedAt}.`,
-        ),
-        sections: {
-          introduction: paragraph(
-            `${ctx.projectLabel} is developed under a staged life cycle aligned with DO-178C guidance.`,
-            'Planning artefacts establish objectives for requirements, architecture, implementation, verification, and certification coordination.',
-          ),
-          organization: paragraph(
-            'The project organization assigns system, software, verification, and quality leads with defined independence.',
-            'Suppliers and partners integrate into the same configuration and reporting processes to maintain visibility of deliverables.',
-          ),
-          developmentStandards: paragraph(
-            'Development adheres to approved standards covering requirements notation, modelling, coding guidelines, and peer review checklists.',
-            'Deviation handling and tool qualification approaches are documented to satisfy the applicable DO-178C objectives.',
-          ),
-          infrastructure: paragraph(
-            'Engineering infrastructure includes requirements management, modelling, version control, build automation, and verification dashboards.',
-            `${ctx.codePaths} software components are built and tested using reproducible toolchains with continuous integration feedback.`,
-          ),
-          configurationManagement: paragraph(
-            'Configuration management processes align with the SCMP to baseline plans, requirements, code, and verification evidence.',
-            'Interfaces define how change requests, releases, and audits are coordinated across development and verification teams.',
-          ),
-        },
-      };
-    case 'svp':
-      return {
-        overview: paragraph(
-          `The Software Verification Plan (SVP) for ${ctx.projectLabel} captures the verification scope, independence, and coverage objectives needed for ${ctx.levelNarrative} certification.`,
-          `Current data shows ${ctx.coveragePercent}% objective coverage with ${ctx.testTotal} verification cases executing against the ${ctx.requirementTotal} baseline requirements.`,
-        ),
-        sections: {
-          verificationScope: paragraph(
-            'Verification encompasses reviews, analyses, and testing across all life-cycle phases.',
-            `${ctx.testTotal} cases cover functionality, interface behaviour, and robustness with independence applied according to DO-178C.`,
-          ),
-          reviewsAndAnalysis: paragraph(
-            'Structured reviews confirm traceability and correctness of requirements, design, code, and test artefacts.',
-            'Static analyses and walkthroughs provide supplemental evidence to justify coverage gaps and anomalous conditions.',
-          ),
-          testingStrategy: paragraph(
-            'Dynamic testing includes requirements-based, interface, and regression campaigns.',
-            `${ctx.passedTests} tests have passed, ${ctx.failedTests} have outstanding findings, and ${ctx.skippedTests} are awaiting data or dependencies.`,
-          ),
-          coverageAssessment: paragraph(
-            'Structural coverage and requirements completeness are monitored continuously.',
-            `${ctx.coveragePercent}% of objectives are satisfied; remaining partial (${ctx.partialCount}) and missing (${ctx.missingCount}) objectives drive targeted verification tasks.`,
-          ),
-          anomalyResolution: paragraph(
-            'Problem reports, change requests, and discrepancy tracking ensure anomalies are recorded and dispositioned.',
-            `Outstanding items (${outstandingCount}) are assessed for safety impact and resolved before final qualification.`,
-          ),
-        },
-      };
-    case 'scmp':
-      return {
-        overview: paragraph(
-          `The Software Configuration Management Plan (SCMP) for ${ctx.projectLabel} defines how configuration items, baselines, and changes are controlled throughout the programme.`,
-          `${ctx.codePaths} controlled code elements and ${ctx.requirementTotal} requirements are maintained under configuration status accounting with audits tied to ${ctx.levelNarrative} objectives.`,
-        ),
-        sections: {
-          introduction: paragraph(
-            'Configuration management ensures integrity of plans, requirements, code, tools, and generated data.',
-            'The CM organisation coordinates with development and verification leads to maintain authoritative baselines.',
-          ),
-          responsibilities: paragraph(
-            'Roles define who raises, evaluates, approves, and implements change requests.',
-            'Independence between development and verification is maintained while sharing transparent status accounting.',
-          ),
-          baselines: paragraph(
-            'Baselines capture planning data, requirements, design artefacts, source code, test procedures, and results.',
-            `Each release identifies the ${ctx.requirementTotal} approved requirements and associated evidence ready for certification review.`,
-          ),
-          changeControl: paragraph(
-            'Change control records include impact analysis, trace updates, and verification evidence updates.',
-            `Open findings (${outstandingCount}) remain under CM tracking until all objectives are marked complete.`,
-          ),
-          audits: paragraph(
-            'Configuration audits verify repository integrity, traceability, and documentation completeness before major milestones.',
-            `Results feed certification data packages generated on ${ctx.generatedAt}.`,
-          ),
-        },
-      };
-    case 'sqap':
-      return {
-        overview: paragraph(
-          `The Software Quality Assurance Plan (SQAP) for ${ctx.projectLabel} outlines independent oversight ensuring processes satisfy ${ctx.levelNarrative} objectives.`,
-          `Quality assurance monitors ${ctx.requirementTotal} requirements, ${ctx.testTotal} verification artefacts, and the ${ctx.coveragePercent}% objective coverage achieved to date.`,
-        ),
-        sections: {
-          qualityPolicy: paragraph(
-            'Quality assurance policies enforce compliance with approved plans, standards, and certification commitments.',
-            'Audit findings are reported to management and authorities with authority to stop non-conforming activities.',
-          ),
-          processAssurance: paragraph(
-            'QA reviews confirm processes are executed, documented, and independently assessed throughout each phase.',
-            'Checklists cover planning, development, verification, configuration management, and problem reporting.',
-          ),
-          audits: paragraph(
-            'Process audits and product inspections evaluate adherence to DO-178C objectives and internal standards.',
-            `Sampling focuses on areas with partial (${ctx.partialCount}) or missing (${ctx.missingCount}) objective coverage.`,
-          ),
-          metrics: paragraph(
-            'Metrics track requirement maturity, verification progress, anomaly trends, and closure rates.',
-            `Dashboards highlight ${ctx.coveragePercent}% objective coverage and ${ctx.passedTests}/${ctx.testTotal} passing tests.`,
-          ),
-          records: paragraph(
-            'QA records include plans, checklists, audit reports, meeting minutes, and corrective actions.',
-            `Records are archived to support certification submissions planned after ${ctx.generatedAt}.`,
-          ),
-        },
-      };
-    default:
-      return { overview: paragraph('No content available.'), sections: {} };
+  try {
+    const template = getPlanContentTemplate(templateId);
+    const rendered = template(ctx);
+    return parsePlanTemplateOutput(rendered);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to render plan template '${templateId}': ${message}`);
   }
 };
 
@@ -284,6 +330,39 @@ const paragraphsFromPlainText = (text: string): Paragraph[] =>
 
 const paragraphsFromHtml = (html: string): Paragraph[] => paragraphsFromPlainText(htmlToPlainText(html));
 
+const plainTextToPdfContent = (text: string): Content[] => {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const content: Content[] = [];
+  let bullets: string[] = [];
+
+  const flushBullets = () => {
+    if (bullets.length > 0) {
+      content.push({ ul: [...bullets], margin: [0, 0, 0, 6] });
+      bullets = [];
+    }
+  };
+
+  lines.forEach((line) => {
+    if (line.startsWith('• ')) {
+      bullets.push(line.replace(/^•\s*/, ''));
+      return;
+    }
+
+    flushBullets();
+    content.push({ text: line, margin: [0, 0, 0, 6] });
+  });
+
+  flushBullets();
+
+  return content;
+};
+
+const htmlToPdfContent = (html: string): Content[] => plainTextToPdfContent(htmlToPlainText(html));
+
 const createHeaderCell = (text: string): TableCell =>
   new TableCell({
     children: [
@@ -310,6 +389,208 @@ const createBodyCell = (
       : [new Paragraph({ text: '—', alignment })];
 
   return new TableCell({ children: paragraphs });
+};
+
+const buildPlanPdfDefinition = (
+  definition: PlanTemplateDefinition,
+  context: {
+    overview: string;
+    sections: Record<string, string>;
+    coverageSummary: PlanRenderResult['coverageSummary'];
+    tableSummary: Array<{ table: string; total: number; covered: number; partial: number; missing: number }>;
+    objectives: PlanObjectiveRow[];
+    openObjectives: PlanObjectiveRow[];
+    openSummary: string;
+    projectLabel: string;
+    levelLabel: string;
+    generatedAt: string;
+  },
+  stats: ComplianceSnapshot['stats'],
+  manifestId?: string,
+  additionalNotes?: string,
+): TDocumentDefinitions => {
+  const content: Content[] = [
+    { text: definition.title, style: 'title' },
+    { text: definition.purpose, style: 'subtitle' },
+    { text: `Project: ${context.projectLabel}`, style: 'meta' },
+    { text: `Certification Level: ${context.levelLabel}`, style: 'meta' },
+    { text: `Manifest ID: ${manifestId ?? 'Pending'}`, style: 'meta' },
+    { text: `Generated: ${context.generatedAt}`, style: 'meta', margin: [0, 0, 0, 12] },
+  ];
+
+  const metricsTable: Content = {
+    table: {
+      widths: ['*', '*'],
+      body: [
+        ['Objective Coverage', `${context.coverageSummary.coveredCount}/${context.coverageSummary.total} (${context.coverageSummary.coveragePercent}%)`],
+        [
+          'Verification Tests',
+          `${stats.tests.total} total · ${stats.tests.passed} passed · ${stats.tests.failed} failed · ${stats.tests.skipped} skipped`,
+        ],
+        ['Tracked Requirements', `${stats.requirements.total}`],
+        ['Code Elements', `${stats.codePaths.total}`],
+      ].map(([label, value]) => [
+        { text: label, style: 'metricLabel' },
+        { text: value, style: 'metricValue' },
+      ]),
+    },
+    layout: 'lightHorizontalLines',
+    margin: [0, 0, 0, 16],
+  };
+
+  content.push(metricsTable);
+  content.push({ text: 'Purpose & Overview', style: 'heading' });
+
+  const overviewContent = htmlToPdfContent(context.overview);
+  if (overviewContent.length > 0) {
+    content.push(...overviewContent);
+  } else {
+    content.push({ text: 'Content pending definition.', margin: [0, 0, 0, 6] });
+  }
+
+  definition.sections.forEach((section) => {
+    content.push({ text: section.title, style: 'heading' });
+    const html = context.sections[section.id] ?? '';
+    const sectionContent = htmlToPdfContent(html);
+    if (sectionContent.length > 0) {
+      content.push(...sectionContent);
+    } else {
+      content.push({ text: 'Content pending definition.', margin: [0, 0, 0, 6] });
+    }
+  });
+
+  content.push({ text: 'Objective Coverage Summary', style: 'heading' });
+  content.push({ text: context.coverageSummary.text, margin: [0, 0, 0, 8] });
+
+  const coverageTable: Content = {
+    table: {
+      headerRows: 1,
+      widths: ['*', 'auto', 'auto', 'auto', 'auto'],
+      body: [
+        [
+          { text: 'Objective Table', style: 'tableHeader' },
+          { text: 'Total', style: 'tableHeader', alignment: 'center' },
+          { text: 'Covered', style: 'tableHeader', alignment: 'center' },
+          { text: 'Partial', style: 'tableHeader', alignment: 'center' },
+          { text: 'Missing', style: 'tableHeader', alignment: 'center' },
+        ],
+        ...context.tableSummary.map((row) => [
+          { text: row.table, style: 'tableCell' },
+          { text: String(row.total), style: 'tableCell', alignment: 'center' },
+          { text: String(row.covered), style: 'tableCell', alignment: 'center' },
+          { text: String(row.partial), style: 'tableCell', alignment: 'center' },
+          { text: String(row.missing), style: 'tableCell', alignment: 'center' },
+        ]),
+      ],
+    },
+    layout: 'lightHorizontalLines',
+    margin: [0, 8, 0, 16],
+  };
+
+  content.push(coverageTable);
+  content.push({ text: 'Detailed Objective Mapping', style: 'heading' });
+
+  const objectiveTable: Content = {
+    table: {
+      headerRows: 1,
+      widths: ['auto', 'auto', '*', 'auto', '*'],
+      body: [
+        [
+          { text: 'Objective', style: 'tableHeader' },
+          { text: 'Table', style: 'tableHeader', alignment: 'center' },
+          { text: 'Description', style: 'tableHeader' },
+          { text: 'Status', style: 'tableHeader', alignment: 'center' },
+          { text: 'Evidence & Gaps', style: 'tableHeader' },
+        ],
+        ...context.objectives.map((objective) => {
+          const evidenceParts: string[] = [];
+          if (objective.satisfiedArtifacts.length > 0) {
+            evidenceParts.push(`Available: ${objective.satisfiedArtifacts.join(', ')}`);
+          }
+          if (objective.missingArtifacts.length > 0) {
+            evidenceParts.push(`Gaps: ${objective.missingArtifacts.join(', ')}`);
+          }
+          if (objective.evidenceRefs.length > 0) {
+            evidenceParts.push(`Refs: ${objective.evidenceRefs.join(', ')}`);
+          }
+
+          const descriptionStack: Content[] = [
+            { text: objective.name, bold: true },
+          ];
+          if (objective.description) {
+            descriptionStack.push({ text: objective.description, style: 'small' });
+          }
+
+          return [
+            { text: objective.id, style: 'tableCell' },
+            { text: objective.table ?? '—', style: 'tableCell', alignment: 'center' },
+            { stack: descriptionStack, style: 'tableCell' },
+            { text: objective.statusLabel, style: 'tableCell', alignment: 'center' },
+            {
+              text: evidenceParts.length > 0 ? evidenceParts.join('\n') : '—',
+              style: 'tableCell',
+            },
+          ];
+        }),
+      ],
+    },
+    layout: 'lightHorizontalLines',
+    margin: [0, 8, 0, 16],
+  };
+
+  content.push(objectiveTable);
+
+  if (context.openObjectives.length > 0) {
+    content.push({ text: 'Open Compliance Items', style: 'heading' });
+    content.push({ text: context.openSummary, margin: [0, 0, 0, 8] });
+    content.push({
+      ul: context.openObjectives.map(
+        (objective) => `${objective.id} — ${objective.name} (${objective.statusLabel})`,
+      ),
+      margin: [0, 0, 0, 12],
+    });
+  }
+
+  if (additionalNotes) {
+    content.push({ text: 'Notes', style: 'heading' });
+    const notesContent = htmlToPdfContent(additionalNotes);
+    if (notesContent.length > 0) {
+      content.push(...notesContent);
+    }
+  }
+
+  content.push({
+    text: `Generated by SOIPack ${packageInfo.version} on ${context.generatedAt} for ${context.projectLabel}.`,
+    style: 'footer',
+  });
+
+  return {
+    info: {
+      title: `${definition.title} - ${context.projectLabel}`,
+      author: 'SOIPack',
+      subject: definition.purpose,
+      creator: 'SOIPack',
+    },
+    content,
+    styles: {
+      title: { fontSize: 18, bold: true, color: '#0a5c9b', margin: [0, 0, 0, 4] },
+      subtitle: { fontSize: 11, color: '#3e5974', margin: [0, 0, 0, 12] },
+      heading: { fontSize: 14, bold: true, color: '#0a5c9b', margin: [0, 16, 0, 8] },
+      meta: { fontSize: 9, color: '#475569' },
+      metricLabel: { fontSize: 9, bold: true, color: '#3b5773' },
+      metricValue: { fontSize: 9, color: '#0f172a' },
+      tableHeader: { fontSize: 9, bold: true, color: '#3b5773' },
+      tableCell: { fontSize: 9, color: '#1f2937' },
+      small: { fontSize: 8, color: '#64748b' },
+      footer: { fontSize: 9, color: '#64748b', margin: [0, 24, 0, 0] },
+    },
+    defaultStyle: {
+      font: 'Helvetica',
+      fontSize: 10,
+      lineHeight: 1.3,
+    },
+    pageMargins: [40, 60, 40, 60],
+  };
 };
 
 const toProjectLabel = (project?: { name?: string; version?: string }): string => {
@@ -595,6 +876,8 @@ const buildPlanContext = (
     text: `Objective coverage stands at ${coveragePercent}% (${coverageStats.covered}/${coverageStats.total} covered, ${coverageStats.partial} partial, ${coverageStats.missing} missing).`,
   };
 
+  const outstandingCount = coverageStats.partial + coverageStats.missing;
+
   const defaultContent = buildDefaultContent(templateId, {
     projectLabel,
     levelNarrative,
@@ -610,6 +893,7 @@ const buildPlanContext = (
     objectiveTotal: coverageStats.total,
     codePaths: snapshot.stats.codePaths.total,
     generatedAt,
+    outstandingCount,
   });
 
   const sections: Record<string, string> = {};
@@ -646,7 +930,7 @@ const buildPlanContext = (
     ? `There are ${openObjectives.length} open objectives consisting of ${coverageStats.partial} partial and ${coverageStats.missing} missing items.`
     : 'All mapped objectives are currently marked as covered.';
 
-  const html = templateEnv.renderString(basePlanTemplate, {
+  const html = getPlanHtmlTemplate()({
     planDefinition: definition,
     projectLabel,
     levelLabel,
@@ -732,6 +1016,43 @@ export const renderPlanDocument = async (
     sections,
     coverageSummary,
   };
+};
+
+export const renderPlanPdf = async (
+  templateId: PlanTemplateId,
+  options: PlanRenderOptions,
+): Promise<Buffer> => {
+  const definition = planTemplateDefinitions[templateId];
+  if (!definition) {
+    throw new Error(`Unknown plan template: ${templateId}`);
+  }
+
+  const context = buildPlanContext(
+    definition,
+    templateId,
+    options,
+  );
+
+  const docDefinition = buildPlanPdfDefinition(
+    definition,
+    {
+      overview: context.overview,
+      sections: context.sections,
+      coverageSummary: context.coverageSummary,
+      tableSummary: context.tableSummary,
+      objectives: context.objectives,
+      openObjectives: context.openObjectives,
+      openSummary: context.openSummary,
+      projectLabel: context.projectLabel,
+      levelLabel: context.levelLabel,
+      generatedAt: context.generatedAt,
+    },
+    options.snapshot.stats,
+    options.manifestId,
+    options.additionalNotes,
+  );
+
+  return createPdfBuffer(docDefinition);
 };
 
 export type { PlanTemplateId } from './types';

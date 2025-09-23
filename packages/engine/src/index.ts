@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import {
   CoverageMetric,
   CoverageReport,
@@ -11,13 +13,46 @@ import {
   Objective,
   ObjectiveArtifactType,
   Requirement,
+  SnapshotVersion,
   TraceLink,
+  createSnapshotVersion,
+  freezeSnapshotVersion,
 } from '@soipack/core';
 
 import { evaluateQualityFindings, QualityFinding } from './quality';
 
 export * from './coverage';
 export * from './gaps';
+
+const canonicalStringify = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => canonicalStringify(item)).sort((a, b) => a.localeCompare(b));
+    return `[${items.join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, val]) => [key, canonicalStringify(val)] as const)
+      .sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([key, val]) => `${JSON.stringify(key)}:${val}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const computeBundleFingerprint = (bundle: ImportBundle): string => {
+  const canonical = {
+    requirements: bundle.requirements,
+    objectives: bundle.objectives,
+    testResults: bundle.testResults,
+    coverage: bundle.coverage ?? null,
+    structuralCoverage: bundle.structuralCoverage ?? null,
+    evidenceIndex: bundle.evidenceIndex,
+    traceLinks: bundle.traceLinks ?? [],
+    testToCodeMap: bundle.testToCodeMap ?? {},
+    targetLevel: bundle.targetLevel ?? null,
+  };
+  const serialized = canonicalStringify(canonical);
+  return createHash('sha256').update(serialized).digest('hex');
+};
 
 export type TraceNodeType = 'requirement' | 'test' | 'code';
 
@@ -53,6 +88,7 @@ export interface ImportBundle {
   testToCodeMap?: Record<string, string[]>;
   generatedAt?: string;
   targetLevel?: CertificationLevel;
+  snapshot?: SnapshotVersion;
 }
 
 interface InternalNodeBase {
@@ -781,6 +817,7 @@ export interface ComplianceStatistics {
 }
 
 export interface ComplianceSnapshot {
+  version: SnapshotVersion;
   generatedAt: string;
   objectives: ObjectiveCoverage[];
   stats: ComplianceStatistics;
@@ -819,6 +856,17 @@ const summarizeTests = (tests: TestResult[]): TestStatistics => {
 };
 
 export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnapshot => {
+  const fingerprint = computeBundleFingerprint(bundle);
+  const baseTimestamp = bundle.generatedAt ?? bundle.snapshot?.createdAt ?? new Date().toISOString();
+  let version: SnapshotVersion;
+  if (bundle.snapshot && bundle.snapshot.fingerprint === fingerprint) {
+    version = bundle.snapshot;
+  } else {
+    version = createSnapshotVersion(fingerprint, { createdAt: baseTimestamp });
+    if (bundle.snapshot?.isFrozen) {
+      version = freezeSnapshotVersion(version, { frozenAt: bundle.snapshot.frozenAt ?? baseTimestamp });
+    }
+  }
   const engine = new TraceEngine(bundle);
   const mapper = new ObjectiveMapper(bundle.objectives, bundle.evidenceIndex, {
     structuralCoverage: bundle.structuralCoverage,
@@ -837,6 +885,7 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
   const codePathCount = traceGraph.nodes.filter((node) => node.type === 'code').length;
 
   return {
+    version,
     generatedAt: bundle.generatedAt ?? new Date().toISOString(),
     objectives: objectiveCoverage,
     stats: {

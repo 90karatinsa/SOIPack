@@ -42,8 +42,12 @@ import {
   ObjectiveArtifactType,
   Requirement,
   RequirementStatus,
+  SnapshotVersion,
   TraceLink,
   createRequirement,
+  createSnapshotIdentifier,
+  createSnapshotVersion,
+  deriveFingerprint,
   traceLinkSchema,
 } from '@soipack/core';
 import {
@@ -65,12 +69,14 @@ import {
   renderGaps,
   renderTraceMatrix,
   renderPlanDocument,
+  renderPlanPdf,
   planTemplateSections,
   planTemplateTitles,
   printToPDF,
   type PlanTemplateId,
   type PlanOverrideConfig,
   type PlanSectionOverrides,
+  type PlanRenderOptions,
 } from '@soipack/report';
 import YAML from 'yaml';
 import yargs from 'yargs';
@@ -150,6 +156,7 @@ export interface ImportWorkspace {
     targetLevel?: CertificationLevel;
     objectivesPath?: string;
     sources?: ExternalSourceMetadata;
+    version: SnapshotVersion;
   };
 }
 
@@ -389,6 +396,19 @@ interface DownloadResult {
   manifestPath: string;
 }
 
+interface FreezeOptions {
+  baseUrl: string;
+  token: string;
+  allowInsecureHttp?: boolean;
+  httpRequest?: typeof http.request;
+  httpsRequest?: typeof https.request;
+}
+
+interface FreezeResult {
+  version: SnapshotVersion;
+  statusCode: number;
+}
+
 const HTTP_REQUEST_TIMEOUT_MS = 30_000;
 
 const requestStream = (
@@ -456,6 +476,92 @@ const requestStream = (
   });
 };
 
+const requestJson = async <T>(
+  targetUrl: string,
+  body: unknown,
+  options: {
+    token: string;
+    allowInsecureHttp?: boolean;
+    httpRequest?: typeof http.request;
+    httpsRequest?: typeof https.request;
+    method?: 'POST' | 'PUT' | 'PATCH';
+  },
+): Promise<{ statusCode: number; body: T } | never> => {
+  const { token, allowInsecureHttp = false, httpRequest = http.request, httpsRequest = https.request } = options;
+  const method = options.method ?? 'POST';
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch (error) {
+    throw new Error(
+      `Geçersiz URL: ${targetUrl}. Lütfen API taban adresini kontrol edin. ${(error as Error).message}`,
+    );
+  }
+
+  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+    throw new Error(`Desteklenmeyen protokol: ${parsedUrl.protocol}`);
+  }
+
+  if (parsedUrl.protocol !== 'https:' && !allowInsecureHttp) {
+    throw new Error(
+      `İstek URL'si güvenli değil (${parsedUrl.toString()}). HTTP istekleri varsayılan olarak engellenir; ` +
+        '`--allow-insecure-http` bayrağı ile HTTP kullanımını bilinçli olarak etkinleştirin.',
+    );
+  }
+
+  const clientRequest = parsedUrl.protocol === 'https:' ? httpsRequest : httpRequest;
+  const payload = body ? JSON.stringify(body) : '{}';
+
+  return new Promise<{ statusCode: number; body: T }>((resolve, reject) => {
+    const request = clientRequest(
+      parsedUrl,
+      {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'Content-Length': Buffer.byteLength(payload).toString(),
+        },
+      },
+      (response) => {
+        const { statusCode = 0 } = response;
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          const content = chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : '';
+          if (statusCode >= 200 && statusCode < 300) {
+            if (!content) {
+              resolve({ statusCode, body: {} as T });
+              return;
+            }
+            try {
+              resolve({ statusCode, body: JSON.parse(content) as T });
+            } catch (error) {
+              reject(new Error(`Sunucudan dönen JSON parse edilemedi: ${(error as Error).message}`));
+            }
+            return;
+          }
+          const message = content || response.statusMessage || translateCli('errors.server.unexpected');
+          reject(new Error(`HTTP ${statusCode}: ${message}`));
+        });
+      },
+    );
+
+    request.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(
+        new Error(
+          `Sunucudan yanıt alınamadı: ${parsedUrl.toString()} isteği ${HTTP_REQUEST_TIMEOUT_MS}ms içinde tamamlanmadı.`,
+        ),
+      );
+    });
+    request.on('error', reject);
+    request.write(payload);
+    request.end();
+  });
+};
+
 const writeStreamToFile = async (
   response: http.IncomingMessage,
   outputDir: string,
@@ -500,6 +606,27 @@ export const downloadPackageArtifacts = async ({
   const manifestPath = await writeStreamToFile(manifestResponse, outputDir, `manifest-${packageId}.json`);
 
   return { archivePath, manifestPath };
+};
+
+export const runFreeze = async ({
+  baseUrl,
+  token,
+  allowInsecureHttp,
+  httpRequest,
+  httpsRequest,
+}: FreezeOptions): Promise<FreezeResult> => {
+  const url = new URL('/v1/config/freeze', baseUrl).toString();
+  const response = await requestJson<{ version: SnapshotVersion }>(
+    url,
+    {},
+    {
+      token,
+      allowInsecureHttp,
+      httpRequest,
+      httpsRequest,
+    },
+  );
+  return { version: response.body.version, statusCode: response.statusCode };
 };
 
 const parseCsvLine = (line: string): string[] => {
@@ -896,6 +1023,41 @@ const structuralCoverageHasMetric = (
   });
 };
 
+const buildEvidenceSnapshotId = (
+  artifact: ObjectiveArtifactType,
+  source: EvidenceSource,
+  filePath: string,
+  summary: string,
+  timestamp: string,
+  hash?: string,
+): string => {
+  const digest = createHash('sha256');
+  digest.update(artifact);
+  digest.update('|');
+  digest.update(source);
+  digest.update('|');
+  digest.update(normalizeRelativePath(filePath));
+  digest.update('|');
+  digest.update(summary);
+  if (hash) {
+    digest.update('|');
+    digest.update(hash);
+  }
+  return createSnapshotIdentifier(timestamp, digest.digest('hex'));
+};
+
+const computeEvidenceFingerprint = (index: EvidenceIndex): string => {
+  const values: string[] = [];
+  const entries = Object.entries(index).sort(([a], [b]) => a.localeCompare(b));
+  entries.forEach(([artifact, evidences]) => {
+    const sorted = [...evidences].sort((a, b) => a.snapshotId.localeCompare(b.snapshotId));
+    sorted.forEach((item) => {
+      values.push(`${artifact}:${item.snapshotId}:${item.hash ?? ''}`);
+    });
+  });
+  return deriveFingerprint(values);
+};
+
 const createEvidence = (
   artifact: ObjectiveArtifactType,
   source: EvidenceSource,
@@ -903,12 +1065,16 @@ const createEvidence = (
   summary: string,
 ): { artifact: ObjectiveArtifactType; evidence: Evidence } => ({
   artifact,
-  evidence: {
-    source,
-    path: normalizeRelativePath(filePath),
-    summary,
-    timestamp: getCurrentTimestamp(),
-  },
+  evidence: (() => {
+    const timestamp = getCurrentTimestamp();
+    return {
+      source,
+      path: normalizeRelativePath(filePath),
+      summary,
+      timestamp,
+      snapshotId: buildEvidenceSnapshotId(artifact, source, filePath, summary, timestamp),
+    };
+  })(),
 });
 
 const mergeEvidence = (
@@ -1436,6 +1602,10 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   }
   const testToCodeMap = deriveTestToCodeMap(testResults, coverageMaps);
 
+  const generatedAt = getCurrentTimestamp();
+  const fingerprint = computeEvidenceFingerprint(evidenceIndex);
+  const version = createSnapshotVersion(fingerprint, { createdAt: generatedAt });
+
   const workspace: ImportWorkspace = {
     requirements: mergedRequirements,
     testResults,
@@ -1448,7 +1618,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     findings,
     builds,
     metadata: {
-      generatedAt: getCurrentTimestamp(),
+      generatedAt,
       warnings,
       inputs: normalizedInputs,
       project:
@@ -1464,6 +1634,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
         Object.keys(sourceMetadata).length > 0
           ? sourceMetadata
           : undefined,
+      version,
     },
   };
 
@@ -1498,6 +1669,7 @@ interface AnalysisMetadata {
   };
   level: CertificationLevel;
   generatedAt: string;
+  version: SnapshotVersion;
 }
 
 const loadObjectives = async (filePath: string): Promise<Objective[]> => {
@@ -1615,6 +1787,7 @@ const buildImportBundle = (
   testToCodeMap: workspace.testToCodeMap,
   generatedAt: workspace.metadata.generatedAt,
   targetLevel: level,
+  snapshot: workspace.metadata.version,
 });
 
 const collectRequirementTraces = (
@@ -1649,6 +1822,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const tracePath = path.join(outputDir, 'traces.json');
   const analysisPath = path.join(outputDir, 'analysis.json');
 
+  const analysisGeneratedAt = getCurrentTimestamp();
   const analysisMetadata: AnalysisMetadata = {
     project:
       options.projectName || options.projectVersion || workspace.metadata.project
@@ -1658,7 +1832,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
           }
         : undefined,
     level,
-    generatedAt: getCurrentTimestamp(),
+    generatedAt: analysisGeneratedAt,
+    version: snapshot.version,
   };
 
   await writeJsonFile(snapshotPath, snapshot);
@@ -1800,6 +1975,218 @@ const parsePlanOverrides = (data: unknown): PlanSectionOverrides => {
   return overrides;
 };
 
+interface PlanGenerationPlanEntry {
+  id: PlanTemplateId;
+  overrides?: PlanOverrideConfig;
+}
+
+interface PlanGenerationConfig {
+  snapshotPath: string;
+  objectivesPath?: string;
+  outputDir: string;
+  manifestPath: string;
+  manifestId?: string;
+  project?: { name?: string; version?: string };
+  level?: CertificationLevel;
+  generatedAt?: string;
+  plans: PlanGenerationPlanEntry[];
+}
+
+const parsePlanGenerationConfig = (
+  data: unknown,
+  baseDir: string,
+): PlanGenerationConfig => {
+  if (!data || typeof data !== 'object') {
+    throw new Error('Plan configuration must be a JSON object.');
+  }
+
+  const record = data as Record<string, unknown>;
+
+  const snapshotValue = record.snapshot;
+  if (typeof snapshotValue !== 'string' || snapshotValue.trim().length === 0) {
+    throw new Error('Plan configuration requires a "snapshot" path.');
+  }
+  const snapshotPath = path.resolve(baseDir, snapshotValue);
+
+  const outputValue = record.outputDir;
+  if (typeof outputValue !== 'string' || outputValue.trim().length === 0) {
+    throw new Error('Plan configuration requires an "outputDir".');
+  }
+  const outputDir = path.resolve(baseDir, outputValue);
+
+  const manifestValue = record.manifestPath;
+  const manifestPath =
+    typeof manifestValue === 'string' && manifestValue.trim().length > 0
+      ? path.resolve(baseDir, manifestValue)
+      : path.join(outputDir, 'plans-manifest.json');
+
+  const objectivesValue = record.objectives;
+  const objectivesPath =
+    typeof objectivesValue === 'string' && objectivesValue.trim().length > 0
+      ? path.resolve(baseDir, objectivesValue)
+      : undefined;
+
+  const manifestId = typeof record.manifestId === 'string' ? record.manifestId : undefined;
+  const generatedAt = typeof record.generatedAt === 'string' ? record.generatedAt : undefined;
+
+  let project: { name?: string; version?: string } | undefined;
+  if (record.project && typeof record.project === 'object') {
+    const projectRecord = record.project as Record<string, unknown>;
+    const name = typeof projectRecord.name === 'string' ? projectRecord.name : undefined;
+    const version = typeof projectRecord.version === 'string' ? projectRecord.version : undefined;
+    if (name || version) {
+      project = { name, version };
+    }
+  }
+
+  let level: CertificationLevel | undefined;
+  if (typeof record.level === 'string' && record.level.trim().length > 0) {
+    const candidate = record.level.toUpperCase() as CertificationLevel;
+    if (!certificationLevels.includes(candidate)) {
+      throw new Error(`Unsupported certification level: ${record.level}`);
+    }
+    level = candidate;
+  }
+
+  const plansValue = record.plans;
+  if (!Array.isArray(plansValue) || plansValue.length === 0) {
+    throw new Error('Plan configuration must include a non-empty "plans" array.');
+  }
+
+  const plans: PlanGenerationPlanEntry[] = plansValue.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`Plan entry at index ${index} must be an object.`);
+    }
+
+    const entryRecord = entry as Record<string, unknown>;
+    const idValue = entryRecord.id;
+    if (typeof idValue !== 'string' || !isPlanTemplateId(idValue)) {
+      throw new Error(`Invalid plan template identifier at index ${index}: ${idValue}`);
+    }
+
+    let overrides: PlanOverrideConfig | undefined;
+    if (entryRecord.overrides && typeof entryRecord.overrides === 'object') {
+      const parsed = parsePlanOverrides({ [idValue]: entryRecord.overrides });
+      overrides = parsed[idValue];
+    }
+
+    return { id: idValue, overrides };
+  });
+
+  return {
+    snapshotPath,
+    objectivesPath,
+    outputDir,
+    manifestPath,
+    manifestId,
+    project,
+    level,
+    generatedAt,
+    plans,
+  };
+};
+
+export interface GeneratePlansOptions {
+  config: string;
+}
+
+export interface GeneratedPlanArtifact {
+  id: PlanTemplateId;
+  title: string;
+  pdfPath: string;
+  docxPath: string;
+  pdfSha256: string;
+  docxSha256: string;
+}
+
+export interface GeneratePlansResult {
+  outputDir: string;
+  manifestPath: string;
+  plans: GeneratedPlanArtifact[];
+}
+
+export const runGeneratePlans = async (
+  options: GeneratePlansOptions,
+): Promise<GeneratePlansResult> => {
+  const configPath = path.resolve(options.config);
+  const configDir = path.dirname(configPath);
+  const rawConfig = await readJsonFile<unknown>(configPath);
+  const config = parsePlanGenerationConfig(rawConfig, configDir);
+
+  const snapshot = await readJsonFile<ComplianceSnapshot>(config.snapshotPath);
+  const objectives = config.objectivesPath
+    ? await readJsonFile<Objective[]>(config.objectivesPath)
+    : undefined;
+
+  await ensureDirectory(config.outputDir);
+  await ensureDirectory(path.dirname(config.manifestPath));
+
+  const planResults: GeneratedPlanArtifact[] = [];
+
+  for (const plan of config.plans) {
+    const planOptions: PlanRenderOptions = {
+      snapshot,
+      objectivesMetadata: objectives,
+      manifestId: config.manifestId,
+      project: config.project,
+      level: config.level,
+      generatedAt: config.generatedAt,
+      overview: plan.overrides?.overview,
+      sections: plan.overrides?.sections,
+      additionalNotes: plan.overrides?.additionalNotes,
+    };
+
+    const planDocument = await renderPlanDocument(plan.id, planOptions);
+    const pdfBuffer = await renderPlanPdf(plan.id, planOptions);
+
+    const docxPath = path.join(config.outputDir, `${plan.id}.docx`);
+    const pdfPath = path.join(config.outputDir, `${plan.id}.pdf`);
+
+    await fsPromises.writeFile(docxPath, planDocument.docx);
+    await fsPromises.writeFile(pdfPath, pdfBuffer);
+
+    const docxSha256 = createHash('sha256').update(planDocument.docx).digest('hex');
+    const pdfSha256 = createHash('sha256').update(pdfBuffer).digest('hex');
+
+    planResults.push({
+      id: plan.id,
+      title: planDocument.title,
+      docxPath,
+      pdfPath,
+      docxSha256,
+      pdfSha256,
+    });
+  }
+
+  const manifest = {
+    generatedAt: getCurrentTimestamp(),
+    plans: planResults.map((plan) => ({
+      id: plan.id,
+      title: plan.title,
+      outputs: [
+        {
+          format: 'pdf',
+          path: path.relative(config.outputDir, plan.pdfPath),
+          sha256: plan.pdfSha256,
+        },
+        {
+          format: 'docx',
+          path: path.relative(config.outputDir, plan.docxPath),
+          sha256: plan.docxSha256,
+        },
+      ],
+    })),
+  };
+
+  await writeJsonFile(config.manifestPath, manifest);
+
+  return {
+    outputDir: config.outputDir,
+    manifestPath: config.manifestPath,
+    plans: planResults,
+  };
+};
+
 export const runReport = async (options: ReportOptions): Promise<ReportResult> => {
   const inputDir = path.resolve(options.input);
   const analysisPath = path.join(inputDir, 'analysis.json');
@@ -1834,6 +2221,8 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
       ? `${analysis.metadata.project.name} Uyum Matrisi`
       : 'SOIPack Uyum Matrisi',
     git: analysis.git,
+    snapshotId: snapshot.version.id,
+    snapshotVersion: snapshot.version,
   });
   const traceHtml = renderTraceMatrix(traces, {
     generatedAt: analysis.metadata.generatedAt,
@@ -1842,6 +2231,8 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
       : 'SOIPack İzlenebilirlik Matrisi',
     coverage: snapshot.requirementCoverage,
     git: analysis.git,
+    snapshotId: snapshot.version.id,
+    snapshotVersion: snapshot.version,
   });
   const gapsHtml = renderGaps(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -1851,6 +2242,8 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
       ? `${analysis.metadata.project.name} Kanıt Boşlukları`
       : 'SOIPack Uyumluluk Boşlukları',
     git: analysis.git,
+    snapshotId: snapshot.version.id,
+    snapshotVersion: snapshot.version,
   });
 
   const outputDir = path.resolve(options.output);
@@ -2577,7 +2970,6 @@ if (require.main === module) {
       const localeOption = argv.locale;
       const value = Array.isArray(localeOption) ? localeOption[0] : (localeOption as string | undefined);
       setCliLocale(value);
-      return {};
     }, true)
     .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
     .alias('version', 'V')
@@ -2953,6 +3345,46 @@ if (require.main === module) {
           process.exitCode = exitCodes.success;
         } catch (error) {
           logCliError(logger, error, context);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'freeze',
+      'Sunucudaki kanıt ve konfigürasyon verilerini dondurur.',
+      (y) =>
+        y
+          .option('api', {
+            describe: 'SOIPack API taban URL\'i.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('token', {
+            describe: 'Bearer yetkilendirme token\'ı.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const apiOption = Array.isArray(argv.api) ? argv.api[0] : argv.api;
+        const tokenOption = Array.isArray(argv.token) ? argv.token[0] : argv.token;
+        const allowInsecureHttp = Boolean(argv.allowInsecureHttp);
+        const baseUrl = String(apiOption);
+        const token = String(tokenOption);
+        const context = { command: 'freeze', api: baseUrl, allowInsecureHttp };
+
+        try {
+          const result = await runFreeze({
+            baseUrl,
+            token,
+            allowInsecureHttp,
+          });
+          logger.info({ ...context, snapshotId: result.version.id }, 'Konfigürasyon donduruldu.');
+          console.log(`Konfigürasyon donduruldu (snapshot: ${result.version.id}).`);
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          console.error('Konfigürasyon dondurulamadı.');
           process.exitCode = exitCodes.error;
         }
       },
@@ -3356,6 +3788,46 @@ if (require.main === module) {
           logCliError(logger, error, context);
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'generate-plans',
+      'JSON konfigürasyonundan plan şablonlarını PDF ve DOCX olarak üretir.',
+      (y) =>
+        y.option('config', {
+          alias: 'c',
+          describe: 'Plan üretim konfigürasyon JSON dosyası.',
+          type: 'string',
+          demandOption: true,
+        }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const configOption = Array.isArray(argv.config) ? argv.config[0] : argv.config;
+        const configPath = path.resolve(configOption as string);
+        const context = {
+          command: 'generate-plans',
+          configPath,
+        };
+
+        try {
+          const result = await runGeneratePlans({ config: configPath });
+          logger.info(
+            {
+              ...context,
+              manifestPath: result.manifestPath,
+              planCount: result.plans.length,
+            },
+            'Plan belgeleri üretildi.',
+          );
+          console.log(`Plan belgeleri ${result.outputDir} dizinine kaydedildi.`);
+          console.log(`Manifest ${result.manifestPath} dosyasına yazıldı.`);
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Plan üretimi sırasında hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
       },

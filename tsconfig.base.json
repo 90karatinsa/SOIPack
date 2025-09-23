@@ -13,6 +13,7 @@
     "moduleResolution": "Node",
     "resolveJsonModule": true,
     "baseUrl": ".",
+    "typeRoots": ["./types", "./node_modules/@types"],
     "paths": {
       "@soipack/*": ["packages/*/src"]
     }

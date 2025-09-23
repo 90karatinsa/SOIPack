@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["jest", "node"]
+    "types": ["jest", "node"],
+    "paths": {
+      "@soipack/*": ["packages/*/src"],
+      "@soipack/report/__fixtures__/*": ["packages/report/src/__fixtures__/*"]
+    }
   },
   "include": ["src/**/*.ts"]
 }
