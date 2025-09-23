@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import { CoverageReport, TestResult, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import {
   Evidence,
@@ -6,6 +8,8 @@ import {
   Requirement,
   TraceLink,
   createRequirement,
+  createSnapshotIdentifier,
+  freezeSnapshotVersion,
 } from '@soipack/core';
 
 import {
@@ -26,6 +30,10 @@ const evidence = (
   path,
   summary: `${type} evidence`,
   timestamp: '2024-01-10T10:00:00Z',
+  snapshotId: createSnapshotIdentifier(
+    '2024-01-10T10:00:00Z',
+    createHash('sha256').update(`${type}:${path}`).digest('hex'),
+  ),
 });
 
 const requirementFixture = (): Requirement[] => [
@@ -359,6 +367,13 @@ describe('Compliance snapshot generation', () => {
   const bundle = bundleFixture();
   const snapshot = generateComplianceSnapshot(bundle);
 
+  it('produces a snapshot version with deterministic fingerprint', () => {
+    expect(snapshot.version.id).toMatch(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/);
+    const repeated = generateComplianceSnapshot(bundleFixture());
+    expect(repeated.version.fingerprint).toBe(snapshot.version.fingerprint);
+    expect(repeated.version.id).not.toBeUndefined();
+  });
+
   it('summarizes objective coverage and statistics', () => {
     expect(snapshot.objectives).toHaveLength(8);
     expect(snapshot.stats.objectives).toEqual({
@@ -430,6 +445,16 @@ describe('Compliance snapshot generation', () => {
 
   it('does not emit quality findings when bundle is consistent', () => {
     expect(snapshot.qualityFindings).toHaveLength(0);
+  });
+
+  it('reuses frozen snapshot metadata when provided in the bundle', () => {
+    const frozenVersion = freezeSnapshotVersion(snapshot.version, {
+      frozenAt: '2024-04-01T00:00:00Z',
+    });
+    const frozenSnapshot = generateComplianceSnapshot({ ...bundle, snapshot: frozenVersion });
+    expect(frozenSnapshot.version.isFrozen).toBe(true);
+    expect(frozenSnapshot.version.fingerprint).toBe(snapshot.version.fingerprint);
+    expect(frozenSnapshot.version.id.startsWith('20240401T000000Z-')).toBe(true);
   });
 });
 

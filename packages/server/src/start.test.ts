@@ -3,6 +3,20 @@ import type { Server as HttpsServer } from 'https';
 import os from 'os';
 import path from 'path';
 
+const stubProcessExit = () => {
+  const originalExit = process.exit;
+  const exitMock = jest.fn((code?: number) => {
+    throw new Error(`process.exit: ${code ?? 0}`);
+  });
+  Reflect.set(process, 'exit', exitMock);
+  return {
+    exitMock: exitMock as jest.Mock,
+    restore: () => {
+      Reflect.set(process, 'exit', originalExit);
+    },
+  };
+};
+
 describe('resolveSigningKeyPath', () => {
   const originalEnv = process.env;
 
@@ -24,37 +38,31 @@ describe('resolveSigningKeyPath', () => {
   it('exits when signing key path env is missing', async () => {
     delete process.env.SOIPACK_SIGNING_KEY_PATH;
 
-    const exitSpy = jest
-      .spyOn(process, 'exit')
-      .mockImplementation(((code?: number) => {
-        throw new Error(`process.exit: ${code ?? 0}`);
-      }) as never);
+    const { exitMock, restore } = stubProcessExit();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     const resolveSigningKeyPath = await loadHelper();
 
     await expect(resolveSigningKeyPath()).rejects.toThrow('process.exit: 1');
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitMock).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalledWith('SOIPACK_SIGNING_KEY_PATH ortam değişkeni tanımlanmalıdır.');
+    restore();
   });
 
   it('exits when signing key path is unreadable', async () => {
     process.env.SOIPACK_SIGNING_KEY_PATH = 'non-existent.pem';
 
-    const exitSpy = jest
-      .spyOn(process, 'exit')
-      .mockImplementation(((code?: number) => {
-        throw new Error(`process.exit: ${code ?? 0}`);
-      }) as never);
+    const { exitMock, restore } = stubProcessExit();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     const resolveSigningKeyPath = await loadHelper();
 
     await expect(resolveSigningKeyPath()).rejects.toThrow('process.exit: 1');
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitMock).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('SOIPACK_SIGNING_KEY_PATH ile belirtilen anahtar dosyasına erişilemiyor:'),
     );
+    restore();
   });
 
   it('returns resolved path when signing key is accessible', async () => {
@@ -128,19 +136,16 @@ describe('start', () => {
     const { tmpDir } = await prepareBaseEnv();
     delete process.env.SOIPACK_TLS_KEY_PATH;
 
-    const exitSpy = jest
-      .spyOn(process, 'exit')
-      .mockImplementation(((code?: number) => {
-        throw new Error(`process.exit: ${code ?? 0}`);
-      }) as never);
+    const { exitMock, restore } = stubProcessExit();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     const { start } = await import('./start');
     await expect(start()).rejects.toThrow('process.exit: 1');
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitMock).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalledWith('SOIPACK_TLS_KEY_PATH ortam değişkeni tanımlanmalıdır.');
 
     await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
   });
 
   it('starts HTTPS server with provided certificates', async () => {

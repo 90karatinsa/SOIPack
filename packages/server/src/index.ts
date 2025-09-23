@@ -21,7 +21,17 @@ import {
   verifyLicenseFile,
   type LicensePayload,
 } from '@soipack/cli';
-import { CertificationLevel, DEFAULT_LOCALE, resolveLocale, translate } from '@soipack/core';
+import {
+  CertificationLevel,
+  DEFAULT_LOCALE,
+  SnapshotVersion,
+  createSnapshotIdentifier,
+  createSnapshotVersion,
+  deriveFingerprint,
+  freezeSnapshotVersion,
+  resolveLocale,
+  translate,
+} from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
 import helmet from 'helmet';
@@ -1814,6 +1824,8 @@ export const createServer = (config: ServerConfig): Express => {
     metadata: Record<string, unknown>;
     contentEncoding: 'base64';
     content: string;
+    snapshotId: string;
+    snapshotVersion: SnapshotVersion;
   }
 
   interface ComplianceRequirementEntry {
@@ -1856,7 +1868,9 @@ export const createServer = (config: ServerConfig): Express => {
   }
 
   const evidenceStore = new Map<string, Map<string, EvidenceRecord>>();
+  const evidenceHashIndex = new Map<string, Map<string, string>>();
   const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
+  const tenantSnapshotVersions = new Map<string, SnapshotVersion>();
   const isValidSha256Hex = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
   const computeObjectSha256 = (value: unknown): string =>
     createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -1868,6 +1882,46 @@ export const createServer = (config: ServerConfig): Express => {
       evidenceStore.set(tenantId, store);
     }
     return store;
+  };
+
+  const getTenantEvidenceHashIndex = (tenantId: string): Map<string, string> => {
+    let index = evidenceHashIndex.get(tenantId);
+    if (!index) {
+      index = new Map();
+      evidenceHashIndex.set(tenantId, index);
+    }
+    return index;
+  };
+
+  const computeTenantEvidenceFingerprint = (tenantId: string): string => {
+    const store = evidenceStore.get(tenantId);
+    if (!store || store.size === 0) {
+      return deriveFingerprint([]);
+    }
+    const hashes = Array.from(store.values()).map((record) => record.sha256);
+    return deriveFingerprint(hashes);
+  };
+
+  const updateTenantSnapshotVersion = (tenantId: string, timestamp: string): SnapshotVersion => {
+    const fingerprint = computeTenantEvidenceFingerprint(tenantId);
+    const existing = tenantSnapshotVersions.get(tenantId);
+    if (existing && existing.fingerprint === fingerprint) {
+      return existing;
+    }
+    const version = createSnapshotVersion(fingerprint, { createdAt: timestamp });
+    tenantSnapshotVersions.set(tenantId, version);
+    return version;
+  };
+
+  const ensureTenantSnapshotVersion = (tenantId: string): SnapshotVersion => {
+    const existing = tenantSnapshotVersions.get(tenantId);
+    if (existing) {
+      return existing;
+    }
+    const now = new Date().toISOString();
+    const version = createSnapshotVersion(computeTenantEvidenceFingerprint(tenantId), { createdAt: now });
+    tenantSnapshotVersions.set(tenantId, version);
+    return version;
   };
 
   const getTenantComplianceMap = (tenantId: string): Map<string, ComplianceRecord> => {
@@ -1891,6 +1945,8 @@ export const createServer = (config: ServerConfig): Express => {
       uploadedAt: record.uploadedAt,
       metadata: record.metadata,
       contentEncoding: record.contentEncoding,
+      snapshotId: record.snapshotId,
+      snapshotVersion: record.snapshotVersion,
     };
     if (options?.includeContent) {
       base.content = record.content;
@@ -2962,21 +3018,62 @@ export const createServer = (config: ServerConfig): Express => {
       normalizedMetadata.sha256 = computedHash;
       normalizedMetadata.size = buffer.length;
 
+      const currentVersion = tenantSnapshotVersions.get(tenantId);
+      if (currentVersion?.isFrozen) {
+        throw new HttpError(409, 'CONFIG_FROZEN', 'Kiracı konfigürasyonu donduruldu.');
+      }
+
+      const hashIndex = getTenantEvidenceHashIndex(tenantId);
+      const existingId = hashIndex.get(computedHash);
+      if (existingId) {
+        const existingRecord = getTenantEvidenceMap(tenantId).get(existingId);
+        if (existingRecord) {
+          res.status(200).json(serializeEvidenceRecord(existingRecord));
+          return;
+        }
+      }
+
+      const uploadedAt = new Date().toISOString();
+      const snapshotVersion = createSnapshotVersion(computedHash, { createdAt: uploadedAt });
+      const snapshotId = createSnapshotIdentifier(uploadedAt, computedHash);
+      normalizedMetadata.snapshotId = snapshotId;
+
       const record: EvidenceRecord = {
         id: randomUUID(),
         tenantId,
         filename: sanitizeUploadFileName(filenameRaw),
         sha256: computedHash,
         size: buffer.length,
-        uploadedAt: new Date().toISOString(),
+        uploadedAt,
         metadata: normalizedMetadata,
         contentEncoding: 'base64',
         content: buffer.toString('base64'),
+        snapshotId,
+        snapshotVersion,
       };
 
-      getTenantEvidenceMap(tenantId).set(record.id, record);
+      const tenantEvidence = getTenantEvidenceMap(tenantId);
+      tenantEvidence.set(record.id, record);
+      hashIndex.set(computedHash, record.id);
+      updateTenantSnapshotVersion(tenantId, uploadedAt);
 
       res.status(201).json(serializeEvidenceRecord(record));
+    }),
+  );
+
+  app.post(
+    '/v1/config/freeze',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const current = ensureTenantSnapshotVersion(tenantId);
+      if (current.isFrozen) {
+        res.json({ version: current });
+        return;
+      }
+      const frozen = freezeSnapshotVersion(current, { frozenAt: new Date().toISOString() });
+      tenantSnapshotVersions.set(tenantId, frozen);
+      res.json({ version: frozen });
     }),
   );
 

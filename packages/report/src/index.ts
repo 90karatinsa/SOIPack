@@ -1,5 +1,5 @@
 import type { BuildInfo, CoverageMetric, CoverageReport } from '@soipack/adapters';
-import { Objective, ObjectiveArtifactType, Requirement, TestCase } from '@soipack/core';
+import { Objective, ObjectiveArtifactType, Requirement, SnapshotVersion, TestCase } from '@soipack/core';
 import {
   ComplianceSnapshot,
   ComplianceStatistics,
@@ -30,6 +30,8 @@ interface BaseReportOptions {
   generatedAt?: string;
   version?: string;
   git?: BuildInfo | null;
+  snapshotId?: string;
+  snapshotVersion?: SnapshotVersion;
 }
 
 interface LayoutContext extends BaseReportOptions {
@@ -123,6 +125,8 @@ export interface ComplianceMatrixJson {
   manifestId?: string;
   generatedAt: string;
   version: string;
+  snapshotId: string;
+  snapshotVersion: SnapshotVersion;
   stats: ComplianceStatistics;
   objectives: Array<{
     id: string;
@@ -615,6 +619,12 @@ const layoutTemplate = nunjucks.compile(
           <p class="report-meta">{{ subtitle }}</p>
         {% endif %}
         <p class="report-meta">Kanıt Manifest ID: <strong>{{ manifestId or 'N/A' }}</strong></p>
+        <p class="report-meta">
+          Snapshot: <strong>{{ snapshotId or 'N/A' }}</strong>
+          {% if snapshotVersion and snapshotVersion.isFrozen %}
+            <span class="report-meta-flag">Donduruldu</span>
+          {% endif %}
+        </p>
         <p class="report-meta">Rapor Tarihi: {{ generatedAt }}</p>
         {% if git %}
           <div class="git-meta">
@@ -1111,6 +1121,8 @@ const buildComplianceMatrixJson = (
   manifestId: options.manifestId,
   generatedAt: options.generatedAt ?? snapshot.generatedAt,
   version: options.version ?? packageInfo.version,
+  snapshotId: options.snapshotId ?? snapshot.version.id,
+  snapshotVersion: options.snapshotVersion ?? snapshot.version,
   stats: {
     objectives: { ...snapshot.stats.objectives },
     requirements: { ...snapshot.stats.requirements },
@@ -1167,6 +1179,8 @@ export const renderComplianceMatrix = (
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? snapshot.generatedAt,
     version: options.version ?? packageInfo.version,
+    snapshotId: options.snapshotId ?? snapshot.version.id,
+    snapshotVersion: options.snapshotVersion ?? snapshot.version,
     summaryMetrics: view.summaryMetrics,
     content: complianceTemplate.render({
       objectives: view.objectives,
@@ -1204,6 +1218,8 @@ export const renderComplianceCoverageReport = (
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? snapshot.generatedAt,
     version: options.version ?? packageInfo.version,
+    snapshotId: options.snapshotId ?? snapshot.version.id,
+    snapshotVersion: options.snapshotVersion ?? snapshot.version,
     summaryMetrics: [...view.summaryMetrics, ...buildCoverageSummaryMetrics(coverage)],
     content,
     subtitle: 'Uyumluluk hedefleri ve yapısal kapsam özetleri',
@@ -1301,6 +1317,8 @@ export const renderTraceMatrix = (
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     version: options.version ?? packageInfo.version,
+    snapshotId: options.snapshotId,
+    snapshotVersion: options.snapshotVersion,
     summaryMetrics,
     content: traceTemplate.render({ rows }),
     subtitle: 'Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü',
@@ -1343,6 +1361,8 @@ export const renderGaps = (
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? snapshot.generatedAt,
     version: options.version ?? packageInfo.version,
+    snapshotId: options.snapshotId ?? snapshot.version.id,
+    snapshotVersion: options.snapshotVersion ?? snapshot.version,
     summaryMetrics,
     content: gapsTemplate.render({ categories }),
     subtitle: 'Kanıt eksikliği bulunan alanların özet görünümü',
@@ -1466,6 +1486,7 @@ export const generatePdf = async (page: PdfPage, html: string): Promise<Buffer> 
 
 export {
   renderPlanDocument,
+  renderPlanPdf,
   planTemplateSections,
   planTemplateTitles,
   type PlanRenderOptions,

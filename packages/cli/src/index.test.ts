@@ -6,9 +6,11 @@ import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
 
-import { Manifest } from '@soipack/core';
+import { Manifest, SnapshotVersion } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifestBundle, verifyManifestSignature } from '@soipack/packager';
+import type { PlanTemplateId } from '@soipack/report';
+import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
 
 import type { LicensePayload } from './license';
 import { setCliLocale } from './localization';
@@ -19,6 +21,8 @@ import {
   exitCodes,
   runAnalyze,
   runObjectivesList,
+  runGeneratePlans,
+  runFreeze,
   runImport,
   runPack,
   runIngestPipeline,
@@ -79,6 +83,8 @@ describe('@soipack/cli pipeline', () => {
     const workspaceStats = await fs.stat(path.join(workDir, 'workspace.json'));
     expect(workspaceStats.isFile()).toBe(true);
     expect(importResult.workspace.requirements.length).toBeGreaterThan(0);
+    expect(importResult.workspace.metadata.version.id).toMatch(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/);
+    expect(importResult.workspace.metadata.version.isFrozen).toBe(false);
 
     const analysisResult = await runAnalyze({
       input: workDir,
@@ -90,6 +96,12 @@ describe('@soipack/cli pipeline', () => {
     });
 
     expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const snapshotData = JSON.parse(
+      await fs.readFile(analysisResult.snapshotPath, 'utf8'),
+    ) as { version: SnapshotVersion };
+    expect(snapshotData.version.fingerprint).toHaveLength(64);
+    expect(snapshotData.version.id).toMatch(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/);
 
     const reportResult = await runReport({
       input: analysisDir,
@@ -114,10 +126,11 @@ describe('@soipack/cli pipeline', () => {
 
     const analysisWithPlans = JSON.parse(
       await fs.readFile(path.join(reportsDir, 'analysis.json'), 'utf8'),
-    ) as { warnings: string[] };
+    ) as { warnings: string[]; metadata: { version: SnapshotVersion } };
     reportResult.warnings.forEach((warning) => {
       expect(analysisWithPlans.warnings).toContain(warning);
     });
+    expect(analysisWithPlans.metadata.version.id).toBe(snapshotData.version.id);
 
     const packResult = await runPack({
       input: distDir,
@@ -189,6 +202,81 @@ describe('@soipack/cli pipeline', () => {
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
+  });
+
+  it('generates plan documents from configuration JSON', async () => {
+    const configDir = path.join(tempRoot, 'plan-generator');
+    await fs.mkdir(configDir, { recursive: true });
+
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(configDir, 'snapshot.json');
+    await fs.writeFile(snapshotPath, JSON.stringify(fixture.snapshot, null, 2));
+    const objectivesPathLocal = path.join(configDir, 'objectives.json');
+    await fs.writeFile(objectivesPathLocal, JSON.stringify(fixture.objectives, null, 2));
+
+    const outputDirRelative = '../plan-output';
+    const configPath = path.join(configDir, 'plans.json');
+    const planConfig = {
+      snapshot: './snapshot.json',
+      objectives: './objectives.json',
+      outputDir: outputDirRelative,
+      manifestId: fixture.manifestId,
+      level: 'C',
+      generatedAt: fixture.snapshot.generatedAt,
+      project: { name: 'Demo Avionics', version: '1.0.0' },
+      plans: [
+        { id: 'psac' },
+        { id: 'sdp', overrides: { sections: { introduction: '<p>CLI intro override.</p>' } } },
+        { id: 'svp' },
+        { id: 'scmp' },
+        { id: 'sqap' },
+      ],
+    };
+    await fs.writeFile(configPath, JSON.stringify(planConfig, null, 2));
+
+    const result = await runGeneratePlans({ config: configPath });
+    const expectedOutputDir = path.resolve(configDir, outputDirRelative);
+    expect(result.outputDir).toBe(expectedOutputDir);
+    expect(result.plans).toHaveLength(5);
+
+    for (const plan of result.plans) {
+      const docxBuffer = await fs.readFile(plan.docxPath);
+      const pdfBuffer = await fs.readFile(plan.pdfPath);
+      expect(docxBuffer.subarray(0, 2).toString('ascii')).toBe('PK');
+      expect(pdfBuffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      expect(createHash('sha256').update(docxBuffer).digest('hex')).toBe(plan.docxSha256);
+      expect(createHash('sha256').update(pdfBuffer).digest('hex')).toBe(plan.pdfSha256);
+    }
+
+    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as {
+      plans: Array<{
+        id: string;
+        outputs: Array<{ format: string; path: string; sha256: string }>;
+      }>;
+    };
+    expect(manifest.plans).toHaveLength(5);
+    manifest.plans.forEach((entry) => {
+      expect(entry.outputs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ format: 'pdf' }),
+          expect.objectContaining({ format: 'docx' }),
+        ]),
+      );
+
+      const planResult = result.plans.find((plan) => plan.id === entry.id as PlanTemplateId);
+      expect(planResult).toBeDefined();
+      entry.outputs.forEach((output) => {
+        const absolutePath = path.resolve(expectedOutputDir, output.path);
+        if (output.format === 'pdf') {
+          expect(output.sha256).toBe(planResult!.pdfSha256);
+          expect(absolutePath).toBe(planResult!.pdfPath);
+        }
+        if (output.format === 'docx') {
+          expect(output.sha256).toBe(planResult!.docxSha256);
+          expect(absolutePath).toBe(planResult!.docxPath);
+        }
+      });
+    });
   });
 
   it('fails manifest verification when packaged data is tampered', async () => {
@@ -286,6 +374,7 @@ describe('@soipack/cli pipeline', () => {
       traceLinks: result.workspace.traceLinks,
       testToCodeMap: result.workspace.testToCodeMap,
       generatedAt: result.workspace.metadata.generatedAt,
+      snapshot: result.workspace.metadata.version,
     };
 
     const engine = new TraceEngine(bundle);
@@ -626,6 +715,90 @@ describe('downloadPackageArtifacts', () => {
     request!.triggerTimeout();
 
     await expect(downloadPromise).rejects.toThrow('tamamlanmadı');
+  });
+});
+
+describe('runFreeze', () => {
+  class MockRequest extends EventEmitter {
+    public payload = '';
+    timeoutHandler?: () => void;
+
+    write(chunk: string): void {
+      this.payload += chunk;
+    }
+
+    end(): void {
+      this.emit('finish');
+    }
+
+    setTimeout(_ms: number, handler: () => void): this {
+      this.timeoutHandler = handler;
+      return this;
+    }
+  }
+
+  const createRequestMock = () => jest.fn() as jest.MockedFunction<typeof http.request>;
+
+  it('sends a POST request to freeze configuration and returns the version metadata', async () => {
+    const requestMock = createRequestMock();
+    const mockRequest = new MockRequest();
+    const versionResponse = {
+      version: {
+        id: '20240619T123456Z-deadbeef1234',
+        createdAt: '2024-06-19T12:34:56.000Z',
+        fingerprint: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        isFrozen: true,
+        frozenAt: '2024-06-19T12:35:00.000Z',
+      } satisfies SnapshotVersion,
+    };
+
+    requestMock.mockImplementation(((url: unknown, _options: unknown, callback: (res: http.IncomingMessage) => void) => {
+      void url;
+      const responseStream = new PassThrough();
+      const response = Object.assign(responseStream, { statusCode: 200 }) as http.IncomingMessage;
+      process.nextTick(() => {
+        callback(response);
+        responseStream.end(JSON.stringify(versionResponse));
+      });
+      return mockRequest as unknown as http.ClientRequest;
+    }) as unknown as typeof http.request);
+
+    const result = await runFreeze({
+      baseUrl: 'http://localhost:8080',
+      token: 'freeze-token',
+      allowInsecureHttp: true,
+      httpRequest: requestMock,
+    });
+
+    expect(result.version).toEqual(versionResponse.version);
+    expect(mockRequest.payload).toBe('{}');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects when the server responds with an error', async () => {
+    const requestMock = createRequestMock();
+    const mockRequest = new MockRequest();
+
+    requestMock.mockImplementation(((url: unknown, _options: unknown, callback: (res: http.IncomingMessage) => void) => {
+      void url;
+      const responseStream = new PassThrough();
+      const response = Object.assign(responseStream, { statusCode: 409, statusMessage: 'Frozen' }) as http.IncomingMessage;
+      process.nextTick(() => {
+        callback(response);
+        responseStream.end('already frozen');
+      });
+      return mockRequest as unknown as http.ClientRequest;
+    }) as unknown as typeof http.request);
+
+    await expect(
+      runFreeze({
+        baseUrl: 'http://localhost:8080',
+        token: 'freeze-token',
+        allowInsecureHttp: true,
+        httpRequest: requestMock,
+      }),
+    ).rejects.toThrow('HTTP 409');
+    expect(requestMock).toHaveBeenCalledTimes(1);
   });
 });
 

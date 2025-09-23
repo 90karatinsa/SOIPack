@@ -1,6 +1,6 @@
 import { createReportFixture } from '../__fixtures__/snapshot';
 
-import { renderPlanDocument, planTemplateSections } from './index';
+import { renderPlanDocument, renderPlanPdf, planTemplateSections } from './index';
 
 describe('plan templates', () => {
   const fixture = createReportFixture();
@@ -35,5 +35,10 @@ describe('plan templates', () => {
     expect(planTemplateSections.svp).toContain('testingStrategy');
     expect(result.sections.testingStrategy).toBe(customSection);
     expect(result.html).toContain('Custom verification cadence');
+  });
+
+  it('renders plan PDF output with pdfmake', async () => {
+    const pdfBuffer = await renderPlanPdf('scmp', baseOptions);
+    expect(pdfBuffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
   });
 });

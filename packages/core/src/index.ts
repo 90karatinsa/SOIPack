@@ -57,6 +57,7 @@ export interface Evidence {
   summary: string;
   hash?: string;
   timestamp: string;
+  snapshotId: string;
 }
 
 export const evidenceSchema: z.ZodType<Evidence> = z.object({
@@ -68,6 +69,9 @@ export const evidenceSchema: z.ZodType<Evidence> = z.object({
     .regex(/^[a-f0-9]{8,}$/i, 'Evidence hash should be a hexadecimal digest.')
     .optional(),
   timestamp: z.string().datetime({ offset: true }),
+  snapshotId: z
+    .string()
+    .regex(/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{7,}$/i, 'Evidence snapshotId must look like 20240101T000000Z-deadbeef.'),
 });
 
 export const traceLinkTypes = ['satisfies', 'verifies', 'implements'] as const;
@@ -95,3 +99,5 @@ export interface Manifest {
   createdAt: string;
   toolVersion: string;
 }
+
+export * from './versioning';

@@ -22,6 +22,7 @@
     "demo:test": "npx --yes tsx scripts/demo-smoke.ts",
     "test:server": "npm run test --workspace @soipack/server",
     "test:cli": "npm run test --workspace @soipack/cli",
+    "test:plans": "npm run test --workspace @soipack/cli -- index.test.ts -t plan",
     "healthcheck:verify": "node scripts/verify-healthcheck.js",
     "ui": "npm run dev --workspace @soipack/ui",
     "test:adapters": "npm run test --workspace @soipack/adapters",
