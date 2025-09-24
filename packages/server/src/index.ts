@@ -41,6 +41,8 @@ import multer from 'multer';
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
+import type { DatabaseManager } from './database';
+
 
 import { HttpError, toHttpError } from './errors';
 import { createApiKeyAuthorizer } from './middleware/auth';
@@ -946,6 +948,7 @@ export interface ServerConfig {
   storageDir: string;
   signingKeyPath: string;
   licensePublicKeyPath: string;
+  database: DatabaseManager;
   maxUploadSizeBytes?: number;
   jsonBodyLimitBytes?: number;
   maxQueuedJobsPerTenant?: number;

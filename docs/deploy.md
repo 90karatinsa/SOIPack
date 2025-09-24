@@ -84,6 +84,7 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    SOIPACK_HEALTHCHECK_TOKEN=
    PORT=3443
    SOIPACK_STORAGE_DIR=/data/soipack
+   SOIPACK_DATABASE_URL=postgres://soipack:secret@postgres:5432/soipack
    SOIPACK_SIGNING_KEY_PATH=/run/secrets/soipack-signing.pem
    SOIPACK_LICENSE_PUBLIC_KEY_PATH=/run/secrets/soipack-license.pub
    SOIPACK_LICENSE_MAX_BYTES=524288
@@ -129,6 +130,16 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```
 
    `SOIPACK_AUTH_ADMIN_SCOPES`, virgülle ayrılmış yönetici kapsamlarını tanımlar. Liste boş değilse yalnızca bu kapsamların en az birine sahip belirteçler yönetici uç noktalarına (`POST /v1/admin/cleanup` ve `/metrics`) erişebilir. İş yüklerini tetikleyen kullanıcılarla gözlemleme/bakım ekiplerini ayrıştırmak için ayrı bir erişim scope'u tanımlamanız önerilir.
+
+   PostgreSQL 13 veya üzeri bir veritabanı sunucusu çalışır durumda olmalıdır. `SOIPACK_DATABASE_URL`, uygulamanın bağlanacağı veritabanının URI'sini belirtir ve standart `postgres://kullanici:sifre@sunucu:port/veritabani` formatını kullanır. Air-gapped ortamda veritabanı aynı sunucuda çalışıyorsa `localhost` adresini, ayrı bir düğümde barındırılıyorsa ağ üzerinde erişilebilir özel IP adresini kullanın. Bağlantı dizesi TLS gerektiriyorsa parametreleri URI'ya ekleyin (örneğin `?sslmode=require`).
+
+   Veritabanını hazırlamak için şu adımları izleyin:
+
+   1. `createdb soipack` ve `createuser soipack` komutlarıyla boş bir veritabanı ve kullanıcı oluşturun (ya da kurumsal standartlarınıza göre eşdeğer işlemleri gerçekleştirin).
+   2. Kullanıcıya `ALTER ROLE soipack WITH LOGIN PASSWORD 'güçlü-bir-parola';` ile kimlik bilgisi atayın ve hedef veritabanında `GRANT ALL PRIVILEGES ON DATABASE soipack TO soipack;` komutu ile yetki verin.
+   3. Elde edilen bağlantı bilgilerini `.env` dosyasındaki `SOIPACK_DATABASE_URL` alanına yazın.
+
+   Sunucu başlatıldığında dahili `DatabaseManager`, `jobs`, `audit_logs`, `reviews` ve `evidence` tablolarını kapsayan şema migrations işlemlerini otomatik olarak yürütür. Her adım, ilgili tablo ya da indeksin halihazırda var olup olmadığını `information_schema` ve kataloğu sorgulayarak kontrol eder; yalnızca eksik nesneler oluşturulur ve mevcut olanlar atlanır. Bu sayede hizmeti yeniden başlatmak, tabloları veya indeksleri yeniden oluştururken veri kaybına yol açmaz. Güncellenmiş şemayı uygulamak için yapmanız gereken tek işlem konteyneri (veya Node.js sürecini) yeniden başlatmaktır; aynı migration adımları her açılışta tekrar denetlenir.
 
    `SOIPACK_AUTH_JWKS_URI` değeri yalnızca HTTPS protokolünü kabul eder; air-gap senaryosunda JWKS içeriğini önceden indirip `SOIPACK_AUTH_JWKS_PATH` ile dosya sisteminden paylaşabilirsiniz. Uzak JWKS yanıtlarının zaman aşımına uğramaması için varsayılan değerler 5 saniyelik zaman aşımı, sınırlı tekrar denemeleri ve önbellekleme davranışı içerir; ortamınızın gereksinimlerine göre `SOIPACK_AUTH_JWKS_TIMEOUT_MS` ve ilgili değişkenlerle bu süreleri ayarlayabilirsiniz.
 

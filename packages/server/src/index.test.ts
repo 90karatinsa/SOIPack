@@ -19,6 +19,7 @@ import { Agent, setGlobalDispatcher } from 'undici';
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 
+import type { DatabaseManager } from './database';
 import type { FileScanner } from './scanner';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
@@ -352,6 +353,12 @@ describe('@soipack/server REST API', () => {
   let baseConfig: ServerConfig;
   let metricsRegistry: Registry;
   let logEntries: Array<Record<string, unknown>>;
+  const createDatabaseStub = (): DatabaseManager =>
+    ({
+      initialize: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      getPool: jest.fn(() => ({ query: jest.fn() })),
+    } as unknown as DatabaseManager);
 
   const createAccessToken = async ({
     tenant = tenantId,
@@ -418,6 +425,7 @@ describe('@soipack/server REST API', () => {
       storageDir,
       signingKeyPath,
       licensePublicKeyPath,
+      database: createDatabaseStub(),
       retention: {
         uploads: { maxAgeMs: 0 },
         analyses: { maxAgeMs: 0 },

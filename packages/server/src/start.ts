@@ -5,6 +5,7 @@ import process from 'process';
 import dotenv from 'dotenv';
 import type { JSONWebKeySet } from 'jose';
 
+import { DatabaseManager } from './database';
 import { createCommandScanner } from './scanner';
 import type { FileScanner } from './scanner';
 
@@ -259,6 +260,24 @@ export const start = async (): Promise<void> => {
   if (Number.isNaN(port) || port <= 0) {
     // eslint-disable-next-line no-console
     console.error('Geçerli bir PORT değeri belirtilmelidir.');
+    process.exit(1);
+  }
+
+  let database: DatabaseManager;
+  try {
+    database = DatabaseManager.fromEnv();
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error('SOIPACK_DATABASE_URL ortam değişkeni tanımlanmalıdır.');
+    process.exit(1);
+  }
+
+  try {
+    await database.initialize();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // eslint-disable-next-line no-console
+    console.error(`Veritabanı şeması uygulanamadı: ${message}`);
     process.exit(1);
   }
 
@@ -588,6 +607,7 @@ export const start = async (): Promise<void> => {
     storageDir,
     signingKeyPath,
     licensePublicKeyPath,
+    database,
     maxQueuedJobsPerTenant,
     maxQueuedJobsTotal,
     workerConcurrency,
@@ -666,16 +686,43 @@ export const start = async (): Promise<void> => {
       throw error;
     });
 
-    const cleanupPromise = lifecycle.shutdown().catch((error) => {
-      lifecycle.logger.error(
-        {
-          event: 'shutdown_cleanup_failed',
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Sunucu kapanış temizliği tamamlanamadı.',
-      );
-      throw error;
-    });
+    const cleanupPromise = lifecycle
+      .shutdown()
+      .catch(async (error) => {
+        lifecycle.logger.error(
+          {
+            event: 'shutdown_cleanup_failed',
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Sunucu kapanış temizliği tamamlanamadı.',
+        );
+        try {
+          await database.close();
+        } catch (closeError) {
+          lifecycle.logger.error(
+            {
+              event: 'shutdown_database_close_failed',
+              error: closeError instanceof Error ? closeError.message : String(closeError),
+            },
+            'Veritabanı bağlantısı kapatılamadı.',
+          );
+        }
+        throw error;
+      })
+      .then(async () => {
+        try {
+          await database.close();
+        } catch (error) {
+          lifecycle.logger.error(
+            {
+              event: 'shutdown_database_close_failed',
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Veritabanı bağlantısı kapatılamadı.',
+          );
+          throw error;
+        }
+      });
 
     Promise.all([closePromise, drainPromise, cleanupPromise])
       .then(() => {
