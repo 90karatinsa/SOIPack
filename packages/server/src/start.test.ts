@@ -128,9 +128,69 @@ describe('start', () => {
     process.env.SOIPACK_TLS_KEY_PATH = tlsKeyPath;
     process.env.SOIPACK_TLS_CERT_PATH = tlsCertPath;
     process.env.PORT = '3443';
+    process.env.SOIPACK_DATABASE_URL = 'postgres://postgres:secret@localhost:5432/soipack';
 
     return { tmpDir, tlsKeyPath, tlsCertPath };
   };
+
+  const setupDatabaseMock = (
+    overrides: Partial<{
+      initialize: jest.Mock<Promise<unknown>, []>;
+      close: jest.Mock<Promise<unknown>, []>;
+    }> = {},
+  ) => {
+    const databaseMock = {
+      initialize: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      getPool: jest.fn(),
+      ...overrides,
+    };
+    const fromEnvMock = jest.fn(() => databaseMock);
+    jest.doMock('./database', () => ({
+      __esModule: true,
+      DatabaseManager: { fromEnv: fromEnvMock },
+    }));
+    return { databaseMock, fromEnvMock };
+  };
+
+  it('exits when database URL is missing', async () => {
+    const { tmpDir } = await prepareBaseEnv();
+    delete process.env.SOIPACK_DATABASE_URL;
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(exitMock).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith('SOIPACK_DATABASE_URL ortam değişkeni tanımlanmalıdır.');
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
+
+  it('exits when database migrations fail', async () => {
+    const { tmpDir } = await prepareBaseEnv();
+    const failure = new Error('migration failed');
+    const { databaseMock, fromEnvMock } = setupDatabaseMock({
+      initialize: jest.fn().mockRejectedValue(failure),
+    });
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(fromEnvMock).toHaveBeenCalledTimes(1);
+    expect(databaseMock.initialize).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith('Veritabanı şeması uygulanamadı: migration failed');
+    expect(databaseMock.close).not.toHaveBeenCalled();
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
 
   it('exits when TLS key is missing', async () => {
     const { tmpDir } = await prepareBaseEnv();
@@ -139,6 +199,7 @@ describe('start', () => {
     const { exitMock, restore } = stubProcessExit();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
+    setupDatabaseMock();
     const { start } = await import('./start');
     await expect(start()).rejects.toThrow('process.exit: 1');
     expect(exitMock).toHaveBeenCalledWith(1);
@@ -206,6 +267,7 @@ describe('start', () => {
     const getServerLifecycleMock = jest.fn(() => lifecycleMock);
     const registeredHandlers: Partial<Record<NodeJS.Signals, () => void>> = {};
 
+    const { databaseMock, fromEnvMock } = setupDatabaseMock();
     jest.doMock('./index', () => ({
       __esModule: true,
       createServer: createServerMock,
@@ -228,6 +290,7 @@ describe('start', () => {
 
     expect(createServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        database: databaseMock,
         jsonBodyLimitBytes: 4096,
         rateLimit: {
           ip: { windowMs: 1000, max: 5, maxEntries: 50 },
@@ -259,6 +322,9 @@ describe('start', () => {
     expect(mockHttpsServer.keepAliveTimeout).toBe(2000);
     expect(listenSpy).toHaveBeenCalledWith(3443, expect.any(Function));
     expect(logSpy).toHaveBeenCalledWith('SOIPack API HTTPS olarak 3443 portunda dinliyor.');
+    expect(fromEnvMock).toHaveBeenCalledTimes(1);
+    expect(databaseMock.initialize).toHaveBeenCalledTimes(1);
+    expect(databaseMock.close).not.toHaveBeenCalled();
     expect(lifecycleMock.logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'server_listening',
@@ -312,6 +378,7 @@ describe('start', () => {
     const getServerLifecycleMock = jest.fn(() => lifecycleMock);
     const registeredHandlers: Partial<Record<NodeJS.Signals, () => void>> = {};
 
+    const { databaseMock, fromEnvMock } = setupDatabaseMock();
     jest.doMock('./index', () => ({
       __esModule: true,
       createServer: createServerMock,
@@ -335,6 +402,9 @@ describe('start', () => {
     const { start } = await import('./start');
     await start();
 
+    expect(fromEnvMock).toHaveBeenCalledTimes(1);
+    expect(databaseMock.initialize).toHaveBeenCalledTimes(1);
+
     const handler = registeredHandlers.SIGTERM;
     expect(handler).toBeDefined();
     handler?.();
@@ -344,6 +414,7 @@ describe('start', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(lifecycleMock.waitForIdle).toHaveBeenCalledTimes(1);
     expect(lifecycleMock.shutdown).toHaveBeenCalledTimes(1);
+    expect(databaseMock.close).toHaveBeenCalledTimes(1);
     expect(lifecycleMock.logger.info).toHaveBeenCalledWith(
       { event: 'shutdown_signal', signal: 'SIGTERM' },
       'Kapatma sinyali alındı.',
