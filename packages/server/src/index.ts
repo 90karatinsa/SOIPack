@@ -46,7 +46,13 @@ import type { DatabaseManager } from './database';
 
 
 import { HttpError, toHttpError } from './errors';
-import { createApiKeyAuthorizer } from './middleware/auth';
+import {
+  ApiPrincipal,
+  UserRole,
+  createApiKeyAuthorizer,
+  createJwtPrincipalResolver,
+  type JwtUserLoader,
+} from './middleware/auth';
 import { JobDetails, JobExecutionContext, JobKind, JobQueue, JobStatus, JobSummary } from './queue';
 import { FileScanner, FileScanResult, createNoopScanner } from './scanner';
 import {
@@ -55,6 +61,7 @@ import {
   StorageProvider,
   UploadedFileMap,
 } from './storage';
+import { RbacStore, type RbacApiKey, type RbacRole, type RbacUser } from './rbac';
 
 type FileMap = Record<string, Express.Multer.File[]>;
 
@@ -96,6 +103,11 @@ interface AuthContext {
   subject: string;
   claims: JWTPayload;
   hasAdminScope: boolean;
+  principal?: ApiPrincipal;
+  roles?: UserRole[];
+  permissions?: string[];
+  actorLabel?: string;
+  userId?: string;
 }
 
 const AUTH_CONTEXT_SYMBOL = Symbol('soipack:auth');
@@ -2166,6 +2178,61 @@ export const createServer = (config: ServerConfig): Express => {
   const knownTenants = new Set<string>();
   const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
 
+  const rbacStore = new RbacStore(config.database);
+
+  const jwtUserLoader: JwtUserLoader = {
+    loadUser: async (tenantId, subject) => {
+      const user = await rbacStore.getUser(tenantId, subject);
+      if (!user) {
+        return null;
+      }
+      return {
+        id: user.id,
+        tenantId: user.tenantId,
+        displayName: user.displayName,
+      };
+    },
+    loadRoles: async (tenantId, userId) => {
+      const roles = await rbacStore.listUserRoles(tenantId, userId);
+      return roles
+        .map((role) => role.name)
+        .filter((name): name is UserRole => name === 'admin' || name === 'maintainer' || name === 'reader');
+    },
+  };
+
+  const resolveJwtPrincipal = createJwtPrincipalResolver(jwtUserLoader);
+
+  const ensurePrincipal = async (req: Request): Promise<ApiPrincipal> => {
+    const context = getAuthContext(req);
+    if (context.principal) {
+      return context.principal;
+    }
+    const principal = await resolveJwtPrincipal({
+      token: context.token,
+      tenantId: context.tenantId,
+      subject: context.subject,
+    });
+    context.principal = principal;
+    context.roles = principal.roles;
+    context.permissions = principal.permissions;
+    context.actorLabel = principal.label;
+    context.userId = principal.userId;
+    return principal;
+  };
+
+  const ensureRole = async (req: Request, allowed: UserRole[]): Promise<ApiPrincipal> => {
+    const principal = await ensurePrincipal(req);
+    if (!allowed.some((role) => principal.roles.includes(role))) {
+      throw new HttpError(
+        403,
+        'FORBIDDEN_ROLE',
+        'Bu işlem için gerekli role sahip değilsiniz.',
+        { requiredRoles: allowed },
+      );
+    }
+    return principal;
+  };
+
   const appendAuditLog = async (entry: AppendAuditLogInput): Promise<void> => {
     try {
       await auditLogStore.append({ ...entry, createdAt: entry.createdAt ?? new Date() });
@@ -2251,6 +2318,140 @@ export const createServer = (config: ServerConfig): Express => {
   const TENANT_EVIDENCE_FILE = 'evidence.json';
   const TENANT_COMPLIANCE_FILE = 'compliance.json';
   const TENANT_SNAPSHOT_FILE = 'snapshot.json';
+
+  interface RoleSummary {
+    id: string;
+    name: string;
+    description?: string | null;
+    createdAt: string;
+  }
+
+  interface UserSummary {
+    id: string;
+    tenantId: string;
+    email: string;
+    displayName?: string | null;
+    createdAt: string;
+    updatedAt: string;
+    roles: RoleSummary[];
+  }
+
+  interface ApiKeySummary {
+    id: string;
+    tenantId: string;
+    label?: string | null;
+    fingerprint: string;
+    createdAt: string;
+    lastUsedAt?: string | null;
+    roles: UserRole[];
+    permissions: string[];
+    preview?: string;
+    expiresAt?: string | null;
+  }
+
+  interface ApiKeyMetadataEntry {
+    label?: string | null;
+    roles: UserRole[];
+    permissions: string[];
+    preview?: string;
+    expiresAt?: string | null;
+  }
+
+  const apiKeyMetadata = new Map<string, ApiKeyMetadataEntry>();
+
+  const toRoleSummary = (role: RbacRole): RoleSummary => ({
+    id: role.id,
+    name: role.name,
+    description: role.description ?? null,
+    createdAt: role.createdAt.toISOString(),
+  });
+
+  const buildUserSummary = async (user: RbacUser): Promise<UserSummary> => {
+    const roles = await rbacStore.listUserRoles(user.tenantId, user.id);
+    return {
+      id: user.id,
+      tenantId: user.tenantId,
+      email: user.email,
+      displayName: user.displayName ?? null,
+      createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
+      roles: roles.map((role) => toRoleSummary(role)),
+    };
+  };
+
+  const getApiKeySummary = (key: RbacApiKey): ApiKeySummary => {
+    const metadata = apiKeyMetadata.get(key.id);
+    return {
+      id: key.id,
+      tenantId: key.tenantId,
+      label: metadata?.label ?? key.label ?? null,
+      fingerprint: key.fingerprint,
+      createdAt: key.createdAt.toISOString(),
+      lastUsedAt: key.lastUsedAt ? key.lastUsedAt.toISOString() : null,
+      roles: metadata?.roles ?? [],
+      permissions: metadata?.permissions ?? [],
+      preview: metadata?.preview,
+      expiresAt: metadata?.expiresAt ?? null,
+    };
+  };
+
+  const getActorIdentifier = (principal: ApiPrincipal, fallback: string): string => {
+    if (principal.userId) {
+      return principal.userId;
+    }
+    if (principal.preview) {
+      return principal.preview;
+    }
+    return fallback;
+  };
+
+  const validRoles: UserRole[] = ['admin', 'maintainer', 'reader'];
+
+  const parseRoleIdentifiers = (input: unknown, fieldName: string): UserRole[] => {
+    if (input === undefined) {
+      return [];
+    }
+    if (!Array.isArray(input)) {
+      throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} dizisi gereklidir.`);
+    }
+    const roles = input.map((value) => {
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} değerleri metin olmalıdır.`);
+      }
+      const normalized = value.trim().toLowerCase();
+      if (!validRoles.includes(normalized as UserRole)) {
+        throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} değeri desteklenmiyor: ${value}`);
+      }
+      return normalized as UserRole;
+    });
+    return Array.from(new Set(roles));
+  };
+
+  const parsePermissionList = (input: unknown, fieldName: string): string[] => {
+    if (input === undefined) {
+      return [];
+    }
+    if (!Array.isArray(input)) {
+      throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} dizisi gereklidir.`);
+    }
+    const permissions = input.map((value) => {
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} değerleri metin olmalıdır.`);
+      }
+      return value.trim();
+    });
+    return Array.from(new Set(permissions));
+  };
+
+  const toOptionalIsoString = (value: Date | null | undefined): string | null | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (value === null) {
+      return null;
+    }
+    return value.toISOString();
+  };
 
   const readPersistedJson = <T>(filePath: string): T | undefined => {
     try {
@@ -3637,6 +3838,606 @@ export const createServer = (config: ServerConfig): Express => {
           latencyMs,
         },
       });
+    }),
+  );
+
+  app.get(
+    '/v1/admin/roles',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await ensureRole(req, ['admin', 'maintainer']);
+      const { tenantId } = getAuthContext(req);
+      const roles = await rbacStore.listRoles(tenantId);
+      res.json({ items: roles.map((role) => toRoleSummary(role)) });
+    }),
+  );
+
+  app.post(
+    '/v1/admin/roles',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const body = req.body as { id?: unknown; name?: unknown; description?: unknown };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol adı belirtilmelidir.');
+      }
+      const descriptionRaw = body.description;
+      let description: string | null | undefined;
+      if (descriptionRaw === null) {
+        description = null;
+      } else if (descriptionRaw === undefined) {
+        description = undefined;
+      } else if (typeof descriptionRaw === 'string') {
+        description = descriptionRaw.trim();
+      } else {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol açıklaması metin olmalıdır.');
+      }
+      const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined;
+      const role = await rbacStore.createRole({
+        tenantId: context.tenantId,
+        id,
+        name,
+        description: description ?? undefined,
+      });
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.role.created',
+        target: `role:${role.id}`,
+        payload: {
+          id: role.id,
+          name: role.name,
+          description: role.description ?? null,
+        },
+      });
+      res.status(201).json({ role: toRoleSummary(role) });
+    }),
+  );
+
+  app.put(
+    '/v1/admin/roles/:roleId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { roleId } = req.params as { roleId?: string };
+      if (!roleId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol kimliği belirtilmelidir.');
+      }
+      const body = req.body as { name?: unknown; description?: unknown };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol adı belirtilmelidir.');
+      }
+      const descriptionRaw = body.description;
+      let description: string | null | undefined;
+      if (descriptionRaw === null) {
+        description = null;
+      } else if (descriptionRaw === undefined) {
+        description = undefined;
+      } else if (typeof descriptionRaw === 'string') {
+        description = descriptionRaw.trim();
+      } else {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol açıklaması metin olmalıdır.');
+      }
+      const role = await rbacStore.createRole({
+        tenantId: context.tenantId,
+        id: roleId,
+        name,
+        description: description ?? undefined,
+      });
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.role.updated',
+        target: `role:${role.id}`,
+        payload: {
+          id: role.id,
+          name: role.name,
+          description: role.description ?? null,
+        },
+      });
+      res.json({ role: toRoleSummary(role) });
+    }),
+  );
+
+  app.delete(
+    '/v1/admin/roles/:roleId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { roleId } = req.params as { roleId?: string };
+      if (!roleId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Rol kimliği belirtilmelidir.');
+      }
+      const pool = config.database.getPool();
+      await pool.query('DELETE FROM rbac_user_roles WHERE tenant_id = $1 AND role_id = $2', [
+        context.tenantId,
+        roleId,
+      ]);
+      const result = await pool.query('DELETE FROM rbac_roles WHERE tenant_id = $1 AND id = $2', [
+        context.tenantId,
+        roleId,
+      ]);
+      if (result.rowCount === 0) {
+        throw new HttpError(404, 'ROLE_NOT_FOUND', 'Silinecek rol bulunamadı.');
+      }
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.role.deleted',
+        target: `role:${roleId}`,
+      });
+      res.status(204).end();
+    }),
+  );
+
+  app.get(
+    '/v1/admin/users',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await ensureRole(req, ['admin', 'maintainer']);
+      const { tenantId } = getAuthContext(req);
+      const users = await rbacStore.listUsers(tenantId);
+      const items = await Promise.all(users.map((user) => buildUserSummary(user)));
+      res.json({ items });
+    }),
+  );
+
+  app.post(
+    '/v1/admin/users',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const body = req.body as {
+        id?: unknown;
+        email?: unknown;
+        secret?: unknown;
+        displayName?: unknown;
+        roleIds?: unknown;
+      };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const email = typeof body.email === 'string' ? body.email.trim() : '';
+      if (!email) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kullanıcı e-posta adresi zorunludur.');
+      }
+      const secret = typeof body.secret === 'string' ? body.secret : '';
+      if (!secret) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kullanıcı parolası zorunludur.');
+      }
+      const displayName =
+        typeof body.displayName === 'string'
+          ? body.displayName.trim()
+          : body.displayName === null
+            ? null
+            : undefined;
+      const roleIdsRaw = Array.isArray(body.roleIds) ? body.roleIds : [];
+      const roleIds = roleIdsRaw.map((value) => {
+        if (typeof value !== 'string' || value.trim().length === 0) {
+          throw new HttpError(400, 'INVALID_REQUEST', 'Rol kimlikleri metin olarak sağlanmalıdır.');
+        }
+        return value.trim();
+      });
+      const availableRoles = await rbacStore.listRoles(context.tenantId);
+      const availableRoleIds = new Set(availableRoles.map((role) => role.id));
+      roleIds.forEach((roleId) => {
+        if (!availableRoleIds.has(roleId)) {
+          throw new HttpError(400, 'ROLE_NOT_FOUND', `Rol bulunamadı: ${roleId}`);
+        }
+      });
+      const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined;
+      const user = await rbacStore.createUser({
+        tenantId: context.tenantId,
+        id,
+        email,
+        secret,
+        displayName: displayName ?? undefined,
+      });
+      await Promise.all(roleIds.map((roleId) => rbacStore.assignRole(context.tenantId, user.id, roleId)));
+      const summary = await buildUserSummary(user);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.user.created',
+        target: `user:${summary.id}`,
+        payload: {
+          email: summary.email,
+          roles: summary.roles.map((role) => role.id),
+          displayName: summary.displayName ?? null,
+        },
+      });
+      res.status(201).json({ user: summary });
+    }),
+  );
+
+  app.get(
+    '/v1/admin/users/:userId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await ensureRole(req, ['admin', 'maintainer']);
+      const context = getAuthContext(req);
+      const { userId } = req.params as { userId?: string };
+      if (!userId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kullanıcı kimliği belirtilmelidir.');
+      }
+      const user = await rbacStore.getUser(context.tenantId, userId);
+      if (!user) {
+        throw new HttpError(404, 'USER_NOT_FOUND', 'Kullanıcı kaydı bulunamadı.');
+      }
+      const summary = await buildUserSummary(user);
+      res.json({ user: summary });
+    }),
+  );
+
+  app.put(
+    '/v1/admin/users/:userId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { userId } = req.params as { userId?: string };
+      if (!userId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kullanıcı kimliği belirtilmelidir.');
+      }
+      const existing = await rbacStore.getUser(context.tenantId, userId);
+      if (!existing) {
+        throw new HttpError(404, 'USER_NOT_FOUND', 'Kullanıcı kaydı bulunamadı.');
+      }
+      const body = req.body as {
+        displayName?: unknown;
+        secret?: unknown;
+        roleIds?: unknown;
+      };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      if (body.secret !== undefined) {
+        if (typeof body.secret !== 'string' || body.secret.length === 0) {
+          throw new HttpError(400, 'INVALID_REQUEST', 'Parola metin olarak sağlanmalıdır.');
+        }
+        await rbacStore.updateUserSecret(context.tenantId, userId, body.secret);
+      }
+      if (body.displayName !== undefined) {
+        let normalizedDisplayName: string | null;
+        if (body.displayName === null) {
+          normalizedDisplayName = null;
+        } else if (typeof body.displayName === 'string') {
+          normalizedDisplayName = body.displayName.trim();
+        } else {
+          throw new HttpError(400, 'INVALID_REQUEST', 'Görünen ad metin olmalıdır.');
+        }
+        await config.database
+          .getPool()
+          .query(
+            `UPDATE rbac_users SET display_name = $1, updated_at = $2 WHERE tenant_id = $3 AND id = $4`,
+            [normalizedDisplayName, new Date().toISOString(), context.tenantId, userId],
+          );
+      }
+      if (Array.isArray(body.roleIds)) {
+        const desiredRoleIds = body.roleIds.map((value) => {
+          if (typeof value !== 'string' || value.trim().length === 0) {
+            throw new HttpError(400, 'INVALID_REQUEST', 'Rol kimlikleri metin olarak sağlanmalıdır.');
+          }
+          return value.trim();
+        });
+        const availableRoles = await rbacStore.listRoles(context.tenantId);
+        const availableRoleIds = new Set(availableRoles.map((role) => role.id));
+        desiredRoleIds.forEach((roleId) => {
+          if (!availableRoleIds.has(roleId)) {
+            throw new HttpError(400, 'ROLE_NOT_FOUND', `Rol bulunamadı: ${roleId}`);
+          }
+        });
+        const currentRoles = await rbacStore.listUserRoles(context.tenantId, userId);
+        const currentRoleIds = new Set(currentRoles.map((role) => role.id));
+        const desiredSet = new Set(desiredRoleIds);
+        const toAssign = desiredRoleIds.filter((roleId) => !currentRoleIds.has(roleId));
+        const toRevoke = currentRoles.filter((role) => !desiredSet.has(role.id));
+        await Promise.all([
+          ...toAssign.map((roleId) => rbacStore.assignRole(context.tenantId, userId, roleId)),
+          ...toRevoke.map((role) => rbacStore.revokeRole(context.tenantId, userId, role.id)),
+        ]);
+      }
+      const updated = await rbacStore.getUser(context.tenantId, userId);
+      if (!updated) {
+        throw new HttpError(500, 'USER_NOT_FOUND', 'Kullanıcı güncelleme sonrası bulunamadı.');
+      }
+      const summary = await buildUserSummary(updated);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.user.updated',
+        target: `user:${summary.id}`,
+        payload: {
+          roles: summary.roles.map((role) => role.id),
+          displayName: summary.displayName ?? null,
+        },
+      });
+      res.json({ user: summary });
+    }),
+  );
+
+  app.delete(
+    '/v1/admin/users/:userId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { userId } = req.params as { userId?: string };
+      if (!userId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Kullanıcı kimliği belirtilmelidir.');
+      }
+      const existing = await rbacStore.getUser(context.tenantId, userId);
+      if (!existing) {
+        throw new HttpError(404, 'USER_NOT_FOUND', 'Kullanıcı kaydı bulunamadı.');
+      }
+      const pool = config.database.getPool();
+      await pool.query('DELETE FROM rbac_user_roles WHERE tenant_id = $1 AND user_id = $2', [
+        context.tenantId,
+        userId,
+      ]);
+      await rbacStore.deleteUser(context.tenantId, userId);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.user.deleted',
+        target: `user:${userId}`,
+      });
+      res.status(204).end();
+    }),
+  );
+
+  app.get(
+    '/v1/admin/api-keys',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await ensureRole(req, ['admin', 'maintainer']);
+      const { tenantId } = getAuthContext(req);
+      const keys = await rbacStore.listApiKeys(tenantId);
+      res.json({ items: keys.map((key) => getApiKeySummary(key)) });
+    }),
+  );
+
+  app.post(
+    '/v1/admin/api-keys',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const body = req.body as {
+        id?: unknown;
+        label?: unknown;
+        secret?: unknown;
+        roles?: unknown;
+        permissions?: unknown;
+        expiresAt?: unknown;
+      };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const label =
+        typeof body.label === 'string'
+          ? body.label.trim()
+          : body.label === null
+            ? null
+            : undefined;
+      const secret = typeof body.secret === 'string' && body.secret.trim().length > 0
+        ? body.secret
+        : randomUUID().replace(/-/g, '');
+      const roles = parseRoleIdentifiers(body.roles, 'roles');
+      const permissions = parsePermissionList(body.permissions, 'permissions');
+      const expiresAtValue = body.expiresAt;
+      let expiresAt: string | null | undefined;
+      if (expiresAtValue === null) {
+        expiresAt = null;
+      } else if (expiresAtValue === undefined) {
+        expiresAt = undefined;
+      } else if (typeof expiresAtValue === 'string') {
+        expiresAt = expiresAtValue;
+      } else if (typeof expiresAtValue === 'number') {
+        expiresAt = new Date(expiresAtValue).toISOString();
+      } else {
+        throw new HttpError(400, 'INVALID_REQUEST', 'expiresAt alanı metin veya sayı olmalıdır.');
+      }
+      const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined;
+      const apiKey = await rbacStore.createApiKey({
+        tenantId: context.tenantId,
+        id,
+        label: label ?? undefined,
+        secret,
+      });
+      const registered = apiKeyAuthorizer.register({
+        key: secret,
+        label: label ?? undefined,
+        roles: roles.length > 0 ? roles : ['reader'],
+        tenantId: context.tenantId,
+        permissions,
+        expiresAt,
+      });
+      apiKeyMetadata.set(apiKey.id, {
+        label: registered.label ?? label ?? null,
+        roles: registered.roles,
+        permissions: registered.permissions,
+        preview: registered.preview,
+        expiresAt: toOptionalIsoString(registered.expiresAt),
+      });
+      const summary = getApiKeySummary(apiKey);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.api-key.created',
+        target: `api-key:${summary.id}`,
+        payload: {
+          label: summary.label ?? null,
+          roles: summary.roles,
+          permissions: summary.permissions,
+        },
+      });
+      res.status(201).json({ apiKey: summary, secret });
+    }),
+  );
+
+  app.get(
+    '/v1/admin/api-keys/:keyId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await ensureRole(req, ['admin', 'maintainer']);
+      const context = getAuthContext(req);
+      const { keyId } = req.params as { keyId?: string };
+      if (!keyId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'API anahtarı kimliği belirtilmelidir.');
+      }
+      const keys = await rbacStore.listApiKeys(context.tenantId);
+      const apiKey = keys.find((entry) => entry.id === keyId);
+      if (!apiKey) {
+        throw new HttpError(404, 'API_KEY_NOT_FOUND', 'API anahtarı bulunamadı.');
+      }
+      res.json({ apiKey: getApiKeySummary(apiKey) });
+    }),
+  );
+
+  app.put(
+    '/v1/admin/api-keys/:keyId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { keyId } = req.params as { keyId?: string };
+      if (!keyId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'API anahtarı kimliği belirtilmelidir.');
+      }
+      const keys = await rbacStore.listApiKeys(context.tenantId);
+      const existing = keys.find((entry) => entry.id === keyId);
+      if (!existing) {
+        throw new HttpError(404, 'API_KEY_NOT_FOUND', 'API anahtarı bulunamadı.');
+      }
+      const body = req.body as {
+        label?: unknown;
+        secret?: unknown;
+        roles?: unknown;
+        permissions?: unknown;
+        expiresAt?: unknown;
+      };
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      if (body.secret === undefined || typeof body.secret !== 'string' || body.secret.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Güncelleme için yeni bir API anahtarı gizli değeri zorunludur.');
+      }
+      const label =
+        typeof body.label === 'string'
+          ? body.label.trim()
+          : body.label === null
+            ? null
+            : apiKeyMetadata.get(existing.id)?.label ?? existing.label ?? undefined;
+      const roles =
+        body.roles === undefined
+          ? apiKeyMetadata.get(existing.id)?.roles ?? ['reader']
+          : parseRoleIdentifiers(body.roles, 'roles');
+      const permissions =
+        body.permissions === undefined
+          ? apiKeyMetadata.get(existing.id)?.permissions ?? []
+          : parsePermissionList(body.permissions, 'permissions');
+      const expiresAtValue = body.expiresAt;
+      let expiresAt: string | null | undefined;
+      if (expiresAtValue === undefined) {
+        expiresAt = apiKeyMetadata.get(existing.id)?.expiresAt;
+      } else if (expiresAtValue === null) {
+        expiresAt = null;
+      } else if (typeof expiresAtValue === 'string') {
+        expiresAt = expiresAtValue;
+      } else if (typeof expiresAtValue === 'number') {
+        expiresAt = new Date(expiresAtValue).toISOString();
+      } else {
+        throw new HttpError(400, 'INVALID_REQUEST', 'expiresAt alanı metin veya sayı olmalıdır.');
+      }
+      const apiKey = await rbacStore.createApiKey({
+        tenantId: context.tenantId,
+        id: existing.id,
+        label: label ?? undefined,
+        secret: body.secret,
+      });
+      const registered = apiKeyAuthorizer.register({
+        key: body.secret,
+        label: label ?? undefined,
+        roles,
+        tenantId: context.tenantId,
+        permissions,
+        expiresAt,
+      });
+      apiKeyMetadata.set(apiKey.id, {
+        label: registered.label ?? label ?? null,
+        roles: registered.roles,
+        permissions: registered.permissions,
+        preview: registered.preview,
+        expiresAt: toOptionalIsoString(registered.expiresAt),
+      });
+      const summary = getApiKeySummary(apiKey);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.api-key.updated',
+        target: `api-key:${summary.id}`,
+        payload: {
+          label: summary.label ?? null,
+          roles: summary.roles,
+          permissions: summary.permissions,
+        },
+      });
+      res.json({ apiKey: summary, secret: body.secret });
+    }),
+  );
+
+  app.delete(
+    '/v1/admin/api-keys/:keyId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      const { keyId } = req.params as { keyId?: string };
+      if (!keyId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'API anahtarı kimliği belirtilmelidir.');
+      }
+      const keys = await rbacStore.listApiKeys(context.tenantId);
+      const existing = keys.find((entry) => entry.id === keyId);
+      if (!existing) {
+        throw new HttpError(404, 'API_KEY_NOT_FOUND', 'API anahtarı bulunamadı.');
+      }
+      apiKeyAuthorizer.revoke(existing.fingerprint);
+      await rbacStore.deleteApiKey(context.tenantId, keyId);
+      apiKeyMetadata.delete(keyId);
+      await appendAuditLog({
+        tenantId: context.tenantId,
+        actor: getActorIdentifier(principal, context.subject),
+        action: 'admin.api-key.deleted',
+        target: `api-key:${keyId}`,
+      });
+      res.status(204).end();
     }),
   );
 
