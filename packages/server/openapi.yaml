@@ -366,6 +366,243 @@ components:
         manifest:
           type: object
           additionalProperties: true
+    AdminRole:
+      type: object
+      required:
+        - id
+        - name
+        - createdAt
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    AdminRoleResponse:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          $ref: '#/components/schemas/AdminRole'
+    AdminRoleListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRole'
+    AdminUser:
+      type: object
+      required:
+        - id
+        - tenantId
+        - email
+        - createdAt
+        - updatedAt
+        - roles
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRole'
+    AdminUserResponse:
+      type: object
+      required:
+        - user
+      properties:
+        user:
+          $ref: '#/components/schemas/AdminUser'
+    AdminUserListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUser'
+    AdminApiKey:
+      type: object
+      required:
+        - id
+        - tenantId
+        - fingerprint
+        - createdAt
+        - roles
+        - permissions
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        label:
+          type: string
+          nullable: true
+        fingerprint:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, maintainer, reader]
+        permissions:
+          type: array
+          items:
+            type: string
+        preview:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+    AdminApiKeyResponse:
+      type: object
+      required:
+        - apiKey
+      properties:
+        apiKey:
+          $ref: '#/components/schemas/AdminApiKey'
+    AdminApiKeySecretResponse:
+      allOf:
+        - $ref: '#/components/schemas/AdminApiKeyResponse'
+        - type: object
+          required:
+            - secret
+          properties:
+            secret:
+              type: string
+              description: Oluşturulan veya döndürülen API anahtarının gizli değeri.
+    AdminApiKeyListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminApiKey'
+    AdminRoleRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+      required:
+        - name
+    AdminUserCreateRequest:
+      type: object
+      required:
+        - email
+        - secret
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        secret:
+          type: string
+        displayName:
+          type: string
+          nullable: true
+        roleIds:
+          type: array
+          items:
+            type: string
+    AdminUserUpdateRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+          nullable: true
+        secret:
+          type: string
+        roleIds:
+          type: array
+          items:
+            type: string
+    AdminApiKeyCreateRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+          nullable: true
+        secret:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, maintainer, reader]
+        permissions:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+    AdminApiKeyUpdateRequest:
+      type: object
+      required:
+        - secret
+      properties:
+        label:
+          type: string
+          nullable: true
+        secret:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, maintainer, reader]
+        permissions:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
 paths:
   /health:
     get:
@@ -1025,6 +1262,316 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Manifest bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/roles:
+    get:
+      operationId: listAdminRoles
+      summary: Yönetici rollerini listeler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: Tanımlı roller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoleListResponse'
+    post:
+      operationId: createAdminRole
+      summary: Yeni bir yönetici rolü oluşturur.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRoleRequest'
+      responses:
+        '201':
+          description: Oluşturulan rol.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoleResponse'
+        '400':
+          description: Geçersiz rol bilgisi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/roles/{roleId}:
+    parameters:
+      - in: path
+        name: roleId
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: updateAdminRole
+      summary: Mevcut rolü günceller.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRoleRequest'
+      responses:
+        '200':
+          description: Güncellenen rol.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoleResponse'
+        '400':
+          description: Geçersiz rol verisi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteAdminRole
+      summary: Rolü kalıcı olarak siler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '204':
+          description: Rol silindi.
+        '404':
+          description: Rol bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/users:
+    get:
+      operationId: listAdminUsers
+      summary: Kiracıdaki kullanıcıları listeler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: Kullanıcı listesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+    post:
+      operationId: createAdminUser
+      summary: Yeni bir kullanıcı oluşturur.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserCreateRequest'
+      responses:
+        '201':
+          description: Oluşturulan kullanıcı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '400':
+          description: Geçersiz kullanıcı bilgisi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/users/{userId}:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getAdminUser
+      summary: Kullanıcı detaylarını döndürür.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: Kullanıcı bilgileri.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '404':
+          description: Kullanıcı bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: updateAdminUser
+      summary: Kullanıcı profilini veya yetkilerini günceller.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdateRequest'
+      responses:
+        '200':
+          description: Güncellenen kullanıcı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '400':
+          description: Geçersiz kullanıcı güncellemesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteAdminUser
+      summary: Kullanıcıyı siler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '204':
+          description: Kullanıcı silindi.
+        '404':
+          description: Kullanıcı bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/api-keys:
+    get:
+      operationId: listAdminApiKeys
+      summary: API anahtarlarını listeler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: API anahtarı listesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminApiKeyListResponse'
+    post:
+      operationId: createAdminApiKey
+      summary: Yeni bir API anahtarı oluşturur.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminApiKeyCreateRequest'
+      responses:
+        '201':
+          description: Oluşturulan anahtar ve gizli değer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminApiKeySecretResponse'
+        '400':
+          description: Geçersiz API anahtarı isteği.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/api-keys/{keyId}:
+    parameters:
+      - in: path
+        name: keyId
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getAdminApiKey
+      summary: Tekil API anahtarı ayrıntılarını döndürür.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: API anahtarı bilgileri.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminApiKeyResponse'
+        '404':
+          description: Anahtar bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: updateAdminApiKey
+      summary: API anahtarını döndürür ve yeni gizli değer üretir.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminApiKeyUpdateRequest'
+      responses:
+        '200':
+          description: Güncellenen anahtar ve yeni gizli değer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminApiKeySecretResponse'
+        '400':
+          description: Geçersiz güncelleme isteği.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteAdminApiKey
+      summary: API anahtarını kalıcı olarak siler.
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '204':
+          description: API anahtarı silindi.
+        '404':
+          description: Anahtar bulunamadı.
           content:
             application/json:
               schema:

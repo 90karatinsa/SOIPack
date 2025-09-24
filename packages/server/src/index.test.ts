@@ -22,6 +22,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import type { DatabaseManager } from './database';
 import type { JobKind, JobStatus } from './queue';
 import type { FileScanner } from './scanner';
+import type { UserRole } from './middleware/auth';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
 import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
@@ -370,11 +371,45 @@ describe('@soipack/server REST API', () => {
     updatedAt: Date;
   };
 
+  type StubRbacUser = {
+    id: string;
+    tenantId: string;
+    email: string;
+    displayName?: string | null;
+    secretHash: string;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+
+  type StubRbacRole = {
+    id: string;
+    tenantId: string;
+    name: string;
+    description?: string | null;
+    createdAt: Date;
+  };
+
+  type StubRbacApiKey = {
+    id: string;
+    tenantId: string;
+    label?: string | null;
+    secretHash: string;
+    fingerprint: string;
+    createdAt: Date;
+    lastUsedAt?: Date | null;
+  };
+
   type DatabaseStub = {
     manager: DatabaseManager;
     pool: { query: jest.Mock<Promise<{ rows: unknown[]; rowCount: number }>, [string, unknown[]?]> };
     rows: Map<string, StubJobRow>;
+    rbacUsers: Map<string, StubRbacUser>;
+    rbacRoles: Map<string, StubRbacRole>;
+    rbacUserRoles: Set<string>;
+    rbacApiKeys: Map<string, StubRbacApiKey>;
     reset: () => void;
+    seedDefaults: () => void;
+    ensureUser: (tenantId: string, userId: string, roles?: UserRole[], options?: { email?: string }) => void;
     failNext: (error: Error) => void;
   };
 
@@ -394,6 +429,10 @@ describe('@soipack/server REST API', () => {
 
   const createDatabaseStub = (): DatabaseStub => {
     const rows = new Map<string, StubJobRow>();
+    const rbacUsers = new Map<string, StubRbacUser>();
+    const rbacRoles = new Map<string, StubRbacRole>();
+    const rbacUserRoles = new Set<string>();
+    const rbacApiKeys = new Map<string, StubRbacApiKey>();
     let failNextError: Error | undefined;
 
     const toDbRow = (row: StubJobRow): Record<string, unknown> => ({
@@ -409,6 +448,89 @@ describe('@soipack/server REST API', () => {
       updated_at: row.updatedAt,
     });
 
+    const userKey = (tenantId: string, userId: string) => `${tenantId}:${userId}`;
+    const roleKey = (tenantId: string, roleId: string) => `${tenantId}:${roleId}`;
+    const apiKeyKey = (tenantId: string, apiKeyId: string) => `${tenantId}:${apiKeyId}`;
+    const userRoleKey = (tenantId: string, userId: string, roleId: string) => `${tenantId}:${userId}:${roleId}`;
+
+    const mapUserRow = (user: StubRbacUser): Record<string, unknown> => ({
+      id: user.id,
+      tenant_id: user.tenantId,
+      email: user.email,
+      display_name: user.displayName ?? null,
+      created_at: user.createdAt,
+      updated_at: user.updatedAt,
+    });
+
+    const mapRoleRow = (role: StubRbacRole): Record<string, unknown> => ({
+      id: role.id,
+      tenant_id: role.tenantId,
+      name: role.name,
+      description: role.description ?? null,
+      created_at: role.createdAt,
+    });
+
+    const mapApiKeyRow = (key: StubRbacApiKey): Record<string, unknown> => ({
+      id: key.id,
+      tenant_id: key.tenantId,
+      label: key.label ?? null,
+      fingerprint: key.fingerprint,
+      created_at: key.createdAt,
+      last_used_at: key.lastUsedAt ?? null,
+    });
+
+    const ensureRoleRecord = (
+      tenantId: string,
+      name: string,
+      description?: string | null,
+      id?: string,
+      createdAt?: Date,
+    ): StubRbacRole => {
+      const roleId = id ?? `role-${name}`;
+      const key = roleKey(tenantId, roleId);
+      const existing = rbacRoles.get(key);
+      if (existing) {
+        if (description !== undefined) {
+          existing.description = description;
+        }
+        return existing;
+      }
+      const record: StubRbacRole = {
+        id: roleId,
+        tenantId,
+        name,
+        description: description ?? null,
+        createdAt: createdAt ?? new Date(),
+      };
+      rbacRoles.set(key, record);
+      return record;
+    };
+
+    const ensureUserRecord = (
+      tenantId: string,
+      userId: string,
+      roles: UserRole[] = ['reader'],
+      options?: { email?: string },
+    ) => {
+      const key = userKey(tenantId, userId);
+      if (!rbacUsers.has(key)) {
+        const now = new Date();
+        rbacUsers.set(key, {
+          id: userId,
+          tenantId,
+          email: options?.email ?? `${userId}@example.com`,
+          displayName: options?.email ?? userId,
+          secretHash: 'seed-secret-hash',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      roles.forEach((roleName) => {
+        const role = ensureRoleRecord(tenantId, roleName, `${roleName} role`, `role-${roleName}`);
+        rbacUserRoles.add(userRoleKey(tenantId, userId, role.id));
+      });
+    };
+
     const query = jest.fn(async (text: string, parameters?: unknown[]) => {
       if (failNextError) {
         const error = failNextError;
@@ -423,9 +545,7 @@ describe('@soipack/server REST API', () => {
       }
 
       if (normalized.startsWith('select id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at from jobs order by created_at asc')) {
-        const ordered = [...rows.values()].sort(
-          (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-        );
+        const ordered = [...rows.values()].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
         return { rows: ordered.map(toDbRow), rowCount: ordered.length };
       }
 
@@ -550,6 +670,235 @@ describe('@soipack/server REST API', () => {
         return { rows: [{ count }], rowCount: 1 };
       }
 
+      if (normalized.startsWith('insert into rbac_users')) {
+        const [id, tenantIdParam, email, displayNameRaw, secretHash, createdAtRaw, updatedAtRaw] = params as [
+          string,
+          string,
+          string,
+          string | null,
+          string,
+          string | Date,
+          string | Date | undefined,
+        ];
+        const createdAtSource = createdAtRaw ?? new Date();
+        const updatedAtSource = updatedAtRaw ?? createdAtRaw ?? createdAtSource;
+        const key = userKey(tenantIdParam, id);
+        const existing = rbacUsers.get(key);
+        const createdAt =
+          existing?.createdAt ?? (createdAtSource instanceof Date ? createdAtSource : new Date(createdAtSource));
+        const updatedAt = updatedAtSource instanceof Date ? updatedAtSource : new Date(updatedAtSource);
+        const normalizedUpdatedAt = Number.isNaN(updatedAt.getTime()) ? new Date(createdAt.getTime()) : updatedAt;
+        const record: StubRbacUser = {
+          id,
+          tenantId: tenantIdParam,
+          email,
+          displayName: displayNameRaw ?? null,
+          secretHash,
+          createdAt,
+          updatedAt: normalizedUpdatedAt,
+        };
+        rbacUsers.set(key, record);
+        return { rows: [mapUserRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('select id, tenant_id, email, display_name, created_at, updated_at from rbac_users where tenant_id = $1 order by created_at asc')) {
+        const [tenantIdParam] = params as [string];
+        const items = [...rbacUsers.values()]
+          .filter((user) => user.tenantId === tenantIdParam)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .map(mapUserRow);
+        return { rows: items, rowCount: items.length };
+      }
+
+      if (normalized.startsWith('select id, tenant_id, email, display_name, created_at, updated_at from rbac_users where tenant_id = $1 and id = $2 limit 1')) {
+        const [tenantIdParam, userIdParam] = params as [string, string];
+        const record = rbacUsers.get(userKey(tenantIdParam, userIdParam));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapUserRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('update rbac_users set secret_hash = $1, updated_at = $2 where tenant_id = $3 and id = $4')) {
+        const [secretHash, updatedAtRaw, tenantIdParam, userIdParam] = params as [string, string, string, string];
+        const key = userKey(tenantIdParam, userIdParam);
+        const record = rbacUsers.get(key);
+        if (record) {
+          record.secretHash = secretHash;
+          record.updatedAt = new Date(updatedAtRaw);
+        }
+        return { rows: [], rowCount: record ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('select secret_hash from rbac_users where tenant_id = $1 and id = $2 limit 1')) {
+        const [tenantIdParam, userIdParam] = params as [string, string];
+        const record = rbacUsers.get(userKey(tenantIdParam, userIdParam));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [{ secret_hash: record.secretHash }], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('update rbac_users set display_name = $1, updated_at = $2 where tenant_id = $3 and id = $4')) {
+        const [displayNameRaw, updatedAtRaw, tenantIdParam, userIdParam] = params as [
+          string | null,
+          string,
+          string,
+          string,
+        ];
+        const key = userKey(tenantIdParam, userIdParam);
+        const record = rbacUsers.get(key);
+        if (record) {
+          record.displayName = displayNameRaw ?? null;
+          record.updatedAt = new Date(updatedAtRaw);
+        }
+        return { rows: [], rowCount: record ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('delete from rbac_users where tenant_id = $1 and id = $2')) {
+        const [tenantIdParam, userIdParam] = params as [string, string];
+        const key = userKey(tenantIdParam, userIdParam);
+        const existed = rbacUsers.delete(key);
+        [...rbacUserRoles].forEach((assignment) => {
+          if (assignment.startsWith(`${tenantIdParam}:${userIdParam}:`)) {
+            rbacUserRoles.delete(assignment);
+          }
+        });
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('insert into rbac_roles')) {
+        const [id, tenantIdParam, name, descriptionRaw, createdAtRaw] = params as [
+          string,
+          string,
+          string,
+          string | null,
+          string,
+        ];
+        const record = ensureRoleRecord(tenantIdParam, name, descriptionRaw, id, new Date(createdAtRaw));
+        return { rows: [mapRoleRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('select id, tenant_id, name, description, created_at from rbac_roles where tenant_id = $1 order by created_at asc')) {
+        const [tenantIdParam] = params as [string];
+        const items = [...rbacRoles.values()]
+          .filter((role) => role.tenantId === tenantIdParam)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .map(mapRoleRow);
+        return { rows: items, rowCount: items.length };
+      }
+
+      if (normalized.startsWith('delete from rbac_roles where tenant_id = $1 and id = $2')) {
+        const [tenantIdParam, roleIdParam] = params as [string, string];
+        const existed = rbacRoles.delete(roleKey(tenantIdParam, roleIdParam));
+        [...rbacUserRoles].forEach((assignment) => {
+          if (assignment.endsWith(`:${roleIdParam}`) && assignment.startsWith(`${tenantIdParam}:`)) {
+            rbacUserRoles.delete(assignment);
+          }
+        });
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('insert into rbac_user_roles')) {
+        const [tenantIdParam, userIdParam, roleIdParam] = params as [string, string, string, string];
+        const assignmentKey = userRoleKey(tenantIdParam, userIdParam, roleIdParam);
+        rbacUserRoles.add(assignmentKey);
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('select r.id, r.tenant_id, r.name, r.description, r.created_at from rbac_roles r join rbac_user_roles ur')) {
+        const [tenantIdParam, userIdParam] = params as [string, string];
+        const roleIds = [...rbacUserRoles]
+          .filter((assignment) => assignment.startsWith(`${tenantIdParam}:${userIdParam}:`))
+          .map((assignment) => assignment.split(':')[2]);
+        const roles = roleIds
+          .map((roleId) => rbacRoles.get(roleKey(tenantIdParam, roleId)))
+          .filter((role): role is StubRbacRole => role !== undefined)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .map(mapRoleRow);
+        return { rows: roles, rowCount: roles.length };
+      }
+
+      if (normalized.startsWith('delete from rbac_user_roles where tenant_id = $1 and user_id = $2 and role_id = $3')) {
+        const [tenantIdParam, userIdParam, roleIdParam] = params as [string, string, string];
+        const assignmentKey = userRoleKey(tenantIdParam, userIdParam, roleIdParam);
+        const existed = rbacUserRoles.delete(assignmentKey);
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('delete from rbac_user_roles where tenant_id = $1 and role_id = $2')) {
+        const [tenantIdParam, roleIdParam] = params as [string, string];
+        let count = 0;
+        [...rbacUserRoles].forEach((assignment) => {
+          if (assignment.startsWith(`${tenantIdParam}:`) && assignment.endsWith(`:${roleIdParam}`)) {
+            rbacUserRoles.delete(assignment);
+            count += 1;
+          }
+        });
+        return { rows: [], rowCount: count };
+      }
+
+      if (normalized.startsWith('delete from rbac_user_roles where tenant_id = $1 and user_id = $2')) {
+        const [tenantIdParam, userIdParam] = params as [string, string];
+        let count = 0;
+        [...rbacUserRoles].forEach((assignment) => {
+          if (assignment.startsWith(`${tenantIdParam}:${userIdParam}:`)) {
+            rbacUserRoles.delete(assignment);
+            count += 1;
+          }
+        });
+        return { rows: [], rowCount: count };
+      }
+
+      if (normalized.startsWith('insert into rbac_api_keys')) {
+        const [id, tenantIdParam, labelRaw, secretHash, fingerprint, createdAtRaw] = params as [
+          string,
+          string,
+          string | null,
+          string,
+          string,
+          string,
+          unknown,
+        ];
+        const key = apiKeyKey(tenantIdParam, id);
+        const existing = rbacApiKeys.get(key);
+        const record: StubRbacApiKey = {
+          id,
+          tenantId: tenantIdParam,
+          label: labelRaw ?? null,
+          secretHash,
+          fingerprint,
+          createdAt: existing?.createdAt ?? new Date(createdAtRaw),
+          lastUsedAt: existing?.lastUsedAt ?? null,
+        };
+        rbacApiKeys.set(key, record);
+        return { rows: [mapApiKeyRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('select id, tenant_id, label, fingerprint, created_at, last_used_at from rbac_api_keys where tenant_id = $1 order by created_at asc')) {
+        const [tenantIdParam] = params as [string];
+        const items = [...rbacApiKeys.values()]
+          .filter((key) => key.tenantId === tenantIdParam)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .map(mapApiKeyRow);
+        return { rows: items, rowCount: items.length };
+      }
+
+      if (normalized.startsWith('select secret_hash from rbac_api_keys where tenant_id = $1 and id = $2 limit 1')) {
+        const [tenantIdParam, apiKeyId] = params as [string, string];
+        const record = rbacApiKeys.get(apiKeyKey(tenantIdParam, apiKeyId));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [{ secret_hash: record.secretHash }], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('delete from rbac_api_keys where tenant_id = $1 and id = $2')) {
+        const [tenantIdParam, apiKeyId] = params as [string, string];
+        const existed = rbacApiKeys.delete(apiKeyKey(tenantIdParam, apiKeyId));
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+
       throw new Error(`Unsupported query: ${text}`);
     });
 
@@ -560,15 +909,36 @@ describe('@soipack/server REST API', () => {
       getPool: jest.fn(() => pool),
     } as unknown as DatabaseManager;
 
+    const seedDefaults = () => {
+      rbacUsers.clear();
+      rbacRoles.clear();
+      rbacUserRoles.clear();
+      rbacApiKeys.clear();
+      ensureRoleRecord(tenantId, 'admin', 'Administrator', 'role-admin');
+      ensureRoleRecord(tenantId, 'maintainer', 'Maintainer', 'role-maintainer');
+      ensureRoleRecord(tenantId, 'reader', 'Reader', 'role-reader');
+      ensureUserRecord(tenantId, 'user-1', ['admin']);
+    };
+
     return {
       manager,
       pool,
       rows,
+      rbacUsers,
+      rbacRoles,
+      rbacUserRoles,
+      rbacApiKeys,
       reset: () => {
         rows.clear();
+        rbacUsers.clear();
+        rbacRoles.clear();
+        rbacUserRoles.clear();
+        rbacApiKeys.clear();
         query.mockClear();
         failNextError = undefined;
       },
+      seedDefaults,
+      ensureUser: ensureUserRecord,
       failNext: (error: Error) => {
         failNextError = error;
       },
@@ -662,15 +1032,21 @@ describe('@soipack/server REST API', () => {
     subject = 'user-1',
     scope = `${requiredScope} ${adminScope}`,
     expiresIn = '2h',
+    roles = ['admin'],
   }: {
     tenant?: string;
     subject?: string;
     scope?: string | null;
     expiresIn?: string | number;
+    roles?: UserRole[];
   } = {}): Promise<string> => {
     const payload: Record<string, unknown> = { [tenantClaim]: tenant };
     if (scope) {
       payload.scope = scope;
+    }
+
+    if (databaseStub) {
+      databaseStub.ensureUser(tenant, subject, roles);
     }
 
     return new SignJWT(payload)
@@ -710,6 +1086,7 @@ describe('@soipack/server REST API', () => {
     metricsRegistry = new Registry();
 
     databaseStub = createDatabaseStub();
+    databaseStub.seedDefaults();
     auditLogMock = createAuditLogStoreMock();
 
     baseConfig = {
@@ -755,6 +1132,7 @@ describe('@soipack/server REST API', () => {
       logEntries.length = 0;
     }
     databaseStub.reset();
+    databaseStub.seedDefaults();
     auditLogMock.reset();
   });
 
@@ -1284,6 +1662,153 @@ describe('@soipack/server REST API', () => {
       .get('/metrics')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
+  });
+
+  it('allows administrators to manage RBAC roles and users', async () => {
+    const adminToken = await createAccessToken({ roles: ['admin'] });
+
+    const roleResponse = await request(app)
+      .post('/v1/admin/roles')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ id: 'role-auditor', name: 'auditor', description: 'Reviews compliance reports' })
+      .expect(201);
+
+    expect(roleResponse.body.role).toMatchObject({ id: 'role-auditor', name: 'auditor' });
+
+    const roleList = await request(app)
+      .get('/v1/admin/roles')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(roleList.body.items.map((item: { id: string }) => item.id)).toContain('role-auditor');
+
+    const userResponse = await request(app)
+      .post('/v1/admin/users')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        id: 'user-auditor',
+        email: 'auditor@example.com',
+        secret: 'Str0ngSecret!',
+        displayName: 'Auditor',
+        roleIds: ['role-auditor'],
+      })
+      .expect(201);
+
+    expect(userResponse.body.user.email).toBe('auditor@example.com');
+    expect(userResponse.body.user.roles).toHaveLength(1);
+
+    const userId = userResponse.body.user.id as string;
+
+    const userDetail = await request(app)
+      .get(`/v1/admin/users/${userId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(userDetail.body.user.roles.map((role: { id: string }) => role.id)).toEqual(['role-auditor']);
+
+    const updateResponse = await request(app)
+      .put(`/v1/admin/users/${userId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        displayName: 'Lead Auditor',
+        secret: 'An0therSecret!',
+        roleIds: ['role-admin'],
+      })
+      .expect(200);
+
+    expect(updateResponse.body.user.displayName).toBe('Lead Auditor');
+    expect(updateResponse.body.user.roles.map((role: { id: string }) => role.id)).toEqual(['role-admin']);
+
+    await request(app)
+      .delete(`/v1/admin/users/${userId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(204);
+
+    await request(app)
+      .delete('/v1/admin/roles/role-auditor')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(204);
+
+    const actions = auditLogMock.appended.map((entry) => entry.action);
+    expect(actions).toEqual(expect.arrayContaining(['admin.user.created', 'admin.user.updated', 'admin.role.created']));
+  });
+
+  it('enforces role boundaries for admin endpoints', async () => {
+    const maintainerToken = await createAccessToken({ roles: ['maintainer'], subject: 'user-maintainer' });
+    const readerToken = await createAccessToken({ roles: ['reader'], subject: 'user-reader' });
+
+    await request(app)
+      .get('/v1/admin/users')
+      .set('Authorization', `Bearer ${maintainerToken}`)
+      .expect(200);
+
+    const maintainerCreate = await request(app)
+      .post('/v1/admin/users')
+      .set('Authorization', `Bearer ${maintainerToken}`)
+      .send({ email: 'denied@example.com', secret: 'Secret123!', roleIds: [] })
+      .expect(403);
+
+    expect(maintainerCreate.body.error.code).toBe('FORBIDDEN_ROLE');
+
+    const readerList = await request(app)
+      .get('/v1/admin/users')
+      .set('Authorization', `Bearer ${readerToken}`)
+      .expect(403);
+
+    expect(readerList.body.error.code).toBe('FORBIDDEN_ROLE');
+  });
+
+  it('manages API keys with audit logging and rotation', async () => {
+    const adminToken = await createAccessToken({ roles: ['admin'] });
+
+    const createResponse = await request(app)
+      .post('/v1/admin/api-keys')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ label: 'CI', roles: ['maintainer'], permissions: ['jobs:read'] })
+      .expect(201);
+
+    expect(createResponse.body.secret).toBeDefined();
+    expect(createResponse.body.apiKey.roles).toEqual(['maintainer']);
+
+    const keyId = createResponse.body.apiKey.id as string;
+
+    const listResponse = await request(app)
+      .get('/v1/admin/api-keys')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(listResponse.body.items.some((item: { id: string }) => item.id === keyId)).toBe(true);
+
+    const rotateResponse = await request(app)
+      .put(`/v1/admin/api-keys/${keyId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ secret: 'rotated-secret', roles: ['admin'], permissions: [] })
+      .expect(200);
+
+    expect(rotateResponse.body.apiKey.roles).toEqual(['admin']);
+    expect(rotateResponse.body.secret).toBe('rotated-secret');
+
+    await request(app)
+      .delete(`/v1/admin/api-keys/${keyId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(204);
+
+    const deletedList = await request(app)
+      .get('/v1/admin/api-keys')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(deletedList.body.items.some((item: { id: string }) => item.id === keyId)).toBe(false);
+  });
+
+  it('rejects user creation with unknown role identifiers', async () => {
+    const adminToken = await createAccessToken({ roles: ['admin'] });
+
+    const invalidResponse = await request(app)
+      .post('/v1/admin/users')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ email: 'invalid@example.com', secret: 'Secret123!', roleIds: ['role-missing'] })
+      .expect(400);
+
+    expect(invalidResponse.body.error.code).toBe('ROLE_NOT_FOUND');
   });
 
   it('reports storage provider health with database latency metrics', async () => {
