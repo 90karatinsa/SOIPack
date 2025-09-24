@@ -49,6 +49,29 @@ components:
               type: object
               description: Hata ile ilgili ek bilgiler.
               additionalProperties: true
+    StorageHealthResponse:
+      type: object
+      required:
+        - provider
+        - status
+        - database
+      properties:
+        provider:
+          type: string
+          description: Aktif depolama sağlayıcısının sınıf adı veya tanımlayıcısı.
+        status:
+          type: string
+          enum:
+            - ok
+        database:
+          type: object
+          required:
+            - latencyMs
+          properties:
+            latencyMs:
+              type: number
+              format: double
+              description: Sağlık denetimi sırasında ölçülen veritabanı sorgu gecikmesi (ms).
     ImportResponse:
       type: object
       required:
@@ -865,6 +888,41 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Manifest bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/storage/health:
+    get:
+      operationId: getStorageHealth
+      summary: Depolama sağlayıcısı ve veritabanı sağlık durumunu döndürür.
+      description: |-
+        Yalnızca yönetici kapsamına sahip belirteçlerle çağrılabilir. Aktif depolama
+        sağlayıcısının adını ve veritabanına yapılan test sorgusunun gecikmesini
+        rapor eder. Başarısız olursa hata ayrıntıları döner.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Depolama sağlık durumu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageHealthResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Yönetici kapsamı gerekli.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sağlık denetimi sırasında depolama veya veritabanı erişimi başarısız oldu.
           content:
             application/json:
               schema:

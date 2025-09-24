@@ -1,183 +1,45 @@
+import fs from 'fs';
+import path from 'path';
+
 import type { Pool } from 'pg';
 import { Pool as DefaultPool } from 'pg';
 
 export type PoolFactory = (connectionString: string) => Pool;
 
-interface MigrationStep {
-  readonly description: string;
-  readonly createSql: string;
-  readonly checkSql?: string;
-  readonly checkParams?: readonly unknown[];
+interface SqlMigration {
+  readonly id: string;
+  readonly name: string;
+  readonly sql: string;
 }
 
-const MIGRATION_STEPS: MigrationStep[] = [
-  {
-    description: 'jobs table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['jobs'],
-    createSql: `CREATE TABLE jobs (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      status TEXT NOT NULL,
-      hash TEXT,
-      payload JSONB,
-      result JSONB,
-      error JSONB,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL
-    )`,
-  },
-  {
-    description: 'jobs hash column',
-    createSql: 'ALTER TABLE jobs ADD COLUMN IF NOT EXISTS hash TEXT',
-  },
-  {
-    description: 'jobs tenant+status index',
-    checkParams: ['jobs_tenant_status_idx'],
-    createSql: 'CREATE INDEX jobs_tenant_status_idx ON jobs (tenant_id, status, created_at DESC)',
-  },
-  {
-    description: 'pipeline_jobs table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['pipeline_jobs'],
-    createSql: `CREATE TABLE pipeline_jobs (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      checksum TEXT NOT NULL,
-      data JSONB,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      deleted_at TIMESTAMP
-    )`,
-  },
-  {
-    description: 'pipeline_jobs tenant index',
-    checkParams: ['pipeline_jobs_tenant_idx'],
-    createSql: 'CREATE INDEX pipeline_jobs_tenant_idx ON pipeline_jobs (tenant_id, created_at DESC)',
-  },
-  {
-    description: 'pipeline_artifacts table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['pipeline_artifacts'],
-    createSql: `CREATE TABLE pipeline_artifacts (
-      id TEXT PRIMARY KEY,
-      job_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL,
-      checksum TEXT NOT NULL,
-      data JSONB,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      deleted_at TIMESTAMP
-    )`,
-  },
-  {
-    description: 'pipeline_artifacts job index',
-    checkParams: ['pipeline_artifacts_job_idx'],
-    createSql: 'CREATE INDEX pipeline_artifacts_job_idx ON pipeline_artifacts (job_id)',
-  },
-  {
-    description: 'pipeline_artifacts tenant index',
-    checkParams: ['pipeline_artifacts_tenant_idx'],
-    createSql:
-      'CREATE INDEX pipeline_artifacts_tenant_idx ON pipeline_artifacts (tenant_id, created_at DESC)',
-  },
-  {
-    description: 'audit_events table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['audit_events'],
-    createSql: `CREATE TABLE audit_events (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      checksum TEXT NOT NULL,
-      payload JSONB,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      deleted_at TIMESTAMP
-    )`,
-  },
-  {
-    description: 'audit_events tenant index',
-    checkParams: ['audit_events_tenant_idx'],
-    createSql: 'CREATE INDEX audit_events_tenant_idx ON audit_events (tenant_id, created_at DESC)',
-  },
-  {
-    description: 'audit_logs table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['audit_logs'],
-    createSql: `CREATE TABLE audit_logs (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      actor TEXT,
-      action TEXT NOT NULL,
-      metadata JSONB,
-      created_at TIMESTAMP NOT NULL
-    )`,
-  },
-  {
-    description: 'audit_logs tenant index',
-    checkParams: ['audit_logs_tenant_idx'],
-    createSql: 'CREATE INDEX audit_logs_tenant_idx ON audit_logs (tenant_id, created_at DESC)',
-  },
-  {
-    description: 'reviews table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['reviews'],
-    createSql: `CREATE TABLE reviews (
-      id TEXT PRIMARY KEY,
-      job_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL,
-      reviewer TEXT,
-      decision TEXT,
-      notes TEXT,
-      metadata JSONB,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL
-    )`,
-  },
-  {
-    description: 'reviews job index',
-    checkParams: ['reviews_job_idx'],
-    createSql: 'CREATE INDEX reviews_job_idx ON reviews (job_id)',
-  },
-  {
-    description: 'reviews tenant index',
-    checkParams: ['reviews_tenant_idx'],
-    createSql: 'CREATE INDEX reviews_tenant_idx ON reviews (tenant_id, created_at DESC)',
-  },
-  {
-    description: 'evidence table',
-    checkSql:
-      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
-    checkParams: ['evidence'],
-    createSql: `CREATE TABLE evidence (
-      id TEXT PRIMARY KEY,
-      review_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      sha256 TEXT NOT NULL,
-      size_bytes BIGINT NOT NULL,
-      metadata JSONB,
-      created_at TIMESTAMP NOT NULL
-    )`,
-  },
-  {
-    description: 'evidence review index',
-    checkParams: ['evidence_review_idx'],
-    createSql: 'CREATE INDEX evidence_review_idx ON evidence (review_id)',
-  },
-  {
-    description: 'evidence tenant index',
-    checkParams: ['evidence_tenant_idx'],
-    createSql: 'CREATE INDEX evidence_tenant_idx ON evidence (tenant_id, created_at DESC)',
-  },
-];
+const migrationsDirectory = path.resolve(__dirname, '../migrations');
+
+function loadMigrations(): SqlMigration[] {
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(migrationsDirectory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  return entries
+    .filter((fileName) => fileName.endsWith('.sql'))
+    .sort()
+    .map((fileName) => {
+      const absolutePath = path.join(migrationsDirectory, fileName);
+      const sql = fs.readFileSync(absolutePath, 'utf8');
+      const baseName = fileName.replace(/\.sql$/u, '');
+      const underscoreIndex = baseName.indexOf('_');
+      const id = underscoreIndex >= 0 ? baseName.slice(0, underscoreIndex) : baseName;
+      const name = underscoreIndex >= 0 ? baseName.slice(underscoreIndex + 1) : '';
+      return { id, name, sql };
+    });
+}
+
+const SQL_MIGRATIONS = loadMigrations();
 
 export class DatabaseManager {
   private pool?: Pool;
@@ -201,6 +63,7 @@ export class DatabaseManager {
   async initialize(): Promise<void> {
     if (!this.pool) {
       this.pool = this.createPool(this.connectionString);
+      this.patchPool(this.pool);
     }
     try {
       await this.runMigrations(this.pool);
@@ -230,25 +93,34 @@ export class DatabaseManager {
   private async runMigrations(pool: Pool): Promise<void> {
     const client = await pool.connect();
     try {
-      for (const step of MIGRATION_STEPS) {
-        let shouldCreate = true;
-        if (step.checkSql) {
-          try {
-            const result = await client.query(step.checkSql, Array.from(step.checkParams ?? []));
-            shouldCreate = result.rowCount === 0;
-          } catch {
-            shouldCreate = true;
-          }
-        }
-        if (!shouldCreate) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS soipack_migrations (
+          id TEXT,
+          name TEXT,
+          applied_at TIMESTAMP
+        )
+      `);
+
+      for (const migration of SQL_MIGRATIONS) {
+        const applied = await client.query('SELECT 1 FROM soipack_migrations WHERE id = $1', [migration.id]);
+        if ((applied.rowCount ?? 0) > 0) {
           continue;
         }
+
+        await client.query('BEGIN');
         try {
-          await client.query(step.createSql);
-        } catch (error) {
-          if (!this.isAlreadyExistsError(error)) {
-            throw error;
+          if (migration.sql.trim()) {
+            await client.query(migration.sql);
           }
+          await client.query('INSERT INTO soipack_migrations (id, name, applied_at) VALUES ($1, $2, CURRENT_TIMESTAMP)', [
+            migration.id,
+            migration.name,
+          ]);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Migration ${migration.id}_${migration.name} failed: ${message}`);
         }
       }
     } finally {
@@ -256,17 +128,50 @@ export class DatabaseManager {
     }
   }
 
-  private isAlreadyExistsError(error: unknown): boolean {
-    if (error && typeof error === 'object') {
-      const code = (error as { code?: unknown }).code;
-      if (code === '42P07') {
-        return true;
+  private patchPool(pool: Pool): void {
+    const marker = '__soipackPatchedQuery';
+    if ((pool as unknown as Record<string, unknown>)[marker]) {
+      return;
+    }
+    (pool as unknown as Record<string, unknown>)[marker] = true;
+    const originalQuery = pool.query.bind(pool);
+    const enhanceResult = (result: unknown): void => {
+      if (!result || typeof result !== 'object') {
+        return;
       }
-    }
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
-      return message.includes('already exists');
-    }
-    return false;
+      const rows = (result as { rows?: unknown[] }).rows;
+      if (!Array.isArray(rows)) {
+        return;
+      }
+      for (const row of rows) {
+        if (row && typeof row === 'object' && 'int' in (row as Record<string, unknown>) && !('count' in (row as Record<string, unknown>))) {
+          (row as Record<string, unknown>).count = (row as Record<string, unknown>).int;
+        }
+      }
+    };
+    const patchedQuery: typeof pool.query = ((...args: unknown[]) => {
+      const last = args[args.length - 1];
+      if (typeof last === 'function') {
+        const callback = last as (err: unknown, result: unknown) => void;
+        args[args.length - 1] = (error: unknown, result: unknown) => {
+          if (!error) {
+            enhanceResult(result);
+          }
+          callback(error, result);
+        };
+        return originalQuery(...(args as Parameters<typeof originalQuery>));
+      }
+      const queryResult = originalQuery(...(args as Parameters<typeof originalQuery>));
+      const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
+        typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function';
+      if (isPromiseLike(queryResult)) {
+        return queryResult.then((result) => {
+          enhanceResult(result);
+          return result;
+        });
+      }
+      return queryResult;
+    }) as typeof pool.query;
+    (pool as unknown as { query: typeof patchedQuery }).query = patchedQuery;
   }
 }

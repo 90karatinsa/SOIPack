@@ -30,6 +30,7 @@
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
-    "test": "jest --config ./jest.config.cjs"
+    "test": "jest --config ./jest.config.cjs",
+    "db:migrate": "node dist/scripts/migrate.js"
   }
 }

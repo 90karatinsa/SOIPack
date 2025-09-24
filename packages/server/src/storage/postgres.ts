@@ -78,6 +78,16 @@ const parseDate = (value: unknown): Date => {
 const toNullableJson = (value: unknown): unknown =>
   value === undefined ? null : JSON.stringify(value);
 
+const ACTIVE_DELETED_AT = new Date(0);
+
+const normalizeDeletedAt = (value: unknown): Date | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const parsed = parseDate(value);
+  return parsed.getTime() === ACTIVE_DELETED_AT.getTime() ? null : parsed;
+};
+
 export class PostgresStorageProvider {
   constructor(private readonly database: DatabaseManager) {}
 
@@ -93,7 +103,7 @@ export class PostgresStorageProvider {
       data: parseJson(row.data),
       createdAt: parseDate(row.created_at),
       updatedAt: parseDate(row.updated_at),
-      deletedAt: row.deleted_at ? parseDate(row.deleted_at) : null,
+      deletedAt: normalizeDeletedAt(row.deleted_at),
     };
   }
 
@@ -106,7 +116,7 @@ export class PostgresStorageProvider {
       data: parseJson(row.data),
       createdAt: parseDate(row.created_at),
       updatedAt: parseDate(row.updated_at),
-      deletedAt: row.deleted_at ? parseDate(row.deleted_at) : null,
+      deletedAt: normalizeDeletedAt(row.deleted_at),
     };
   }
 
@@ -118,12 +128,12 @@ export class PostgresStorageProvider {
       payload: parseJson(row.payload),
       createdAt: parseDate(row.created_at),
       updatedAt: parseDate(row.updated_at),
-      deletedAt: row.deleted_at ? parseDate(row.deleted_at) : null,
+      deletedAt: normalizeDeletedAt(row.deleted_at),
     };
   }
 
   public async createPipelineJob(input: PipelineJobInput): Promise<PipelineJobRecord> {
-    const now = new Date().toISOString();
+    const now = new Date();
     const { rows } = await this.pool.query(
       `INSERT INTO pipeline_jobs (id, tenant_id, checksum, data, created_at, updated_at, deleted_at)
        VALUES ($1, $2, $3, $4, $5, $5, NULL)
@@ -158,7 +168,9 @@ export class PostgresStorageProvider {
     const conditions: string[] = ['tenant_id = $1'];
     const params: unknown[] = [tenantId];
     if (!options.includeDeleted) {
-      conditions.push('deleted_at IS NULL');
+      params.push(ACTIVE_DELETED_AT);
+      const placeholder = `$${params.length}`;
+      conditions.push(`COALESCE(deleted_at, ${placeholder}) = ${placeholder}`);
     }
     const { rows } = await this.pool.query(
       `SELECT id, tenant_id, checksum, data, created_at, updated_at, deleted_at
@@ -185,7 +197,7 @@ export class PostgresStorageProvider {
       updates.push(`data = $${updates.length + 1}`);
       params.push(toNullableJson(patch.data));
     }
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     updates.push(`updated_at = $${updates.length + 1}`);
     params.push(nowIso);
     params.push(id, tenantId);
@@ -203,7 +215,7 @@ export class PostgresStorageProvider {
   }
 
   public async softDeletePipelineJob(tenantId: string, id: string): Promise<void> {
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     await this.pool.query(
       `UPDATE pipeline_jobs
        SET deleted_at = $1, updated_at = $1
@@ -215,7 +227,7 @@ export class PostgresStorageProvider {
   public async createPipelineArtifact(
     input: PipelineArtifactInput,
   ): Promise<PipelineArtifactRecord> {
-    const now = new Date().toISOString();
+    const now = new Date();
     const { rows } = await this.pool.query(
       `INSERT INTO pipeline_artifacts (id, job_id, tenant_id, checksum, data, created_at, updated_at, deleted_at)
        VALUES ($1, $2, $3, $4, $5, $6, $6, NULL)
@@ -253,7 +265,9 @@ export class PostgresStorageProvider {
     const conditions: string[] = ['tenant_id = $1'];
     const params: unknown[] = [tenantId];
     if (!options.includeDeleted) {
-      conditions.push('deleted_at IS NULL');
+      params.push(ACTIVE_DELETED_AT);
+      const placeholder = `$${params.length}`;
+      conditions.push(`COALESCE(deleted_at, ${placeholder}) = ${placeholder}`);
     }
     if (options.jobId) {
       conditions.push(`job_id = $${params.length + 1}`);
@@ -284,7 +298,7 @@ export class PostgresStorageProvider {
       updates.push(`data = $${updates.length + 1}`);
       params.push(toNullableJson(patch.data));
     }
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     updates.push(`updated_at = $${updates.length + 1}`);
     params.push(nowIso);
     params.push(id, tenantId);
@@ -302,7 +316,7 @@ export class PostgresStorageProvider {
   }
 
   public async softDeletePipelineArtifact(tenantId: string, id: string): Promise<void> {
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     await this.pool.query(
       `UPDATE pipeline_artifacts
        SET deleted_at = $1, updated_at = $1
@@ -312,7 +326,7 @@ export class PostgresStorageProvider {
   }
 
   public async createAuditEvent(input: AuditEventInput): Promise<AuditEventRecord> {
-    const now = new Date().toISOString();
+    const now = new Date();
     const { rows } = await this.pool.query(
       `INSERT INTO audit_events (id, tenant_id, checksum, payload, created_at, updated_at, deleted_at)
        VALUES ($1, $2, $3, $4, $5, $5, NULL)
@@ -350,7 +364,9 @@ export class PostgresStorageProvider {
     const conditions: string[] = ['tenant_id = $1'];
     const params: unknown[] = [tenantId];
     if (!options.includeDeleted) {
-      conditions.push('deleted_at IS NULL');
+      params.push(ACTIVE_DELETED_AT);
+      const placeholder = `$${params.length}`;
+      conditions.push(`COALESCE(deleted_at, ${placeholder}) = ${placeholder}`);
     }
     const { rows } = await this.pool.query(
       `SELECT id, tenant_id, checksum, payload, created_at, updated_at, deleted_at
@@ -377,7 +393,7 @@ export class PostgresStorageProvider {
       updates.push(`payload = $${updates.length + 1}`);
       params.push(toNullableJson(patch.payload));
     }
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     updates.push(`updated_at = $${updates.length + 1}`);
     params.push(nowIso);
     params.push(id, tenantId);
@@ -395,7 +411,7 @@ export class PostgresStorageProvider {
   }
 
   public async softDeleteAuditEvent(tenantId: string, id: string): Promise<void> {
-    const nowIso = new Date().toISOString();
+    const nowIso = new Date();
     await this.pool.query(
       `UPDATE audit_events
        SET deleted_at = $1, updated_at = $1
