@@ -24,12 +24,16 @@ describe('DatabaseManager', () => {
     expect(pool).toBe(getPool());
 
     const { rows } = await pool.query(
-      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('jobs','audit_logs','reviews','evidence') ORDER BY table_name",
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('jobs','audit_logs','reviews','evidence','pipeline_jobs','pipeline_artifacts','audit_events') ORDER BY table_name",
     );
-    expect(rows.map((row: { table_name: string }) => row.table_name)).toEqual([
+    const tableNames = rows.map((row: { table_name: string }) => row.table_name).sort();
+    expect(tableNames).toEqual([
+      'audit_events',
       'audit_logs',
       'evidence',
       'jobs',
+      'pipeline_artifacts',
+      'pipeline_jobs',
       'reviews',
     ]);
 

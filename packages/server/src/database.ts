@@ -21,6 +21,7 @@ const MIGRATION_STEPS: MigrationStep[] = [
       tenant_id TEXT NOT NULL,
       kind TEXT NOT NULL,
       status TEXT NOT NULL,
+      hash TEXT,
       payload JSONB,
       result JSONB,
       error JSONB,
@@ -29,9 +30,80 @@ const MIGRATION_STEPS: MigrationStep[] = [
     )`,
   },
   {
+    description: 'jobs hash column',
+    createSql: 'ALTER TABLE jobs ADD COLUMN IF NOT EXISTS hash TEXT',
+  },
+  {
     description: 'jobs tenant+status index',
     checkParams: ['jobs_tenant_status_idx'],
     createSql: 'CREATE INDEX jobs_tenant_status_idx ON jobs (tenant_id, status, created_at DESC)',
+  },
+  {
+    description: 'pipeline_jobs table',
+    checkSql:
+      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
+    checkParams: ['pipeline_jobs'],
+    createSql: `CREATE TABLE pipeline_jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      data JSONB,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      deleted_at TIMESTAMP
+    )`,
+  },
+  {
+    description: 'pipeline_jobs tenant index',
+    checkParams: ['pipeline_jobs_tenant_idx'],
+    createSql: 'CREATE INDEX pipeline_jobs_tenant_idx ON pipeline_jobs (tenant_id, created_at DESC)',
+  },
+  {
+    description: 'pipeline_artifacts table',
+    checkSql:
+      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
+    checkParams: ['pipeline_artifacts'],
+    createSql: `CREATE TABLE pipeline_artifacts (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      data JSONB,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      deleted_at TIMESTAMP
+    )`,
+  },
+  {
+    description: 'pipeline_artifacts job index',
+    checkParams: ['pipeline_artifacts_job_idx'],
+    createSql: 'CREATE INDEX pipeline_artifacts_job_idx ON pipeline_artifacts (job_id)',
+  },
+  {
+    description: 'pipeline_artifacts tenant index',
+    checkParams: ['pipeline_artifacts_tenant_idx'],
+    createSql:
+      'CREATE INDEX pipeline_artifacts_tenant_idx ON pipeline_artifacts (tenant_id, created_at DESC)',
+  },
+  {
+    description: 'audit_events table',
+    checkSql:
+      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
+    checkParams: ['audit_events'],
+    createSql: `CREATE TABLE audit_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      payload JSONB,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      deleted_at TIMESTAMP
+    )`,
+  },
+  {
+    description: 'audit_events tenant index',
+    checkParams: ['audit_events_tenant_idx'],
+    createSql: 'CREATE INDEX audit_events_tenant_idx ON audit_events (tenant_id, created_at DESC)',
   },
   {
     description: 'audit_logs table',

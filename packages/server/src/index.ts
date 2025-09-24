@@ -193,6 +193,349 @@ const createScopedJobKey = (tenantId: string, jobId: string): string => `${tenan
 const normalizeScopeList = (scopes?: string[]): string[] =>
   (scopes ?? []).map((scope) => scope.trim()).filter((scope) => scope.length > 0);
 
+interface JobErrorState {
+  statusCode: number;
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+interface StoredJobRecord<TResult = unknown, TPayload = unknown> {
+  tenantId: string;
+  id: string;
+  kind: JobKind;
+  hash: string;
+  status: JobStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  result?: TResult;
+  error?: JobErrorState;
+  payload?: TPayload;
+}
+
+class JobStore {
+  constructor(private readonly database: DatabaseManager, private readonly logger: Logger) {}
+
+  private get pool() {
+    return this.database.getPool();
+  }
+
+  private toScopedId(tenantId: string, jobId: string): string {
+    return createScopedJobKey(tenantId, jobId);
+  }
+
+  private extractJobId(scopedId: string, tenantId: string): string {
+    const prefix = `${tenantId}:`;
+    return scopedId.startsWith(prefix) ? scopedId.slice(prefix.length) : scopedId;
+  }
+
+  private parseDate(value: unknown): Date {
+    if (value instanceof Date) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    return new Date();
+  }
+
+  private parseJson<T>(value: unknown): T | undefined {
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value) as T;
+      } catch {
+        return undefined;
+      }
+    }
+    return value as T;
+  }
+
+  private fromRow<TResult = unknown, TPayload = unknown>(
+    row: {
+      id: string;
+      tenant_id: string;
+      kind: JobKind;
+      status: JobStatus;
+      hash?: string | null;
+      payload?: unknown;
+      result?: unknown;
+      error?: unknown;
+      created_at: unknown;
+      updated_at: unknown;
+    },
+  ): StoredJobRecord<TResult, TPayload> {
+    const tenantId = row.tenant_id;
+    const id = this.extractJobId(row.id, tenantId);
+    const error = this.parseJson<JobErrorState>(row.error);
+    return {
+      tenantId,
+      id,
+      kind: row.kind,
+      hash: typeof row.hash === 'string' ? row.hash : '',
+      status: row.status,
+      createdAt: this.parseDate(row.created_at),
+      updatedAt: this.parseDate(row.updated_at),
+      result: this.parseJson<TResult>(row.result),
+      error: error ?? undefined,
+      payload: this.parseJson<TPayload>(row.payload),
+    };
+  }
+
+  private toJobDetails<TResult>(record: StoredJobRecord<TResult>): JobDetails<TResult> {
+    return {
+      id: record.id,
+      kind: record.kind,
+      hash: record.hash,
+      status: record.status,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      result: record.result,
+      error: record.error,
+    };
+  }
+
+  public async restore(queue: JobQueue, knownTenants: Set<string>): Promise<void> {
+    const { rows } = await this.pool.query(
+      'SELECT id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at FROM jobs ORDER BY created_at ASC',
+    );
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const record = this.fromRow(row as never);
+      knownTenants.add(record.tenantId);
+      switch (record.status) {
+        case 'queued':
+          if (record.payload === undefined) {
+            this.logger.warn(
+              {
+                event: 'job_restore_skipped',
+                tenantId: record.tenantId,
+                jobId: record.id,
+                reason: 'payload_missing',
+              },
+              'Kuyrukta bekleyen iş kalıcı yük olmadığı için yeniden kuyruğa alınamadı.',
+            );
+            break;
+          }
+          queue.enqueue({
+            tenantId: record.tenantId,
+            id: record.id,
+            kind: record.kind,
+            hash: record.hash,
+            payload: record.payload,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
+          });
+          break;
+        case 'running':
+          if (record.payload === undefined) {
+            this.logger.warn(
+              {
+                event: 'job_restore_skipped',
+                tenantId: record.tenantId,
+                jobId: record.id,
+                reason: 'payload_missing',
+              },
+              'Çalışmakta olan iş kalıcı yük olmadığı için tekrar kuyruğa alınamadı.',
+            );
+            break;
+          }
+          queue.enqueue({
+            tenantId: record.tenantId,
+            id: record.id,
+            kind: record.kind,
+            hash: record.hash,
+            payload: record.payload,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
+          });
+          await this.markQueued(record.tenantId, record.id);
+          break;
+        case 'completed':
+          queue.adoptCompleted({
+            tenantId: record.tenantId,
+            id: record.id,
+            kind: record.kind,
+            hash: record.hash,
+            createdAt: record.createdAt.toISOString(),
+            updatedAt: record.updatedAt.toISOString(),
+            result: record.result,
+          });
+          break;
+        case 'failed':
+          if (record.error) {
+            queue.adoptFailed({
+              tenantId: record.tenantId,
+              id: record.id,
+              kind: record.kind,
+              hash: record.hash,
+              createdAt: record.createdAt.toISOString(),
+              updatedAt: record.updatedAt.toISOString(),
+              result: undefined,
+              error: record.error,
+            });
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  private async getRecord<TResult = unknown, TPayload = unknown>(
+    tenantId: string,
+    jobId: string,
+    options: { includePayload?: boolean } = {},
+  ): Promise<StoredJobRecord<TResult, TPayload> | undefined> {
+    const columns = options.includePayload
+      ? 'id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at'
+      : 'id, tenant_id, kind, status, hash, result, error, created_at, updated_at';
+    const { rows } = await this.pool.query(
+      `SELECT ${columns} FROM jobs WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+      [this.toScopedId(tenantId, jobId), tenantId],
+    );
+    if (rows.length === 0) {
+      return undefined;
+    }
+    const row = rows[0] as Record<string, unknown>;
+    if (!options.includePayload && !(row as { payload?: unknown }).payload) {
+      (row as { payload?: unknown }).payload = undefined;
+    }
+    return this.fromRow(row as never);
+  }
+
+  public async findJob<TResult = unknown>(
+    tenantId: string,
+    jobId: string,
+  ): Promise<JobDetails<TResult> | undefined> {
+    const record = await this.getRecord<TResult>(tenantId, jobId);
+    return record ? this.toJobDetails(record) : undefined;
+  }
+
+  public async getJobWithPayload<TResult = unknown, TPayload = unknown>(
+    tenantId: string,
+    jobId: string,
+  ): Promise<StoredJobRecord<TResult, TPayload> | undefined> {
+    return this.getRecord<TResult, TPayload>(tenantId, jobId, { includePayload: true });
+  }
+
+  public async listJobs<TResult = unknown>(tenantId: string): Promise<JobDetails<TResult>[]> {
+    const { rows } = await this.pool.query(
+      'SELECT id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at FROM jobs WHERE tenant_id = $1 ORDER BY created_at DESC',
+      [tenantId],
+    );
+    return (rows as Array<Record<string, unknown>>)
+      .map((row) => this.toJobDetails(this.fromRow(row as never)));
+  }
+
+  public async insertQueuedJob<TPayload>(options: {
+    tenantId: string;
+    id: string;
+    kind: JobKind;
+    hash: string;
+    payload: TPayload;
+    createdAt: Date;
+    updatedAt: Date;
+  }): Promise<{ inserted: boolean; job?: JobDetails<unknown> }> {
+    const scopedId = this.toScopedId(options.tenantId, options.id);
+    const createdAtIso = options.createdAt.toISOString();
+    const updatedAtIso = options.updatedAt.toISOString();
+    const payloadValue = options.payload === undefined ? null : JSON.stringify(options.payload);
+    const result = await this.pool.query(
+      `INSERT INTO jobs (id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        scopedId,
+        options.tenantId,
+        options.kind,
+        'queued',
+        options.hash,
+        payloadValue,
+        null,
+        null,
+        createdAtIso,
+        updatedAtIso,
+      ],
+    );
+    if (result.rowCount === 0) {
+      const existing = await this.findJob(options.tenantId, options.id);
+      return { inserted: false, job: existing };
+    }
+    return { inserted: true };
+  }
+
+  public async markRunning(tenantId: string, jobId: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    await this.pool.query(
+      'UPDATE jobs SET status = $1, updated_at = $2, error = NULL WHERE id = $3 AND tenant_id = $4',
+      ['running', nowIso, this.toScopedId(tenantId, jobId), tenantId],
+    );
+  }
+
+  public async markCompleted<TResult>(tenantId: string, jobId: string, result: TResult): Promise<void> {
+    const nowIso = new Date().toISOString();
+    const serializedResult = result === undefined ? null : JSON.stringify(result);
+    await this.pool.query(
+      'UPDATE jobs SET status = $1, updated_at = $2, result = $3, error = NULL WHERE id = $4 AND tenant_id = $5',
+      ['completed', nowIso, serializedResult, this.toScopedId(tenantId, jobId), tenantId],
+    );
+  }
+
+  public async markFailed(tenantId: string, jobId: string, error: JobErrorState): Promise<void> {
+    const nowIso = new Date().toISOString();
+    await this.pool.query(
+      'UPDATE jobs SET status = $1, updated_at = $2, error = $3 WHERE id = $4 AND tenant_id = $5',
+      ['failed', nowIso, JSON.stringify(error), this.toScopedId(tenantId, jobId), tenantId],
+    );
+  }
+
+  public async deleteJob(tenantId: string, jobId: string): Promise<void> {
+    await this.pool.query('DELETE FROM jobs WHERE id = $1 AND tenant_id = $2', [
+      this.toScopedId(tenantId, jobId),
+      tenantId,
+    ]);
+  }
+
+  public async countActiveJobs(tenantId: string): Promise<number> {
+    const { rows } = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM jobs WHERE tenant_id = $1 AND status IN ($2, $3)',
+      [tenantId, 'queued', 'running'],
+    );
+    const [first] = rows as Array<{ count: number } | { count: string }>;
+    if (!first) {
+      return 0;
+    }
+    const value = (first as { count: number }).count ?? Number((first as { count: string }).count);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  public async countTotalActiveJobs(): Promise<number> {
+    const { rows } = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM jobs WHERE status IN ($1, $2)',
+      ['queued', 'running'],
+    );
+    const [first] = rows as Array<{ count: number } | { count: string }>;
+    if (!first) {
+      return 0;
+    }
+    const value = (first as { count: number }).count ?? Number((first as { count: string }).count);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  private async markQueued(tenantId: string, jobId: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    await this.pool.query(
+      'UPDATE jobs SET status = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4',
+      ['queued', nowIso, this.toScopedId(tenantId, jobId), tenantId],
+    );
+  }
+}
+
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024;
 const DEFAULT_LICENSE_MAX_BYTES = 512 * 1024;
 const DEFAULT_LICENSE_HEADER_MAX_BYTES = Math.ceil((DEFAULT_LICENSE_MAX_BYTES * 4) / 3);
@@ -2524,6 +2867,7 @@ export const createServer = (config: ServerConfig): Express => {
     source: RetentionSource = 'manual',
   ): Promise<RetentionStats[]> => {
     try {
+      await ensureJobsRestored();
       const summary = await runRetentionSweep(
         storage,
         queue,
@@ -2850,11 +3194,59 @@ export const createServer = (config: ServerConfig): Express => {
   const maxQueuedJobsTotal =
     config.maxQueuedJobsTotal !== undefined ? Math.max(1, config.maxQueuedJobsTotal) : undefined;
   const workerConcurrency = Math.max(1, config.workerConcurrency ?? 1);
+  const jobStore = new JobStore(config.database, logger);
   const queue = new JobQueue(workerConcurrency, {
     directory: queueDirectory,
+    persistJobs: false,
     createRunner: (context) => {
       const handler = jobHandlers[context.kind] as JobHandler<JobKind>;
-      const run = () => handler(context as JobExecutionContext<JobPayloadMap[JobKind]>);
+      const run = async () => {
+        try {
+          await jobStore.markRunning(context.tenantId, context.id);
+        } catch (error) {
+          logger.error(
+            {
+              event: 'job_store_mark_running_failed',
+              tenantId: context.tenantId,
+              jobId: context.id,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'İş durumu "running" olarak güncellenemedi.',
+          );
+          throw error;
+        }
+        try {
+          const result = await handler(context as JobExecutionContext<JobPayloadMap[JobKind]>);
+          await jobStore.markCompleted(context.tenantId, context.id, result);
+          return result;
+        } catch (error) {
+          const normalized = toHttpError(error, {
+            code: 'JOB_FAILED',
+            message: 'İş başarısız oldu.',
+            statusCode: 500,
+          });
+          const payload: JobErrorState = {
+            statusCode: normalized.statusCode,
+            code: normalized.code,
+            message: normalized.message,
+            details: normalized.details,
+          };
+          try {
+            await jobStore.markFailed(context.tenantId, context.id, payload);
+          } catch (storeError) {
+            logger.error(
+              {
+                event: 'job_store_mark_failed_error',
+                tenantId: context.tenantId,
+                jobId: context.id,
+                error: storeError instanceof Error ? storeError.message : String(storeError),
+              },
+              'İş başarısız durumu kaydedilemedi.',
+            );
+          }
+          throw error;
+        }
+      };
       return instrumentJobRun(
         {
           tenantId: context.tenantId,
@@ -2867,27 +3259,44 @@ export const createServer = (config: ServerConfig): Express => {
     },
   });
 
-  const getActiveJobCount = (tenantId: string): number =>
-    queue
-      .list(tenantId)
-      .filter((job) => job.status === 'queued' || job.status === 'running').length;
+  let restoreError: unknown;
+  const restorePromise = jobStore
+    .restore(queue, knownTenants)
+    .catch((error) => {
+      restoreError = error;
+      logger.error(
+        {
+          event: 'job_restore_failed',
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Kuyruk iş durumu veritabanından yüklenemedi.',
+      );
+      throw error;
+    });
 
-  const getTotalActiveJobCount = (): number => {
-    let total = 0;
-    for (const tenant of knownTenants) {
-      total += getActiveJobCount(tenant);
+  const ensureJobsRestored = async (): Promise<void> => {
+    if (restoreError) {
+      throw restoreError;
     }
-    return total;
+    await restorePromise;
   };
 
-  const updateQueueDepth = (tenantId: string): void => {
-    const activeJobs = getActiveJobCount(tenantId);
-    jobQueueDepthGauge.set({ tenantId }, activeJobs);
-    jobQueueTotalGauge.set(getTotalActiveJobCount());
+  const getActiveJobCount = async (tenantId: string): Promise<number> =>
+    jobStore.countActiveJobs(tenantId);
+
+  const getTotalActiveJobCount = async (): Promise<number> => jobStore.countTotalActiveJobs();
+
+  const updateQueueDepth = async (tenantId: string): Promise<void> => {
+    const [tenantCount, totalCount] = await Promise.all([
+      getActiveJobCount(tenantId),
+      getTotalActiveJobCount(),
+    ]);
+    jobQueueDepthGauge.set({ tenantId }, tenantCount);
+    jobQueueTotalGauge.set(totalCount);
   };
 
-  const ensureQueueWithinLimit = (tenantId: string): void => {
-    const activeJobs = getActiveJobCount(tenantId);
+  const ensureQueueWithinLimit = async (tenantId: string): Promise<void> => {
+    const activeJobs = await getActiveJobCount(tenantId);
     if (activeJobs >= maxQueuedJobsPerTenant) {
       throw new HttpError(
         429,
@@ -2897,7 +3306,7 @@ export const createServer = (config: ServerConfig): Express => {
       );
     }
     if (maxQueuedJobsTotal !== undefined) {
-      const totalActiveJobs = getTotalActiveJobCount();
+      const totalActiveJobs = await getTotalActiveJobCount();
       if (totalActiveJobs >= maxQueuedJobsTotal) {
         throw new HttpError(
           429,
@@ -2931,7 +3340,9 @@ export const createServer = (config: ServerConfig): Express => {
           hash: context.hash,
           durationMs: durationSeconds * 1000,
         });
-        setImmediate(() => updateQueueDepth(context.tenantId));
+        setImmediate(() => {
+          void updateQueueDepth(context.tenantId);
+        });
         return result;
       } catch (error) {
         const durationNs = process.hrtime.bigint() - startedAt;
@@ -2966,27 +3377,59 @@ export const createServer = (config: ServerConfig): Express => {
           },
           normalized.message,
         );
-        setImmediate(() => updateQueueDepth(context.tenantId));
+        setImmediate(() => {
+          void updateQueueDepth(context.tenantId);
+        });
         throw error;
       }
     };
   }
 
-  const enqueueObservedJob = <TResult, TPayload>(options: {
+  const enqueueObservedJob = async <TResult, TPayload>(options: {
     tenantId: string;
     id: string;
     kind: JobKind;
     hash: string;
     payload: TPayload;
-  }): JobDetails<TResult> => {
-    ensureQueueWithinLimit(options.tenantId);
+  }): Promise<JobDetails<TResult>> => {
+    await ensureJobsRestored();
+    await ensureQueueWithinLimit(options.tenantId);
+    const existing = await jobStore.findJob<TResult>(options.tenantId, options.id);
+    if (existing) {
+      return existing;
+    }
+
+    const createdAt = new Date();
+    const insertResult = await jobStore.insertQueuedJob({
+      tenantId: options.tenantId,
+      id: options.id,
+      kind: options.kind,
+      hash: options.hash,
+      payload: options.payload,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    if (!insertResult.inserted) {
+      if (insertResult.job) {
+        return insertResult.job as JobDetails<TResult>;
+      }
+      const fallback = await jobStore.findJob<TResult>(options.tenantId, options.id);
+      if (fallback) {
+        return fallback;
+      }
+    }
+
     const job = queue.enqueue<TPayload, TResult>({
       tenantId: options.tenantId,
       id: options.id,
       kind: options.kind,
       hash: options.hash,
       payload: options.payload,
+      createdAt,
+      updatedAt: createdAt,
     });
+    knownTenants.add(options.tenantId);
     logger.info({
       event: 'job_created',
       tenantId: options.tenantId,
@@ -2994,7 +3437,7 @@ export const createServer = (config: ServerConfig): Express => {
       kind: options.kind,
       hash: options.hash,
     });
-    updateQueueDepth(options.tenantId);
+    await updateQueueDepth(options.tenantId);
     return job;
   };
 
@@ -3431,8 +3874,8 @@ export const createServer = (config: ServerConfig): Express => {
         JOB_STATUSES,
         'İş durumu',
       );
-      const jobs = queue
-        .list(tenantId)
+      await ensureJobsRestored();
+      const jobs = (await jobStore.listJobs(tenantId))
         .filter((job) => jobMatchesFilters(job, kinds, statuses))
         .map(serializeJobSummary);
       res.json({ jobs });
@@ -3449,8 +3892,9 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
       }
       assertJobId(id);
+      await ensureJobsRestored();
       const job =
-        queue.get(tenantId, id) ??
+        (await jobStore.findJob(tenantId, id)) ??
         (await locateJobMetadata(storage, queue, tenantId, id, (metadata) =>
           hydrateJobLicense(metadata, tenantId),
         ));
@@ -3563,7 +4007,8 @@ export const createServer = (config: ServerConfig): Express => {
       }
       assertJobId(id);
 
-      const job = queue.get(tenantId, id);
+      await ensureJobsRestored();
+      const job = await jobStore.findJob(tenantId, id);
       if (!job) {
         throw new HttpError(404, 'JOB_NOT_FOUND', 'İstenen iş bulunamadı.');
       }
@@ -3578,12 +4023,14 @@ export const createServer = (config: ServerConfig): Express => {
         );
       }
 
-      queue.remove(tenantId, id);
-      await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
+      const removed = queue.remove(tenantId, id);
+      await jobStore.deleteJob(tenantId, id);
+      const kind = removed?.kind ?? job.kind;
+      await removeJobArtifacts(storage, directories, tenantId, id, kind);
       jobLicenses.delete(createScopedJobKey(tenantId, id));
-      updateQueueDepth(tenantId);
+      await updateQueueDepth(tenantId);
 
-      res.json({ status: 'cancelled', id, kind: job.kind });
+      res.json({ status: 'cancelled', id, kind });
     }),
   );
 
@@ -3598,7 +4045,8 @@ export const createServer = (config: ServerConfig): Express => {
       }
       assertJobId(id);
 
-      let job = queue.get(tenantId, id);
+      await ensureJobsRestored();
+      let job = await jobStore.findJob(tenantId, id);
       if (!job) {
         const adopted = await locateJobMetadata(storage, queue, tenantId, id);
         if (!adopted) {
@@ -3614,12 +4062,14 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(409, 'JOB_NOT_FINISHED', 'Önce işi iptal etmelisiniz.');
       }
 
-      queue.remove(tenantId, id);
-      await removeJobArtifacts(storage, directories, tenantId, id, job.kind);
+      const removed = queue.remove(tenantId, id);
+      await jobStore.deleteJob(tenantId, id);
+      const kind = removed?.kind ?? job.kind;
+      await removeJobArtifacts(storage, directories, tenantId, id, kind);
       jobLicenses.delete(createScopedJobKey(tenantId, id));
-      updateQueueDepth(tenantId);
+      await updateQueueDepth(tenantId);
 
-      res.json({ status: 'deleted', id, kind: job.kind });
+      res.json({ status: 'deleted', id, kind });
     }),
   );
 
@@ -3695,7 +4145,8 @@ export const createServer = (config: ServerConfig): Express => {
         const workspaceDir = path.join(directories.workspaces, tenantId, importId);
         const metadataPath = path.join(workspaceDir, METADATA_FILE);
 
-        const existingJob = queue.get<ImportJobResult>(tenantId, importId);
+        await ensureJobsRestored();
+        const existingJob = await jobStore.findJob<ImportJobResult>(tenantId, importId);
         if (existingJob) {
           ensureJobLicense(tenantId, importId, license);
           await ensureCleanup();
@@ -3734,12 +4185,12 @@ export const createServer = (config: ServerConfig): Express => {
         }
 
         try {
-          const job = enqueueObservedJob<ImportJobResult, ImportJobPayload>({
-            tenantId,
-            id: importId,
-            kind: 'import',
-            hash,
-            payload: {
+        const job = await enqueueObservedJob<ImportJobResult, ImportJobPayload>({
+          tenantId,
+          id: importId,
+          kind: 'import',
+          hash,
+          payload: {
               workspaceDir,
               uploads: persistedUploads,
               level: level ?? null,
@@ -3821,7 +4272,8 @@ export const createServer = (config: ServerConfig): Express => {
       const analysisDir = path.join(directories.analyses, tenantId, analyzeId);
       const metadataPath = path.join(analysisDir, METADATA_FILE);
 
-      const existingJob = queue.get<AnalyzeJobResult>(tenantId, analyzeId);
+      await ensureJobsRestored();
+      const existingJob = await jobStore.findJob<AnalyzeJobResult>(tenantId, analyzeId);
       if (existingJob) {
         ensureJobLicense(tenantId, analyzeId, license);
         sendJobResponse(res, existingJob, tenantId, {
@@ -3852,7 +4304,7 @@ export const createServer = (config: ServerConfig): Express => {
         projectVersion: effectiveProjectVersion,
       };
 
-      const job = enqueueObservedJob<AnalyzeJobResult, AnalyzeJobPayload>({
+      const job = await enqueueObservedJob<AnalyzeJobResult, AnalyzeJobPayload>({
         tenantId,
         id: analyzeId,
         kind: 'analyze',
@@ -3897,7 +4349,8 @@ export const createServer = (config: ServerConfig): Express => {
       const reportDir = path.join(directories.reports, tenantId, reportId);
       const metadataPath = path.join(reportDir, METADATA_FILE);
 
-      const existingJob = queue.get<ReportJobResult>(tenantId, reportId);
+      await ensureJobsRestored();
+      const existingJob = await jobStore.findJob<ReportJobResult>(tenantId, reportId);
       if (existingJob) {
         ensureJobLicense(tenantId, reportId, license);
         sendJobResponse(res, existingJob, tenantId, {
@@ -3925,7 +4378,7 @@ export const createServer = (config: ServerConfig): Express => {
         manifestId: body.manifestId,
       };
 
-      const job = enqueueObservedJob<ReportJobResult, ReportJobPayload>({
+      const job = await enqueueObservedJob<ReportJobResult, ReportJobPayload>({
         tenantId,
         id: reportId,
         kind: 'report',
@@ -3984,7 +4437,8 @@ export const createServer = (config: ServerConfig): Express => {
       const packageDir = path.join(directories.packages, tenantId, packId);
       const metadataPath = path.join(packageDir, METADATA_FILE);
 
-      const existingJob = queue.get<PackJobResult>(tenantId, packId);
+      await ensureJobsRestored();
+      const existingJob = await jobStore.findJob<PackJobResult>(tenantId, packId);
       if (existingJob) {
         ensureJobLicense(tenantId, packId, license);
         sendJobResponse(res, existingJob, tenantId, {
@@ -4002,7 +4456,7 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      const job = enqueueObservedJob<PackJobResult, PackJobPayload>({
+      const job = await enqueueObservedJob<PackJobResult, PackJobPayload>({
         tenantId,
         id: packId,
         kind: 'pack',

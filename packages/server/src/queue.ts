@@ -49,6 +49,8 @@ interface EnqueueOptions<TPayload> {
   kind: JobKind;
   hash: string;
   payload?: TPayload;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 interface AdoptOptions<T> {
@@ -185,6 +187,8 @@ export class JobQueue {
     kind,
     hash,
     payload,
+    createdAt: createdAtOption,
+    updatedAt,
   }: EnqueueOptions<TPayload>): JobDetails<TResult> {
     const key = this.getKey(tenantId, id);
     const existing = this.jobs.get(key) as InternalJob<TResult> | undefined;
@@ -192,7 +196,7 @@ export class JobQueue {
       return this.toDetails(existing);
     }
 
-    const createdAt = new Date();
+    const createdAt = createdAtOption ?? new Date();
     const job: InternalJob<TResult> = {
       tenantId,
       id,
@@ -200,7 +204,7 @@ export class JobQueue {
       hash,
       status: 'queued',
       createdAt,
-      updatedAt: createdAt,
+      updatedAt: updatedAt ?? createdAt,
       payload,
       filePath: this.resolveJobFilePath(tenantId, id),
     };
@@ -246,6 +250,46 @@ export class JobQueue {
       createdAt: created,
       updatedAt: updated,
       result,
+      filePath: this.resolveJobFilePath(tenantId, id),
+    };
+
+    this.jobs.set(key, job);
+    this.order.push(job);
+    this.saveJob(job);
+    return this.toDetails(job);
+  }
+
+  public adoptFailed<T>({
+    tenantId,
+    id,
+    kind,
+    hash,
+    createdAt,
+    updatedAt,
+    error,
+  }: AdoptOptions<T> & { error: JobErrorInfo }): JobDetails<T> {
+    const key = this.getKey(tenantId, id);
+    const existing = this.jobs.get(key) as InternalJob<T> | undefined;
+    if (existing) {
+      existing.status = 'failed';
+      existing.error = error;
+      existing.updatedAt = updatedAt ? new Date(updatedAt) : new Date();
+      existing.result = undefined;
+      this.saveJob(existing);
+      return this.toDetails(existing);
+    }
+
+    const created = new Date(createdAt);
+    const updated = updatedAt ? new Date(updatedAt) : created;
+    const job: InternalJob<T> = {
+      tenantId,
+      id,
+      kind,
+      hash,
+      status: 'failed',
+      createdAt: created,
+      updatedAt: updated,
+      error,
       filePath: this.resolveJobFilePath(tenantId, id),
     };
 

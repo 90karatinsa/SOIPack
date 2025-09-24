@@ -20,6 +20,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 
 import type { DatabaseManager } from './database';
+import type { JobKind, JobStatus } from './queue';
 import type { FileScanner } from './scanner';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
@@ -351,14 +352,222 @@ describe('@soipack/server REST API', () => {
   let privateKey: KeyLike;
   let jwks: JSONWebKeySet;
   let baseConfig: ServerConfig;
+  let databaseStub: DatabaseStub;
   let metricsRegistry: Registry;
   let logEntries: Array<Record<string, unknown>>;
-  const createDatabaseStub = (): DatabaseManager =>
-    ({
+  type StubJobRow = {
+    id: string;
+    tenantId: string;
+    kind: JobKind;
+    status: JobStatus;
+    hash: string;
+    payload?: unknown;
+    result?: unknown;
+    error?: { statusCode: number; code: string; message: string; details?: unknown };
+    createdAt: Date;
+    updatedAt: Date;
+  };
+
+  type DatabaseStub = {
+    manager: DatabaseManager;
+    pool: { query: jest.Mock<Promise<{ rows: unknown[]; rowCount: number }>, [string, unknown[]?]> };
+    rows: Map<string, StubJobRow>;
+    reset: () => void;
+    failNext: (error: Error) => void;
+  };
+
+  const parseJson = (value: unknown): unknown => {
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return undefined;
+      }
+    }
+    return value;
+  };
+
+  const createDatabaseStub = (): DatabaseStub => {
+    const rows = new Map<string, StubJobRow>();
+    let failNextError: Error | undefined;
+
+    const toDbRow = (row: StubJobRow): Record<string, unknown> => ({
+      id: row.id,
+      tenant_id: row.tenantId,
+      kind: row.kind,
+      status: row.status,
+      hash: row.hash,
+      payload: row.payload ?? null,
+      result: row.result ?? null,
+      error: row.error ?? null,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+    });
+
+    const query = jest.fn(async (text: string, parameters?: unknown[]) => {
+      if (failNextError) {
+        const error = failNextError;
+        failNextError = undefined;
+        throw error;
+      }
+      const params = parameters ?? [];
+      const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase();
+
+      if (normalized.startsWith('select id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at from jobs order by created_at asc')) {
+        const ordered = [...rows.values()].sort(
+          (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+        );
+        return { rows: ordered.map(toDbRow), rowCount: ordered.length };
+      }
+
+      if (normalized.startsWith('select id, tenant_id, kind, status, hash')) {
+        if (normalized.includes('where id = $1 and tenant_id = $2 limit 1')) {
+          const [scopedId, tenantId] = params as [string, string];
+          const row = rows.get(scopedId);
+          if (!row || row.tenantId !== tenantId) {
+            return { rows: [], rowCount: 0 };
+          }
+          return { rows: [toDbRow(row)], rowCount: 1 };
+        }
+        if (normalized.includes('where tenant_id = $1 order by created_at desc')) {
+          const [tenantId] = params as [string];
+          const filtered = [...rows.values()]
+            .filter((row) => row.tenantId === tenantId)
+            .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+          return { rows: filtered.map(toDbRow), rowCount: filtered.length };
+        }
+      }
+
+      if (normalized.startsWith('insert into jobs')) {
+        const [id, tenantId, kind, status, hash, payloadRaw, resultRaw, errorRaw, createdAtRaw, updatedAtRaw] =
+          params as [
+            string,
+            string,
+            JobKind,
+            JobStatus,
+            string,
+            unknown,
+            unknown,
+            unknown,
+            string,
+            string,
+          ];
+        if (rows.has(id)) {
+          return { rows: [], rowCount: 0 };
+        }
+        const payload = parseJson(payloadRaw);
+        const result = parseJson(resultRaw);
+        const error = parseJson(errorRaw) as StubJobRow['error'];
+        const createdAt = new Date(createdAtRaw);
+        const updatedAt = new Date(updatedAtRaw);
+        rows.set(id, {
+          id,
+          tenantId,
+          kind,
+          status,
+          hash,
+          payload: payload ?? undefined,
+          result: result ?? undefined,
+          error: error ?? undefined,
+          createdAt,
+          updatedAt,
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('update jobs set status = $1, updated_at = $2, error = null where id = $3 and tenant_id = $4')) {
+        const [status, updatedAtRaw, scopedId] = params as [JobStatus, string, string, string];
+        const row = rows.get(scopedId);
+        if (row) {
+          row.status = status;
+          row.updatedAt = new Date(updatedAtRaw);
+          delete row.error;
+        }
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('update jobs set status = $1, updated_at = $2, result = $3, error = null where id = $4 and tenant_id = $5')) {
+        const [status, updatedAtRaw, resultRaw, scopedId] = params as [JobStatus, string, unknown, string, string];
+        const row = rows.get(scopedId);
+        if (row) {
+          row.status = status;
+          row.updatedAt = new Date(updatedAtRaw);
+          row.result = parseJson(resultRaw) ?? undefined;
+          delete row.error;
+        }
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('update jobs set status = $1, updated_at = $2, error = $3 where id = $4 and tenant_id = $5')) {
+        const [status, updatedAtRaw, errorRaw, scopedId] = params as [JobStatus, string, unknown, string, string];
+        const row = rows.get(scopedId);
+        if (row) {
+          row.status = status;
+          row.updatedAt = new Date(updatedAtRaw);
+          row.error = parseJson(errorRaw) as StubJobRow['error'];
+        }
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('update jobs set status = $1, updated_at = $2 where id = $3 and tenant_id = $4')) {
+        const [status, updatedAtRaw, scopedId] = params as [JobStatus, string, string, string];
+        const row = rows.get(scopedId);
+        if (row) {
+          row.status = status;
+          row.updatedAt = new Date(updatedAtRaw);
+        }
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('delete from jobs where id = $1 and tenant_id = $2')) {
+        const [scopedId] = params as [string, string];
+        const existed = rows.delete(scopedId);
+        return { rows: [], rowCount: existed ? 1 : 0 };
+      }
+
+      if (normalized.startsWith('select count(*)::int as count from jobs where tenant_id = $1 and status in ($2, $3)')) {
+        const [tenantId, firstStatus, secondStatus] = params as [string, JobStatus, JobStatus];
+        const count = [...rows.values()].filter(
+          (row) => row.tenantId === tenantId && (row.status === firstStatus || row.status === secondStatus),
+        ).length;
+        return { rows: [{ count }], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('select count(*)::int as count from jobs where status in ($1, $2)')) {
+        const [firstStatus, secondStatus] = params as [JobStatus, JobStatus];
+        const count = [...rows.values()].filter(
+          (row) => row.status === firstStatus || row.status === secondStatus,
+        ).length;
+        return { rows: [{ count }], rowCount: 1 };
+      }
+
+      throw new Error(`Unsupported query: ${text}`);
+    });
+
+    const pool = { query };
+    const manager = {
       initialize: jest.fn().mockResolvedValue(undefined),
       close: jest.fn().mockResolvedValue(undefined),
-      getPool: jest.fn(() => ({ query: jest.fn() })),
-    } as unknown as DatabaseManager);
+      getPool: jest.fn(() => pool),
+    } as unknown as DatabaseManager;
+
+    return {
+      manager,
+      pool,
+      rows,
+      reset: () => {
+        rows.clear();
+        query.mockClear();
+        failNextError = undefined;
+      },
+      failNext: (error: Error) => {
+        failNextError = error;
+      },
+    };
+  };
 
   const createAccessToken = async ({
     tenant = tenantId,
@@ -412,6 +621,8 @@ describe('@soipack/server REST API', () => {
     logEntries = logCapture.entries;
     metricsRegistry = new Registry();
 
+    databaseStub = createDatabaseStub();
+
     baseConfig = {
       auth: {
         issuer,
@@ -425,7 +636,7 @@ describe('@soipack/server REST API', () => {
       storageDir,
       signingKeyPath,
       licensePublicKeyPath,
-      database: createDatabaseStub(),
+      database: databaseStub.manager,
       retention: {
         uploads: { maxAgeMs: 0 },
         analyses: { maxAgeMs: 0 },
@@ -453,6 +664,7 @@ describe('@soipack/server REST API', () => {
     if (logEntries) {
       logEntries.length = 0;
     }
+    databaseStub.reset();
   });
 
   afterAll(async () => {
@@ -2911,13 +3123,23 @@ describe('@soipack/server REST API', () => {
     const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
     expect(importJob.status).toBe('completed');
 
+    const scopedId = `${tenantId}:${importResponse.body.id}`;
+    expect(databaseStub.rows.get(scopedId)?.status).toBe('completed');
+
     const initialRuns = runImportSpy.mock.calls.length;
 
+    databaseStub.pool.query.mockClear();
     const restartRegistry = new Registry();
     const restartApp = createServer({
       ...baseConfig,
       metricsRegistry: restartRegistry,
     });
+
+    await waitForCondition(() =>
+      databaseStub.pool.query.mock.calls.some(
+        ([sql]) => typeof sql === 'string' && sql.toLowerCase().includes('order by created_at asc'),
+      ),
+    );
 
     const adoptedResponse = await request(restartApp)
       .get(`/v1/jobs/${importResponse.body.id}`)
@@ -2927,8 +3149,42 @@ describe('@soipack/server REST API', () => {
     expect(adoptedResponse.body.status).toBe('completed');
     expect(adoptedResponse.body.id).toBe(importResponse.body.id);
     expect(runImportSpy.mock.calls.length).toBe(initialRuns);
+    expect(databaseStub.rows.get(scopedId)?.status).toBe('completed');
 
     runImportSpy.mockRestore();
+  });
+
+  it('uses database counts to update queue metrics', async () => {
+    databaseStub.pool.query.mockClear();
+
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Metrics Demo')
+      .field('projectVersion', `metrics-${Date.now()}`)
+      .expect(202);
+
+    await waitForJobCompletion(app, token, importResponse.body.id);
+
+    const countQueries = databaseStub.pool.query.mock.calls.filter(
+      ([sql]) => typeof sql === 'string' && sql.toLowerCase().includes('select count(*'),
+    );
+    expect(countQueries.length).toBeGreaterThan(0);
+  });
+
+  it('propagates database errors when listing jobs fails', async () => {
+    databaseStub.failNext(new Error('db failure'));
+
+    const response = await request(app)
+      .get('/v1/jobs')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(500);
+
+    expect(response.body.error.code).toBe('UNEXPECTED_ERROR');
   });
 });
 
