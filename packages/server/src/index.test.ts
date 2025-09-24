@@ -24,6 +24,7 @@ import type { JobKind, JobStatus } from './queue';
 import type { FileScanner } from './scanner';
 
 import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
+import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const TEST_SIGNING_BUNDLE = fs.readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
@@ -355,6 +356,7 @@ describe('@soipack/server REST API', () => {
   let databaseStub: DatabaseStub;
   let metricsRegistry: Registry;
   let logEntries: Array<Record<string, unknown>>;
+  let auditLogMock: AuditLogStoreMock;
   type StubJobRow = {
     id: string;
     tenantId: string;
@@ -573,6 +575,88 @@ describe('@soipack/server REST API', () => {
     };
   };
 
+  type AuditLogStoreMock = {
+    store: {
+      append: jest.Mock<
+        Promise<{
+          id: string;
+          tenantId: string;
+          actor: string;
+          action: string;
+          target?: string;
+          payload?: unknown;
+          createdAt: Date;
+        }>,
+        [AppendAuditLogInput]
+      >;
+      query: jest.Mock<
+        Promise<{
+          items: Array<{
+            id: string;
+            tenantId: string;
+            actor: string;
+            action: string;
+            target?: string;
+            payload?: unknown;
+            createdAt: Date;
+          }>;
+          hasMore: boolean;
+          nextOffset?: number;
+        }>,
+        [AuditLogQueryOptions]
+      >;
+    };
+    appended: AppendAuditLogInput[];
+    reset: () => void;
+  };
+
+  const createAuditLogStoreMock = (): AuditLogStoreMock => {
+    const appended: AppendAuditLogInput[] = [];
+    const append = jest.fn(async (input: AppendAuditLogInput) => {
+      appended.push(input);
+      return {
+        id: input.id ?? `audit-${appended.length}`,
+        tenantId: input.tenantId,
+        actor: input.actor,
+        action: input.action,
+        target: input.target,
+        payload: input.payload,
+        createdAt: input.createdAt ? new Date(input.createdAt) : new Date(),
+      };
+    });
+    const query = jest.fn(async (options: AuditLogQueryOptions) => {
+      const filtered = appended.filter(
+        (entry) =>
+          entry.tenantId === options.tenantId &&
+          (!options.actor || entry.actor === options.actor) &&
+          (!options.action || entry.action === options.action) &&
+          (!options.target || entry.target === options.target),
+      );
+      return {
+        items: filtered.map((entry, index) => ({
+          id: entry.id ?? `audit-query-${index}`,
+          tenantId: entry.tenantId,
+          actor: entry.actor,
+          action: entry.action,
+          target: entry.target,
+          payload: entry.payload,
+          createdAt: entry.createdAt ? new Date(entry.createdAt) : new Date(),
+        })),
+        hasMore: false,
+        nextOffset: undefined,
+      };
+    });
+    return {
+      store: { append, query },
+      appended,
+      reset: () => {
+        appended.length = 0;
+        append.mockClear();
+        query.mockClear();
+      },
+    };
+  };
+
   const createAccessToken = async ({
     tenant = tenantId,
     subject = 'user-1',
@@ -626,6 +710,7 @@ describe('@soipack/server REST API', () => {
     metricsRegistry = new Registry();
 
     databaseStub = createDatabaseStub();
+    auditLogMock = createAuditLogStoreMock();
 
     baseConfig = {
       auth: {
@@ -656,6 +741,7 @@ describe('@soipack/server REST API', () => {
         tenant: { windowMs: 60_000, max: 1_000 },
       },
       requireAdminClientCertificate: false,
+      auditLogStore: auditLogMock.store,
     };
 
     app = createServer(baseConfig);
@@ -669,6 +755,7 @@ describe('@soipack/server REST API', () => {
       logEntries.length = 0;
     }
     databaseStub.reset();
+    auditLogMock.reset();
   });
 
   afterAll(async () => {
@@ -3187,6 +3274,82 @@ describe('@soipack/server REST API', () => {
     expect(databaseStub.rows.get(scopedId)?.status).toBe('completed');
 
     runImportSpy.mockRestore();
+  });
+
+  it('emits audit logs for import job lifecycle and license actions', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    runImportSpy.mockResolvedValue({
+      warnings: [],
+      workspacePath: path.join('out', 'workspace.json'),
+      workspace: {} as cli.ImportWorkspace,
+    } satisfies Awaited<ReturnType<typeof cli.runImport>>);
+
+    const projectVersion = `audit-${Date.now()}`;
+    const response = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Audit Demo')
+      .field('projectVersion', projectVersion)
+      .expect(202);
+
+    const jobId = response.body.id as string;
+    await waitForJobCompletion(app, token, jobId);
+    runImportSpy.mockRestore();
+
+    const actions = auditLogMock.store.append.mock.calls.map(([entry]) => entry.action);
+    expect(actions).toEqual(
+      expect.arrayContaining(['job.created', 'job.started', 'job.completed', 'license.attached']),
+    );
+    const creationEntry = auditLogMock.store.append.mock.calls.find(
+      ([entry]) => entry.action === 'job.created',
+    )?.[0];
+    expect(creationEntry).toMatchObject({
+      tenantId,
+      actor: 'user-1',
+      target: `job:${jobId}`,
+      payload: expect.objectContaining({ kind: 'import' }),
+    });
+  });
+
+  it('returns audit log entries filtered by actor via the API', async () => {
+    const timestamp = new Date('2024-07-01T12:00:00Z');
+    auditLogMock.store.query.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'entry-1',
+          tenantId,
+          actor: 'user-1',
+          action: 'job.created',
+          target: 'job:abcd1234',
+          payload: { kind: 'import' },
+          createdAt: timestamp,
+        },
+      ],
+      hasMore: false,
+      nextOffset: undefined,
+    });
+
+    const response = await request(app)
+      .get('/api/audit-logs?actor=user-1')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(auditLogMock.store.query).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId, actor: 'user-1' }),
+    );
+    expect(response.body.items).toEqual([
+      expect.objectContaining({
+        id: 'entry-1',
+        actor: 'user-1',
+        action: 'job.created',
+        target: 'job:abcd1234',
+      }),
+    ]);
+    expect(typeof response.body.items[0].createdAt).toBe('string');
   });
 
   it('uses database counts to update queue metrics', async () => {

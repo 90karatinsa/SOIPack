@@ -41,6 +41,7 @@ import multer from 'multer';
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
+import { AuditLogStore, type AppendAuditLogInput, type AuditLogQueryOptions } from './audit';
 import type { DatabaseManager } from './database';
 
 
@@ -1286,12 +1287,15 @@ export interface JwtAuthConfig {
   remoteJwks?: RemoteJwksConfig;
 }
 
+type AuditLogAdapter = Pick<AuditLogStore, 'append' | 'query'>;
+
 export interface ServerConfig {
   auth: JwtAuthConfig;
   storageDir: string;
   signingKeyPath: string;
   licensePublicKeyPath: string;
   database: DatabaseManager;
+  auditLogStore?: AuditLogAdapter;
   maxUploadSizeBytes?: number;
   jsonBodyLimitBytes?: number;
   maxQueuedJobsPerTenant?: number;
@@ -2157,9 +2161,34 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const licenseCache = new Map<string, LicenseCacheEntry>();
+  const auditLogStore: AuditLogAdapter = config.auditLogStore ?? new AuditLogStore(config.database);
   const jobLicenses = new Map<string, VerifiedLicense>();
   const knownTenants = new Set<string>();
   const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
+
+  const appendAuditLog = async (entry: AppendAuditLogInput): Promise<void> => {
+    try {
+      await auditLogStore.append({ ...entry, createdAt: entry.createdAt ?? new Date() });
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          tenantId: entry.tenantId,
+          action: entry.action,
+        },
+        'Audit log entry could not be persisted.',
+      );
+    }
+  };
+
+  const toJobTarget = (jobId: string): string => `job:${jobId}`;
+
+  const toLicenseAuditPayload = (license: VerifiedLicense): Record<string, unknown> => ({
+    licenseId: license.payload.licenseId,
+    issuedTo: license.payload.issuedTo,
+    hash: license.hash,
+    expiresAt: license.payload.expiresAt ?? null,
+  });
 
   interface EvidenceRecord {
     id: string;
@@ -3203,6 +3232,13 @@ export const createServer = (config: ServerConfig): Express => {
       const run = async () => {
         try {
           await jobStore.markRunning(context.tenantId, context.id);
+          await appendAuditLog({
+            tenantId: context.tenantId,
+            actor: 'system',
+            action: 'job.started',
+            target: toJobTarget(context.id),
+            payload: { kind: context.kind, hash: context.hash },
+          });
         } catch (error) {
           logger.error(
             {
@@ -3218,6 +3254,13 @@ export const createServer = (config: ServerConfig): Express => {
         try {
           const result = await handler(context as JobExecutionContext<JobPayloadMap[JobKind]>);
           await jobStore.markCompleted(context.tenantId, context.id, result);
+          await appendAuditLog({
+            tenantId: context.tenantId,
+            actor: 'system',
+            action: 'job.completed',
+            target: toJobTarget(context.id),
+            payload: { kind: context.kind, hash: context.hash },
+          });
           return result;
         } catch (error) {
           const normalized = toHttpError(error, {
@@ -3233,6 +3276,17 @@ export const createServer = (config: ServerConfig): Express => {
           };
           try {
             await jobStore.markFailed(context.tenantId, context.id, payload);
+            await appendAuditLog({
+              tenantId: context.tenantId,
+              actor: 'system',
+              action: 'job.failed',
+              target: toJobTarget(context.id),
+              payload: {
+                kind: context.kind,
+                hash: context.hash,
+                error: { code: payload.code, statusCode: payload.statusCode },
+              },
+            });
           } catch (storeError) {
             logger.error(
               {
@@ -3387,6 +3441,7 @@ export const createServer = (config: ServerConfig): Express => {
 
   const enqueueObservedJob = async <TResult, TPayload>(options: {
     tenantId: string;
+    actor: string;
     id: string;
     kind: JobKind;
     hash: string;
@@ -3396,6 +3451,13 @@ export const createServer = (config: ServerConfig): Express => {
     await ensureQueueWithinLimit(options.tenantId);
     const existing = await jobStore.findJob<TResult>(options.tenantId, options.id);
     if (existing) {
+      await appendAuditLog({
+        tenantId: options.tenantId,
+        actor: options.actor,
+        action: 'job.reused',
+        target: toJobTarget(existing.id),
+        payload: { kind: existing.kind, hash: existing.hash, status: existing.status },
+      });
       return existing;
     }
 
@@ -3412,13 +3474,39 @@ export const createServer = (config: ServerConfig): Express => {
 
     if (!insertResult.inserted) {
       if (insertResult.job) {
+        await appendAuditLog({
+          tenantId: options.tenantId,
+          actor: options.actor,
+          action: 'job.reused',
+          target: toJobTarget(insertResult.job.id),
+          payload: {
+            kind: insertResult.job.kind,
+            hash: insertResult.job.hash,
+            status: insertResult.job.status,
+          },
+        });
         return insertResult.job as JobDetails<TResult>;
       }
       const fallback = await jobStore.findJob<TResult>(options.tenantId, options.id);
       if (fallback) {
+        await appendAuditLog({
+          tenantId: options.tenantId,
+          actor: options.actor,
+          action: 'job.reused',
+          target: toJobTarget(fallback.id),
+          payload: { kind: fallback.kind, hash: fallback.hash, status: fallback.status },
+        });
         return fallback;
       }
     }
+
+    await appendAuditLog({
+      tenantId: options.tenantId,
+      actor: options.actor,
+      action: 'job.created',
+      target: toJobTarget(options.id),
+      payload: { kind: options.kind, hash: options.hash },
+    });
 
     const job = queue.enqueue<TPayload, TResult>({
       tenantId: options.tenantId,
@@ -3492,7 +3580,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/evidence/:id',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Kanıt kimliği belirtilmelidir.');
@@ -3556,7 +3644,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/evidence/upload',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const body = req.body as { filename?: unknown; content?: unknown; metadata?: unknown };
       if (!body || typeof body !== 'object') {
         throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
@@ -3674,7 +3762,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/config/freeze',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const current = ensureTenantSnapshotVersion(tenantId);
       if (current.isFrozen) {
         res.json({ version: current });
@@ -3691,7 +3779,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const store = complianceStore.get(tenantId);
       const items = store ? Array.from(store.values()).map((record) => serializeComplianceRecord(record)) : [];
       res.json({ items });
@@ -3702,7 +3790,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/compliance/:id',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Uyum kaydı kimliği belirtilmelidir.');
@@ -3719,7 +3807,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const body = req.body as {
         matrix?: unknown;
         coverage?: unknown;
@@ -3911,10 +3999,82 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
+    '/api/audit-logs',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId: contextTenantId } = getAuthContext(req);
+      const query = req.query as Record<string, unknown>;
+      const tenantParam = typeof query.tenantId === 'string' ? query.tenantId.trim() : '';
+      const tenantId = tenantParam.length > 0 ? tenantParam : contextTenantId;
+      if (tenantId !== contextTenantId) {
+        ensureAdminScope(req);
+      }
+
+      const options: AuditLogQueryOptions = { tenantId };
+
+      const actor = typeof query.actor === 'string' ? query.actor.trim() : '';
+      if (actor) {
+        options.actor = actor;
+      }
+      const action = typeof query.action === 'string' ? query.action.trim() : '';
+      if (action) {
+        options.action = action;
+      }
+      const target = typeof query.target === 'string' ? query.target.trim() : '';
+      if (target) {
+        options.target = target;
+      }
+      const since = typeof query.since === 'string' ? query.since.trim() : '';
+      if (since) {
+        options.since = since;
+      }
+      const until = typeof query.until === 'string' ? query.until.trim() : '';
+      if (until) {
+        options.until = until;
+      }
+
+      const order = typeof query.order === 'string' ? query.order.trim().toLowerCase() : '';
+      if (order === 'asc' || order === 'desc') {
+        options.order = order;
+      }
+
+      const limitRaw = typeof query.limit === 'string' ? query.limit.trim() : '';
+      if (limitRaw) {
+        const parsed = Number.parseInt(limitRaw, 10);
+        if (Number.isFinite(parsed)) {
+          options.limit = parsed;
+        }
+      }
+      const offsetRaw = typeof query.offset === 'string' ? query.offset.trim() : '';
+      if (offsetRaw) {
+        const parsed = Number.parseInt(offsetRaw, 10);
+        if (Number.isFinite(parsed)) {
+          options.offset = parsed;
+        }
+      }
+
+      const result = await auditLogStore.query(options);
+      res.json({
+        items: result.items.map((item) => ({
+          id: item.id,
+          tenantId: item.tenantId,
+          actor: item.actor,
+          action: item.action,
+          target: item.target ?? null,
+          payload: item.payload ?? null,
+          createdAt: item.createdAt.toISOString(),
+        })),
+        hasMore: result.hasMore,
+        nextOffset: result.nextOffset ?? null,
+      });
+    }),
+  );
+
+  app.get(
     '/v1/jobs',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const kinds = parseFilterParam<JobKind>(req.query.kind as unknown, JOB_KINDS, 'İş türü');
       const statuses = parseFilterParam<JobStatus>(
         req.query.status as unknown,
@@ -3933,7 +4093,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/jobs/:id(*)',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
@@ -3956,7 +4116,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/manifests/:manifestId',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { manifestId } = req.params as { manifestId?: string };
       if (!manifestId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');
@@ -4047,7 +4207,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/jobs/:id(*)/cancel',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
@@ -4077,6 +4237,14 @@ export const createServer = (config: ServerConfig): Express => {
       jobLicenses.delete(createScopedJobKey(tenantId, id));
       await updateQueueDepth(tenantId);
 
+      await appendAuditLog({
+        tenantId,
+        actor: subject,
+        action: 'job.cancelled',
+        target: toJobTarget(id),
+        payload: { kind },
+      });
+
       res.json({ status: 'cancelled', id, kind });
     }),
   );
@@ -4085,7 +4253,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/jobs/:id(*)',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'İş kimliği belirtilmelidir.');
@@ -4116,6 +4284,14 @@ export const createServer = (config: ServerConfig): Express => {
       jobLicenses.delete(createScopedJobKey(tenantId, id));
       await updateQueueDepth(tenantId);
 
+      await appendAuditLog({
+        tenantId,
+        actor: subject,
+        action: 'job.deleted',
+        target: toJobTarget(id),
+        payload: { kind },
+      });
+
       res.json({ status: 'deleted', id, kind });
     }),
   );
@@ -4138,7 +4314,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     importFields,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const fileMap = (req.files as FileMap) ?? {};
       let cleaned = false;
       const ensureCleanup = async () => {
@@ -4196,6 +4372,13 @@ export const createServer = (config: ServerConfig): Express => {
         const existingJob = await jobStore.findJob<ImportJobResult>(tenantId, importId);
         if (existingJob) {
           ensureJobLicense(tenantId, importId, license);
+          await appendAuditLog({
+            tenantId,
+            actor: subject,
+            action: 'license.revalidated',
+            target: toJobTarget(existingJob.id),
+            payload: toLicenseAuditPayload(license),
+          });
           await ensureCleanup();
           sendJobResponse(res, existingJob, tenantId, {
             reused: existingJob.status === 'completed',
@@ -4207,6 +4390,13 @@ export const createServer = (config: ServerConfig): Express => {
           const metadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
           hydrateJobLicense(metadata, tenantId);
           ensureJobLicense(tenantId, metadata.id, license);
+          await appendAuditLog({
+            tenantId,
+            actor: subject,
+            action: 'license.revalidated',
+            target: toJobTarget(metadata.id),
+            payload: toLicenseAuditPayload(license),
+          });
           const adopted = adoptJobFromMetadata(
             storage,
             queue,
@@ -4232,12 +4422,13 @@ export const createServer = (config: ServerConfig): Express => {
         }
 
         try {
-        const job = await enqueueObservedJob<ImportJobResult, ImportJobPayload>({
-          tenantId,
-          id: importId,
-          kind: 'import',
-          hash,
-          payload: {
+          const job = await enqueueObservedJob<ImportJobResult, ImportJobPayload>({
+            tenantId,
+            actor: subject,
+            id: importId,
+            kind: 'import',
+            hash,
+            payload: {
               workspaceDir,
               uploads: persistedUploads,
               level: level ?? null,
@@ -4248,6 +4439,13 @@ export const createServer = (config: ServerConfig): Express => {
           });
 
           registerJobLicense(tenantId, importId, license);
+          await appendAuditLog({
+            tenantId,
+            actor: subject,
+            action: 'license.attached',
+            target: toJobTarget(importId),
+            payload: toLicenseAuditPayload(license),
+          });
           sendJobResponse(res, job, tenantId);
         } catch (error) {
           await storage.removeDirectory(path.join(directories.uploads, tenantId, importId));
@@ -4264,7 +4462,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/analyze',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.analyze);
       const body = req.body as {
@@ -4323,6 +4521,13 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = await jobStore.findJob<AnalyzeJobResult>(tenantId, analyzeId);
       if (existingJob) {
         ensureJobLicense(tenantId, analyzeId, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(existingJob.id),
+          payload: toLicenseAuditPayload(license),
+        });
         sendJobResponse(res, existingJob, tenantId, {
           reused: existingJob.status === 'completed',
         });
@@ -4333,6 +4538,13 @@ export const createServer = (config: ServerConfig): Express => {
         const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(metadata.id),
+          payload: toLicenseAuditPayload(license),
+        });
         const adopted = adoptJobFromMetadata(
           storage,
           queue,
@@ -4353,6 +4565,7 @@ export const createServer = (config: ServerConfig): Express => {
 
       const job = await enqueueObservedJob<AnalyzeJobResult, AnalyzeJobPayload>({
         tenantId,
+        actor: subject,
         id: analyzeId,
         kind: 'analyze',
         hash,
@@ -4366,6 +4579,13 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, analyzeId, license);
+      await appendAuditLog({
+        tenantId,
+        actor: subject,
+        action: 'license.attached',
+        target: toJobTarget(analyzeId),
+        payload: toLicenseAuditPayload(license),
+      });
       sendJobResponse(res, job, tenantId);
     }),
   );
@@ -4374,7 +4594,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/report',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
       const body = req.body as { analysisId?: string; manifestId?: string };
@@ -4400,6 +4620,13 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = await jobStore.findJob<ReportJobResult>(tenantId, reportId);
       if (existingJob) {
         ensureJobLicense(tenantId, reportId, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(existingJob.id),
+          payload: toLicenseAuditPayload(license),
+        });
         sendJobResponse(res, existingJob, tenantId, {
           reused: existingJob.status === 'completed',
         });
@@ -4410,6 +4637,13 @@ export const createServer = (config: ServerConfig): Express => {
         const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(metadata.id),
+          payload: toLicenseAuditPayload(license),
+        });
         const adopted = adoptJobFromMetadata(
           storage,
           queue,
@@ -4427,6 +4661,7 @@ export const createServer = (config: ServerConfig): Express => {
 
       const job = await enqueueObservedJob<ReportJobResult, ReportJobPayload>({
         tenantId,
+        actor: subject,
         id: reportId,
         kind: 'report',
         hash,
@@ -4441,6 +4676,13 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, reportId, license);
+      await appendAuditLog({
+        tenantId,
+        actor: subject,
+        action: 'license.attached',
+        target: toJobTarget(reportId),
+        payload: toLicenseAuditPayload(license),
+      });
       sendJobResponse(res, job, tenantId);
     }),
   );
@@ -4449,7 +4691,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/pack',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId } = getAuthContext(req);
+      const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
       const body = req.body as { reportId?: string; packageName?: string };
@@ -4488,6 +4730,13 @@ export const createServer = (config: ServerConfig): Express => {
       const existingJob = await jobStore.findJob<PackJobResult>(tenantId, packId);
       if (existingJob) {
         ensureJobLicense(tenantId, packId, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(existingJob.id),
+          payload: toLicenseAuditPayload(license),
+        });
         sendJobResponse(res, existingJob, tenantId, {
           reused: existingJob.status === 'completed',
         });
@@ -4498,6 +4747,13 @@ export const createServer = (config: ServerConfig): Express => {
         const metadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
         hydrateJobLicense(metadata, tenantId);
         ensureJobLicense(tenantId, metadata.id, license);
+        await appendAuditLog({
+          tenantId,
+          actor: subject,
+          action: 'license.revalidated',
+          target: toJobTarget(metadata.id),
+          payload: toLicenseAuditPayload(license),
+        });
         const adopted = adoptJobFromMetadata(storage, queue, metadata) as JobDetails<PackJobResult>;
         sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
@@ -4505,6 +4761,7 @@ export const createServer = (config: ServerConfig): Express => {
 
       const job = await enqueueObservedJob<PackJobResult, PackJobPayload>({
         tenantId,
+        actor: subject,
         id: packId,
         kind: 'pack',
         hash,
@@ -4519,6 +4776,13 @@ export const createServer = (config: ServerConfig): Express => {
       });
 
       registerJobLicense(tenantId, packId, license);
+      await appendAuditLog({
+        tenantId,
+        actor: subject,
+        action: 'license.attached',
+        target: toJobTarget(packId),
+        payload: toLicenseAuditPayload(license),
+      });
       sendJobResponse(res, job, tenantId);
     }),
   );

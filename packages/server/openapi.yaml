@@ -219,6 +219,57 @@ components:
               type: string
             archive:
               type: string
+    AuditLogEntry:
+      type: object
+      required:
+        - id
+        - tenantId
+        - actor
+        - action
+        - createdAt
+      properties:
+        id:
+          type: string
+          description: Denetim kaydının benzersiz kimliği.
+        tenantId:
+          type: string
+          description: Kaydın ait olduğu kiracı kimliği.
+        actor:
+          type: string
+          description: Olayı tetikleyen kullanıcı veya sistem.
+        action:
+          type: string
+          description: Gerçekleştirilen eylemin adı.
+        target:
+          type: string
+          nullable: true
+          description: Eylemin hedef kaynağı.
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Eylemle ilişkili isteğe bağlı ek veriler.
+        createdAt:
+          type: string
+          format: date-time
+          description: Kaydın oluşturulma zamanı.
+    AuditLogListResponse:
+      type: object
+      required:
+        - items
+        - hasMore
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        hasMore:
+          type: boolean
+          description: Daha fazla kayıt olup olmadığını belirtir.
+        nextOffset:
+          type: integer
+          nullable: true
+          description: Sonraki sayfa için ofset değeri.
     JobSummary:
       type: object
       required:
@@ -333,6 +384,92 @@ paths:
                     type: string
         '400':
           description: Geçersiz istek.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/audit-logs:
+    get:
+      operationId: listAuditLogs
+      summary: Denetim kayıtlarını listeler.
+      description: Kiracının ve (yönetici yetkisi varsa) diğer kiracıların denetim olaylarını döndürür.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: tenantId
+          in: query
+          required: false
+          description: Başka bir kiracının kayıtlarını görüntülemek için yönetici yetkisi gerekir.
+          schema:
+            type: string
+        - name: actor
+          in: query
+          required: false
+          description: Belirli bir kullanıcı veya sistem aktörü tarafından oluşturulan kayıtları filtreler.
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          description: Eylem adına göre filtre uygular.
+          schema:
+            type: string
+        - name: target
+          in: query
+          required: false
+          description: Belirli bir hedef kaynağa ait kayıtları döndürür.
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          description: Belirtilen ISO 8601 zamanından itibaren kayıtları döndürür.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          required: false
+          description: Belirtilen ISO 8601 zamanına kadar olan kayıtları içerir.
+          schema:
+            type: string
+            format: date-time
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+          description: Zaman sıralamasını belirler (varsayılan desc).
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Döndürülecek maksimum kayıt sayısı.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Sayfalama için ofset değeri.
+      responses:
+        '200':
+          description: Denetim kayıtları başarıyla döndürüldü.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Yetki yetersiz.
           content:
             application/json:
               schema:
