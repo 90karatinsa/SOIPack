@@ -416,6 +416,10 @@ describe('@soipack/server REST API', () => {
       const params = parameters ?? [];
       const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase();
 
+      if (normalized === 'select 1') {
+        return { rows: [{ '?': 1 }], rowCount: 1 };
+      }
+
       if (normalized.startsWith('select id, tenant_id, kind, status, hash, payload, result, error, created_at, updated_at from jobs order by created_at asc')) {
         const ordered = [...rows.values()].sort(
           (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
@@ -1193,6 +1197,37 @@ describe('@soipack/server REST API', () => {
       .get('/metrics')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
+  });
+
+  it('reports storage provider health with database latency metrics', async () => {
+    const response = await request(app)
+      .get('/v1/admin/storage/health')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body.provider).toBe('FileSystemStorage');
+    expect(response.body.status).toBe('ok');
+    expect(response.body.database).toEqual({
+      latencyMs: expect.any(Number),
+    });
+    expect(response.body.database.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns an error response when the database health check fails', async () => {
+    databaseStub.failNext(new Error('db down'));
+
+    const response = await request(app)
+      .get('/v1/admin/storage/health')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(500);
+
+    expect(response.body.error.code).toBe('STORAGE_HEALTH_FAILED');
+    expect(response.body.error.message).toBe('Depolama sağlığı doğrulanamadı.');
+    expect(response.body.error.details).toMatchObject({
+      provider: 'FileSystemStorage',
+      reason: 'db down',
+      databaseLatencyMs: expect.any(Number),
+    });
   });
 
   it('rejects expired tokens', async () => {

@@ -139,7 +139,29 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    2. Kullanıcıya `ALTER ROLE soipack WITH LOGIN PASSWORD 'güçlü-bir-parola';` ile kimlik bilgisi atayın ve hedef veritabanında `GRANT ALL PRIVILEGES ON DATABASE soipack TO soipack;` komutu ile yetki verin.
    3. Elde edilen bağlantı bilgilerini `.env` dosyasındaki `SOIPACK_DATABASE_URL` alanına yazın.
 
-   Sunucu başlatıldığında dahili `DatabaseManager`, `jobs`, `audit_logs`, `reviews` ve `evidence` tablolarını kapsayan şema migrations işlemlerini otomatik olarak yürütür. Her adım, ilgili tablo ya da indeksin halihazırda var olup olmadığını `information_schema` ve kataloğu sorgulayarak kontrol eder; yalnızca eksik nesneler oluşturulur ve mevcut olanlar atlanır. Bu sayede hizmeti yeniden başlatmak, tabloları veya indeksleri yeniden oluştururken veri kaybına yol açmaz. Güncellenmiş şemayı uygulamak için yapmanız gereken tek işlem konteyneri (veya Node.js sürecini) yeniden başlatmaktır; aynı migration adımları her açılışta tekrar denetlenir.
+   Şema güncellemeleri `packages/server/migrations` dizinindeki sıralı `.sql` dosyalarıyla yönetilir. Sunucu başlatıldığında dahili `DatabaseManager`, bu dosyaları artan numara sırasıyla çalıştırır ve uygulanan sürümleri `soipack_migrations` tablosuna kaydeder; bir migration başarıyla işlendiğinde yeniden uygulanmaz. Güncellenmiş bir sürüme geçerken veya dağıtım öncesinde veritabanını hazırlamak için aşağıdaki komutları çalıştırabilirsiniz:
+
+   ```bash
+   pnpm --filter @soipack/server build
+   pnpm --filter @soipack/server db:migrate
+   ```
+
+   İlk komut TypeScript kaynaklarını `packages/server/dist` altına derler; ikinci komut ise `SOIPACK_DATABASE_URL` ortam değişkenini okuyarak aynı `DatabaseManager` mantığını kullanır ve eksik migration dosyalarını uygular. Migration betikleri idempotent olacak şekilde tasarlanmıştır; aynı sürüm yeniden çalıştırıldığında hiçbir değişiklik yapılmaz ve `soipack_migrations` kaydı korunur.
+
+   Geri alma (rollback) işlemleri, ilgili tabloların ve yardımcı fonksiyonların manuel olarak temizlenmesini gerektirir. Örneğin yalnızca ilk migration'ı (001_init) geri almak istiyorsanız, aşağıdaki örnek komutu çalıştırıp ardından `soipack_migrations` kaydını silebilirsiniz:
+
+   ```bash
+   psql "$SOIPACK_DATABASE_URL" <<'SQL'
+   BEGIN;
+   DROP TABLE IF EXISTS pipeline_artifacts CASCADE;
+   DROP TABLE IF EXISTS pipeline_jobs CASCADE;
+   DROP TABLE IF EXISTS audit_events CASCADE;
+   DELETE FROM soipack_migrations WHERE id = '001';
+   COMMIT;
+   SQL
+   ```
+
+   Daha karmaşık geri dönüşler için her sürümde alınan veritabanı yedeklerinden dönmeniz önerilir. Migration dosyasıyla birlikte `soipack_mark_expired_pipeline_records` ve `soipack_purge_deleted_pipeline_records` fonksiyonları da oluşturulur; bu yardımcılar `pipeline_jobs`, `pipeline_artifacts` ve `audit_events` tablolarındaki kayıtların `deleted_at` alanını yaşa göre işaretleyip temizlemek için kullanılabilir.
 
    `SOIPACK_AUTH_JWKS_URI` değeri yalnızca HTTPS protokolünü kabul eder; air-gap senaryosunda JWKS içeriğini önceden indirip `SOIPACK_AUTH_JWKS_PATH` ile dosya sisteminden paylaşabilirsiniz. Uzak JWKS yanıtlarının zaman aşımına uğramaması için varsayılan değerler 5 saniyelik zaman aşımı, sınırlı tekrar denemeleri ve önbellekleme davranışı içerir; ortamınızın gereksinimlerine göre `SOIPACK_AUTH_JWKS_TIMEOUT_MS` ve ilgili değişkenlerle bu süreleri ayarlayabilirsiniz.
 

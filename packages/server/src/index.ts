@@ -3505,6 +3505,53 @@ export const createServer = (config: ServerConfig): Express => {
     }),
   );
 
+  app.get(
+    '/v1/admin/storage/health',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const providerName = storage.constructor?.name ?? 'UnknownStorage';
+
+      try {
+        await storage.listSubdirectories(directories.base);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new HttpError(
+          500,
+          'STORAGE_HEALTH_FAILED',
+          'Depolama sağlayıcısı doğrulanamadı.',
+          { provider: providerName, reason },
+        );
+      }
+
+      const startedAt = process.hrtime.bigint();
+      let latencyMs = 0;
+      try {
+        await config.database.getPool().query('SELECT 1');
+        const elapsed = Number(process.hrtime.bigint() - startedAt);
+        latencyMs = elapsed < 0 ? 0 : elapsed / 1_000_000;
+      } catch (error) {
+        const elapsed = Number(process.hrtime.bigint() - startedAt);
+        latencyMs = elapsed < 0 ? 0 : elapsed / 1_000_000;
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new HttpError(
+          500,
+          'STORAGE_HEALTH_FAILED',
+          'Depolama sağlığı doğrulanamadı.',
+          { provider: providerName, reason, databaseLatencyMs: latencyMs },
+        );
+      }
+
+      res.json({
+        provider: providerName,
+        status: 'ok',
+        database: {
+          latencyMs,
+        },
+      });
+    }),
+  );
+
   app.post(
     '/evidence/upload',
     requireAuth,

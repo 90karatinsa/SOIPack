@@ -757,7 +757,7 @@ export const start = async (): Promise<void> => {
   });
 };
 
-if (require.main === module) {
+if (require.main === module && process.env.JEST_WORKER_ID === undefined) {
   void start();
 }
 
