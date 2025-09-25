@@ -501,6 +501,67 @@ describe('Compliance snapshot generation', () => {
   });
 });
 
+describe('compliance delta tracking', () => {
+  it('computes compliance delta summaries across snapshot history', () => {
+    const baselineBundle = bundleFixture();
+    const baseline = generateComplianceSnapshot(baselineBundle);
+
+    const improvedEvidence: EvidenceIndex = {
+      ...evidenceIndexFixture(),
+      cm_record: [
+        evidence('cm_record', 'cm/records.md', 'git', { independent: true }),
+      ],
+      problem_report: [
+        evidence('problem_report', 'cm/problems.md', 'git', { independent: true }),
+      ],
+    };
+    const improvedBundle: ImportBundle = {
+      ...bundleFixture(),
+      generatedAt: '2024-02-15T10:00:00Z',
+      evidenceIndex: improvedEvidence,
+    };
+    const improvedSnapshot = generateComplianceSnapshot(improvedBundle);
+
+    const regressedEvidence: EvidenceIndex = {
+      ...(improvedBundle.evidenceIndex as EvidenceIndex),
+      coverage_stmt: [],
+    };
+    const regressedBundle: ImportBundle = {
+      ...improvedBundle,
+      generatedAt: '2024-03-01T10:00:00Z',
+      evidenceIndex: regressedEvidence,
+    };
+
+    const finalSnapshot = generateComplianceSnapshot(regressedBundle, {
+      includeRisk: true,
+      risk: {
+        snapshotHistory: [
+          {
+            version: baseline.version,
+            generatedAt: baseline.generatedAt,
+            objectives: baseline.objectives,
+          },
+          {
+            version: improvedSnapshot.version,
+            generatedAt: improvedSnapshot.generatedAt,
+            objectives: improvedSnapshot.objectives,
+          },
+        ],
+      },
+    });
+
+    expect(finalSnapshot.risk?.complianceDelta?.steps).toHaveLength(2);
+    expect(finalSnapshot.risk?.complianceDelta?.totals.improvements).toBeGreaterThan(0);
+
+    const improvementStep = finalSnapshot.risk?.complianceDelta?.steps[0];
+    expect(improvementStep?.improvements.map((entry) => entry.objectiveId)).toContain('A-6-02');
+
+    const latest = finalSnapshot.risk?.complianceDelta?.latest;
+    expect(latest?.regressions.map((entry) => entry.objectiveId)).toContain('A-5-08');
+    expect(finalSnapshot.risk?.complianceDelta?.totals.regressions).toBe(1);
+  });
+});
+
 describe('Quality checks', () => {
   it('identifies verified requirements without supporting tests or coverage', () => {
     const requirement = createRequirement('REQ-Q', 'Quality rule', { status: 'verified' });
@@ -615,7 +676,9 @@ describe('Quality checks', () => {
     );
     expect(snapshot.qualityFindings.find((finding) => finding.id === 'analysis-ldra-L-210')).toBeUndefined();
   });
+});
 
+describe('TraceSuggestions', () => {
   it('suggests trace links from test identifiers and coverage maps', () => {
     const requirement = createRequirement('REQ-LOG-1', 'Logging requirement', { status: 'draft' });
     const bundle: ImportBundle = {
@@ -656,6 +719,53 @@ describe('Quality checks', () => {
         }),
       ]),
     );
+  });
+
+  it('scores paraphrased requirement titles using TF-IDF similarity and provides rationale', () => {
+    const requirement = createRequirement('REQ-AUDIT-ROT', 'Audit kayıtları döngüsel tutulmalı', {
+      status: 'verified',
+      description: 'Sistem logları kapasite dolmadan önce otomatik döndürülür.',
+    });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [
+        {
+          testId: 'TC-AUDIT-ROTATE',
+          className: 'AuditSuite',
+          name: 'Audit log rotation persists events',
+          status: 'passed',
+          duration: 4,
+        },
+        {
+          testId: 'TC-NOISE',
+          className: 'MiscSuite',
+          name: 'Handles unrelated telemetry',
+          status: 'passed',
+          duration: 3,
+        },
+      ],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: { 'TC-AUDIT-ROTATE': ['src/security/audit_log.c'] },
+      generatedAt: '2024-03-03T10:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    const rotationSuggestion = snapshot.traceSuggestions.find(
+      (suggestion) => suggestion.targetId === 'TC-AUDIT-ROTATE',
+    );
+    expect(rotationSuggestion).toBeDefined();
+    expect(rotationSuggestion?.confidence === 'high' || rotationSuggestion?.confidence === 'medium').toBe(true);
+    expect(rotationSuggestion?.reason).toContain('TF-IDF');
+
+    const unrelatedSuggestion = snapshot.traceSuggestions.find(
+      (suggestion) => suggestion.targetId === 'TC-NOISE',
+    );
+    expect(unrelatedSuggestion).toBeUndefined();
   });
 });
 

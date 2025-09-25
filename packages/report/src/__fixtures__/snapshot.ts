@@ -8,9 +8,11 @@ import {
   ObjectiveArtifactType,
   createRequirement,
   createSnapshotIdentifier,
+  createSnapshotVersion,
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
+  type ComplianceDeltaSnapshot,
   ImportBundle,
   RequirementTrace,
   TraceEngine,
@@ -290,13 +292,59 @@ export const createReportFixture = (): ReportFixture => {
     generatedAt: '2024-02-01T12:00:00Z',
   };
 
-  const snapshot = generateComplianceSnapshot(bundle, {
-    includeRisk: true,
-    risk: {
-      audit: auditFlagsFixture(),
-      coverageHistory: coverageHistoryFixture(),
+  const baseline = generateComplianceSnapshot(bundle);
+
+  const downgradeStatus = (status: ComplianceSnapshot['objectives'][number]['status']):
+    ComplianceSnapshot['objectives'][number]['status'] => {
+      if (status === 'covered') {
+        return 'partial';
+      }
+      if (status === 'partial') {
+        return 'missing';
+      }
+      return 'missing';
+    };
+
+  const upgradeStatus = (status: ComplianceSnapshot['objectives'][number]['status']):
+    ComplianceSnapshot['objectives'][number]['status'] => {
+      if (status === 'missing') {
+        return 'partial';
+      }
+      if (status === 'partial') {
+        return 'covered';
+      }
+      return 'covered';
+    };
+
+  const buildHistoryEntry = (seed: string, createdAt: string, mapper: (status: ComplianceSnapshot['objectives'][number]['status']) => ComplianceSnapshot['objectives'][number]['status']): ComplianceDeltaSnapshot => {
+    const fingerprint = createHash('sha256').update(seed).digest('hex');
+    const version = createSnapshotVersion(fingerprint, { createdAt });
+    return {
+      version,
+      generatedAt: createdAt,
+      objectives: baseline.objectives.map((objective) => ({
+        ...objective,
+        status: mapper(objective.status),
+      })),
+    };
+  };
+
+  const snapshotHistory: ComplianceDeltaSnapshot[] = [
+    buildHistoryEntry('history:downgrade', '2024-01-10T00:00:00Z', downgradeStatus),
+    buildHistoryEntry('history:upgrade', '2024-01-20T00:00:00Z', upgradeStatus),
+  ];
+
+  const snapshot = generateComplianceSnapshot(
+    { ...bundle, snapshot: baseline.version },
+    {
+      includeRisk: true,
+      risk: {
+        audit: auditFlagsFixture(),
+        coverageHistory: coverageHistoryFixture(),
+        snapshotHistory,
+      },
     },
-  });
+  );
   const engine = new TraceEngine(bundle);
   const traces = requirements.map((requirement) => engine.getRequirementTrace(requirement.id));
   const signoffs = signoffTimelineFixture();

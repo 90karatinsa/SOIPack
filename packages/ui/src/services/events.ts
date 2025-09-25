@@ -15,6 +15,45 @@ export interface RiskFactorBreakdown {
   details?: string;
 }
 
+export interface ComplianceDeltaChange {
+  objectiveId: string;
+  previousStatus: 'missing' | 'partial' | 'covered';
+  currentStatus: 'missing' | 'partial' | 'covered';
+}
+
+export interface ComplianceDeltaBoundary {
+  version: { id: string };
+  generatedAt?: string;
+}
+
+export interface ComplianceDeltaStep {
+  from?: ComplianceDeltaBoundary;
+  to: ComplianceDeltaBoundary;
+  improvements: ComplianceDeltaChange[];
+  regressions: ComplianceDeltaChange[];
+}
+
+export interface ComplianceDeltaSummary {
+  steps: ComplianceDeltaStep[];
+  latest?: ComplianceDeltaStep;
+  totals: { improvements: number; regressions: number };
+}
+
+export interface ToolQualificationAlert {
+  toolId: string;
+  toolName?: string;
+  category?: string;
+  tql?: string | null;
+  pendingActivities: number;
+  message?: string;
+}
+
+export interface ToolQualificationAlertSummary {
+  pendingTools: number;
+  alerts: ToolQualificationAlert[];
+  updatedAt?: string;
+}
+
 export interface ComplianceRiskEvent extends ComplianceEventBase {
   type: 'riskProfile';
   profile: {
@@ -22,6 +61,8 @@ export interface ComplianceRiskEvent extends ComplianceEventBase {
     classification: string;
     breakdown: RiskFactorBreakdown[];
     missingSignals: string[];
+    complianceDelta?: ComplianceDeltaSummary;
+    toolQualification?: ToolQualificationAlertSummary;
   };
 }
 

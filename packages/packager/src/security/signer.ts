@@ -4,6 +4,30 @@ import path from 'node:path';
 
 import { Manifest } from '@soipack/core';
 
+import {
+  DEFAULT_POST_QUANTUM_ALGORITHM,
+  deriveSphincsPlusPublicKey,
+  loadDefaultSphincsPlusKeyPair,
+  signWithSphincsPlus,
+  verifyWithSphincsPlus,
+} from './pqc';
+
+export type PostQuantumAlgorithm = typeof DEFAULT_POST_QUANTUM_ALGORITHM;
+
+export interface PostQuantumSigningOptions {
+  algorithm?: PostQuantumAlgorithm;
+  privateKey?: string;
+  privateKeyPath?: string;
+  publicKey?: string;
+  publicKeyPath?: string;
+}
+
+export interface PostQuantumVerificationOptions {
+  algorithm?: PostQuantumAlgorithm;
+  publicKey?: string;
+  required?: boolean;
+}
+
 type ManifestLedgerMetadata = {
   ledger?: {
     root: string | null;
@@ -30,6 +54,11 @@ export interface ManifestSignatureBundle {
   ledgerRoot?: string | null;
   previousLedgerRoot?: string | null;
   hardware?: HardwareSignatureMetadata;
+  postQuantumSignature?: {
+    algorithm: PostQuantumAlgorithm;
+    signature: string;
+    publicKey: string;
+  };
 }
 
 export interface SecuritySignerOptions {
@@ -41,6 +70,7 @@ export interface SecuritySignerOptions {
   privateKeyPem?: string;
   ledger?: LedgerProofMetadata;
   pkcs11?: Pkcs11SigningOptions;
+  postQuantum?: PostQuantumSigningOptions | false;
 }
 
 type Pkcs11Attribute = { type: number; value?: Buffer };
@@ -154,6 +184,7 @@ export interface VerificationOptions {
   expectedLedgerRoot?: string | null;
   expectedPreviousLedgerRoot?: string | null;
   requireLedgerProof?: boolean;
+  postQuantum?: PostQuantumVerificationOptions;
 }
 
 export interface VerificationResult {
@@ -167,6 +198,11 @@ export interface VerificationResult {
   };
   ledgerRoot?: string | null;
   previousLedgerRoot?: string | null;
+  postQuantum?: {
+    algorithm: PostQuantumAlgorithm;
+    publicKey: string;
+    verified: boolean;
+  };
 }
 
 const DEFAULT_BUNDLE_PATH = path.resolve(__dirname, '../../../../test/certs/dev.pem');
@@ -187,6 +223,94 @@ const base64UrlDecode = (value: string): Buffer => {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
   return Buffer.from(normalized + padding, 'base64');
+};
+
+const normalizeBase64String = (value: string): string => value.replace(/\s+/g, '').trim();
+
+type PostQuantumSigningMaterial = {
+  algorithm: PostQuantumAlgorithm;
+  privateKey: string;
+  publicKey: string;
+};
+
+const resolvePostQuantumSigningMaterial = (
+  options?: PostQuantumSigningOptions | false,
+): PostQuantumSigningMaterial | undefined => {
+  if (options === false) {
+    return undefined;
+  }
+
+  const requestedAlgorithm = options?.algorithm ?? DEFAULT_POST_QUANTUM_ALGORITHM;
+
+  let privateKey = options?.privateKey;
+  if (!privateKey && options?.privateKeyPath) {
+    privateKey = readFileSync(options.privateKeyPath, 'utf8');
+  }
+  privateKey = privateKey ? normalizeBase64String(privateKey) : undefined;
+
+  let publicKey = options?.publicKey;
+  if (!publicKey && options?.publicKeyPath) {
+    publicKey = readFileSync(options.publicKeyPath, 'utf8');
+  }
+  publicKey = publicKey ? normalizeBase64String(publicKey) : undefined;
+
+  if (!privateKey && !publicKey) {
+    const defaults = loadDefaultSphincsPlusKeyPair();
+    return {
+      algorithm: defaults.algorithm,
+      privateKey: defaults.privateKey,
+      publicKey: defaults.publicKey,
+    };
+  }
+
+  if (!privateKey) {
+    if (publicKey) {
+      throw new Error('Post-quantum imza oluşturmak için özel anahtar gereklidir.');
+    }
+    const defaults = loadDefaultSphincsPlusKeyPair();
+    return {
+      algorithm: options?.algorithm ?? defaults.algorithm,
+      privateKey: defaults.privateKey,
+      publicKey: defaults.publicKey,
+    };
+  }
+
+  if (!publicKey) {
+    publicKey = deriveSphincsPlusPublicKey(privateKey, requestedAlgorithm);
+  }
+
+  return {
+    algorithm: requestedAlgorithm,
+    privateKey,
+    publicKey,
+  };
+};
+
+const createPostQuantumSignature = (
+  signingInput: string,
+  material?: PostQuantumSigningMaterial,
+):
+  | {
+      algorithm: PostQuantumAlgorithm;
+      publicKey: string;
+      signature: Buffer;
+    }
+  | undefined => {
+  if (!material) {
+    return undefined;
+  }
+
+  const signature = signWithSphincsPlus(
+    Buffer.from(signingInput, 'utf8'),
+    material.privateKey,
+    material.algorithm,
+  );
+
+  return {
+    algorithm: material.algorithm,
+    publicKey: material.publicKey,
+    signature,
+  };
 };
 
 const encodePkcs11Uint = (value: number): Buffer => {
@@ -365,13 +489,21 @@ const buildSigningPreparation = (
   digest: ManifestDigest,
   ledgerRoot: string | null,
   previousLedgerRoot: string | null,
+  postQuantum?: { algorithm: PostQuantumAlgorithm; publicKey: string },
 ): { signingInput: string } => {
   const x509 = new X509Certificate(certificatePem);
-  const header = {
-    alg: 'EdDSA',
+  const header: Record<string, unknown> = {
+    alg: postQuantum ? 'SOI-HYBRID' : 'EdDSA',
     typ: 'SOIManifest',
     x5c: [x509.raw.toString('base64')],
   };
+
+  if (postQuantum) {
+    header.pq = {
+      alg: postQuantum.algorithm,
+      pub: postQuantum.publicKey,
+    };
+  }
   const payload = {
     digest: digest.hash,
     algorithm: digest.algorithm,
@@ -394,13 +526,34 @@ const buildBundleFromSignature = (
   previousLedgerRoot: string | null,
   signingInput: string,
   signatureBuffer: Buffer,
-): ManifestSignatureBundle => ({
-  signature: `${signingInput}.${base64UrlEncode(signatureBuffer)}`,
-  certificate: certificatePem.trim(),
-  manifestDigest: digest,
-  ledgerRoot,
-  previousLedgerRoot,
-});
+  postQuantumSignature?: {
+    algorithm: PostQuantumAlgorithm;
+    publicKey: string;
+    signature: Buffer;
+  },
+): ManifestSignatureBundle => {
+  const segments = [signingInput, base64UrlEncode(signatureBuffer)];
+  let pqSignature: ManifestSignatureBundle['postQuantumSignature'];
+
+  if (postQuantumSignature) {
+    const encodedPostQuantum = base64UrlEncode(postQuantumSignature.signature);
+    segments.push(encodedPostQuantum);
+    pqSignature = {
+      algorithm: postQuantumSignature.algorithm,
+      publicKey: postQuantumSignature.publicKey,
+      signature: encodedPostQuantum,
+    };
+  }
+
+  return {
+    signature: segments.join('.'),
+    certificate: certificatePem.trim(),
+    manifestDigest: digest,
+    ledgerRoot,
+    previousLedgerRoot,
+    postQuantumSignature: pqSignature,
+  };
+};
 
 const ensurePkcs11Module = (options: Pkcs11SigningOptions): Pkcs11Like => {
   if (options.module) {
@@ -485,6 +638,7 @@ const signManifestWithPkcs11 = (
   ledgerRoot: string | null,
   previousLedgerRoot: string | null,
   options: SecuritySignerOptions,
+  postQuantumMaterial?: PostQuantumSigningMaterial,
 ): ManifestSignatureBundle => {
   const pkcs11Options = options.pkcs11!;
   if (!pkcs11Options.privateKey.label && !pkcs11Options.privateKey.idHex) {
@@ -533,9 +687,15 @@ const signManifestWithPkcs11 = (
       digest,
       ledgerRoot,
       previousLedgerRoot,
+      postQuantumMaterial && {
+        algorithm: postQuantumMaterial.algorithm,
+        publicKey: postQuantumMaterial.publicKey,
+      },
     );
     pkcs11.C_SignInit(session, { mechanism: pkcs11Options.mechanism ?? CKM_EDDSA }, privateKeyHandle);
     const signatureBuffer = pkcs11.C_Sign(session, Buffer.from(signingInput, 'utf8'));
+
+    const postQuantumSignature = createPostQuantumSignature(signingInput, postQuantumMaterial);
 
     const bundle = buildBundleFromSignature(
       trimmedCertificate,
@@ -544,6 +704,7 @@ const signManifestWithPkcs11 = (
       previousLedgerRoot,
       signingInput,
       signatureBuffer,
+      postQuantumSignature,
     );
 
     const hardwareMetadata: HardwareSignatureMetadata = {
@@ -622,8 +783,16 @@ export const signManifestWithSecuritySigner = (
   const previousLedgerRoot =
     ledgerSource?.previousRoot ?? manifestLedger?.previousRoot ?? null;
 
+  const postQuantumMaterial = resolvePostQuantumSigningMaterial(options.postQuantum);
+
   if (options.pkcs11) {
-    return signManifestWithPkcs11(digest, ledgerRoot, previousLedgerRoot, options);
+    return signManifestWithPkcs11(
+      digest,
+      ledgerRoot,
+      previousLedgerRoot,
+      options,
+      postQuantumMaterial,
+    );
   }
 
   const credentials = resolveCredentials(options);
@@ -632,12 +801,18 @@ export const signManifestWithSecuritySigner = (
     digest,
     ledgerRoot,
     previousLedgerRoot,
+    postQuantumMaterial && {
+      algorithm: postQuantumMaterial.algorithm,
+      publicKey: postQuantumMaterial.publicKey,
+    },
   );
   const signatureBuffer = signData(
     null,
     Buffer.from(signingInput, 'utf8'),
     credentials.privateKeyPem,
   );
+
+  const postQuantumSignature = createPostQuantumSignature(signingInput, postQuantumMaterial);
 
   return buildBundleFromSignature(
     credentials.certificatePem,
@@ -646,6 +821,7 @@ export const signManifestWithSecuritySigner = (
     previousLedgerRoot,
     signingInput,
     signatureBuffer,
+    postQuantumSignature,
   );
 };
 
@@ -655,25 +831,35 @@ export const verifyManifestSignatureWithSecuritySigner = (
   options: VerificationOptions = {},
 ): VerificationResult => {
   const segments = signature.split('.');
-  if (segments.length !== 3) {
+  if (segments.length !== 3 && segments.length !== 4) {
     return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
-  const [encodedHeader, encodedPayload, encodedSignature] = segments;
+  const [encodedHeader, encodedPayload, encodedSignature, encodedPostQuantumSignature] = segments;
 
-  let header: { alg?: string; typ?: string; x5c?: string[] };
+  let header: { alg?: string; typ?: string; x5c?: string[]; pq?: { alg?: string; pub?: string } };
   try {
     header = JSON.parse(base64UrlDecode(encodedHeader).toString('utf8')) as {
       alg?: string;
       typ?: string;
       x5c?: string[];
+      pq?: { alg?: string; pub?: string };
     };
   } catch (error) {
     return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
-  if (header.alg !== 'EdDSA') {
+  if (header.alg !== 'EdDSA' && header.alg !== 'SOI-HYBRID') {
     return { valid: false, reason: 'UNSUPPORTED_ALGORITHM' };
+  }
+
+  const isHybrid = header.alg === 'SOI-HYBRID';
+  if (isHybrid && !encodedPostQuantumSignature) {
+    return { valid: false, reason: 'FORMAT_INVALID' };
+  }
+
+  if (!isHybrid && encodedPostQuantumSignature && !options.postQuantum?.required) {
+    return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
   let payload: {
@@ -718,6 +904,10 @@ export const verifyManifestSignatureWithSecuritySigner = (
     previousLedgerRoot !== options.expectedPreviousLedgerRoot
   ) {
     return { valid: false, reason: 'LEDGER_PREVIOUS_MISMATCH', ...ledgerContext };
+  }
+
+  if (!isHybrid && options.postQuantum?.required) {
+    return { valid: false, reason: 'UNSUPPORTED_ALGORITHM', ...ledgerContext };
   }
 
   let certificatePem = options.certificatePem;
@@ -794,11 +984,44 @@ export const verifyManifestSignatureWithSecuritySigner = (
     return { valid: false, reason: 'SIGNATURE_INVALID', certificateInfo, ...ledgerContext };
   }
 
+  let postQuantumResult: VerificationResult['postQuantum'];
+
+  if (isHybrid && encodedPostQuantumSignature) {
+    const providedPublicKey =
+      options.postQuantum?.publicKey ?? (typeof header.pq?.pub === 'string' ? header.pq.pub : undefined);
+    const algorithm: PostQuantumAlgorithm =
+      options.postQuantum?.algorithm ??
+      ((typeof header.pq?.alg === 'string' ? header.pq.alg : DEFAULT_POST_QUANTUM_ALGORITHM) as PostQuantumAlgorithm);
+
+    if (!providedPublicKey) {
+      return { valid: false, reason: 'FORMAT_INVALID', certificateInfo, ...ledgerContext };
+    }
+
+    const postQuantumSignatureBuffer = base64UrlDecode(encodedPostQuantumSignature);
+    const postQuantumValid = verifyWithSphincsPlus(
+      Buffer.from(`${encodedHeader}.${encodedPayload}`, 'utf8'),
+      postQuantumSignatureBuffer,
+      providedPublicKey,
+      algorithm,
+    );
+
+    postQuantumResult = {
+      algorithm,
+      publicKey: providedPublicKey,
+      verified: postQuantumValid,
+    };
+
+    if (!postQuantumValid) {
+      return { valid: false, reason: 'SIGNATURE_INVALID', certificateInfo, ...ledgerContext, postQuantum: postQuantumResult };
+    }
+  }
+
   return {
     valid: true,
     digest,
     certificateInfo,
     ...ledgerContext,
+    postQuantum: postQuantumResult,
   };
 };
 

@@ -39,7 +39,7 @@ const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFI
 const TEST_SIGNING_CERTIFICATE = (() => {
   const match = TEST_SIGNING_BUNDLE.match(CERTIFICATE_PATTERN);
   if (!match) {
-    throw new Error('Test sertifika demeti geçersiz.');
+    throw new Error('Test certificate bundle is invalid.');
   }
   return match[0];
 })();
@@ -656,6 +656,63 @@ describe('@soipack/cli pipeline', () => {
     };
     const recordedGap = analysisJson.gaps.analysis.find((item) => item.objectiveId === 'A-3-99');
     expect(recordedGap?.missingArtifacts).toContain('analysis');
+  });
+
+  describe('certification gating', () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'certification-gating');
+
+    it('fails Level A analysis when MC/DC evidence is missing', async () => {
+      const inputDir = path.join(tempRoot, 'cert-gating-level-a-input');
+      const outputDir = path.join(tempRoot, 'cert-gating-level-a-output');
+
+      await fs.mkdir(inputDir, { recursive: true });
+      await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+      const result = await runAnalyze({
+        input: inputDir,
+        output: outputDir,
+        level: 'A',
+        objectives: objectivesPath,
+      });
+
+      expect(result.exitCode).toBe(exitCodes.missingEvidence);
+
+      const analysisData = JSON.parse(
+        await fs.readFile(path.join(outputDir, 'analysis.json'), 'utf8'),
+      ) as { warnings: string[] };
+
+      expect(analysisData.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('MC/DC coverage evidence')]),
+      );
+    });
+
+    it('downgrades missing statement coverage to a warning for Level C', async () => {
+      const inputDir = path.join(tempRoot, 'cert-gating-level-c-input');
+      const outputDir = path.join(tempRoot, 'cert-gating-level-c-output');
+
+      await fs.mkdir(inputDir, { recursive: true });
+      await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+      const result = await runAnalyze({
+        input: inputDir,
+        output: outputDir,
+        level: 'C',
+        objectives: objectivesPath,
+      });
+
+      expect(result.exitCode).toBe(exitCodes.success);
+
+      const analysisData = JSON.parse(
+        await fs.readFile(path.join(outputDir, 'analysis.json'), 'utf8'),
+      ) as { warnings: string[] };
+
+      expect(analysisData.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('Level C warning')]),
+      );
+      expect(analysisData.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('Statement coverage evidence')]),
+      );
+    });
   });
 });
 
