@@ -58,6 +58,7 @@ import {
   ComplianceSnapshot,
   EvidenceIndex,
   ImportBundle,
+  ObjectiveCoverage,
   RequirementTrace,
   TraceEngine,
   generateComplianceSnapshot,
@@ -1357,11 +1358,14 @@ const toRequirementFromJira = (entry: JiraRequirement): Requirement => {
   return requirement;
 };
 
-const toRequirementFromReqif = (entry: ReqIFRequirement): Requirement =>
-  createRequirement(entry.id, entry.text || entry.id, {
-    description: entry.text,
+const toRequirementFromReqif = (entry: ReqIFRequirement): Requirement => {
+  const summary = entry.title || entry.text || entry.id;
+  const description = entry.descriptionHtml ?? entry.text ?? entry.title ?? entry.id;
+  return createRequirement(entry.id, summary, {
+    description,
     status: 'draft',
   });
+};
 
 const requirementStatusFromPolarion = (status: string | undefined): RequirementStatus => {
   const normalized = status?.trim().toLowerCase();
@@ -1954,6 +1958,65 @@ const sortObjectives = (objectives: Objective[]): Objective[] => {
   return [...objectives].sort((a, b) => a.id.localeCompare(b.id, 'en') || a.name.localeCompare(b.name, 'en'));
 };
 
+const coverageArtifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
+  coverage_stmt: 'Statement coverage evidence',
+  coverage_dec: 'Decision coverage evidence',
+  coverage_mcdc: 'MC/DC coverage evidence',
+};
+
+const certificationGatingConfig: Record<
+  ObjectiveArtifactType,
+  { fail: CertificationLevel[]; warn: CertificationLevel[] }
+> = {
+  coverage_stmt: { fail: ['A', 'B'], warn: ['C'] },
+  coverage_dec: { fail: ['A', 'B'], warn: ['C'] },
+  coverage_mcdc: { fail: ['A'], warn: ['B', 'C'] },
+} as const;
+
+interface CertificationGatingEvaluation {
+  shouldFail: boolean;
+  warnings: string[];
+}
+
+const evaluateCertificationGating = (
+  level: CertificationLevel,
+  objectives: ObjectiveCoverage[],
+): CertificationGatingEvaluation => {
+  const missingByArtifact = new Map<ObjectiveArtifactType, Set<string>>();
+
+  objectives.forEach((objective) => {
+    const missingArtifacts = objective.missingArtifacts ?? [];
+    missingArtifacts.forEach((artifact) => {
+      if (!missingByArtifact.has(artifact)) {
+        missingByArtifact.set(artifact, new Set<string>());
+      }
+      missingByArtifact.get(artifact)!.add(objective.objectiveId);
+    });
+  });
+
+  const warnings: string[] = [];
+  let shouldFail = false;
+
+  (Object.keys(certificationGatingConfig) as ObjectiveArtifactType[]).forEach((artifact) => {
+    const config = certificationGatingConfig[artifact];
+    const missingObjectives = missingByArtifact.get(artifact);
+    if (!missingObjectives || missingObjectives.size === 0) {
+      return;
+    }
+
+    const label = coverageArtifactLabels[artifact] ?? artifact;
+    const objectiveList = Array.from(missingObjectives).sort().join(', ');
+    if (config.fail.includes(level)) {
+      shouldFail = true;
+      warnings.push(`Required ${label} missing for Level ${level} (Objectives: ${objectiveList}).`);
+    } else if (config.warn.includes(level)) {
+      warnings.push(`Level ${level} warning: ${label} missing (Objectives: ${objectiveList}).`);
+    }
+  });
+
+  return { shouldFail, warnings };
+};
+
 export interface ListObjectivesOptions {
   objectives?: string;
   level?: CertificationLevel;
@@ -1986,28 +2049,28 @@ const formatLevelApplicability = (levels: Objective['levels']): string => {
 
 const formatObjectivesTable = (objectives: Objective[]): string => {
   if (objectives.length === 0) {
-    return 'Seçilen filtre kriterleriyle eşleşen hedef bulunamadı.';
+    return 'No objectives matched the selected filters.';
   }
 
   const columns = [
     { key: 'id', label: 'ID', getter: (objective: Objective) => objective.id },
-    { key: 'table', label: 'Tablo', getter: (objective: Objective) => objective.table },
+    { key: 'table', label: 'Table', getter: (objective: Objective) => objective.table },
     {
       key: 'levels',
-      label: 'Seviyeler',
+      label: 'Levels',
       getter: (objective: Objective) => formatLevelApplicability(objective.levels),
     },
     {
       key: 'independence',
-      label: 'Bağımsızlık',
+      label: 'Independence',
       getter: (objective: Objective) => objective.independence,
     },
     {
       key: 'artifacts',
-      label: 'Artefaktlar',
+      label: 'Artifacts',
       getter: (objective: Objective) => objective.artifacts.join(', '),
     },
-    { key: 'name', label: 'Başlık', getter: (objective: Objective) => objective.name },
+    { key: 'name', label: 'Title', getter: (objective: Objective) => objective.name },
   ] as const;
 
   const widths = columns.reduce<Record<string, number>>((acc, column) => {
@@ -2084,6 +2147,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const engine = new TraceEngine(bundle);
   const traces = collectRequirementTraces(engine, workspace.requirements);
 
+  const gatingEvaluation = evaluateCertificationGating(level, snapshot.objectives);
+
   const outputDir = path.resolve(options.output);
   await ensureDirectory(outputDir);
 
@@ -2107,6 +2172,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
 
   await writeJsonFile(snapshotPath, snapshot);
   await writeJsonFile(tracePath, traces);
+  const analysisWarnings = [...workspace.metadata.warnings, ...gatingEvaluation.warnings];
   await writeJsonFile(analysisPath, {
     metadata: analysisMetadata,
     objectives: filteredObjectives,
@@ -2118,15 +2184,12 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     evidenceIndex: workspace.evidenceIndex,
     git: workspace.git,
     inputs: workspace.metadata.inputs,
-    warnings: workspace.metadata.warnings,
+    warnings: analysisWarnings,
     qualityFindings: snapshot.qualityFindings,
     traceSuggestions: snapshot.traceSuggestions,
   });
 
-  const hasMissingEvidence = snapshot.objectives.some(
-    (objective) => objective.status !== 'covered',
-  );
-  const exitCode = hasMissingEvidence ? exitCodes.missingEvidence : exitCodes.success;
+  const exitCode = gatingEvaluation.shouldFail ? exitCodes.missingEvidence : exitCodes.success;
 
   return { snapshotPath, tracePath, analysisPath, exitCode };
 };
@@ -3423,7 +3486,7 @@ if (require.main === module) {
             type: 'string',
           })
           .option('level', {
-            describe: 'Seviye filtresi (A-E).',
+            describe: 'Certification level filter (A-E).',
             type: 'string',
             choices: certificationLevels as unknown as string[],
           }),

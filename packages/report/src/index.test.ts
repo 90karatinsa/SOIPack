@@ -17,8 +17,10 @@ import {
   renderGaps,
   renderHtmlReport,
   renderJsonReport,
+  renderToolQualificationPack,
   renderTraceMatrix,
   printToPDF,
+  type ToolUsageMetadata,
 } from './index';
 
 jest.mock('html-validator', () => ({
@@ -92,6 +94,23 @@ describe('@soipack/report', () => {
     expect(result.html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
     expect(result.html).toContain('Risk Profili');
     expect(result.html).toContain('Signoff Zaman Çizelgesi');
+  });
+
+  it('renders ComplianceDelta dashboard with regression sparkline', () => {
+    const fixture = createReportFixture();
+    const result = renderComplianceMatrix(fixture.snapshot, {
+      manifestId: fixture.manifestId,
+      objectivesMetadata: fixture.objectives,
+      signoffs: fixture.signoffs,
+    });
+
+    expect(result.html).toContain('Uyum Delta Panosu');
+    expect(result.html).toContain('Regresyonlar');
+    expect(result.html).toContain('Gerileme:');
+    expect(result.html).toContain('Regresyon trendi');
+    expect(result.json.complianceDelta?.totals.regressions).toBeGreaterThan(0);
+    expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
+    expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
@@ -305,6 +324,107 @@ describe('@soipack/report', () => {
     ).resolves.toBe(pdfBuffer);
 
     expect(actions).toEqual(['launch', 'newPage', 'setContent', 'pdf', 'pageClose', 'browserClose']);
+  });
+
+  describe('ToolQualification pack', () => {
+    const sampleTools: ToolUsageMetadata[] = [
+      {
+        id: 'tool-vectorcast',
+        name: 'VectorCAST',
+        version: '2023R1',
+        vendor: 'Vector Informatik',
+        category: 'verification',
+        tql: 'TQL-4',
+        description: 'Structural coverage konsolidasyonu ve rapor üretimi.',
+        objectives: ['DO-178C A-5-08', 'DO-178C A-5-10'],
+        environment: ['Container CI'],
+        outputs: [
+          {
+            name: 'Coverage Merge',
+            description: 'MC/DC kapsam ölçümlerini tekleştirir.',
+            producedArtifacts: ['coverage_mcdc', 'coverage_dec'],
+            referencedObjectives: ['A-5-10'],
+          },
+        ],
+        controls: [
+          {
+            id: 'CTRL-1',
+            description: 'Kapsam birleştirme scripti gözden geçirilir.',
+            owner: 'Verification Lead',
+            frequency: 'Her sürüm',
+            evidence: ['reviews/vectorcast-merge.md'],
+          },
+        ],
+        validation: [
+          {
+            id: 'VAL-1',
+            description: 'Baz set ile JSON çıktısını karşılaştır.',
+            method: 'Bağımsız veri tekrar yürütmesi',
+            expectedResult: '%1 altında fark',
+            status: 'passed',
+            evidence: ['validation/vectorcast-baseline.csv'],
+          },
+          {
+            id: 'VAL-2',
+            description: 'Tohumlanmış hataların MC/DC ile yakalanması',
+            method: 'Mutasyon testi',
+            expectedResult: 'Hatalar raporlanır',
+            status: 'in-progress',
+          },
+        ],
+        limitations: ['Araç, manuel test haritalamalarını doğrulamaz.'],
+        residualRisks: ['Mutasyon sonuçları manuel onay gerektirir.'],
+      },
+    ];
+
+    it('ToolQualification pack outlines include validation and controls', () => {
+      const pack = renderToolQualificationPack(sampleTools, {
+        programName: 'Flight Control',
+        level: 'A',
+        author: 'QA Team',
+        generatedAt: '2024-03-01T00:00:00Z',
+      });
+
+      expect(pack.tqp.filename).toBe('tool-qualification-plan.md');
+      expect(pack.tar.filename).toBe('tool-accomplishment-report.md');
+      expect(pack.tqp.content).toContain('# DO-330 Tool Qualification Plan');
+      expect(pack.tqp.content).toContain('VectorCAST');
+      expect(pack.tqp.content).toContain('Kontroller ve Doğrulama Aktiviteleri');
+      expect(pack.tar.content).toContain('Tool Accomplishment Report');
+      expect(pack.tar.content).toContain('Açık Aktivite Sayısı: 1');
+      expect(pack.summary.tools[0].pendingActivities).toBe(1);
+      expect(pack.summary.generatedAt).toBe('2024-03-01T00:00:00Z');
+    });
+
+    it('ToolQualification links render within compliance report', () => {
+      const pack = renderToolQualificationPack(sampleTools, {
+        programName: 'Flight Control',
+        level: 'A',
+        author: 'QA Team',
+        generatedAt: '2024-03-01T00:00:00Z',
+      });
+      const fixture = createReportFixture();
+
+      const result = renderComplianceMatrix(fixture.snapshot, {
+        manifestId: fixture.manifestId,
+        objectivesMetadata: fixture.objectives,
+        signoffs: fixture.signoffs,
+        toolQualification: {
+          tqpHref: pack.tqp.filename,
+          tarHref: pack.tar.filename,
+          generatedAt: pack.summary.generatedAt,
+          tools: pack.summary.tools,
+        },
+      });
+
+      expect(result.html).toContain('DO-330 Araç Niteliklendirme');
+      expect(result.html).toContain('VectorCAST');
+      expect(result.html).toContain('TQP Taslağı');
+      expect(result.html).toContain('Açık Aktiviteler');
+      expect(result.json.toolQualification?.tools[0].pendingActivities).toBe(1);
+      expect(result.json.toolQualification?.tqpHref).toBe('tool-qualification-plan.md');
+      expect(result.json.toolQualification?.tarHref).toBe('tool-accomplishment-report.md');
+    });
   });
 
   it('keeps legacy HTML and JSON helpers for CLI', () => {

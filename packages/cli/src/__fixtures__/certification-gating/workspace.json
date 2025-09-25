@@ -1,0 +1,23 @@
+{
+  "requirements": [],
+  "testResults": [],
+  "coverage": null,
+  "structuralCoverage": null,
+  "traceLinks": [],
+  "testToCodeMap": {},
+  "evidenceIndex": {},
+  "git": null,
+  "findings": [],
+  "builds": [],
+  "metadata": {
+    "generatedAt": "2024-06-01T12:00:00.000Z",
+    "warnings": [],
+    "inputs": {},
+    "version": {
+      "id": "20240601T120000Z-testfixture",
+      "createdAt": "2024-06-01T12:00:00.000Z",
+      "fingerprint": "0123456789abcdef0123456789abcdef",
+      "isFrozen": false
+    }
+  }
+}

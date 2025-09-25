@@ -50,6 +50,7 @@ interface LayoutContext extends BaseReportOptions {
 export interface ComplianceMatrixOptions extends BaseReportOptions {
   objectivesMetadata?: Objective[];
   signoffs?: SignoffTimelineEntry[];
+  toolQualification?: ToolQualificationLinkOptions;
 }
 
 export interface TraceMatrixOptions extends BaseReportOptions {
@@ -125,6 +126,53 @@ interface RiskDriftView {
   confidenceLabel: string;
 }
 
+interface RiskDeltaTrendEntryView {
+  label: string;
+  window?: string;
+  improvements: number;
+  regressions: number;
+}
+
+interface RiskDeltaRegressionView {
+  objectiveId: string;
+  changeLabel: string;
+  stepLabel: string;
+  badgeClass: string;
+}
+
+interface RiskDeltaSparklineView {
+  svg: string;
+  label: string;
+}
+
+interface RiskDeltaSummaryJson {
+  totals: { improvements: number; regressions: number };
+  steps: Array<{
+    fromVersionId?: string;
+    toVersionId: string;
+    fromGeneratedAt?: string;
+    toGeneratedAt?: string;
+    improvements: number;
+    regressions: number;
+  }>;
+  regressions: Array<{
+    objectiveId: string;
+    previousStatus: ComplianceSnapshot['objectives'][number]['status'];
+    currentStatus: ComplianceSnapshot['objectives'][number]['status'];
+    fromVersionId?: string;
+    toVersionId: string;
+  }>;
+}
+
+interface RiskDeltaView {
+  totalsLabel: string;
+  totals: { improvements: number; regressions: number };
+  trend: RiskDeltaTrendEntryView[];
+  regressions: RiskDeltaRegressionView[];
+  sparkline?: RiskDeltaSparklineView;
+  summary: RiskDeltaSummaryJson;
+}
+
 interface RiskView {
   score: number;
   scoreLabel: string;
@@ -134,6 +182,7 @@ interface RiskView {
   breakdown: RiskBreakdownView[];
   missingSignals: string[];
   drift?: RiskDriftView;
+  delta?: RiskDeltaView;
 }
 
 interface SignoffTimelineEventView {
@@ -164,6 +213,7 @@ interface ComplianceMatrixView {
   summaryMetrics: LayoutSummaryMetric[];
   risk?: RiskView;
   signoffs?: SignoffTimelineView;
+  toolQualification?: ToolQualificationLinkView;
 }
 
 interface TraceMatrixRow {
@@ -211,6 +261,90 @@ interface GapReportRow {
   missingArtifacts: string[];
 }
 
+export interface ToolQualificationUsageOutput {
+  name: string;
+  description: string;
+  producedArtifacts?: string[];
+  referencedObjectives?: string[];
+}
+
+export interface ToolQualificationControl {
+  id: string;
+  description: string;
+  owner?: string;
+  frequency?: string;
+  evidence?: string[];
+}
+
+export type ToolQualificationActivityStatus = 'planned' | 'in-progress' | 'passed' | 'blocked';
+
+export interface ToolQualificationValidationActivity {
+  id: string;
+  description: string;
+  method: string;
+  expectedResult: string;
+  status?: ToolQualificationActivityStatus;
+  evidence?: string[];
+  owner?: string;
+}
+
+export interface ToolUsageMetadata {
+  id: string;
+  name: string;
+  version?: string;
+  vendor?: string;
+  category: 'development' | 'verification' | 'support';
+  tql?: string;
+  description?: string;
+  objectives: string[];
+  environment?: string[];
+  outputs: ToolQualificationUsageOutput[];
+  controls?: ToolQualificationControl[];
+  validation?: ToolQualificationValidationActivity[];
+  limitations?: string[];
+  residualRisks?: string[];
+}
+
+export interface ToolQualificationPackOptions {
+  programName?: string;
+  level?: string;
+  generatedAt?: string;
+  author?: string;
+}
+
+export interface ToolQualificationSummaryItem {
+  id: string;
+  name: string;
+  version?: string;
+  category: 'development' | 'verification' | 'support';
+  tql?: string;
+  outputs: string[];
+  pendingActivities: number;
+}
+
+export interface ToolQualificationPackResult {
+  tqp: { filename: string; content: string };
+  tar: { filename: string; content: string };
+  summary: {
+    generatedAt: string;
+    programName?: string;
+    level?: string;
+    author?: string;
+    tools: ToolQualificationSummaryItem[];
+  };
+}
+
+export interface ToolQualificationLinkOptions {
+  tqpHref?: string;
+  tarHref?: string;
+  generatedAt?: string;
+  tools: ToolQualificationSummaryItem[];
+}
+
+interface ToolQualificationLinkView extends ToolQualificationLinkOptions {
+  summaryLabel: string;
+}
+
 export interface ComplianceMatrixJson {
   manifestId?: string;
   generatedAt: string;
@@ -255,7 +389,9 @@ export interface ComplianceMatrixJson {
   }>;
   git?: BuildInfo | null;
   risk?: ComplianceSnapshot['risk'] | null;
+  complianceDelta?: RiskDeltaSummaryJson;
   signoffs: SignoffTimelineEntry[];
+  toolQualification?: ToolQualificationLinkOptions;
 }
 
 export interface ComplianceMatrixResult {
@@ -362,6 +498,169 @@ const gapSummaryLabels: Record<GapCategoryKey, string> = {
   quality: 'Kalite Boşlukları',
   issues: 'Problem Takibi Boşlukları',
   conformity: 'Uygunluk Boşlukları',
+};
+
+const toolActivityStatusLabels: Record<ToolQualificationActivityStatus, string> = {
+  planned: 'Planlandı',
+  'in-progress': 'Devam ediyor',
+  passed: 'Tamamlandı',
+  blocked: 'Engellendi',
+};
+
+const defaultTqpFilename = 'tool-qualification-plan.md';
+const defaultTarFilename = 'tool-accomplishment-report.md';
+
+const formatBulletList = (items: string[], fallback: string): string => {
+  if (!items.length) {
+    return `- ${fallback}`;
+  }
+  return items.map((item) => `- ${item}`).join('\n');
+};
+
+const describeOutput = (output: ToolQualificationUsageOutput): string => {
+  const parts = [`${output.name}: ${output.description}`];
+  if (output.producedArtifacts && output.producedArtifacts.length > 0) {
+    parts.push(`Kanıt: ${output.producedArtifacts.join(', ')}`);
+  }
+  if (output.referencedObjectives && output.referencedObjectives.length > 0) {
+    parts.push(`Hedefler: ${output.referencedObjectives.join(', ')}`);
+  }
+  return parts.join(' • ');
+};
+
+const describeControl = (control: ToolQualificationControl): string => {
+  const details = [control.description];
+  if (control.owner) {
+    details.push(`Sorumlu: ${control.owner}`);
+  }
+  if (control.frequency) {
+    details.push(`Periyot: ${control.frequency}`);
+  }
+  if (control.evidence && control.evidence.length > 0) {
+    details.push(`Kanıt: ${control.evidence.join(', ')}`);
+  }
+  return `${control.id}: ${details.join(' • ')}`;
+};
+
+const describeValidationActivity = (activity: ToolQualificationValidationActivity): string => {
+  const statusLabel = toolActivityStatusLabels[activity.status ?? 'planned'] ?? activity.status ?? 'Durum bilinmiyor';
+  const pieces = [
+    `${activity.id}: ${activity.description}`,
+    `Yöntem: ${activity.method}`,
+    `Beklenen Sonuç: ${activity.expectedResult}`,
+    `Durum: ${statusLabel}`,
+  ];
+  if (activity.owner) {
+    pieces.push(`Sorumlu: ${activity.owner}`);
+  }
+  if (activity.evidence && activity.evidence.length > 0) {
+    pieces.push(`Kanıt: ${activity.evidence.join(', ')}`);
+  }
+  return pieces.join(' • ');
+};
+
+export const renderToolQualificationPack = (
+  toolUsage: ToolUsageMetadata[],
+  options: ToolQualificationPackOptions = {},
+): ToolQualificationPackResult => {
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
+  const tqpLines: string[] = [
+    '# DO-330 Tool Qualification Plan (TQP)',
+    '',
+    `Program: ${options.programName ?? 'TBD'}`,
+    `Seviye: ${options.level ?? 'TBD'}`,
+    `Oluşturan: ${options.author ?? 'Kalite Ekibi'}`,
+    `Oluşturulma: ${generatedAt}`,
+    '',
+    'Bu plan, yazılım doğrulama sürecinde kullanılan araçların DO-330 kapsamında nasıl niteliklendirileceğini özetler.',
+  ];
+
+  const tarLines: string[] = [
+    '# DO-330 Tool Accomplishment Report (TAR)',
+    '',
+    `Program: ${options.programName ?? 'TBD'}`,
+    `Seviye: ${options.level ?? 'TBD'}`,
+    `Hazırlayan: ${options.author ?? 'Kalite Ekibi'}`,
+    `Oluşturulma: ${generatedAt}`,
+    '',
+    'Bu rapor, planlanan niteliklendirme aktivitelerinin yürütülmesini ve kalan riskleri özetler.',
+  ];
+
+  if (toolUsage.length === 0) {
+    tqpLines.push('', '## Araç Verisi Sağlanmadı', '', 'Hiçbir araç kullanımı raporlanmadı.');
+    tarLines.push('', '## Araç Verisi Sağlanmadı', '', 'Kapanacak aktivite yok.');
+  }
+
+  const summaryTools: ToolQualificationSummaryItem[] = toolUsage.map((tool) => {
+    const pendingActivities = (tool.validation ?? []).filter((activity) => activity.status !== 'passed').length;
+    return {
+      id: tool.id,
+      name: tool.name,
+      version: tool.version,
+      category: tool.category,
+      tql: tool.tql,
+      outputs: tool.outputs.map((output) => output.name),
+      pendingActivities,
+    };
+  });
+
+  toolUsage.forEach((tool, index) => {
+    const headerIndex = index + 1;
+    const heading = `## ${headerIndex}. ${tool.name}${tool.version ? ` v${tool.version}` : ''}`;
+    tqpLines.push('', heading, '');
+    tqpLines.push(
+      `- Tanım: ${tool.description ?? 'Açıklama sağlanmadı.'}`,
+      `- Tedarikçi: ${tool.vendor ?? 'Bilinmiyor'}`,
+      `- Kategori: ${tool.category}`,
+      `- Önerilen TQL: ${tool.tql ?? 'TBD'}`,
+      `- Çevre: ${(tool.environment ?? ['Çevre belirtilmedi.']).join(', ')}`,
+    );
+    tqpLines.push('', '### 1. Kullanım Kapsamı');
+    tqpLines.push(formatBulletList(tool.objectives, 'Hedef belirtilmedi.'));
+    tqpLines.push('', '### 2. Üretilen Çıktılar');
+    tqpLines.push(formatBulletList(tool.outputs.map(describeOutput), 'Kayıtlı çıktı yok.'));
+    tqpLines.push('', '### 3. Kontroller ve Doğrulama Aktiviteleri');
+    const controlLines = (tool.controls ?? []).map(describeControl);
+    const validationLines = (tool.validation ?? []).map(describeValidationActivity);
+    const combined = [...controlLines, ...validationLines];
+    tqpLines.push(formatBulletList(combined, 'Kontrol veya doğrulama adımı tanımlanmadı.'));
+    if (tool.limitations && tool.limitations.length > 0) {
+      tqpLines.push('', '### 4. Bilinen Sınırlamalar');
+      tqpLines.push(formatBulletList(tool.limitations, 'Sınırlama tanımlanmadı.'));
+    }
+
+    tarLines.push('', heading, '');
+    tarLines.push('- Kullanım Özeti:');
+    tarLines.push(formatBulletList(tool.outputs.map(describeOutput), 'Kayıtlı çıktı yok.'));
+    tarLines.push('', '### Niteliklendirme Aktivite Durumu');
+    tarLines.push(
+      formatBulletList(
+        validationLines.length > 0
+          ? validationLines
+          : [(tool.controls ?? []).length > 0 ? 'Planlanan kontroller yürütüldü.' : 'Aktivite kaydı yok.'],
+        'Aktivite kaydı yok.',
+      ),
+    );
+    if (tool.residualRisks && tool.residualRisks.length > 0) {
+      tarLines.push('', '### Kalıcı Riskler');
+      tarLines.push(formatBulletList(tool.residualRisks, 'Kalıcı risk tanımlanmadı.'));
+    }
+    if (summaryTools[index].pendingActivities > 0) {
+      tarLines.push('', `> Açık Aktivite Sayısı: ${summaryTools[index].pendingActivities}`);
+    }
+  });
+
+  return {
+    tqp: { filename: defaultTqpFilename, content: `${tqpLines.join('\n')}\n` },
+    tar: { filename: defaultTarFilename, content: `${tarLines.join('\n')}` },
+    summary: {
+      generatedAt,
+      programName: options.programName,
+      level: options.level,
+      author: options.author,
+      tools: summaryTools,
+    },
+  };
 };
 
 const artifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
@@ -950,8 +1249,139 @@ const riskTemplate = nunjucks.compile(
         {% endfor %}
       </ul>
     </div>
+    {% if delta %}
+      <div class="risk-breakdown">
+        <h3>Uyum Delta Panosu</h3>
+        <p class="muted">{{ delta.totalsLabel }}</p>
+        {% if delta.sparkline %}
+          <div class="risk-delta-sparkline" role="img" aria-label="{{ delta.sparkline.label }}">
+            {{ delta.sparkline.svg | safe }}
+          </div>
+        {% endif %}
+        <div class="risk-delta-panels">
+          <div class="risk-delta-panel">
+            <h4>Adım Özeti</h4>
+            {% if delta.trend.length %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dönem</th>
+                    <th style="text-align:right;">İyileşme</th>
+                    <th style="text-align:right;">Gerileme</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for entry in delta.trend %}
+                    <tr>
+                      <td>
+                        <div class="cell-title">{{ entry.label }}</div>
+                        {% if entry.window %}
+                          <div class="muted">{{ entry.window }}</div>
+                        {% endif %}
+                      </td>
+                      <td style="text-align:right;">{{ entry.improvements }}</td>
+                      <td style="text-align:right;">{{ entry.regressions }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="muted">Delta adımı kaydedilmedi.</p>
+            {% endif %}
+          </div>
+          <div class="risk-delta-panel">
+            <h4>Regresyonlar</h4>
+            {% if delta.regressions.length %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum Değişimi</th>
+                    <th>Dönem</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for regression in delta.regressions %}
+                    <tr>
+                      <td><span class="cell-title">{{ regression.objectiveId }}</span></td>
+                      <td><span class="badge {{ regression.badgeClass }}">{{ regression.changeLabel }}</span></td>
+                      <td><span class="muted">{{ regression.stepLabel }}</span></td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="muted">Gerileme kaydı bulunmuyor.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
     {% if missingSignals.length %}
       <p class="muted">Eksik sinyaller: {{ missingSignals | join(', ') }}</p>
+    {% endif %}
+  </section>`,
+  env,
+);
+
+const toolQualificationTemplate = nunjucks.compile(
+  `<section class="section">
+    <h2>DO-330 Araç Niteliklendirme</h2>
+    <p class="section-lead">{{ summaryLabel }}</p>
+    {% if tqpHref or tarHref %}
+      <div class="risk-breakdown-stats">
+        {% if tqpHref %}
+          <a class="badge badge-soft" href="{{ tqpHref }}">TQP Taslağı</a>
+        {% endif %}
+        {% if tarHref %}
+          <a class="badge badge-soft" href="{{ tarHref }}">TAR Özeti</a>
+        {% endif %}
+      </div>
+    {% endif %}
+    {% if tools.length %}
+      <table>
+        <thead>
+          <tr>
+            <th>Araç</th>
+            <th>Kategori</th>
+            <th>TQL</th>
+            <th>Üretilen Çıktılar</th>
+            <th>Açık Aktiviteler</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tool in tools %}
+            <tr>
+              <td>
+                <div class="cell-title">{{ tool.name }}</div>
+                <div class="muted">{{ tool.id }}{% if tool.version %} • v{{ tool.version }}{% endif %}</div>
+              </td>
+              <td>{{ tool.category }}</td>
+              <td>{{ tool.tql or 'TBD' }}</td>
+              <td>
+                {% if tool.outputs.length %}
+                  <ul class="list">
+                    {% for output in tool.outputs %}
+                      <li class="muted">{{ output }}</li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="muted">Çıktı kaydı yok</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if tool.pendingActivities > 0 %}
+                  <span class="badge status-missing">{{ tool.pendingActivities }}</span>
+                {% else %}
+                  <span class="badge status-covered">0</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Araç niteliklendirme verisi sağlanmadı.</p>
     {% endif %}
   </section>`,
   env,
@@ -1325,6 +1755,44 @@ const contributionClass = (weight: number, contribution: number): string => {
   return 'status-covered';
 };
 
+const statusBadgeClasses: Record<
+  ComplianceSnapshot['objectives'][number]['status'],
+  string
+> = {
+  covered: 'status-covered',
+  partial: 'status-partial',
+  missing: 'status-missing',
+};
+
+const buildRegressionSparkline = (values: number[]): RiskDeltaSparklineView | undefined => {
+  if (values.length === 0) {
+    return undefined;
+  }
+
+  const maxValue = Math.max(...values);
+  const width = Math.max(60, values.length * 18);
+  const height = 32;
+  const baseY = height - 4;
+  const step = values.length > 1 ? width / (values.length - 1) : 0;
+
+  if (maxValue === 0) {
+    const svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" class="sparkline-graph"><line x1="0" y1="${baseY}" x2="${width}" y2="${baseY}" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4" /></svg>`;
+    return { svg, label: `Regresyon trendi: ${values.join(', ')}` };
+  }
+
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : index * step;
+    const normalized = value / maxValue;
+    const y = baseY - normalized * (height - 8);
+    return { x, y };
+  });
+
+  const linePoints = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+  const areaPoints = [`0,${height}`, ...points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`), `${width.toFixed(1)},${height}`].join(' ');
+  const svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" class="sparkline-graph"><polygon points="${areaPoints}" fill="rgba(244,63,94,0.18)" /><polyline points="${linePoints}" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linecap="round" /></svg>`;
+  return { svg, label: `Regresyon trendi: ${values.join(', ')}` };
+};
+
 const buildRiskView = (risk?: ComplianceSnapshot['risk']): RiskView | undefined => {
   if (!risk) {
     return undefined;
@@ -1359,6 +1827,73 @@ const buildRiskView = (risk?: ComplianceSnapshot['risk']): RiskView | undefined 
     };
   }
 
+  let delta: RiskDeltaView | undefined;
+  if (risk.complianceDelta && risk.complianceDelta.steps.length > 0) {
+    const formatStatus = (status: ComplianceSnapshot['objectives'][number]['status']) =>
+      statusLabels[status] ?? status;
+
+    const trend: RiskDeltaTrendEntryView[] = risk.complianceDelta.steps.map((step) => {
+      const fromId = step.from?.version.id ?? 'Önceki';
+      const toId = step.to.version.id;
+      const fromDate = step.from?.generatedAt ? formatDate(step.from.generatedAt) : undefined;
+      const toDate = step.to.generatedAt ? formatDate(step.to.generatedAt) : undefined;
+      const window = [fromDate, toDate].filter(Boolean).join(' → ') || undefined;
+      return {
+        label: `${fromId} → ${toId}`,
+        window,
+        improvements: step.improvements.length,
+        regressions: step.regressions.length,
+      };
+    });
+
+    const regressionEntries: RiskDeltaRegressionView[] = risk.complianceDelta.steps.flatMap((step) => {
+      const labelParts = [`${step.from?.version.id ?? 'Önceki'} → ${step.to.version.id}`];
+      const fromDate = step.from?.generatedAt ? formatDate(step.from.generatedAt) : undefined;
+      const toDate = step.to.generatedAt ? formatDate(step.to.generatedAt) : undefined;
+      const timeRange = [fromDate, toDate].filter(Boolean).join(' → ');
+      if (timeRange) {
+        labelParts.push(`(${timeRange})`);
+      }
+      const stepLabel = labelParts.join(' ');
+      return step.regressions.map((change) => ({
+        objectiveId: change.objectiveId,
+        changeLabel: `${formatStatus(change.previousStatus)} → ${formatStatus(change.currentStatus)}`,
+        stepLabel,
+        badgeClass: statusBadgeClasses[change.currentStatus] ?? 'status-partial',
+      }));
+    });
+
+    const summary: RiskDeltaSummaryJson = {
+      totals: risk.complianceDelta.totals,
+      steps: risk.complianceDelta.steps.map((step) => ({
+        fromVersionId: step.from?.version.id,
+        toVersionId: step.to.version.id,
+        fromGeneratedAt: step.from?.generatedAt,
+        toGeneratedAt: step.to.generatedAt,
+        improvements: step.improvements.length,
+        regressions: step.regressions.length,
+      })),
+      regressions: risk.complianceDelta.steps.flatMap((step) =>
+        step.regressions.map((change) => ({
+          objectiveId: change.objectiveId,
+          previousStatus: change.previousStatus,
+          currentStatus: change.currentStatus,
+          fromVersionId: step.from?.version.id,
+          toVersionId: step.to.version.id,
+        })),
+      ),
+    };
+
+    delta = {
+      totalsLabel: `İyileşme: ${risk.complianceDelta.totals.improvements}, Gerileme: ${risk.complianceDelta.totals.regressions}`,
+      totals: risk.complianceDelta.totals,
+      trend,
+      regressions: regressionEntries,
+      sparkline: buildRegressionSparkline(trend.map((entry) => entry.regressions)),
+      summary,
+    };
+  }
+
   return {
     score: Number(risk.profile.score.toFixed(1)),
     scoreLabel: '0 en düşük, 100 en yüksek riski temsil eder.',
@@ -1368,6 +1903,7 @@ const buildRiskView = (risk?: ComplianceSnapshot['risk']): RiskView | undefined 
     breakdown,
     missingSignals,
     drift,
+    delta,
   };
 };
 
@@ -1580,6 +2116,15 @@ const buildComplianceMatrixView = (
     };
   });
 
+  const toolQualification: ToolQualificationLinkView | undefined = options.toolQualification
+    ? {
+        ...options.toolQualification,
+        summaryLabel: options.toolQualification.generatedAt
+          ? `Son güncelleme: ${formatDate(options.toolQualification.generatedAt)}`
+          : 'TQP/TAR bağlantıları',
+      }
+    : undefined;
+
   return {
     objectives,
     requirementCoverage,
@@ -1592,6 +2137,7 @@ const buildComplianceMatrixView = (
     ),
     risk: buildRiskView(snapshot.risk),
     signoffs: buildSignoffTimelineView(options.signoffs),
+    toolQualification,
   };
 };
 
@@ -1676,7 +2222,16 @@ const buildComplianceMatrixJson = (
   })),
   git: options.git ?? null,
   risk: snapshot.risk ?? null,
+  complianceDelta: view.risk?.delta?.summary,
   signoffs: (options.signoffs ?? []).map((signoff) => ({ ...signoff })),
+  ...(options.toolQualification
+    ? {
+        toolQualification: {
+          ...options.toolQualification,
+          tools: options.toolQualification.tools.map((tool) => ({ ...tool })),
+        },
+      }
+    : {}),
 });
 
 const renderLayout = (context: LayoutContext): string => {
@@ -1698,6 +2253,9 @@ export const renderComplianceMatrix = (
   const sections: string[] = [];
   if (view.risk) {
     sections.push(riskTemplate.render(view.risk));
+  }
+  if (view.toolQualification) {
+    sections.push(toolQualificationTemplate.render(view.toolQualification));
   }
   sections.push(
     complianceTemplate.render({
@@ -1741,6 +2299,9 @@ export const renderComplianceCoverageReport = (
   const sections: string[] = [];
   if (view.risk) {
     sections.push(riskTemplate.render(view.risk));
+  }
+  if (view.toolQualification) {
+    sections.push(toolQualificationTemplate.render(view.toolQualification));
   }
   sections.push(
     complianceTemplate.render({

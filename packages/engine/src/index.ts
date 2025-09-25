@@ -862,13 +862,54 @@ export interface ComplianceStatistics {
   codePaths: { total: number };
 }
 
+const objectiveStatusRank: Record<ObjectiveCoverageStatus, number> = {
+  missing: 0,
+  partial: 1,
+  covered: 2,
+};
+
+export interface ComplianceDeltaChange {
+  objectiveId: string;
+  previousStatus: ObjectiveCoverageStatus;
+  currentStatus: ObjectiveCoverageStatus;
+}
+
+export interface ComplianceDeltaBoundary {
+  version: SnapshotVersion;
+  generatedAt?: string;
+}
+
+export interface ComplianceDeltaStep {
+  from?: ComplianceDeltaBoundary;
+  to: ComplianceDeltaBoundary;
+  improvements: ComplianceDeltaChange[];
+  regressions: ComplianceDeltaChange[];
+}
+
+export interface ComplianceDeltaSummary {
+  steps: ComplianceDeltaStep[];
+  latest?: ComplianceDeltaStep;
+  totals: {
+    improvements: number;
+    regressions: number;
+  };
+}
+
 export interface ComplianceSnapshotRiskBlock {
   profile: RiskProfile;
   coverageDrift?: CoverageDriftForecast;
+  complianceDelta?: ComplianceDeltaSummary;
+}
+
+export interface ComplianceDeltaSnapshot {
+  version: SnapshotVersion;
+  generatedAt?: string;
+  objectives: ObjectiveCoverage[];
 }
 
 export interface ComplianceSnapshotRiskOptions extends Partial<RiskInput> {
   coverageHistory?: CoverageSnapshot[];
+  snapshotHistory?: ComplianceDeltaSnapshot[];
 }
 
 export interface ComplianceSnapshotOptions {
@@ -915,6 +956,75 @@ const summarizeTests = (tests: TestResult[]): TestStatistics => {
     },
     { total: 0, passed: 0, failed: 0, skipped: 0 },
   );
+};
+
+const computeComplianceDelta = (
+  previous: ObjectiveCoverage[],
+  current: ObjectiveCoverage[],
+): { improvements: ComplianceDeltaChange[]; regressions: ComplianceDeltaChange[] } => {
+  const previousById = new Map(previous.map((entry) => [entry.objectiveId, entry]));
+  const improvements: ComplianceDeltaChange[] = [];
+  const regressions: ComplianceDeltaChange[] = [];
+
+  current.forEach((entry) => {
+    const prior = previousById.get(entry.objectiveId);
+    if (!prior) {
+      return;
+    }
+    const priorRank = objectiveStatusRank[prior.status];
+    const currentRank = objectiveStatusRank[entry.status];
+    if (currentRank > priorRank) {
+      improvements.push({
+        objectiveId: entry.objectiveId,
+        previousStatus: prior.status,
+        currentStatus: entry.status,
+      });
+    } else if (currentRank < priorRank) {
+      regressions.push({
+        objectiveId: entry.objectiveId,
+        previousStatus: prior.status,
+        currentStatus: entry.status,
+      });
+    }
+  });
+
+  return { improvements, regressions };
+};
+
+const buildComplianceDeltaSummary = (
+  timeline: ComplianceDeltaSnapshot[],
+  current: ComplianceDeltaSnapshot,
+): ComplianceDeltaSummary | undefined => {
+  if (timeline.length === 0) {
+    return undefined;
+  }
+
+  const ordered = [...timeline, current];
+  const steps: ComplianceDeltaStep[] = [];
+
+  for (let index = 1; index < ordered.length; index += 1) {
+    const from = ordered[index - 1];
+    const to = ordered[index];
+    const { improvements, regressions } = computeComplianceDelta(from.objectives, to.objectives);
+
+    steps.push({
+      from: { version: from.version, generatedAt: from.generatedAt },
+      to: { version: to.version, generatedAt: to.generatedAt },
+      improvements,
+      regressions,
+    });
+  }
+
+  const totals = steps.reduce(
+    (acc, step) => {
+      acc.improvements += step.improvements.length;
+      acc.regressions += step.regressions.length;
+      return acc;
+    },
+    { improvements: 0, regressions: 0 },
+  );
+
+  return { steps, latest: steps[steps.length - 1], totals };
 };
 
 export const generateComplianceSnapshot = (
@@ -1022,6 +1132,17 @@ export const generateComplianceSnapshot = (
     const riskBlock: ComplianceSnapshotRiskBlock = { profile: riskProfile };
     if (riskOptions.coverageHistory && riskOptions.coverageHistory.length > 0) {
       riskBlock.coverageDrift = predictCoverageDrift(riskOptions.coverageHistory);
+    }
+
+    if (riskOptions.snapshotHistory && riskOptions.snapshotHistory.length > 0) {
+      const complianceDelta = buildComplianceDeltaSummary(riskOptions.snapshotHistory, {
+        version,
+        generatedAt: snapshot.generatedAt,
+        objectives: objectiveCoverage,
+      });
+      if (complianceDelta) {
+        riskBlock.complianceDelta = complianceDelta;
+      }
     }
 
     snapshot.risk = riskBlock;

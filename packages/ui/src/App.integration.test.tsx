@@ -677,6 +677,55 @@ describe('App integration', () => {
           { factor: 'Statik Analiz Bulguları', contribution: 0.2, weight: 0.15 },
           { factor: 'Audit Bayrakları', contribution: 0.1, weight: 0.05 },
         ],
+        complianceDelta: {
+          totals: { improvements: 2, regressions: 2 },
+          steps: [
+            {
+              from: { version: { id: 'SNAP-1' }, generatedAt: '2024-04-01T00:00:00Z' },
+              to: { version: { id: 'SNAP-2' }, generatedAt: '2024-04-08T00:00:00Z' },
+              improvements: [
+                { objectiveId: 'A-3-04', previousStatus: 'missing', currentStatus: 'partial' },
+              ],
+              regressions: [],
+            },
+            {
+              from: { version: { id: 'SNAP-2' }, generatedAt: '2024-04-08T00:00:00Z' },
+              to: { version: { id: 'SNAP-3' }, generatedAt: '2024-04-15T00:00:00Z' },
+              improvements: [
+                { objectiveId: 'A-4-01', previousStatus: 'partial', currentStatus: 'covered' },
+              ],
+              regressions: [
+                { objectiveId: 'A-5-08', previousStatus: 'covered', currentStatus: 'partial' },
+                { objectiveId: 'A-6-02', previousStatus: 'partial', currentStatus: 'missing' },
+              ],
+            },
+          ],
+          latest: {
+            from: { version: { id: 'SNAP-2' }, generatedAt: '2024-04-08T00:00:00Z' },
+            to: { version: { id: 'SNAP-3' }, generatedAt: '2024-04-15T00:00:00Z' },
+            improvements: [
+              { objectiveId: 'A-4-01', previousStatus: 'partial', currentStatus: 'covered' },
+            ],
+            regressions: [
+              { objectiveId: 'A-5-08', previousStatus: 'covered', currentStatus: 'partial' },
+              { objectiveId: 'A-6-02', previousStatus: 'partial', currentStatus: 'missing' },
+            ],
+          },
+        },
+        toolQualification: {
+          pendingTools: 1,
+          updatedAt: '2024-04-15T08:00:00Z',
+          alerts: [
+            {
+              toolId: 'vectorcast',
+              toolName: 'VectorCAST',
+              category: 'TQL4',
+              tql: '4',
+              pendingActivities: 1,
+              message: 'MC/DC doğrulaması için revizyon bekleniyor.',
+            },
+          ],
+        },
       },
     };
 
@@ -703,6 +752,13 @@ describe('App integration', () => {
       expect(scoped.getByText('orta')).toBeInTheDocument();
       expect(scoped.getByText('2')).toBeInTheDocument();
     }
+
+    await screen.findByText('Uyum delta eğrisi');
+    expect(screen.getByText('İyileşme 2 • Gerileme 2')).toBeInTheDocument();
+    expect(screen.getByText('A-5-08')).toBeInTheDocument();
+    expect(screen.getByText('Araç niteliklendirme uyarıları')).toBeInTheDocument();
+    expect(screen.getByText('VectorCAST')).toBeInTheDocument();
+    expect(screen.getByText('MC/DC doğrulaması için revizyon bekleniyor.')).toBeInTheDocument();
 
     const previousRoot = 'a'.repeat(64);
     const ledgerRoot = `${'a'.repeat(56)}${'b'.repeat(8)}`;
@@ -769,6 +825,8 @@ describe('App integration', () => {
     });
 
     await screen.findByText('Ledger verilerine erişim yetkiniz yok.');
+    expect(screen.queryByText('Uyum delta eğrisi')).not.toBeInTheDocument();
+    expect(screen.queryByText('Araç niteliklendirme uyarıları')).not.toBeInTheDocument();
 
     unmountNoLedger();
 
@@ -799,6 +857,8 @@ describe('App integration', () => {
     });
 
     await screen.findByText('Risk verilerine erişim yetkiniz yok.');
+    expect(screen.queryByText('Uyum delta eğrisi')).not.toBeInTheDocument();
+    expect(screen.queryByText('Araç niteliklendirme uyarıları')).not.toBeInTheDocument();
 
     unmountNoRisk();
   });
@@ -811,19 +871,21 @@ describe('App integration', () => {
       </RbacProvider>,
     );
 
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
     const requirementsTab = screen.getByRole('button', { name: 'Gereksinim Editörü' });
-    await user.click(requirementsTab);
+    await act(async () => {
+      await user.click(requirementsTab);
+    });
 
     await screen.findByText('Kimlik bilgileri gerekli');
 
     const adminTab = screen.getByRole('button', { name: 'Yönetici Kullanıcılar' });
     await user.click(adminTab);
     await screen.findByText('Yönetici kullanıcılarını görüntülemek için token ve lisans girmelisiniz.');
-
-    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
-    await act(async () => {
-      await user.type(tokenInput, 'demo-token');
-    });
 
     const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
     await act(async () => {
@@ -832,10 +894,12 @@ describe('App integration', () => {
 
     await screen.findByText('Kaynak: Panodan yapıştırıldı');
 
-    await user.click(requirementsTab);
+    await act(async () => {
+      await user.click(requirementsTab);
+    });
 
     await screen.findByLabelText('Requirement ID 1');
-    expect(screen.getByText('Otopilot manuel müdahalede kapanır')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Otopilot manuel müdahalede kapanır')).toBeInTheDocument();
     expect(screen.getByText('Gözden geçirildikten sonra DER imzası bekleniyor.')).toBeInTheDocument();
 
     await user.click(adminTab);

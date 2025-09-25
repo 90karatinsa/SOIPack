@@ -22,57 +22,78 @@ const close = (server: http.Server): Promise<void> =>
   });
 
 describe('fetchJenkinsArtifacts', () => {
-  it('maps build metadata and test cases', async () => {
-    const requests: string[] = [];
-    const authHeaders: string[] = [];
+  it('refreshes the crumb on 403 responses and retries throttled reports', async () => {
+    let crumbRequests = 0;
+    let buildAttempts = 0;
+    let reportAttempts = 0;
+    const observedCrumbs: string[] = [];
 
     const server = http.createServer((req, res) => {
-      requests.push(req.url ?? '');
-      authHeaders.push(req.headers.authorization ?? '');
+      const path = req.url ?? '';
 
-      if (req.url?.startsWith('/job/Avionics/job/Build/lastCompletedBuild/api/json')) {
+      if (path.startsWith('/crumb')) {
+        crumbRequests += 1;
         res.setHeader('Content-Type', 'application/json');
         res.end(
           JSON.stringify({
-            id: '88',
-            fullDisplayName: 'Avionics » Build #88',
-            url: 'https://ci.example.com/job/Avionics/job/Build/88/',
-            result: 'SUCCESS',
-            timestamp: 1715155200000,
-            duration: 90000,
-            actions: [
-              {
-                lastBuiltRevision: {
-                  SHA1: '123456abcdef',
-                  branch: [{ name: 'origin/main' }],
-                },
-              },
-            ],
+            crumbRequestField: 'Jenkins-Crumb',
+            crumb: `crumb-${crumbRequests}`,
           }),
         );
         return;
       }
 
-      if (req.url?.startsWith('/job/Avionics/job/Build/lastCompletedBuild/testReport/api/json')) {
+      if (path.startsWith('/build')) {
+        buildAttempts += 1;
+        const crumb = String(req.headers['jenkins-crumb'] ?? '');
+        observedCrumbs.push(crumb);
+
+        if (buildAttempts === 1) {
+          res.statusCode = 403;
+          res.end('Forbidden');
+          return;
+        }
+
+        if (crumb !== 'crumb-2') {
+          res.statusCode = 401;
+          res.end('Invalid crumb');
+          return;
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            id: 'build-42',
+            result: 'SUCCESS',
+            timestamp: Date.UTC(2024, 5, 1, 12, 30, 0),
+            duration: 5000,
+            url: 'http://jenkins.local/job/demo/42/',
+          }),
+        );
+        return;
+      }
+
+      if (path.startsWith('/tests')) {
+        reportAttempts += 1;
+        if (reportAttempts === 1) {
+          res.statusCode = 429;
+          res.setHeader('Retry-After', '0.01');
+          res.end('Throttled');
+          return;
+        }
+
         res.setHeader('Content-Type', 'application/json');
         res.end(
           JSON.stringify({
             suites: [
               {
-                name: 'Autopilot Suite',
+                name: 'demo',
                 cases: [
                   {
-                    className: 'autopilot.Qualification',
-                    name: 'engagesWithinLimit',
+                    className: 'jenkins.Demo',
+                    name: 'should-pass',
                     status: 'PASSED',
-                    duration: 2.5,
-                  },
-                  {
-                    className: 'autopilot.Qualification',
-                    name: 'failsOnInvalidInput',
-                    status: 'FAILED',
-                    duration: 1.1,
-                    errorDetails: 'AssertionError: expected fail state',
+                    duration: 0.12,
                   },
                 ],
               },
@@ -91,41 +112,95 @@ describe('fetchJenkinsArtifacts', () => {
 
     const result = await fetchJenkinsArtifacts({
       baseUrl,
-      job: 'Avionics/Build',
-      username: 'ci',
-      token: 'apitoken',
+      job: 'demo',
+      buildEndpoint: '/build',
+      testReportEndpoint: '/tests',
+      crumbIssuerEndpoint: '/crumb',
+      timeoutMs: 250,
     });
 
-    expect(result.warnings).toHaveLength(0);
     expect(result.data.builds).toHaveLength(1);
-    expect(result.data.tests).toHaveLength(2);
+    expect(result.data.tests).toHaveLength(1);
+    expect(result.data.builds[0]).toMatchObject({ id: 'build-42', status: 'SUCCESS' });
+    expect(result.data.tests[0]).toMatchObject({ id: expect.stringContaining('should-pass'), status: 'PASSED' });
 
-    const build = result.data.builds[0];
-    expect(build).toMatchObject({
-      id: '88',
-      status: 'SUCCESS',
-      revision: '123456abcdef',
-      branch: 'origin/main',
-    });
-    expect(build.startedAt).toBe('2024-05-08T08:00:00.000Z');
-    expect(build.completedAt).toBe('2024-05-08T08:01:30.000Z');
+    expect(crumbRequests).toBeGreaterThanOrEqual(2);
+    expect(buildAttempts).toBe(2);
+    expect(reportAttempts).toBe(2);
+    expect(observedCrumbs).toEqual(expect.arrayContaining(['crumb-1', 'crumb-2']));
 
-    const [firstTest, secondTest] = result.data.tests;
-    expect(firstTest.id).toBe('autopilot.Qualification::engagesWithinLimit');
-    expect(firstTest.status).toBe('PASSED');
-    expect(firstTest.durationMs).toBeCloseTo(2500, 5);
-
-    expect(secondTest.id).toBe('autopilot.Qualification::failsOnInvalidInput');
-    expect(secondTest.status).toBe('FAILED');
-    expect(secondTest.errorMessage).toBe('AssertionError: expected fail state');
-
-    expect(authHeaders.filter((value) => value)).toHaveLength(2);
-    expect(authHeaders[0]).toBe(`Basic ${Buffer.from('ci:apitoken').toString('base64')}`);
-    expect(requests).toEqual(
+    expect(result.warnings).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('/job/Avionics/job/Build/lastCompletedBuild/api/json'),
-        expect.stringContaining('/job/Avionics/job/Build/lastCompletedBuild/testReport/api/json'),
+        expect.stringContaining('Jenkins crumb refreshed'),
+        expect.stringContaining('429'),
       ]),
+    );
+
+    await close(server);
+  });
+
+  it('limits oversized test reports and records a warning', async () => {
+    let crumbRequests = 0;
+    const server = http.createServer((req, res) => {
+      const path = req.url ?? '';
+
+      if (path.startsWith('/crumb')) {
+        crumbRequests += 1;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            crumbRequestField: 'Jenkins-Crumb',
+            crumb: `crumb-${crumbRequests}`,
+          }),
+        );
+        return;
+      }
+
+      if (path.startsWith('/build')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ id: 'build-99', result: 'UNSTABLE' }));
+        return;
+      }
+
+      if (path.startsWith('/tests')) {
+        res.setHeader('Content-Type', 'application/json');
+        const largeMessage = 'x'.repeat(4096);
+        res.end(
+          JSON.stringify({
+            suites: [
+              {
+                name: 'oversized',
+                cases: [
+                  { name: 'giant-report', status: 'FAILED', errorDetails: largeMessage },
+                ],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end('Not Found');
+    });
+
+    const address = await listen(server);
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const result = await fetchJenkinsArtifacts({
+      baseUrl,
+      job: 'demo',
+      buildEndpoint: '/build',
+      testReportEndpoint: '/tests',
+      crumbIssuerEndpoint: '/crumb',
+      maxReportBytes: 1024,
+    });
+
+    expect(result.data.builds).toHaveLength(1);
+    expect(result.data.builds[0]).toMatchObject({ id: 'build-99', status: 'UNSTABLE' });
+    expect(result.data.tests).toHaveLength(0);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining('byte limit')]),
     );
 
     await close(server);

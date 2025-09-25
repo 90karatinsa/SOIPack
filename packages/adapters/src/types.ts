@@ -22,7 +22,13 @@ export interface JiraRequirement {
 
 export interface ReqIFRequirement {
   id: string;
-  text: string;
+  title: string;
+  shortName?: string;
+  descriptionHtml?: string;
+  text?: string;
+  parentId?: string;
+  childrenIds: string[];
+  tracesTo: string[];
 }
 
 export type TestStatus = 'passed' | 'failed' | 'skipped';

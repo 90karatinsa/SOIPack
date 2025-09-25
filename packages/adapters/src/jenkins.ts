@@ -1,5 +1,9 @@
+import http, { type IncomingHttpHeaders } from 'http';
+import https from 'https';
+import { setTimeout as delay } from 'timers/promises';
+
 import { ParseResult, RemoteBuildRecord, RemoteTestRecord } from './types';
-import { HttpError, requestJson } from './utils/http';
+import { HttpError } from './utils/http';
 
 export interface JenkinsClientOptions {
   baseUrl: string;
@@ -11,6 +15,8 @@ export interface JenkinsClientOptions {
   buildEndpoint?: string;
   testReportEndpoint?: string;
   timeoutMs?: number;
+  crumbIssuerEndpoint?: string;
+  maxReportBytes?: number;
 }
 
 export interface JenkinsArtifactBundle {
@@ -20,6 +26,27 @@ export interface JenkinsArtifactBundle {
 
 const defaultBuildEndpoint = '/:jobPath/:build/api/json';
 const defaultTestEndpoint = '/:jobPath/:build/testReport/api/json';
+
+const MAX_RETRIES = 3;
+const BASE_RETRY_DELAY_MS = 250;
+const DEFAULT_REPORT_LIMIT_BYTES = 5 * 1024 * 1024;
+const RETRYABLE_STATUSES = new Set([429, 503]);
+
+class ResponseSizeLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Response exceeded the maximum allowed size of ${limit} bytes.`);
+    this.name = 'ResponseSizeLimitError';
+  }
+}
+
+interface JenkinsCrumb {
+  header: string;
+  value: string;
+}
+
+interface JenkinsSession {
+  crumb?: JenkinsCrumb | null;
+}
 
 const encodeSegment = (segment: string | number): string => encodeURIComponent(String(segment));
 
@@ -65,6 +92,251 @@ const buildAuthHeader = (options: JenkinsClientOptions): string | undefined => {
   }
 
   return undefined;
+};
+
+const getHeaderValue = (headers: IncomingHttpHeaders | undefined, key: string): string | undefined => {
+  if (!headers) {
+    return undefined;
+  }
+
+  const value = headers[key];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return undefined;
+};
+
+const parseRetryAfter = (headers: IncomingHttpHeaders | undefined): number | undefined => {
+  const raw = getHeaderValue(headers, 'retry-after');
+  if (!raw) {
+    return undefined;
+  }
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    return Math.max(0, numeric * 1000);
+  }
+
+  const parsedDate = Date.parse(raw);
+  if (!Number.isNaN(parsedDate)) {
+    return Math.max(0, parsedDate - Date.now());
+  }
+
+  return undefined;
+};
+
+const computeRetryDelay = (attempt: number, headers: IncomingHttpHeaders | undefined): number => {
+  const headerDelay = parseRetryAfter(headers);
+  if (typeof headerDelay === 'number') {
+    return headerDelay;
+  }
+  return BASE_RETRY_DELAY_MS * 2 ** attempt;
+};
+
+interface JsonRequestOptions {
+  url: URL;
+  headers: Record<string, string>;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+const requestJsonWithLimit = async <T>(
+  options: JsonRequestOptions,
+): Promise<{ payload: T; headers: IncomingHttpHeaders }> =>
+  await new Promise((resolve, reject) => {
+      const client = options.url.protocol === 'https:' ? https : http;
+      const request = client.request(
+        options.url,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json', ...options.headers },
+          timeout: options.timeoutMs ?? 15000,
+        },
+        (response) => {
+          const { statusCode = 0, statusMessage = '' } = response;
+          const chunks: Buffer[] = [];
+          let totalBytes = 0;
+          const maxBytes = options.maxBytes ?? 0;
+
+          response.on('data', (chunk) => {
+            const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+            totalBytes += buffer.length;
+            if (maxBytes > 0 && totalBytes > maxBytes) {
+              response.destroy(new ResponseSizeLimitError(maxBytes));
+              return;
+            }
+            chunks.push(buffer);
+          });
+
+          response.on('error', (error) => {
+            reject(error);
+          });
+
+          response.on('end', () => {
+            const payload = Buffer.concat(chunks).toString('utf8');
+
+            if (statusCode < 200 || statusCode >= 300) {
+              reject(new HttpError(statusCode, statusMessage, payload || undefined, response.headers));
+              return;
+            }
+
+            if (!payload) {
+              resolve({ payload: {} as T, headers: response.headers });
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(payload) as T;
+              resolve({ payload: parsed, headers: response.headers });
+            } catch (error) {
+              reject(
+                new Error(
+                  `Unable to parse JSON response from ${options.url.toString()}: ${(error as Error).message}`,
+                ),
+              );
+            }
+          });
+        },
+      );
+
+      request.on('error', (error) => {
+        reject(error);
+      });
+
+      request.end();
+    });
+
+interface JenkinsCrumbResponse {
+  crumbRequestField?: string;
+  crumb?: string;
+}
+
+const fetchCrumb = async (
+  options: JenkinsClientOptions,
+  warnings: string[],
+): Promise<JenkinsCrumb | undefined> => {
+  const endpoint = options.crumbIssuerEndpoint ?? '/crumbIssuer/api/json';
+  const url = new URL(endpoint, options.baseUrl);
+  const headers: Record<string, string> = {};
+  const authHeader = buildAuthHeader(options);
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+
+  try {
+    const { payload } = await requestJsonWithLimit<JenkinsCrumbResponse>({
+      url,
+      headers,
+      timeoutMs: options.timeoutMs,
+      maxBytes: 4096,
+    });
+
+    if (typeof payload.crumbRequestField !== 'string' || typeof payload.crumb !== 'string') {
+      warnings.push('Jenkins crumbIssuer response was invalid; crumb fields were missing.');
+      return undefined;
+    }
+
+    return { header: payload.crumbRequestField, value: payload.crumb };
+  } catch (error) {
+    if (error instanceof HttpError && error.statusCode === 404) {
+      return undefined;
+    }
+    warnings.push(`Jenkins crumbIssuer request failed: ${(error as Error).message}`);
+    return undefined;
+  }
+};
+
+const ensureCrumb = async (
+  session: JenkinsSession,
+  options: JenkinsClientOptions,
+  warnings: string[],
+  force = false,
+): Promise<JenkinsCrumb | undefined> => {
+  if (!force && session.crumb !== undefined) {
+    return session.crumb ?? undefined;
+  }
+
+  const crumb = await fetchCrumb(options, warnings);
+  session.crumb = crumb ?? null;
+  return crumb;
+};
+
+const requestWithRetries = async <T>(
+  requestOptions: JsonRequestOptions,
+  warnings: string[],
+): Promise<{ payload: T; headers: IncomingHttpHeaders }> => {
+  let attempt = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      return await requestJsonWithLimit<T>(requestOptions);
+    } catch (error) {
+      if (error instanceof HttpError && RETRYABLE_STATUSES.has(error.statusCode) && attempt < MAX_RETRIES) {
+        const delayMs = computeRetryDelay(attempt, error.headers);
+        warnings.push(
+          `Jenkins API returned ${error.statusCode}; retrying in ${delayMs}ms (attempt ${
+            attempt + 1
+          }/${MAX_RETRIES}).`,
+        );
+        attempt += 1;
+        await delay(delayMs);
+        continue;
+      }
+      throw error;
+    }
+  }
+};
+
+const performJenkinsRequest = async <T>(
+  url: URL,
+  session: JenkinsSession,
+  options: JenkinsClientOptions,
+  warnings: string[],
+  requestOptions: { maxBytes?: number } = {},
+): Promise<T> => {
+  let crumbRefreshed = false;
+
+  while (true) {
+    const headers: Record<string, string> = {};
+    const authHeader = buildAuthHeader(options);
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
+    const crumb = await ensureCrumb(session, options, warnings);
+    if (crumb) {
+      headers[crumb.header] = crumb.value;
+    }
+
+    try {
+      const { payload } = await requestWithRetries<T>(
+        {
+          url,
+          headers,
+          timeoutMs: options.timeoutMs,
+          maxBytes: requestOptions.maxBytes,
+        },
+        warnings,
+      );
+      return payload;
+    } catch (error) {
+      if (error instanceof HttpError && error.statusCode === 403 && !crumbRefreshed) {
+        session.crumb = undefined;
+        const refreshed = await ensureCrumb(session, options, warnings, true);
+        if (refreshed) {
+          warnings.push('Jenkins crumb refreshed; retrying request.');
+        } else {
+          warnings.push('Jenkins crumb refresh failed; proceeding without crumb.');
+        }
+        crumbRefreshed = true;
+        continue;
+      }
+      throw error;
+    }
+  }
 };
 
 interface JenkinsBuildAction {
@@ -160,22 +432,20 @@ const mapTestCases = (report: JenkinsTestReportResponse): RemoteTestRecord[] => 
 
 const fetchBuild = async (
   options: JenkinsClientOptions,
+  session: JenkinsSession,
   warnings: string[],
 ): Promise<RemoteBuildRecord | undefined> => {
   try {
     const url = resolveUrl(options, options.buildEndpoint ?? defaultBuildEndpoint);
-    const authHeader = buildAuthHeader(options);
-    const payload = await requestJson<JenkinsBuildResponse>({
-      url,
-      headers: authHeader ? { Authorization: authHeader } : undefined,
-      timeoutMs: options.timeoutMs,
-    });
+    const payload = await performJenkinsRequest<JenkinsBuildResponse>(url, session, options, warnings);
     return extractBuildMetadata(payload, options);
   } catch (error) {
     if (error instanceof HttpError) {
-      warnings.push(`Jenkins build isteği ${error.statusCode} ${error.statusMessage} ile sonuçlandı. ${error.message ?? ''}`.trim());
+      warnings.push(
+        `Jenkins build request returned ${error.statusCode} ${error.statusMessage}. ${error.message ?? ''}`.trim(),
+      );
     } else {
-      warnings.push(`Jenkins build isteği başarısız oldu: ${(error as Error).message}`);
+      warnings.push(`Jenkins build request failed: ${(error as Error).message}`);
     }
     return undefined;
   }
@@ -183,22 +453,32 @@ const fetchBuild = async (
 
 const fetchTests = async (
   options: JenkinsClientOptions,
+  session: JenkinsSession,
   warnings: string[],
 ): Promise<RemoteTestRecord[]> => {
   try {
     const url = resolveUrl(options, options.testReportEndpoint ?? defaultTestEndpoint);
-    const authHeader = buildAuthHeader(options);
-    const payload = await requestJson<JenkinsTestReportResponse>({
+    const payload = await performJenkinsRequest<JenkinsTestReportResponse>(
       url,
-      headers: authHeader ? { Authorization: authHeader } : undefined,
-      timeoutMs: options.timeoutMs,
-    });
+      session,
+      options,
+      warnings,
+      { maxBytes: options.maxReportBytes ?? DEFAULT_REPORT_LIMIT_BYTES },
+    );
     return mapTestCases(payload);
   } catch (error) {
+    if (error instanceof ResponseSizeLimitError) {
+      warnings.push(
+        `Jenkins test report response exceeded the ${error.limit} byte limit; report skipped.`,
+      );
+      return [];
+    }
     if (error instanceof HttpError) {
-      warnings.push(`Jenkins test raporu ${error.statusCode} ${error.statusMessage} ile sonuçlandı. ${error.message ?? ''}`.trim());
+      warnings.push(
+        `Jenkins test report returned ${error.statusCode} ${error.statusMessage}. ${error.message ?? ''}`.trim(),
+      );
     } else {
-      warnings.push(`Jenkins test raporu isteği başarısız oldu: ${(error as Error).message}`);
+      warnings.push(`Jenkins test report request failed: ${(error as Error).message}`);
     }
     return [];
   }
@@ -208,8 +488,11 @@ export const fetchJenkinsArtifacts = async (
   options: JenkinsClientOptions,
 ): Promise<ParseResult<JenkinsArtifactBundle>> => {
   const warnings: string[] = [];
-  const build = await fetchBuild(options, warnings);
-  const tests = await fetchTests(options, warnings);
+  const session: JenkinsSession = {};
+  await ensureCrumb(session, options, warnings);
+
+  const build = await fetchBuild(options, session, warnings);
+  const tests = await fetchTests(options, session, warnings);
 
   return {
     data: {

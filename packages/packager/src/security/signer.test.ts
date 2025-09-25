@@ -37,6 +37,90 @@ const baseManifest: Manifest = {
   ],
 };
 
+const decodeBase64Url = (value: string): Buffer => {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + padding, 'base64');
+};
+
+describe('security signer post-quantum hybrid signatures', () => {
+  it('produces hybrid signatures with SPHINCS+ companions and verifies both paths', () => {
+    const { bundlePem, certificatePem } = loadDevCredentials();
+
+    const bundle = signManifestWithSecuritySigner(baseManifest, { bundlePem });
+
+    const segments = bundle.signature.split('.');
+    expect(segments).toHaveLength(4);
+
+    const header = JSON.parse(decodeBase64Url(segments[0]).toString('utf8')) as {
+      alg: string;
+      pq?: { alg?: string; pub?: string };
+    };
+
+    expect(header.alg).toBe('SOI-HYBRID');
+    expect(header.pq).toEqual(
+      expect.objectContaining({
+        alg: 'SPHINCS+-SHA2-128s',
+        pub: expect.any(String),
+      }),
+    );
+    expect(bundle.postQuantumSignature).toEqual(
+      expect.objectContaining({
+        algorithm: 'SPHINCS+-SHA2-128s',
+        signature: expect.any(String),
+        publicKey: expect.any(String),
+      }),
+    );
+
+    const verification = verifyManifestSignatureWithSecuritySigner(baseManifest, bundle.signature, {
+      certificatePem,
+    });
+
+    expect(verification.valid).toBe(true);
+    expect(verification.postQuantum).toEqual(
+      expect.objectContaining({
+        algorithm: 'SPHINCS+-SHA2-128s',
+        verified: true,
+        publicKey: expect.any(String),
+      }),
+    );
+  });
+
+  it('remains backward compatible with legacy Ed25519-only signatures when PQ is disabled', () => {
+    const { bundlePem, certificatePem } = loadDevCredentials();
+
+    const bundle = signManifestWithSecuritySigner(baseManifest, { bundlePem, postQuantum: false });
+
+    expect(bundle.signature.split('.')).toHaveLength(3);
+    expect(bundle.postQuantumSignature).toBeUndefined();
+
+    const verification = verifyManifestSignatureWithSecuritySigner(baseManifest, bundle.signature, {
+      certificatePem,
+    });
+
+    expect(verification.valid).toBe(true);
+    expect(verification.postQuantum).toBeUndefined();
+  });
+
+  it('fails verification when the SPHINCS+ signature is altered', () => {
+    const { bundlePem, certificatePem } = loadDevCredentials();
+
+    const bundle = signManifestWithSecuritySigner(baseManifest, { bundlePem });
+    const segments = bundle.signature.split('.');
+    expect(segments).toHaveLength(4);
+
+    segments[3] = `${segments[3]}A`;
+    const tamperedSignature = segments.join('.');
+
+    const verification = verifyManifestSignatureWithSecuritySigner(baseManifest, tamperedSignature, {
+      certificatePem,
+    });
+
+    expect(verification.valid).toBe(false);
+    expect(verification.reason).toBe('SIGNATURE_INVALID');
+  });
+});
+
 type Pkcs11Attribute = { type: number; value?: Buffer };
 
 class MockPkcs11 {
@@ -212,6 +296,8 @@ describe('security signer ledger integration', () => {
       ledger: { root: ledgerRoot, previousRoot: previousLedgerRoot },
     });
 
+    expect(bundle.signature.split('.')).toHaveLength(4);
+    expect(bundle.postQuantumSignature).toBeDefined();
     expect(bundle.ledgerRoot).toBe(ledgerRoot);
     expect(bundle.previousLedgerRoot).toBe(previousLedgerRoot);
 
@@ -224,6 +310,7 @@ describe('security signer ledger integration', () => {
     expect(verification.valid).toBe(true);
     expect(verification.ledgerRoot).toBe(ledgerRoot);
     expect(verification.previousLedgerRoot).toBe(previousLedgerRoot);
+    expect(verification.postQuantum?.verified).toBe(true);
   });
 
   it('rejects signatures when ledger roots do not match the expected chain', () => {
@@ -306,12 +393,16 @@ describe('security signer pkcs11 integration', () => {
     expect(module.lastSignedPayload?.toString('utf8')).toContain('.');
 
     expect(bundle.certificate).toContain('BEGIN CERTIFICATE');
+    expect(bundle.postQuantumSignature).toEqual(
+      expect.objectContaining({ algorithm: 'SPHINCS+-SHA2-128s' }),
+    );
 
     const verification = verifyManifestSignatureWithSecuritySigner(baseManifest, bundle.signature, {
       certificatePem: bundle.certificate,
     });
 
     expect(verification.valid).toBe(true);
+    expect(verification.postQuantum?.verified).toBe(true);
     expect(bundle.hardware).toEqual(
       expect.objectContaining({
         provider: 'PKCS11',
