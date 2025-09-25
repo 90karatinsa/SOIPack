@@ -1,11 +1,19 @@
 import type { JSX } from 'react';
 
-export type View = 'upload' | 'compliance' | 'traceability' | 'risk' | 'timeline';
+export type View =
+  | 'upload'
+  | 'compliance'
+  | 'traceability'
+  | 'risk'
+  | 'timeline'
+  | 'requirements'
+  | 'adminUsers';
 
 interface NavigationTabsProps {
   activeView: View;
   onChange: (view: View) => void;
   disabled: boolean;
+  views?: View[];
 }
 
 const viewLabels: Record<View, string> = {
@@ -13,7 +21,9 @@ const viewLabels: Record<View, string> = {
   compliance: 'Uyum Matrisi',
   traceability: 'İzlenebilirlik',
   risk: 'Risk Kokpiti',
-  timeline: 'Zaman Çizelgesi'
+  timeline: 'Zaman Çizelgesi',
+  requirements: 'Gereksinim Editörü',
+  adminUsers: 'Yönetici Kullanıcılar',
 };
 
 const viewIcons: Record<View, JSX.Element> = {
@@ -45,13 +55,32 @@ const viewIcons: Record<View, JSX.Element> = {
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h18M12 3v18m6-11.25l-3 3 3 3m-12-6l3 3-3 3" />
     </svg>
-  )
+  ),
+  requirements: (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 13.5l3 3 4.5-6m-4.5-6.75L5.25 6a2.25 2.25 0 00-1.5 2.121V18A2.25 2.25 0 006 20.25h12A2.25 2.25 0 0020.25 18V8.121A2.25 2.25 0 0018.75 6L12 3.75z"
+      />
+    </svg>
+  ),
+  adminUsers: (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M7.5 7.5A2.25 2.25 0 0110.5 9.75c0 1.243-1.007 2.25-2.25 2.25S6 10.993 6 9.75 7.007 7.5 8.25 7.5zM15.75 8.25a2.25 2.25 0 110 4.5 2.25 2.25 0 010-4.5zM4.5 18a3.75 3.75 0 017.5 0m0 0h3a3.75 3.75 0 017.5 0"
+      />
+    </svg>
+  ),
 };
 
-export function NavigationTabs({ activeView, onChange, disabled }: NavigationTabsProps) {
+export function NavigationTabs({ activeView, onChange, disabled, views }: NavigationTabsProps) {
+  const availableViews = views ?? (Object.keys(viewLabels) as View[]);
   return (
     <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-800 bg-slate-900/70 p-2 text-sm text-slate-300 shadow-lg shadow-slate-950/30 backdrop-blur">
-      {(Object.keys(viewLabels) as View[]).map((view) => {
+      {availableViews.map((view) => {
         const isActive = activeView === view;
         return (
           <button

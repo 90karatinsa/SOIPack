@@ -19,6 +19,13 @@ export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions } from './polarion';
 export { fetchJenkinsArtifacts } from './jenkins';
 export type { JenkinsClientOptions } from './jenkins';
+export { fetchJiraChangeRequests } from './jiraCloud';
+export type {
+  JiraCloudClientOptions,
+  JiraChangeRequest,
+  JiraChangeRequestAttachment,
+  JiraChangeRequestTransition,
+} from './jiraCloud';
 
 export interface AdapterMetadata {
   name: string;

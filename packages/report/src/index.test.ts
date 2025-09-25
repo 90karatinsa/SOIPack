@@ -9,7 +9,9 @@ import htmlValidator from 'html-validator';
 import { createReportFixture, coverageSummaryFixture } from './__fixtures__/snapshot';
 
 import {
+  ChangeRequestBacklogItem,
   HtmlReportOptions,
+  LedgerAttestationDiffItem,
   renderComplianceCoverageReport,
   renderComplianceMatrix,
   renderGaps,
@@ -96,6 +98,38 @@ describe('@soipack/report', () => {
     const fixture = createReportFixture();
     const coverage = coverageSummaryFixture();
     const coverageWarnings = ['MC/DC kapsam verisi eksik: src/legacy/logger.ts'];
+    const backlog: ChangeRequestBacklogItem[] = [
+      {
+        key: 'CR-42',
+        summary: 'Flight control gain update',
+        status: 'In Progress',
+        statusCategory: 'In Progress',
+        assignee: 'Alex Pilot',
+        updatedAt: '2024-09-01T11:00:00Z',
+        priority: 'High',
+        url: 'https://jira.example.com/browse/CR-42',
+        transitions: [{ id: '1', name: 'Submit for Review', toStatus: 'Ready for Review' }],
+        attachments: [
+          {
+            id: 'att-1',
+            filename: 'impact-analysis.pdf',
+            url: 'https://jira.example.com/secure/attachment/att-1',
+            size: 4096,
+          },
+        ],
+      },
+    ];
+    const ledgerDiffs: LedgerAttestationDiffItem[] = [
+      {
+        snapshotId: 'SNAP-20240901',
+        ledgerRoot: 'abcd1234',
+        attestedAt: '2024-09-01T12:30:00Z',
+        manifestDigest: 'deadbeef',
+        previousLedgerRoot: '0123ffff',
+        addedEvidence: ['EV-100', 'EV-101'],
+        removedEvidence: ['EV-050'],
+      },
+    ];
 
     const result = renderComplianceCoverageReport(fixture.snapshot, coverage, {
       manifestId: fixture.manifestId,
@@ -104,16 +138,27 @@ describe('@soipack/report', () => {
       git: gitFixture,
       coverageWarnings,
       signoffs: fixture.signoffs,
+      changeRequestBacklog: backlog,
+      ledgerDiffs,
     });
 
     expect(result.coverageWarnings).toEqual(coverageWarnings);
     expect(result.coverage).toEqual(coverage);
     expect(result.html).toContain('Kapsam Özeti');
     expect(result.html).toContain('MC/DC');
+    expect(result.html).toContain('Değişiklik Talepleri Birikimi');
+    expect(result.html).toContain('CR-42');
+    expect(result.html).toContain('impact-analysis.pdf');
+    expect(result.html).toContain('Ledger Attestasyon Özeti');
+    expect(result.html).toContain('SNAP-20240901');
     expect(result.json.coverage).toEqual(coverage);
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
+    expect(result.json.changeRequestBacklog).toEqual(backlog);
+    expect(result.json.ledgerDiffs).toEqual(ledgerDiffs);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
+    expect(result.changeRequestBacklog).toEqual(backlog);
+    expect(result.ledgerDiffs).toEqual(ledgerDiffs);
     expect(result.html).toContain('Risk Profili');
     expect(result.html).toContain('Signoff Zaman Çizelgesi');
 

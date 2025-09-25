@@ -1,4 +1,4 @@
-import http from 'http';
+import http, { type IncomingHttpHeaders } from 'http';
 import https from 'https';
 
 export interface HttpRequestOptions {
@@ -10,7 +10,12 @@ export interface HttpRequestOptions {
 }
 
 export class HttpError extends Error {
-  constructor(public readonly statusCode: number, public readonly statusMessage: string, message?: string) {
+  constructor(
+    public readonly statusCode: number,
+    public readonly statusMessage: string,
+    message?: string,
+    public readonly headers?: IncomingHttpHeaders,
+  ) {
     super(message ?? `HTTP ${statusCode} ${statusMessage}`);
     this.name = 'HttpError';
   }
@@ -53,7 +58,7 @@ export const requestJson = async <T>(options: HttpRequestOptions): Promise<T> =>
           const payload = Buffer.concat(chunks).toString('utf8');
 
           if (statusCode < 200 || statusCode >= 300) {
-            reject(new HttpError(statusCode, statusMessage, payload || undefined));
+            reject(new HttpError(statusCode, statusMessage, payload || undefined, response.headers));
             return;
           }
 

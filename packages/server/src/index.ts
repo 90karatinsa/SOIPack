@@ -22,6 +22,10 @@ import {
   type LicensePayload,
 } from '@soipack/cli';
 import {
+  fetchJiraChangeRequests,
+  type JiraChangeRequest,
+} from '@soipack/adapters';
+import {
   CertificationLevel,
   DEFAULT_LOCALE,
   SnapshotVersion,
@@ -121,6 +125,20 @@ const buildContentDisposition = (fileName: string): string => {
   const fallback = fileName.replace(/"/g, "'");
   const encoded = encodeURIComponent(fileName);
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+};
+
+const CHANGE_REQUEST_CACHE_TTL_MS = 300_000;
+
+interface ChangeRequestCacheEntry {
+  payload: { items: JiraChangeRequest[]; fetchedAt: string };
+  etag: string;
+  expiresAt: number;
+}
+
+const changeRequestCache = new Map<string, ChangeRequestCacheEntry>();
+
+export const __clearChangeRequestCacheForTesting = (): void => {
+  changeRequestCache.clear();
 };
 
 interface AuthContext {
@@ -5089,6 +5107,158 @@ export const createServer = (config: ServerConfig): Express => {
       return { id, label: record.label, description };
     });
   };
+
+  app.get(
+    '/v1/change-requests',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+
+      const baseUrl = process.env.JIRA_BASE_URL;
+      const token = process.env.JIRA_TOKEN;
+
+      if (!baseUrl || !token) {
+        throw new HttpError(503, 'UPSTREAM_UNAVAILABLE', 'Jira entegrasyonu yapılandırılmamış.');
+      }
+
+      const query = req.query as { projectKey?: string | string[]; jql?: string | string[] };
+      const projectParam = Array.isArray(query.projectKey) ? query.projectKey[0] : query.projectKey;
+      const envProject = process.env.JIRA_PROJECT_KEY;
+      const projectKey = (projectParam ?? envProject ?? '').trim();
+      if (!projectKey) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'projectKey parametresi zorunludur.');
+      }
+
+      const jqlParam = Array.isArray(query.jql) ? query.jql[0] : query.jql;
+      const jql = jqlParam && jqlParam.trim().length > 0 ? jqlParam : undefined;
+
+      const credentialsKey = `${baseUrl}::${token}`;
+      const cacheKey = `${tenantId}:${credentialsKey}:${projectKey}:${jql ?? ''}`;
+      const cached = changeRequestCache.get(cacheKey);
+      const now = Date.now();
+      const ttlSeconds = Math.floor(CHANGE_REQUEST_CACHE_TTL_MS / 1000);
+
+      if (cached && cached.expiresAt > now) {
+        const ifNoneMatch = req.headers['if-none-match'];
+        const headerValues = Array.isArray(ifNoneMatch) ? ifNoneMatch : ifNoneMatch ? [ifNoneMatch] : [];
+        const tokens = headerValues.flatMap((raw) =>
+          raw
+            .split(',')
+            .map((entry: string) => entry.trim())
+            .filter((entry: string) => entry.length > 0),
+        );
+
+        if (tokens.includes('*') || tokens.includes(cached.etag)) {
+          res
+            .status(304)
+            .set('Cache-Control', `private, max-age=${ttlSeconds}`)
+            .set('ETag', cached.etag)
+            .end();
+          return;
+        }
+
+        res
+          .status(200)
+          .set('Cache-Control', `private, max-age=${ttlSeconds}`)
+          .set('ETag', cached.etag)
+          .json(cached.payload);
+        return;
+      }
+
+      let items: JiraChangeRequest[];
+      try {
+        items = await fetchJiraChangeRequests({
+          baseUrl,
+          projectKey,
+          authToken: token,
+          jql,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Bilinmeyen hata';
+        throw new HttpError(502, 'JIRA_FETCH_FAILED', `Jira change request isteği başarısız: ${message}`);
+      }
+
+      const payload = { items, fetchedAt: new Date().toISOString() };
+      const serialized = JSON.stringify(payload);
+      const etag = `"${createHash('sha256').update(serialized).digest('hex')}"`;
+      changeRequestCache.set(cacheKey, {
+        payload,
+        etag,
+        expiresAt: now + CHANGE_REQUEST_CACHE_TTL_MS,
+      });
+
+      res
+        .status(200)
+        .set('Cache-Control', `private, max-age=${ttlSeconds}`)
+        .set('ETag', etag)
+        .json(payload);
+    }),
+  );
+
+  app.get(
+    '/v1/workspaces/:id/documents/:documentId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const { id: workspaceId, documentId } = req.params as { id?: string; documentId?: string };
+      if (!workspaceId || !documentId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
+      }
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+
+      const query = req.query as { cursor?: string | string[]; limit?: string | string[] };
+      const cursorValue = Array.isArray(query.cursor) ? query.cursor[0] : query.cursor;
+      const limitValue = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+      const cursor = cursorValue && cursorValue.trim().length > 0 ? cursorValue : undefined;
+      let limit: number | undefined;
+      if (limitValue !== undefined) {
+        const parsed = Number.parseInt(limitValue, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          throw new HttpError(400, 'INVALID_REQUEST', 'limit parametresi pozitif bir tam sayı olmalıdır.');
+        }
+        limit = parsed;
+      }
+
+      try {
+        const thread = await workspaceService.getDocumentThread(tenantId, workspaceId, documentId, {
+          cursor: cursor ?? null,
+          limit,
+        });
+        if (!thread) {
+          throw new WorkspaceDocumentNotFoundError();
+        }
+
+        const etag = `"${thread.document.latestRevision.hash}"`;
+        const ifNoneMatchHeader = req.headers['if-none-match'];
+        const headerValues = Array.isArray(ifNoneMatchHeader)
+          ? ifNoneMatchHeader
+          : ifNoneMatchHeader
+            ? [ifNoneMatchHeader]
+            : [];
+        const tokens = headerValues.flatMap((raw: string) => {
+          const segments = raw.split(',').map((segment: string) => segment.trim());
+          return segments.filter((segment: string) => segment.length > 0);
+        });
+        if (tokens.includes('*') || tokens.includes(etag)) {
+          res.status(304).set('ETag', etag).end();
+          return;
+        }
+
+        res
+          .status(200)
+          .set('ETag', etag)
+          .json({
+            document: toWorkspaceDocumentResponse(thread.document),
+            comments: thread.comments.map((comment) => toWorkspaceCommentResponse(comment)),
+            signoffs: thread.signoffs.map((signoff) => toWorkspaceSignoffResponse(signoff)),
+            nextCursor: thread.nextCursor,
+          });
+      } catch (error) {
+        handleWorkspaceError(error);
+      }
+    }),
+  );
 
   app.put(
     '/v1/workspaces/:id/documents/:documentId',

@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { Alert } from '@bora/ui-kit';
+import { useEffect, useMemo, useState } from 'react';
 
 import { ComplianceMatrix } from './components/ComplianceMatrix';
 import { DownloadPackageButton } from './components/DownloadPackageButton';
@@ -8,11 +9,16 @@ import { TokenInput } from './components/TokenInput';
 import { TraceabilityMatrix } from './components/TraceabilityMatrix';
 import { UploadAndRun } from './components/UploadAndRun';
 import { usePipeline } from './hooks/usePipeline';
+import AdminUsersPage from './pages/AdminUsersPage';
 import { TimelinePage } from './pages/TimelinePage';
 import { RiskCockpitPage } from './pages/RiskCockpitPage';
+import RequirementsEditorPage, { type RequirementRecord } from './pages/RequirementsEditorPage';
+import { RoleGate, useRbac } from './providers/RbacProvider';
+import { ApiError, getWorkspaceDocumentThread, type WorkspaceDocumentThread } from './services/api';
 import type { CoverageStatus } from './types/pipeline';
 
 export default function App() {
+  const { roles } = useRbac();
   const [token, setToken] = useState('');
   const [license, setLicense] = useState('');
   const [activeView, setActiveView] = useState<View>('upload');
@@ -23,14 +29,85 @@ export default function App() {
     'missing'
   ]);
 
-  const isTokenActive = token.trim().length > 0;
-  const isLicenseActive = license.trim().length > 0;
+  const trimmedToken = token.trim();
+  const trimmedLicense = license.trim();
+  const isTokenActive = trimmedToken.length > 0;
+  const isLicenseActive = trimmedLicense.length > 0;
   const isAuthorized = isTokenActive && isLicenseActive;
   const { runPipeline, downloadArtifacts, state, reset } = usePipeline({ token, license });
 
   const { logs, isRunning, isDownloading, jobs, reportData, packageJob, error, lastCompletedAt } = state;
 
   const canRunPipeline = selectedFiles.length > 0;
+
+  const canAccessRequirements = roles.has('workspace:write') || roles.has('admin');
+  const canAccessAdminUsers = roles.has('admin');
+
+  const navigationViews = useMemo(() => {
+    const baseViews: View[] = ['upload', 'compliance', 'traceability', 'risk', 'timeline'];
+    if (canAccessRequirements) {
+      baseViews.push('requirements');
+    }
+    if (canAccessAdminUsers) {
+      baseViews.push('adminUsers');
+    }
+    return baseViews;
+  }, [canAccessRequirements, canAccessAdminUsers]);
+
+  useEffect(() => {
+    if (!navigationViews.includes(activeView)) {
+      setActiveView(navigationViews[0] ?? 'upload');
+    }
+  }, [navigationViews, activeView]);
+
+  const [requirementsThread, setRequirementsThread] = useState<WorkspaceDocumentThread<RequirementRecord[]> | null>(null);
+  const [requirementsError, setRequirementsError] = useState<string | null>(null);
+  const [requirementsLoading, setRequirementsLoading] = useState(false);
+
+  useEffect(() => {
+    if (activeView !== 'requirements' || !canAccessRequirements) {
+      return;
+    }
+
+    if (!isAuthorized) {
+      setRequirementsThread(null);
+      setRequirementsError('Gereksinim editörü için token ve lisans gereklidir.');
+      setRequirementsLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setRequirementsLoading(true);
+    setRequirementsError(null);
+
+    getWorkspaceDocumentThread<RequirementRecord[]>({
+      token: trimmedToken,
+      license: trimmedLicense,
+      workspaceId: 'demo-workspace',
+      documentId: 'requirements',
+      signal: controller.signal,
+    })
+      .then((thread) => {
+        if (!controller.signal.aborted) {
+          setRequirementsThread(thread);
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setRequirementsThread(null);
+          setRequirementsError(err instanceof ApiError ? err.message : 'Gereksinim belgesi yüklenemedi.');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setRequirementsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeView, canAccessRequirements, isAuthorized, trimmedToken, trimmedLicense]);
 
   const handleRun = () => {
     if (!canRunPipeline || isRunning) return;
@@ -109,7 +186,7 @@ export default function App() {
           onClear={handleLicenseClear}
         />
 
-        <NavigationTabs activeView={activeView} onChange={setActiveView} disabled={!isTokenActive} />
+        <NavigationTabs activeView={activeView} onChange={setActiveView} disabled={!isTokenActive} views={navigationViews} />
 
         {!isTokenActive && (
           <div className="relative rounded-3xl border border-slate-800 bg-slate-950/70 p-8 text-center text-slate-400 shadow-inner shadow-slate-950/40">
@@ -169,6 +246,36 @@ export default function App() {
           )}
           {activeView === 'timeline' && (
             <TimelinePage token={token} license={license} isAuthorized={isAuthorized} />
+          )}
+          {activeView === 'requirements' && (
+            <RoleGate role={['workspace:write', 'admin']}>
+              {!isAuthorized ? (
+                <Alert variant="warning" title="Kimlik bilgileri gerekli" description="Gereksinimleri düzenlemek için hem token hem de lisans sağlamalısınız." />
+              ) : requirementsError ? (
+                <Alert variant="destructive" title="Belge yüklenemedi" description={requirementsError} />
+              ) : requirementsLoading && !requirementsThread ? (
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-center text-slate-300">
+                  Gereksinim dokümanı yükleniyor…
+                </div>
+              ) : (
+                <RequirementsEditorPage
+                  token={token}
+                  license={license}
+                  workspaceId="demo-workspace"
+                  documentId="requirements"
+                  initialThread={requirementsThread}
+                />
+              )}
+            </RoleGate>
+          )}
+          {activeView === 'adminUsers' && (
+            <RoleGate role="admin">
+              {!isAuthorized ? (
+                <Alert variant="warning" title="Kimlik bilgileri gerekli" description="Yönetici kullanıcılarını görüntülemek için token ve lisans girmelisiniz." />
+              ) : (
+                <AdminUsersPage token={token} license={license} />
+              )}
+            </RoleGate>
           )}
         </main>
       </div>

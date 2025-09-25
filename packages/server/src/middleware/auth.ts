@@ -486,7 +486,7 @@ export const createJwtPrincipalResolver = (
     }
 
     const roles = await loader.loadRoles(context.tenantId, user.id);
-    const uniqueRoles = roles.length > 0 ? Array.from(new Set<UserRole>(roles)) : [DEFAULT_ROLE];
+    const uniqueRoles = roles.length > 0 ? Array.from(new Set<UserRole>(roles)) : [];
     const permissions = computeJwtPermissions(uniqueRoles);
 
     return {

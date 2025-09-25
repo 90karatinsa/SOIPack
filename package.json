@@ -14,7 +14,7 @@
     "lint": "eslint \"{packages,docs}/**/*.{ts,tsx}\" --max-warnings=0",
     "test": "jest",
     "server": "tsx packages/server/src/start.ts",
-    "openapi:validate": "redocly lint packages/server/openapi.yaml",
+    "openapi:validate": "npx --yes @redocly/cli@2.2.0 lint packages/server/openapi.yaml",
     "e2e:api": "tsx scripts/e2e-api.ts",
     "format": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --write",
     "format:check": "prettier \"**/*.{ts,tsx,js,json,md,yml,yaml}\" --check",
