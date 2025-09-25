@@ -9,6 +9,7 @@ import {
   deleteAdminUser,
   deleteAdminRole,
   getAdminApiKey,
+  getWorkspaceDocumentThread,
   listAdminApiKeys,
   listAdminRoles,
   listAdminUsers,
@@ -234,6 +235,78 @@ describe('API integrations', () => {
     expect(workspaceCall[1]).toMatchObject({ method: 'POST' });
   });
 
+  it('fetches workspace document threads with normalized hashes', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          document: {
+            id: 'doc1',
+            tenantId: 'tenant-1',
+            workspaceId: 'ws1',
+            kind: 'requirements',
+            title: 'Requirements',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+            revision: {
+              id: 'rev1',
+              number: 1,
+              hash: 'ABCDEF1234',
+              authorId: 'alice',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              content: [],
+            },
+          },
+          comments: [],
+          signoffs: [
+            {
+              id: 'signoff-1',
+              documentId: 'doc1',
+              revisionId: 'rev1',
+              tenantId: 'tenant-1',
+              workspaceId: 'ws1',
+              revisionHash: 'ABCDEF1234',
+              status: 'pending',
+              requestedBy: 'alice',
+              requestedFor: 'qa',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            },
+          ],
+          nextCursor: 'cursor-1',
+        },
+      }),
+    );
+
+    const thread = await getWorkspaceDocumentThread({
+      ...credentials,
+      workspaceId: 'ws1',
+      documentId: 'doc1',
+      cursor: 'cursor-0',
+      limit: 10,
+    });
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/v1/workspaces/ws1/documents/doc1?cursor=cursor-0&limit=10');
+    expect(options).toMatchObject({ method: 'GET' });
+    expect(thread.document.revision.hash).toBe('abcdef1234');
+    expect(thread.signoffs[0]?.revisionHash).toBe('abcdef1234');
+    expect(thread.nextCursor).toBe('cursor-1');
+  });
+
+  it('propagates errors when document thread request fails', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({ ok: false, status: 404, body: { error: { message: 'Missing' } } }),
+    );
+
+    await expect(
+      getWorkspaceDocumentThread({
+        ...credentials,
+        workspaceId: 'ws1',
+        documentId: 'doc1',
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+
   it('requests and approves workspace signoffs', async () => {
     (global.fetch as jest.Mock).mockResolvedValue(
       createResponse({ body: { signoff: { id: 's1' } } }),
@@ -295,33 +368,22 @@ describe('API integrations', () => {
     expect(adminCall[0]).toContain('/v1/admin/roles/role-1');
     expect(adminCall[1]).toMatchObject({ method: 'PUT' });
 
-    (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { users: [] } }));
-    await listAdminUsers(credentials);
-    adminCall = (global.fetch as jest.Mock).mock.calls[2] as [string, RequestInit];
-    expect(adminCall[0]).toContain('/v1/admin/users');
-
-    (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { user: { email: 'a@b.c', roleId: 'role' } } }));
-    await updateAdminUser({ ...credentials, userId: 'u1', email: 'a@b.c', roleId: 'role' });
-    adminCall = (global.fetch as jest.Mock).mock.calls[3] as [string, RequestInit];
-    expect(adminCall[0]).toContain('/v1/admin/users/u1');
-    expect(adminCall[1]).toMatchObject({ method: 'PUT' });
-
     (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { apiKeys: [] } }));
     await listAdminApiKeys(credentials);
-    adminCall = (global.fetch as jest.Mock).mock.calls[4] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[2] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/api-keys');
 
     (global.fetch as jest.Mock).mockResolvedValue(
       createResponse({ body: { apiKey: { name: 'svc', scopes: [] }, secret: 'shh' } }),
     );
     await createAdminApiKey({ ...credentials, name: 'svc', scopes: [] });
-    adminCall = (global.fetch as jest.Mock).mock.calls[5] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[3] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/api-keys');
     expect(adminCall[1]).toMatchObject({ method: 'POST' });
 
     (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { apiKey: { name: 'svc', scopes: [] } } }));
     await getAdminApiKey({ ...credentials, keyId: 'key-1' });
-    adminCall = (global.fetch as jest.Mock).mock.calls[6] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[4] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/api-keys/key-1');
     expect(adminCall[1]).toMatchObject({ method: 'GET' });
 
@@ -329,26 +391,127 @@ describe('API integrations', () => {
       createResponse({ body: { apiKey: { name: 'svc', scopes: [] }, secret: 'new' } }),
     );
     await rotateAdminApiKey({ ...credentials, keyId: 'key-1', name: 'svc', scopes: [] });
-    adminCall = (global.fetch as jest.Mock).mock.calls[7] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[5] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/api-keys/key-1');
     expect(adminCall[1]).toMatchObject({ method: 'PUT' });
 
     (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { success: true } }));
-    await deleteAdminUser({ ...credentials, userId: 'u1' });
-    adminCall = (global.fetch as jest.Mock).mock.calls[8] as [string, RequestInit];
-    expect(adminCall[0]).toContain('/v1/admin/users/u1');
-    expect(adminCall[1]).toMatchObject({ method: 'DELETE' });
-
-    (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { success: true } }));
     await deleteAdminRole({ ...credentials, roleId: 'role-1' });
-    adminCall = (global.fetch as jest.Mock).mock.calls[9] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[6] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/roles/role-1');
     expect(adminCall[1]).toMatchObject({ method: 'DELETE' });
 
     (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { success: true } }));
     await deleteAdminApiKey({ ...credentials, keyId: 'key-1' });
-    adminCall = (global.fetch as jest.Mock).mock.calls[10] as [string, RequestInit];
+    adminCall = (global.fetch as jest.Mock).mock.calls[7] as [string, RequestInit];
     expect(adminCall[0]).toContain('/v1/admin/api-keys/key-1');
     expect(adminCall[1]).toMatchObject({ method: 'DELETE' });
+  });
+});
+
+describe('admin users', () => {
+  const credentials = { token: 'token', license: 'license' };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('handles CRUD operations with role assignments and secret rotation', async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(
+        createResponse({
+          body: {
+            users: [
+              {
+                id: 'u1',
+                email: 'alice@example.com',
+                roles: ['admin'],
+                status: 'active',
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createResponse({
+          body: {
+            user: {
+              id: 'u2',
+              email: 'new@example.com',
+              roles: ['admin'],
+              status: 'invited',
+            },
+            secret: 'temp-secret',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createResponse({
+          body: {
+            user: {
+              id: 'u2',
+              email: 'new@example.com',
+              roles: ['operator'],
+              status: 'active',
+            },
+            secret: 'rotated-secret',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(createResponse({ body: { success: true } }));
+
+    const list = await listAdminUsers(credentials);
+    expect(list.users).toHaveLength(1);
+    expect(list.users[0]?.roles).toEqual(['admin']);
+
+    await createAdminUser({
+      ...credentials,
+      email: 'new@example.com',
+      roles: ['admin'],
+      displayName: 'New Admin',
+    });
+
+    const createCall = (global.fetch as jest.Mock).mock.calls[1] as [string, RequestInit];
+    expect(createCall[0]).toContain('/v1/admin/users');
+    expect(createCall[1]?.method).toBe('POST');
+    expect(JSON.parse((createCall[1]?.body as string) ?? '{}').roles).toEqual(['admin']);
+
+    await updateAdminUser({
+      ...credentials,
+      userId: 'u2',
+      email: 'new@example.com',
+      roles: ['operator'],
+      rotateSecret: true,
+    });
+
+    const updateCall = (global.fetch as jest.Mock).mock.calls[2] as [string, RequestInit];
+    expect(updateCall[0]).toContain('/v1/admin/users/u2');
+    expect(updateCall[1]?.method).toBe('PUT');
+    const updatePayload = JSON.parse((updateCall[1]?.body as string) ?? '{}');
+    expect(updatePayload.roles).toEqual(['operator']);
+    expect(updatePayload.rotateSecret).toBe(true);
+
+    await deleteAdminUser({ ...credentials, userId: 'u2' });
+    const deleteCall = (global.fetch as jest.Mock).mock.calls[3] as [string, RequestInit];
+    expect(deleteCall[0]).toContain('/v1/admin/users/u2');
+    expect(deleteCall[1]?.method).toBe('DELETE');
+  });
+
+  it('propagates validation errors from the admin user endpoints', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({ ok: false, status: 422, body: { error: { message: 'ROLE_REQUIRED' } } }),
+    );
+
+    await expect(
+      createAdminUser({
+        ...credentials,
+        email: 'bad@example.com',
+        roles: [],
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 });

@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: SOIPack REST API
   version: 0.1.0
@@ -461,14 +461,12 @@ components:
         - type: object
           properties:
             result:
-              oneOf:
-                - type: object
-                  additionalProperties: true
-                - type: 'null'
+              type: object
+              additionalProperties: true
+              nullable: true
             error:
-              oneOf:
-                - $ref: '#/components/schemas/JobError'
-                - type: 'null'
+              $ref: '#/components/schemas/JobError'
+              nullable: true
     JobListResponse:
       type: object
       required:
@@ -872,10 +870,9 @@ components:
           items:
             type: string
         expiresAt:
-          oneOf:
-            - type: string
-            - type: number
-            - type: 'null'
+          type: string
+          format: date-time
+          nullable: true
     AdminApiKeyUpdateRequest:
       type: object
       required:
@@ -896,10 +893,9 @@ components:
           items:
             type: string
         expiresAt:
-          oneOf:
-            - type: string
-            - type: number
-            - type: 'null'
+          type: string
+          format: date-time
+          nullable: true
     WorkspaceRequirement:
       type: object
       required: [id, title, status, tags]
@@ -1037,6 +1033,30 @@ components:
         updatedAt:
           type: string
           format: date-time
+    WorkspaceDocumentThreadResponse:
+      type: object
+      required:
+        - document
+        - comments
+        - signoffs
+        - nextCursor
+      properties:
+        document:
+          $ref: '#/components/schemas/WorkspaceDocument'
+        comments:
+          type: array
+          description: Belgenin en eski tarihten yeni tarihe sıralanmış yorumları.
+          items:
+            $ref: '#/components/schemas/WorkspaceComment'
+        signoffs:
+          type: array
+          description: Revizyonlara ait imza isteği geçmişi (ilk isteğe göre sıralı).
+          items:
+            $ref: '#/components/schemas/WorkspaceSignoff'
+        nextCursor:
+          type: string
+          nullable: true
+          description: Sonraki yorum sayfası için imleç. Daha fazla kayıt yoksa null döner.
     WorkspaceDocumentUpdateRequest:
       type: object
       required: [kind, title, content]
@@ -1447,6 +1467,64 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /v1/workspaces/{workspaceId}/documents/{documentId}:
+    get:
+      operationId: getWorkspaceDocumentThread
+      summary: Çalışma alanı belgesinin son revizyonunu, yorumlarını ve imza geçmişini getirir.
+      tags:
+        - Workspaces
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LicenseHeader'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Yorumları sayfalarken kullanılacak imleç. Bir önceki yanıttaki `nextCursor` değerini iletin.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          description: Aynı yanıtta döndürülecek azami yorum sayısı. Varsayılan 20'dir.
+      responses:
+        '200':
+          description: Belge ve etkinlikleri başarıyla getirildi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDocumentThreadResponse'
+        '400':
+          description: Sorgu parametreleri geçersiz.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Belge bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       operationId: updateWorkspaceDocument
       summary: Çalışma alanı belgesini oluşturur veya günceller.

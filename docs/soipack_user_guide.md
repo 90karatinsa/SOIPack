@@ -212,6 +212,22 @@ Arayüzdeki temel görünüm aşağıda özetlenmiştir:
 
 ![SOIPack UI pipeline görünümü](images/ui-pipeline.png)
 
+#### Gereksinim Editörü
+
+`Requirements Editor` sekmesi, çalışma alanı belgelerini API üzerinden doğrudan düzenlemenizi sağlar. Sayfaya token ve lisans bilgileriyle eriştiğinizde uygulama `/v1/workspaces/{workspaceId}/documents/{documentId}` uç noktasından en son revizyonu, yorumları ve imza isteklerini çeker. Revizyon ızgarasında her satır bir gereksinimi temsil eder; kimlik, başlık, açıklama, durum ve etiketler alanları hücre içinde düzenlenebilir. `Add requirement` düğmesi boş bir satır ekler.
+
+Değişiklikler kaydedildiğinde istemci, beklenen karma değerini (`expectedHash`) mevcut revizyon hash'iyle doldurarak `PUT /v1/workspaces/{workspaceId}/documents/{documentId}` çağrısı yapar. Sunucu yeni revizyonu dönerse hash otomatik güncellenir ve ızgara temizlenir; aksi halde çakışma uyarısı görüntülenir. Sayfanın sağındaki yorum paneli, revizyonla ilişkili geribildirimleri listeler ve `Add comment` alanı yeni notların aynı revizyona eklenmesini sağlar.
+
+İmza süreci için `Request signoff` düğmesi modal açar. Bu pencerede hedef rolü veya kullanıcı kimliğini girerek `POST /v1/workspaces/{workspaceId}/signoffs` çağrısını tetikleyebilir, sonuç olarak dönen kayıt hemen listelenen imza geçmişine eklenir. Onay süreci tamamlandığında signoff kartındaki durum etiketi güncellenir; böylece gereksinim setinin hangi revizyonunun denetimden geçtiği arayüzden izlenebilir.
+
+#### RBAC Kullanıcı Yönetimi
+
+`Yönetici Kullanıcılar` sekmesi yalnızca `admin` rolüne sahip oturumlarda görünür ve tüm çağrılar için token ile lisans anahtarının girilmiş olmasını zorunlu kılar. Sekmeye ilk kez girildiğinde istemci `GET /v1/admin/roles` ve `GET /v1/admin/users` çağrılarını birlikte çalıştırarak mevcut rol tanımlarını ve kullanıcı listesini önbelleğe alır; kimlik doğrulama eksikse arayüz bunu uyarı kartı ile bildirir ve istekleri tekrar denemez.
+
+`Yeni Kullanıcı` eylemi e-posta, görünen ad ve rol seçimi için bir form açar. Kaydetme işlemi `POST /v1/admin/users` uç noktasına yönlendirilir ve sunucu geçici parola dönerse bu bilgi modal kapandıktan sonra “Güncelleme tamamlandı” alert bileşeninde gösterilir. Mevcut bir kaydı `Düzenle` bağlantısıyla açtığınızda form alanları ilgili kullanıcı verileriyle doldurulur; gönderim `PUT /v1/admin/users/{userId}` çağrısıyla rol atamalarını günceller. Güncellenen kullanıcıya ait doğrulama sırrı rota içerisinde dönerse arayüz hemen aynı alert bileşeniyle yeni sırrı yayınlar.
+
+Her kullanıcı satırındaki `Sır Sıfırla` işlemi, söz konusu hesabın erişim anahtarını `rotateSecret: true` parametresiyle sıfırlar ve dönen yeni sırrı operatörle paylaşır. `Sil` butonu `DELETE /v1/admin/users/{userId}` çağrısını tetikler; işlem başarılı olduğunda satır hemen tablodan kaldırılır. Tüm aksiyonlar msw tabanlı testlerde sahte sunucu yanıtlarıyla doğrulanır ve `ApiError` istisnaları formun altındaki hata panelinde görüntülenerek operatöre gerekli düzeltme adımlarını iletir.
+
 ## Hata Kodları
 SOIPack CLI süreçleri başarı ve başarısızlık durumlarını aşağıdaki çıkış kodlarıyla bildirir:
 

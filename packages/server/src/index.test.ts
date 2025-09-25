@@ -10,6 +10,7 @@ import tls from 'tls';
 import EventSource from 'eventsource';
 
 import * as cli from '@soipack/cli';
+import { fetchJiraChangeRequests, type JiraChangeRequest } from '@soipack/adapters';
 import { LedgerEntry, Manifest, createSnapshotVersion } from '@soipack/core';
 import type { RiskProfile } from '@soipack/engine';
 import { verifyManifestSignature } from '@soipack/packager';
@@ -27,7 +28,13 @@ import type { JobKind, JobStatus } from './queue';
 import type { FileScanner } from './scanner';
 import type { UserRole } from './middleware/auth';
 
-import { createHttpsServer, createServer, getServerLifecycle, type ServerConfig } from './index';
+import {
+  createHttpsServer,
+  createServer,
+  getServerLifecycle,
+  __clearChangeRequestCacheForTesting,
+  type ServerConfig,
+} from './index';
 import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
@@ -73,6 +80,14 @@ setGlobalDispatcher(
     },
   }),
 );
+
+jest.mock('@soipack/adapters', () => {
+  const actual = jest.requireActual<typeof import('@soipack/adapters')>('@soipack/adapters');
+  return {
+    ...actual,
+    fetchJiraChangeRequests: jest.fn(),
+  };
+});
 
 const TEST_SERVER_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDsphbJCknHw4kG
@@ -174,6 +189,9 @@ const minimalExample = (...segments: string[]): string =>
 const demoLicensePath = path.resolve(__dirname, '../../..', 'data', 'licenses', 'demo-license.key');
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const mockedFetchJiraChangeRequests =
+  fetchJiraChangeRequests as jest.MockedFunction<typeof fetchJiraChangeRequests>;
 
 const createDeferred = <T = void>() => {
   let resolve: (value: T | PromiseLike<T>) => void;
@@ -1013,6 +1031,55 @@ describe('@soipack/server REST API', () => {
         return { rows: [mapWorkspaceRevisionRow(record)], rowCount: 1 };
       }
 
+      if (
+        normalized.startsWith(
+          'select id, document_id, revision_id, tenant_id, workspace_id, author_id, body, created_at from workspace_document_comments where tenant_id = $1 and workspace_id = $2 and document_id = $3',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, documentIdParam] = params as [string, string, string];
+        let limitParamIndex = 3;
+        let createdAfter: Date | undefined;
+        let cursorId: string | undefined;
+        if (normalized.includes('and (created_at > $4 or (created_at = $4 and id > $5))')) {
+          const createdRaw = params[3] as string;
+          const idRaw = params[4] as string;
+          createdAfter = new Date(createdRaw);
+          cursorId = idRaw;
+          limitParamIndex = 5;
+        }
+        const limitParam = Number(params[limitParamIndex] ?? Number.MAX_SAFE_INTEGER);
+        const comments = [...workspaceComments.values()]
+          .filter(
+            (comment) =>
+              comment.tenantId === tenantIdParam &&
+              comment.workspaceId === workspaceIdParam &&
+              comment.documentId === documentIdParam,
+          )
+          .sort((a, b) => {
+            const delta = a.createdAt.getTime() - b.createdAt.getTime();
+            if (delta !== 0) {
+              return delta;
+            }
+            return a.id.localeCompare(b.id);
+          })
+          .filter((comment) => {
+            if (!createdAfter || !cursorId) {
+              return true;
+            }
+            const diff = comment.createdAt.getTime() - createdAfter.getTime();
+            if (diff > 0) {
+              return true;
+            }
+            if (diff < 0) {
+              return false;
+            }
+            return comment.id > cursorId;
+          })
+          .slice(0, limitParam);
+
+        return { rows: comments.map(mapWorkspaceCommentRow), rowCount: comments.length };
+      }
+
       if (normalized.startsWith('insert into workspace_document_comments')) {
         const [
           id,
@@ -1078,6 +1145,30 @@ describe('@soipack/server REST API', () => {
           return { rows: [], rowCount: 0 };
         }
         return { rows: [mapWorkspaceSignoffRow(record)], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'select id, document_id, revision_id, tenant_id, workspace_id, revision_hash, status, requested_by, requested_for, signer_id, signer_public_key, signature, signed_at, created_at, updated_at from workspace_signoffs where tenant_id = $1 and workspace_id = $2 and document_id = $3 order by created_at asc, id asc',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, documentIdParam] = params as [string, string, string];
+        const results = [...workspaceSignoffs.values()]
+          .filter(
+            (record) =>
+              record.tenantId === tenantIdParam &&
+              record.workspaceId === workspaceIdParam &&
+              record.documentId === documentIdParam,
+          )
+          .sort((a, b) => {
+            const delta = a.createdAt.getTime() - b.createdAt.getTime();
+            if (delta !== 0) {
+              return delta;
+            }
+            return a.id.localeCompare(b.id);
+          })
+          .map(mapWorkspaceSignoffRow);
+        return { rows: results, rowCount: results.length };
       }
 
       if (
@@ -4416,6 +4507,149 @@ describe('@soipack/server REST API', () => {
     expect(typeof response.body.items[0].createdAt).toBe('string');
   });
 
+  describe('Change request proxy', () => {
+    const originalBaseUrl = process.env.JIRA_BASE_URL;
+    const originalToken = process.env.JIRA_TOKEN;
+    const originalProject = process.env.JIRA_PROJECT_KEY;
+    let projectCounter = 0;
+
+    const nextProjectKey = (): string => {
+      projectCounter += 1;
+      return `CR-${projectCounter}`;
+    };
+
+    beforeAll(() => {
+      process.env.JIRA_BASE_URL = 'https://jira.example.com';
+      process.env.JIRA_TOKEN = 'jira-token';
+    });
+
+    afterAll(() => {
+      if (originalBaseUrl === undefined) {
+        delete process.env.JIRA_BASE_URL;
+      } else {
+        process.env.JIRA_BASE_URL = originalBaseUrl;
+      }
+      if (originalToken === undefined) {
+        delete process.env.JIRA_TOKEN;
+      } else {
+        process.env.JIRA_TOKEN = originalToken;
+      }
+      if (originalProject === undefined) {
+        delete process.env.JIRA_PROJECT_KEY;
+      } else {
+        process.env.JIRA_PROJECT_KEY = originalProject;
+      }
+    });
+
+    beforeEach(() => {
+      mockedFetchJiraChangeRequests.mockReset();
+      projectCounter = 0;
+      __clearChangeRequestCacheForTesting();
+    });
+
+    it('rejects requests without reader permissions', async () => {
+      const projectKey = nextProjectKey();
+      const unauthorizedToken = await createAccessToken({ roles: [], scope: requiredScope });
+
+      await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${unauthorizedToken}`)
+        .expect(403);
+
+      expect(mockedFetchJiraChangeRequests).not.toHaveBeenCalled();
+    });
+
+    it('returns change requests with caching and ETag support', async () => {
+      const readerToken = await createAccessToken({ roles: ['reader'], scope: requiredScope });
+      const projectKey = nextProjectKey();
+      mockedFetchJiraChangeRequests.mockResolvedValue([
+        {
+          id: '1001',
+          key: 'CR-1',
+          summary: 'Update autopilot logic',
+          status: 'In Progress',
+          statusCategory: 'In Progress',
+          assignee: 'Alex Pilot',
+          updatedAt: '2024-09-03T10:00:00Z',
+          priority: 'High',
+          issueType: 'Change Request',
+          url: 'https://jira.example.com/browse/CR-1',
+          transitions: [{ id: '1', name: 'Submit', toStatus: 'Ready for Review' }],
+          attachments: [
+            {
+              id: 'att-1',
+              filename: 'impact.pdf',
+              url: 'https://jira.example.com/secure/attachment/att-1',
+            },
+          ],
+        },
+      ] satisfies JiraChangeRequest[]);
+
+      const firstResponse = await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${readerToken}`)
+        .expect(200);
+
+      expect(firstResponse.body.items).toHaveLength(1);
+      expect(firstResponse.body.items[0].key).toBe('CR-1');
+      expect(firstResponse.headers['cache-control']).toBe('private, max-age=300');
+      const etag = firstResponse.headers.etag as string;
+      expect(typeof etag).toBe('string');
+
+      mockedFetchJiraChangeRequests.mockClear();
+
+      await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${readerToken}`)
+        .set('If-None-Match', etag)
+        .expect(304);
+
+      expect(mockedFetchJiraChangeRequests).not.toHaveBeenCalled();
+
+      const secondResponse = await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${readerToken}`)
+        .expect(200);
+
+      expect(secondResponse.body.items[0].summary).toContain('autopilot');
+      expect(mockedFetchJiraChangeRequests).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when the Jira adapter throws an error', async () => {
+      const readerToken = await createAccessToken({ roles: ['reader'] });
+      const projectKey = nextProjectKey();
+      mockedFetchJiraChangeRequests.mockRejectedValue(new Error('boom'));
+
+      const response = await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${readerToken}`)
+        .expect(502);
+
+      expect(response.body.error.code).toBe('JIRA_FETCH_FAILED');
+    });
+
+    it('returns 503 when Jira configuration is missing', async () => {
+      const readerToken = await createAccessToken({ roles: ['reader'] });
+      const projectKey = nextProjectKey();
+      const backupBaseUrl = process.env.JIRA_BASE_URL;
+      delete process.env.JIRA_BASE_URL;
+
+      const response = await request(app)
+        .get('/v1/change-requests')
+        .query({ projectKey })
+        .set('Authorization', `Bearer ${readerToken}`)
+        .expect(503);
+
+      expect(response.body.error.code).toBe('UPSTREAM_UNAVAILABLE');
+      process.env.JIRA_BASE_URL = backupBaseUrl ?? 'https://jira.example.com';
+    });
+  });
+
   describe('workspace collaboration endpoints', () => {
     const workspaceId = 'ws-main';
     const documentId = 'requirements';
@@ -4524,6 +4758,147 @@ describe('@soipack/server REST API', () => {
 
       expect(approveResponse.body.signoff.status).toBe('approved');
       expect(approveResponse.body.signoff.signerId).toBe('user-1');
+    });
+
+    describe('Workspace document thread', () => {
+      it('returns document thread data for authorized readers', async () => {
+        const maintainerToken = await createAccessToken({
+          subject: 'workspace-admin',
+          roles: ['admin'],
+        });
+        const readerToken = await createAccessToken({
+          subject: 'workspace-reader',
+          roles: ['reader'],
+          scope: requiredScope,
+        });
+
+        const editResponse = await request(app)
+          .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send(baseDocumentBody)
+          .expect(200);
+
+        const revisionHash: string = editResponse.body.document.revision.hash;
+
+        await request(app)
+          .post(`/v1/workspaces/${workspaceId}/documents/${documentId}/comments`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send({ body: 'Thread comment', revisionHash })
+          .expect(201);
+
+        await request(app)
+          .post(`/v1/workspaces/${workspaceId}/signoffs`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send({ documentId, revisionHash, requestedFor: 'approver-1' })
+          .expect(201);
+
+        const response = await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${readerToken}`)
+          .expect(200);
+
+        expect(response.headers.etag).toBe(`"${revisionHash}"`);
+        expect(response.body.document.id).toBe(documentId);
+        expect(response.body.comments).toHaveLength(1);
+        expect(response.body.comments[0].body).toBe('Thread comment');
+        expect(response.body.signoffs).toHaveLength(1);
+        expect(response.body.nextCursor).toBeNull();
+      });
+
+      it('rejects access without reader permissions', async () => {
+        const maintainerToken = await createAccessToken({
+          subject: 'workspace-admin',
+          roles: ['admin'],
+        });
+        const unauthorizedToken = await createAccessToken({
+          subject: 'workspace-guest',
+          roles: [],
+          scope: null,
+        });
+
+        await request(app)
+          .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send(baseDocumentBody)
+          .expect(200);
+
+        const response = await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${unauthorizedToken}`)
+          .expect(403);
+
+        expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      });
+
+      it('returns 404 when the document does not exist', async () => {
+        const readerToken = await createAccessToken({ roles: ['reader'] });
+
+        const response = await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/missing-document`)
+          .set('Authorization', `Bearer ${readerToken}`)
+          .expect(404);
+
+        expect(response.body.error.code).toBe('NOT_FOUND');
+      });
+
+      it('supports ETag based cache validation after updates', async () => {
+        const maintainerToken = await createAccessToken({
+          subject: 'workspace-admin',
+          roles: ['admin'],
+        });
+        const readerToken = await createAccessToken({
+          subject: 'workspace-reader',
+          roles: ['reader'],
+          scope: requiredScope,
+        });
+
+        const initialResponse = await request(app)
+          .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send(baseDocumentBody)
+          .expect(200);
+
+        const initialHash: string = initialResponse.body.document.revision.hash;
+
+        const firstFetch = await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${readerToken}`)
+          .expect(200);
+
+        const updatedBody = {
+          ...baseDocumentBody,
+          title: 'Updated Requirements',
+          content: [
+            {
+              ...baseDocumentBody.content[0],
+              status: 'approved',
+            },
+          ],
+          expectedHash: initialHash,
+        };
+
+        const updateResponse = await request(app)
+          .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${maintainerToken}`)
+          .send(updatedBody)
+          .expect(200);
+
+        const updatedHash: string = updateResponse.body.document.revision.hash;
+
+        const staleResponse = await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${readerToken}`)
+          .set('If-None-Match', firstFetch.headers.etag as string)
+          .expect(200);
+
+        expect(staleResponse.headers.etag).toBe(`"${updatedHash}"`);
+
+        await request(app)
+          .get(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+          .set('Authorization', `Bearer ${readerToken}`)
+          .set('If-None-Match', `"${updatedHash}"`)
+          .expect(304);
+      });
     });
   });
 

@@ -67,6 +67,26 @@ Bu belge, internet bağlantısı olmayan ("air-gapped") ortamlarda SOIPack REST 
    ```
 
    HTTPS dinleyicisi varsayılan olarak `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options` ve benzeri HTTP başlıklarını göndererek kullanıcı arayüzleri ve API çağrıları için güvenli varsayılanlar uygular; Express'in `X-Powered-By` başlığı devre dışı bırakılmıştır. Tüm istemcilerin bu başlıklara hazır olduğundan emin olun ve TLS sonlandırmasını başka bir katmanda yapıyorsanız aynı güvenlik başlıklarını orada da çoğaltın.
+
+   #### PKCS#11/YubiHSM tabanlı imzalama
+
+   Paketleme hattında fiziksel güvenlik modülleri kullanıyorsanız `@soipack/packager` paketinin `signManifestWithSecuritySigner` fonksiyonuna `pkcs11` alanını ekleyerek YubiHSM 2 gibi cihazlarla manifest imzalayabilirsiniz. Bu akış Node.js sürecine [`pkcs11js`](https://www.npmjs.com/package/pkcs11js) bağımlılığı eklendiğinde etkinleşir; modül sürücüsü `libraryPath` ile yüklenir ve cihazdaki yuva seçimi için `slotIndex`/`slotId`, kimlik doğrulaması için `pin`, anahtar nesnesi için `privateKey`, X.509 sertifikası için `certificate` ve isteğe bağlı attestation verisi için `attestation` alanları kullanılır:
+
+   ```ts
+   signManifestWithSecuritySigner(manifest, {
+     pkcs11: {
+       libraryPath: '/usr/lib/libyubihsm_pkcs11.so',
+       slotIndex: 0,
+       pin: process.env.YUBIHSM_AUTH!,
+       privateKey: { label: 'SIGNING-KEY' },
+       certificate: { label: 'SIGNING-CERT' },
+       attestation: { label: 'ATTEST', format: 'yubihsm-x509' },
+     },
+   });
+   ```
+
+   Cihazda sertifika tutulmuyorsa aynı opsiyon blokunda `certificatePem`, `certificatePath` veya `bundlePem` değerlerinden biri sağlanarak yalnızca X.509 içeriği yerel dosyadan okunabilir; özel anahtar alanı boş bırakılır. Yuvalar veya nesneler bulunamazsa yardımcı metot açıklayıcı hatalar fırlatır. Başarılı imzada dönen `ManifestSignatureBundle.hardware`, yuva kimliği/üreticisi ve `attestation.data` altında (base64) YubiHSM kanıtını içerir. PKCS#11 kitaplıklarının ihtiyaç duyduğu yerel bağımlılıkların (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` vb.) süreç ortamına eklendiğinden emin olun.
+
 4. Sunucunun ihtiyaç duyduğu ortam değişkenlerini tanımlayın. JSON Web Token doğrulaması için OpenID Connect uyumlu bir sağlayıcının `issuer`, `audience` ve JWKS uç noktası belirtilmelidir. Aynı klasörde bir `.env` dosyası oluşturun:
    ```bash
    cat <<'ENV' > .env

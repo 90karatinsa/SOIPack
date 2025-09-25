@@ -151,6 +151,81 @@ const tracesPayload: RequirementTracePayload[] = [
   }
 ];
 
+const requirementsThreadResponse = {
+  document: {
+    id: 'requirements',
+    tenantId: 'tenant-1',
+    workspaceId: 'demo-workspace',
+    kind: 'requirements',
+    title: 'Uçuş Kontrolleri',
+    createdAt: '2024-04-01T00:00:00.000Z',
+    updatedAt: '2024-04-01T00:00:00.000Z',
+    revision: {
+      id: 'rev-1',
+      number: 1,
+      hash: 'abcdef123456',
+      authorId: 'alice',
+      createdAt: '2024-04-01T00:00:00.000Z',
+      content: [
+        {
+          id: 'REQ-CTRL-1',
+          title: 'Otopilot manuel müdahalede kapanır',
+          description: 'Uçuş ekibi override yaptığında sistem kontrolü devreder.',
+          status: 'draft',
+          tags: ['flight'],
+        },
+      ],
+    },
+  },
+  comments: [
+    {
+      id: 'comment-1',
+      documentId: 'requirements',
+      revisionId: 'rev-1',
+      tenantId: 'tenant-1',
+      workspaceId: 'demo-workspace',
+      authorId: 'qa',
+      body: 'Gözden geçirildikten sonra DER imzası bekleniyor.',
+      createdAt: '2024-04-01T10:00:00.000Z',
+    },
+  ],
+  signoffs: [
+    {
+      id: 'signoff-1',
+      documentId: 'requirements',
+      revisionId: 'rev-1',
+      tenantId: 'tenant-1',
+      workspaceId: 'demo-workspace',
+      revisionHash: 'abcdef123456',
+      status: 'pending',
+      requestedBy: 'alice',
+      requestedFor: 'qa-lead',
+      createdAt: '2024-04-02T09:00:00.000Z',
+      updatedAt: '2024-04-02T09:00:00.000Z',
+    },
+  ],
+  nextCursor: null,
+};
+
+const adminRolesResponse = {
+  roles: [
+    { name: 'admin', permissions: ['*'] },
+    { name: 'operator', permissions: ['documents:write'] },
+  ],
+};
+
+const adminUsersResponse = {
+  users: [
+    {
+      id: 'user-1',
+      email: 'ops@example.com',
+      displayName: 'Ops Review',
+      roles: ['operator'],
+      status: 'active',
+    },
+  ],
+};
+
 const reportAssets: Record<string, string> = {
   'analysis.json': JSON.stringify({ meta: 'analysis' }),
   'snapshot.json': JSON.stringify({ stats: {} }),
@@ -362,6 +437,27 @@ const server = setupServer(
       return authError;
     }
     return res(ctx.status(200), ctx.json(tracesPayload));
+  }),
+  rest.get('/v1/workspaces/demo-workspace/documents/requirements', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
+    return res(ctx.status(200), ctx.json(requirementsThreadResponse));
+  }),
+  rest.get('/v1/admin/roles', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
+    return res(ctx.status(200), ctx.json(adminRolesResponse));
+  }),
+  rest.get('/v1/admin/users', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
+    return res(ctx.status(200), ctx.json(adminUsersResponse));
   }),
   rest.get('/v1/reports/:id/:asset', (req, res, ctx) => {
     const authError = ensureLicense(req, res, ctx);
@@ -705,6 +801,57 @@ describe('App integration', () => {
     await screen.findByText('Risk verilerine erişim yetkiniz yok.');
 
     unmountNoRisk();
+  });
+
+  it('gates requirements editor and admin users routes', async () => {
+    const user = userEvent.setup();
+    render(
+      <RbacProvider roles={['workspace:write', 'admin']}>
+        <App />
+      </RbacProvider>,
+    );
+
+    const requirementsTab = screen.getByRole('button', { name: 'Gereksinim Editörü' });
+    await user.click(requirementsTab);
+
+    await screen.findByText('Kimlik bilgileri gerekli');
+
+    const adminTab = screen.getByRole('button', { name: 'Yönetici Kullanıcılar' });
+    await user.click(adminTab);
+    await screen.findByText('Yönetici kullanıcılarını görüntülemek için token ve lisans girmelisiniz.');
+
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
+    const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    await user.click(requirementsTab);
+
+    await screen.findByLabelText('Requirement ID 1');
+    expect(screen.getByText('Otopilot manuel müdahalede kapanır')).toBeInTheDocument();
+    expect(screen.getByText('Gözden geçirildikten sonra DER imzası bekleniyor.')).toBeInTheDocument();
+
+    await user.click(adminTab);
+    await screen.findByText('RBAC Kullanıcı Yönetimi');
+    await screen.findByText('ops@example.com');
+  });
+
+  it('hides privileged tabs for users without admin roles', () => {
+    render(
+      <RbacProvider roles={['risk:read']}>
+        <App />
+      </RbacProvider>,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Gereksinim Editörü' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Yönetici Kullanıcılar' })).not.toBeInTheDocument();
   });
 
   it('surfaces an error when the license is missing', async () => {

@@ -13,7 +13,13 @@ import type { Browser, Page } from 'playwright';
 
 import packageInfo from '../package.json';
 
-import { renderCoverageSummarySection } from './complianceReport.html';
+import {
+  renderChangeRequestBacklogSection,
+  renderCoverageSummarySection,
+  renderLedgerDiffSection,
+  type ChangeRequestBacklogItem,
+  type LedgerAttestationDiffItem,
+} from './complianceReport.html';
 
 type PlaywrightModule = typeof import('playwright');
 
@@ -259,12 +265,21 @@ export interface ComplianceMatrixResult {
 
 export interface ComplianceCoverageReportOptions extends ComplianceMatrixOptions {
   coverageWarnings?: string[];
+  changeRequestBacklog?: ChangeRequestBacklogItem[];
+  ledgerDiffs?: LedgerAttestationDiffItem[];
 }
 
 export interface ComplianceCoverageReportResult extends ComplianceMatrixResult {
-  json: ComplianceMatrixJson & { coverage: CoverageReport; coverageWarnings: string[] };
+  json: ComplianceMatrixJson & {
+    coverage: CoverageReport;
+    coverageWarnings: string[];
+    changeRequestBacklog?: ChangeRequestBacklogItem[];
+    ledgerDiffs?: LedgerAttestationDiffItem[];
+  };
   coverage: CoverageReport;
   coverageWarnings: string[];
+  changeRequestBacklog?: ChangeRequestBacklogItem[];
+  ledgerDiffs?: LedgerAttestationDiffItem[];
 }
 
 export interface PrintToPdfOptions extends BaseReportOptions {
@@ -1720,6 +1735,8 @@ export const renderComplianceCoverageReport = (
 ): ComplianceCoverageReportResult => {
   const view = buildComplianceMatrixView(snapshot, options);
   const coverageWarnings = options.coverageWarnings ?? [];
+  const changeRequestBacklog = options.changeRequestBacklog ?? [];
+  const ledgerDiffs = options.ledgerDiffs ?? [];
 
   const sections: string[] = [];
   if (view.risk) {
@@ -1736,7 +1753,29 @@ export const renderComplianceCoverageReport = (
     sections.push(signoffTimelineTemplate.render(view.signoffs));
   }
   sections.push(renderCoverageSummarySection({ coverage, warnings: coverageWarnings }));
+  if (changeRequestBacklog.length > 0) {
+    sections.push(renderChangeRequestBacklogSection({ items: changeRequestBacklog }));
+  }
+  if (ledgerDiffs.length > 0) {
+    sections.push(renderLedgerDiffSection({ diffs: ledgerDiffs }));
+  }
   const content = sections.join('');
+
+  const summaryMetrics = [...view.summaryMetrics, ...buildCoverageSummaryMetrics(coverage)];
+  if (options.changeRequestBacklog !== undefined) {
+    summaryMetrics.push({
+      label: 'Açık Değişiklik Talepleri',
+      value: changeRequestBacklog.length.toString(),
+      accent: changeRequestBacklog.length > 0,
+    });
+  }
+  if (options.ledgerDiffs !== undefined) {
+    summaryMetrics.push({
+      label: 'Ledger Attestasyonları',
+      value: ledgerDiffs.length.toString(),
+      accent: ledgerDiffs.length > 0,
+    });
+  }
 
   const html = renderLayout({
     title: options.title ?? 'SOIPack Uyum ve Kapsam Raporu',
@@ -1745,7 +1784,7 @@ export const renderComplianceCoverageReport = (
     version: options.version ?? packageInfo.version,
     snapshotId: options.snapshotId ?? snapshot.version.id,
     snapshotVersion: options.snapshotVersion ?? snapshot.version,
-    summaryMetrics: [...view.summaryMetrics, ...buildCoverageSummaryMetrics(coverage)],
+    summaryMetrics,
     content,
     subtitle: 'Uyumluluk hedefleri ve yapısal kapsam özetleri',
     git: options.git,
@@ -1755,9 +1794,18 @@ export const renderComplianceCoverageReport = (
     ...buildComplianceMatrixJson(snapshot, options, view),
     coverage,
     coverageWarnings,
+    ...(changeRequestBacklog.length > 0 ? { changeRequestBacklog } : {}),
+    ...(ledgerDiffs.length > 0 ? { ledgerDiffs } : {}),
   } as ComplianceCoverageReportResult['json'];
 
-  return { html, json, coverage, coverageWarnings };
+  return {
+    html,
+    json,
+    coverage,
+    coverageWarnings,
+    changeRequestBacklog: changeRequestBacklog.length > 0 ? changeRequestBacklog : undefined,
+    ledgerDiffs: ledgerDiffs.length > 0 ? ledgerDiffs : undefined,
+  };
 };
 
 export const renderTraceMatrix = (
@@ -2075,3 +2123,4 @@ export {
   type PlanOverrideConfig,
   type PlanSectionOverrides,
 } from './plans';
+export type { ChangeRequestBacklogItem, LedgerAttestationDiffItem } from './complianceReport.html';

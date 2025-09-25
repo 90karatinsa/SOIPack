@@ -49,6 +49,21 @@ export interface WorkspaceComment {
   createdAt: Date;
 }
 
+export interface WorkspaceDocumentActivityOptions {
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface WorkspaceDocumentActivityResult {
+  comments: WorkspaceComment[];
+  signoffs: WorkspaceSignoff[];
+  nextCursor: string | null;
+}
+
+export interface WorkspaceDocumentThread extends WorkspaceDocumentActivityResult {
+  document: WorkspaceDocument;
+}
+
 export interface WorkspaceSignoff {
   id: string;
   documentId: string;
@@ -284,6 +299,41 @@ const decodeEd25519Signature = (value: string): Buffer => {
   return signature;
 };
 
+const DEFAULT_COMMENT_PAGE_SIZE = 20;
+
+interface CommentCursor {
+  createdAt: string;
+  id: string;
+}
+
+const encodeCommentCursor = (row: WorkspaceCommentRow): string => {
+  const payload: CommentCursor = {
+    createdAt: toDate(row.created_at).toISOString(),
+    id: row.id,
+  };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+};
+
+const parseCommentCursor = (cursor?: string | null): CommentCursor | null => {
+  if (!cursor) {
+    return null;
+  }
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    const payload = JSON.parse(decoded) as { createdAt?: unknown; id?: unknown };
+    if (typeof payload.createdAt !== 'string' || typeof payload.id !== 'string') {
+      return null;
+    }
+    const timestamp = new Date(payload.createdAt);
+    if (Number.isNaN(timestamp.getTime())) {
+      return null;
+    }
+    return { createdAt: timestamp.toISOString(), id: payload.id };
+  } catch {
+    return null;
+  }
+};
+
 export class WorkspaceService {
   constructor(private readonly database: DatabaseManager) {}
 
@@ -485,6 +535,81 @@ export class WorkspaceService {
       return undefined;
     }
     return this.mapDocumentRow(documentRow, this.mapRevisionRow(revisionRow));
+  }
+
+  public async listDocumentActivity(
+    tenantId: string,
+    workspaceId: string,
+    documentId: string,
+    options: WorkspaceDocumentActivityOptions = {},
+  ): Promise<WorkspaceDocumentActivityResult> {
+    const rawLimit = options.limit ?? DEFAULT_COMMENT_PAGE_SIZE;
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(Math.trunc(rawLimit), 1), 100)
+      : DEFAULT_COMMENT_PAGE_SIZE;
+    const cursor = parseCommentCursor(options.cursor);
+    const parameters: unknown[] = [tenantId, workspaceId, documentId];
+    let cursorClause = '';
+    if (cursor) {
+      parameters.push(cursor.createdAt);
+      const createdAtIndex = parameters.length;
+      parameters.push(cursor.id);
+      const idIndex = parameters.length;
+      cursorClause = ` AND (created_at > $${createdAtIndex} OR (created_at = $${createdAtIndex} AND id > $${idIndex}))`;
+    }
+    parameters.push(limit + 1);
+    const limitIndex = parameters.length;
+
+    const { rows: commentRowsRaw } = await this.pool.query(
+      `SELECT id, document_id, revision_id, tenant_id, workspace_id, author_id, body, created_at
+         FROM workspace_document_comments
+        WHERE tenant_id = $1 AND workspace_id = $2 AND document_id = $3${cursorClause}
+        ORDER BY created_at ASC, id ASC
+        LIMIT $${limitIndex}`,
+      parameters,
+    );
+
+    const commentRows = commentRowsRaw as WorkspaceCommentRow[];
+    let nextCursor: string | null = null;
+    if (commentRows.length > limit) {
+      commentRows.splice(limit);
+      const lastRow = commentRows[commentRows.length - 1];
+      if (lastRow) {
+        nextCursor = encodeCommentCursor(lastRow);
+      }
+    }
+    const comments = commentRows.map((row) => this.mapCommentRow(row));
+
+    const { rows: signoffRowsRaw } = await this.pool.query(
+      `SELECT id, document_id, revision_id, tenant_id, workspace_id, revision_hash, status, requested_by, requested_for,
+              signer_id, signer_public_key, signature, signed_at, created_at, updated_at
+         FROM workspace_signoffs
+        WHERE tenant_id = $1 AND workspace_id = $2 AND document_id = $3
+        ORDER BY created_at ASC, id ASC`,
+      [tenantId, workspaceId, documentId],
+    );
+    const signoffs = (signoffRowsRaw as WorkspaceSignoffRow[]).map((row) => this.mapSignoffRow(row));
+
+    return { comments, signoffs, nextCursor };
+  }
+
+  public async getDocumentThread(
+    tenantId: string,
+    workspaceId: string,
+    documentId: string,
+    options: WorkspaceDocumentActivityOptions = {},
+  ): Promise<WorkspaceDocumentThread | undefined> {
+    const document = await this.getDocument(tenantId, workspaceId, documentId);
+    if (!document) {
+      return undefined;
+    }
+    const activity = await this.listDocumentActivity(tenantId, workspaceId, documentId, options);
+    return {
+      document,
+      comments: activity.comments,
+      signoffs: activity.signoffs,
+      nextCursor: activity.nextCursor,
+    };
   }
 
   public async saveRevision(input: SaveWorkspaceDocumentInput): Promise<WorkspaceDocument> {

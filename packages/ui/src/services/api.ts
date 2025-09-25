@@ -124,6 +124,13 @@ export interface WorkspaceSignoff {
   rejectedAt?: string | null;
 }
 
+export interface WorkspaceDocumentThread<TContent = unknown> {
+  document: WorkspaceDocument<TContent>;
+  comments: WorkspaceComment[];
+  signoffs: WorkspaceSignoff[];
+  nextCursor: string | null;
+}
+
 export interface QueueJobSummary {
   id: string;
   kind: 'import' | 'analyze' | 'report' | 'pack';
@@ -215,6 +222,8 @@ const buildQueryString = (params: Record<string, unknown> | undefined): string =
   const query = searchParams.toString();
   return query ? `?${query}` : '';
 };
+
+const normalizeRevisionHash = (hash?: string | null): string => (hash ?? '').toLowerCase();
 
 export class ApiError extends Error {
   public readonly status: number;
@@ -754,6 +763,57 @@ export const listReviews = async ({
   return readJson<ReviewListResponse>(response);
 };
 
+interface GetWorkspaceDocumentThreadOptions extends AuthCredentials {
+  workspaceId: string;
+  documentId: string;
+  cursor?: string | null;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export const getWorkspaceDocumentThread = async <TContent = unknown>({
+  token,
+  license,
+  workspaceId,
+  documentId,
+  cursor,
+  limit,
+  signal,
+}: GetWorkspaceDocumentThreadOptions): Promise<WorkspaceDocumentThread<TContent>> => {
+  const response = await fetch(
+    joinUrl(
+      `/v1/workspaces/${workspaceId}/documents/${documentId}${buildQueryString({
+        cursor: cursor ?? undefined,
+        limit,
+      })}`,
+    ),
+    {
+      method: 'GET',
+      headers: buildAuthHeaders({ token, license }),
+      signal,
+    },
+  );
+
+  const payload = await readJson<WorkspaceDocumentThread<TContent>>(response);
+  const normalizedDocument: WorkspaceDocument<TContent> = {
+    ...payload.document,
+    revision: {
+      ...payload.document.revision,
+      hash: normalizeRevisionHash(payload.document.revision?.hash),
+    },
+  };
+  const normalizedSignoffs = payload.signoffs.map((signoff) => ({
+    ...signoff,
+    revisionHash: normalizeRevisionHash(signoff.revisionHash),
+  }));
+
+  return {
+    ...payload,
+    document: normalizedDocument,
+    signoffs: normalizedSignoffs,
+  };
+};
+
 interface WorkspaceDocumentPayload<TContent = unknown> extends AuthCredentials {
   workspaceId: string;
   documentId: string;
@@ -896,17 +956,29 @@ export const listJobs = async ({
   return readJson<QueueMetricsResponse>(response);
 };
 
-interface AdminRolePayload {
+export interface AdminRole {
   name: string;
   description?: string | null;
   permissions: string[];
 }
 
-interface AdminUserPayload {
+export interface AdminUser {
+  id: string;
   email: string;
-  roleId: string;
+  roles: string[];
+  displayName?: string | null;
+  status?: 'active' | 'invited' | 'suspended';
+  lastLoginAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface AdminUserRequest {
+  email: string;
+  roles: string[];
   displayName?: string | null;
   password?: string | null;
+  rotateSecret?: boolean;
 }
 
 interface AdminApiKeyPayload {
@@ -923,14 +995,14 @@ export const listAdminRoles = async ({
   token,
   license,
   signal,
-}: AdminAuthOptions): Promise<{ roles: AdminRolePayload[] }> => {
+}: AdminAuthOptions): Promise<{ roles: AdminRole[] }> => {
   const response = await fetch(joinUrl('/v1/admin/roles'), {
     method: 'GET',
     headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
-  return readJson<{ roles: AdminRolePayload[] }>(response);
+  return readJson<{ roles: AdminRole[] }>(response);
 };
 
 export const createAdminRole = async ({
@@ -938,7 +1010,7 @@ export const createAdminRole = async ({
   license,
   signal,
   ...body
-}: AdminAuthOptions & AdminRolePayload): Promise<{ role: AdminRolePayload }> => {
+}: AdminAuthOptions & AdminRole): Promise<{ role: AdminRole }> => {
   const response = await fetch(joinUrl('/v1/admin/roles'), {
     method: 'POST',
     headers: {
@@ -949,7 +1021,7 @@ export const createAdminRole = async ({
     signal,
   });
 
-  return readJson<{ role: AdminRolePayload }>(response);
+  return readJson<{ role: AdminRole }>(response);
 };
 
 export const updateAdminRole = async ({
@@ -957,7 +1029,7 @@ export const updateAdminRole = async ({
   license,
   signal,
   ...body
-}: AdminAuthOptions & AdminRolePayload & { roleId: string }): Promise<{ role: AdminRolePayload }> => {
+}: AdminAuthOptions & AdminRole & { roleId: string }): Promise<{ role: AdminRole }> => {
   const { roleId, ...payload } = body;
   const response = await fetch(joinUrl(`/v1/admin/roles/${roleId}`), {
     method: 'PUT',
@@ -969,7 +1041,7 @@ export const updateAdminRole = async ({
     signal,
   });
 
-  return readJson<{ role: AdminRolePayload }>(response);
+  return readJson<{ role: AdminRole }>(response);
 };
 
 export const deleteAdminRole = async ({
@@ -991,14 +1063,14 @@ export const listAdminUsers = async ({
   token,
   license,
   signal,
-}: AdminAuthOptions): Promise<{ users: AdminUserPayload[] }> => {
+}: AdminAuthOptions): Promise<{ users: AdminUser[] }> => {
   const response = await fetch(joinUrl('/v1/admin/users'), {
     method: 'GET',
     headers: buildAuthHeaders({ token, license }),
     signal,
   });
 
-  return readJson<{ users: AdminUserPayload[] }>(response);
+  return readJson<{ users: AdminUser[] }>(response);
 };
 
 export const createAdminUser = async ({
@@ -1006,7 +1078,7 @@ export const createAdminUser = async ({
   license,
   signal,
   ...body
-}: AdminAuthOptions & AdminUserPayload): Promise<{ user: AdminUserPayload }> => {
+}: AdminAuthOptions & AdminUserRequest): Promise<{ user: AdminUser; secret?: string }> => {
   const response = await fetch(joinUrl('/v1/admin/users'), {
     method: 'POST',
     headers: {
@@ -1017,7 +1089,7 @@ export const createAdminUser = async ({
     signal,
   });
 
-  return readJson<{ user: AdminUserPayload }>(response);
+  return readJson<{ user: AdminUser; secret?: string }>(response);
 };
 
 export const updateAdminUser = async ({
@@ -1025,7 +1097,7 @@ export const updateAdminUser = async ({
   license,
   signal,
   ...body
-}: AdminAuthOptions & AdminUserPayload & { userId: string }): Promise<{ user: AdminUserPayload }> => {
+}: AdminAuthOptions & AdminUserRequest & { userId: string }): Promise<{ user: AdminUser; secret?: string }> => {
   const { userId, ...payload } = body;
   const response = await fetch(joinUrl(`/v1/admin/users/${userId}`), {
     method: 'PUT',
@@ -1037,7 +1109,7 @@ export const updateAdminUser = async ({
     signal,
   });
 
-  return readJson<{ user: AdminUserPayload }>(response);
+  return readJson<{ user: AdminUser; secret?: string }>(response);
 };
 
 export const deleteAdminUser = async ({
