@@ -27,13 +27,42 @@ const normalizeToPosix = (value: string): string => value.replace(/\\/g, '/');
 
 const joinPosix = (...segments: string[]): string => normalizeToPosix(path.join(...segments));
 
-const canonicalizeManifest = (manifest: Manifest): Manifest => ({
-  files: [...manifest.files]
-    .map((file) => ({ path: file.path, sha256: file.sha256 }))
-    .sort((a, b) => a.path.localeCompare(b.path)),
-  createdAt: manifest.createdAt,
-  toolVersion: manifest.toolVersion,
-});
+export interface ManifestLedgerMetadata {
+  ledger?: {
+    root: string | null;
+    previousRoot?: string | null;
+  } | null;
+}
+
+export type LedgerAwareManifest = Manifest & ManifestLedgerMetadata;
+
+const canonicalizeManifest = (manifest: LedgerAwareManifest): LedgerAwareManifest => {
+  const ledgerMetadata = manifest.ledger
+    ? {
+        root: manifest.ledger.root ?? null,
+        previousRoot:
+          manifest.ledger.previousRoot === undefined
+            ? null
+            : manifest.ledger.previousRoot,
+      }
+    : manifest.ledger === null
+      ? null
+      : undefined;
+
+  const canonical: LedgerAwareManifest = {
+    files: [...manifest.files]
+      .map((file) => ({ path: file.path, sha256: file.sha256 }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    createdAt: manifest.createdAt,
+    toolVersion: manifest.toolVersion,
+  };
+
+  if (ledgerMetadata !== undefined) {
+    canonical.ledger = ledgerMetadata;
+  }
+
+  return canonical;
+};
 
 const hashFile = async (filePath: string): Promise<string> => {
   const hash = createHash('sha256');
@@ -104,15 +133,21 @@ const deriveEvidencePrefixes = (evidenceDirs: string[]): string[] => {
   });
 };
 
+export interface ManifestLedgerOptions {
+  root: string | null;
+  previousRoot?: string | null;
+}
+
 export interface ManifestBuildOptions {
   reportDir: string;
   evidenceDirs?: string[];
   toolVersion: string;
   now?: Date;
+  ledger?: ManifestLedgerOptions | null;
 }
 
 export interface ManifestBuildResult {
-  manifest: Manifest;
+  manifest: LedgerAwareManifest;
   files: FileForPackaging[];
 }
 
@@ -121,6 +156,7 @@ export const buildManifest = async ({
   evidenceDirs = [],
   toolVersion,
   now,
+  ledger,
 }: ManifestBuildOptions): Promise<ManifestBuildResult> => {
   const timestamp = now ?? new Date();
   const reportEntries = await collectDirectoryEntries(reportDir, 'reports');
@@ -148,6 +184,14 @@ export const buildManifest = async ({
     files: files.map((file) => ({ path: file.manifestPath, sha256: file.sha256 })),
     createdAt: timestamp.toISOString(),
     toolVersion,
+    ledger: ledger
+      ? {
+          root: ledger.root,
+          previousRoot: ledger.previousRoot ?? null,
+        }
+      : ledger === null
+        ? null
+        : undefined,
   });
 
   return { manifest, files };
@@ -208,10 +252,11 @@ export interface PackageCreationOptions {
   credentialsPath: string;
   now?: Date;
   packageName?: string;
+  ledger?: ManifestLedgerOptions | null;
 }
 
 export interface PackageCreationResult {
-  manifest: Manifest;
+  manifest: LedgerAwareManifest;
   signature: string;
   outputPath: string;
 }
@@ -224,6 +269,7 @@ export const createSoiDataPack = async ({
   credentialsPath,
   now,
   packageName,
+  ledger,
 }: PackageCreationOptions): Promise<PackageCreationResult> => {
   const timestamp = now ?? new Date();
   const resolvedReportDir = path.resolve(reportDir);
@@ -237,15 +283,41 @@ export const createSoiDataPack = async ({
     evidenceDirs: evidenceDirs.map((dir) => path.resolve(dir)),
     toolVersion,
     now: timestamp,
+    ledger,
   });
 
   const credentialsPem = await readFile(path.resolve(credentialsPath), 'utf8');
-  const bundle = signManifestBundle(manifest, { bundlePem: credentialsPem });
+  const ledgerForSigning =
+    ledger && ledger.root
+      ? {
+          root: ledger.root,
+          previousRoot: ledger.previousRoot ?? null,
+        }
+      : undefined;
+  const bundle = signManifestBundle(manifest, {
+    bundlePem: credentialsPem,
+    ledger: ledgerForSigning,
+  });
   const signature = bundle.signature;
-  const verification = verifyManifestSignatureDetailed(manifest, signature);
+  const verification = verifyManifestSignatureDetailed(manifest, signature, {
+    expectedLedgerRoot: ledger?.root ?? null,
+    expectedPreviousLedgerRoot: ledger?.previousRoot ?? null,
+    requireLedgerProof: Boolean(ledgerForSigning),
+  });
   if (!verification.valid) {
     const reason = verification.reason ?? 'bilinmeyen';
     throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
+  }
+
+  if (manifest.ledger) {
+    const manifestLedgerRoot = manifest.ledger.root ?? null;
+    const manifestPrevious = manifest.ledger.previousRoot ?? null;
+    if (verification.ledgerRoot !== manifestLedgerRoot) {
+      throw new Error('Manifest ledger kökü imza bağlamıyla eşleşmiyor.');
+    }
+    if (verification.previousLedgerRoot !== manifestPrevious) {
+      throw new Error('Manifest ledger önceki kökü imza bağlamıyla eşleşmiyor.');
+    }
   }
 
   const finalName = packageName ?? `soi-pack-${formatTimestamp(timestamp)}.zip`;

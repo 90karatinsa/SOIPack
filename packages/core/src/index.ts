@@ -10,6 +10,16 @@ export interface Requirement {
   tags: string[];
 }
 
+export const requirementStatuses = ['draft', 'approved', 'implemented', 'verified'] as const;
+
+export const requirementSchema: z.ZodType<Requirement> = z.object({
+  id: z.string().min(1, 'Requirement identifier is required.'),
+  title: z.string().min(1, 'Requirement title is required.'),
+  description: z.string().optional(),
+  status: z.enum(requirementStatuses),
+  tags: z.array(z.string()),
+});
+
 export interface TestCase {
   id: string;
   requirementId: string;
@@ -33,6 +43,7 @@ export const normalizeTag = (tag: string): string => tag.trim().toLowerCase();
 
 export * from './objectives';
 export * from './i18n';
+export * from './ledger';
 
 export const evidenceSources = [
   'jiraCsv',

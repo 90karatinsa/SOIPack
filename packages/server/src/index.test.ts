@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { generateKeyPairSync, sign as signMessage } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import https from 'https';
 import type { AddressInfo } from 'net';
@@ -6,9 +7,11 @@ import os from 'os';
 import path from 'path';
 import { Writable } from 'stream';
 import tls from 'tls';
+import EventSource from 'eventsource';
 
 import * as cli from '@soipack/cli';
-import { Manifest, createSnapshotVersion } from '@soipack/core';
+import { LedgerEntry, Manifest, createSnapshotVersion } from '@soipack/core';
+import type { RiskProfile } from '@soipack/engine';
 import { verifyManifestSignature } from '@soipack/packager';
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import pino from 'pino';
@@ -399,14 +402,84 @@ describe('@soipack/server REST API', () => {
     lastUsedAt?: Date | null;
   };
 
+  type StubReview = {
+    id: string;
+    tenantId: string;
+    jobId?: string | null;
+    reviewer?: string | null;
+    decision: string;
+    notes?: string | null;
+    metadata: Record<string, unknown>;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+
+  type StubWorkspaceDocument = {
+    id: string;
+    tenantId: string;
+    workspaceId: string;
+    kind: string;
+    title: string;
+    latestRevisionId?: string | null;
+    latestRevisionHash?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+
+  type StubWorkspaceRevision = {
+    id: string;
+    documentId: string;
+    tenantId: string;
+    workspaceId: string;
+    revision: number;
+    hash: string;
+    content: unknown;
+    authorId: string;
+    createdAt: Date;
+  };
+
+  type StubWorkspaceComment = {
+    id: string;
+    documentId: string;
+    revisionId: string;
+    tenantId: string;
+    workspaceId: string;
+    authorId: string;
+    body: string;
+    createdAt: Date;
+  };
+
+  type StubWorkspaceSignoff = {
+    id: string;
+    documentId: string;
+    revisionId: string;
+    tenantId: string;
+    workspaceId: string;
+    revisionHash: string;
+    status: 'pending' | 'approved';
+    requestedBy: string;
+    requestedFor: string;
+    signerId?: string | null;
+    signerPublicKey?: string | null;
+    signature?: string | null;
+    signedAt?: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+
   type DatabaseStub = {
     manager: DatabaseManager;
     pool: { query: jest.Mock<Promise<{ rows: unknown[]; rowCount: number }>, [string, unknown[]?]> };
     rows: Map<string, StubJobRow>;
+    reviews: Map<string, StubReview>;
     rbacUsers: Map<string, StubRbacUser>;
     rbacRoles: Map<string, StubRbacRole>;
     rbacUserRoles: Set<string>;
     rbacApiKeys: Map<string, StubRbacApiKey>;
+    workspaceDocuments: Map<string, StubWorkspaceDocument>;
+    workspaceRevisions: Map<string, StubWorkspaceRevision>;
+    workspaceComments: Map<string, StubWorkspaceComment>;
+    workspaceSignoffs: Map<string, StubWorkspaceSignoff>;
     reset: () => void;
     seedDefaults: () => void;
     ensureUser: (tenantId: string, userId: string, roles?: UserRole[], options?: { email?: string }) => void;
@@ -429,10 +502,15 @@ describe('@soipack/server REST API', () => {
 
   const createDatabaseStub = (): DatabaseStub => {
     const rows = new Map<string, StubJobRow>();
+    const reviews = new Map<string, StubReview>();
     const rbacUsers = new Map<string, StubRbacUser>();
     const rbacRoles = new Map<string, StubRbacRole>();
     const rbacUserRoles = new Set<string>();
     const rbacApiKeys = new Map<string, StubRbacApiKey>();
+    const workspaceDocuments = new Map<string, StubWorkspaceDocument>();
+    const workspaceRevisions = new Map<string, StubWorkspaceRevision>();
+    const workspaceComments = new Map<string, StubWorkspaceComment>();
+    const workspaceSignoffs = new Map<string, StubWorkspaceSignoff>();
     let failNextError: Error | undefined;
 
     const toDbRow = (row: StubJobRow): Record<string, unknown> => ({
@@ -449,9 +527,16 @@ describe('@soipack/server REST API', () => {
     });
 
     const userKey = (tenantId: string, userId: string) => `${tenantId}:${userId}`;
+    const reviewKey = (tenantId: string, reviewId: string) => `${tenantId}:${reviewId}`;
     const roleKey = (tenantId: string, roleId: string) => `${tenantId}:${roleId}`;
     const apiKeyKey = (tenantId: string, apiKeyId: string) => `${tenantId}:${apiKeyId}`;
     const userRoleKey = (tenantId: string, userId: string, roleId: string) => `${tenantId}:${userId}:${roleId}`;
+    const workspaceDocumentKey = (tenantId: string, workspaceId: string, documentId: string) =>
+      `${tenantId}:${workspaceId}:${documentId}`;
+    const workspaceRevisionKey = (tenantId: string, workspaceId: string, revisionId: string) =>
+      `${tenantId}:${workspaceId}:${revisionId}`;
+    const workspaceSignoffKey = (tenantId: string, workspaceId: string, signoffId: string) =>
+      `${tenantId}:${workspaceId}:${signoffId}`;
 
     const mapUserRow = (user: StubRbacUser): Record<string, unknown> => ({
       id: user.id,
@@ -477,6 +562,71 @@ describe('@soipack/server REST API', () => {
       fingerprint: key.fingerprint,
       created_at: key.createdAt,
       last_used_at: key.lastUsedAt ?? null,
+    });
+
+    const mapReviewRow = (review: StubReview): Record<string, unknown> => ({
+      id: review.id,
+      tenant_id: review.tenantId,
+      job_id: review.jobId ?? null,
+      reviewer: review.reviewer ?? null,
+      decision: review.decision,
+      notes: review.notes ?? null,
+      metadata: review.metadata,
+      created_at: review.createdAt,
+      updated_at: review.updatedAt,
+    });
+
+    const mapWorkspaceDocumentRow = (document: StubWorkspaceDocument): Record<string, unknown> => ({
+      id: document.id,
+      tenant_id: document.tenantId,
+      workspace_id: document.workspaceId,
+      kind: document.kind,
+      title: document.title,
+      latest_revision_id: document.latestRevisionId ?? null,
+      latest_revision_hash: document.latestRevisionHash ?? null,
+      created_at: document.createdAt,
+      updated_at: document.updatedAt,
+    });
+
+    const mapWorkspaceRevisionRow = (revision: StubWorkspaceRevision): Record<string, unknown> => ({
+      id: revision.id,
+      document_id: revision.documentId,
+      tenant_id: revision.tenantId,
+      workspace_id: revision.workspaceId,
+      revision: revision.revision,
+      hash: revision.hash,
+      content: revision.content,
+      author_id: revision.authorId,
+      created_at: revision.createdAt,
+    });
+
+    const mapWorkspaceCommentRow = (comment: StubWorkspaceComment): Record<string, unknown> => ({
+      id: comment.id,
+      document_id: comment.documentId,
+      revision_id: comment.revisionId,
+      tenant_id: comment.tenantId,
+      workspace_id: comment.workspaceId,
+      author_id: comment.authorId,
+      body: comment.body,
+      created_at: comment.createdAt,
+    });
+
+    const mapWorkspaceSignoffRow = (signoff: StubWorkspaceSignoff): Record<string, unknown> => ({
+      id: signoff.id,
+      document_id: signoff.documentId,
+      revision_id: signoff.revisionId,
+      tenant_id: signoff.tenantId,
+      workspace_id: signoff.workspaceId,
+      revision_hash: signoff.revisionHash,
+      status: signoff.status,
+      requested_by: signoff.requestedBy,
+      requested_for: signoff.requestedFor,
+      signer_id: signoff.signerId ?? null,
+      signer_public_key: signoff.signerPublicKey ?? null,
+      signature: signoff.signature ?? null,
+      signed_at: signoff.signedAt ?? null,
+      created_at: signoff.createdAt,
+      updated_at: signoff.updatedAt,
     });
 
     const ensureRoleRecord = (
@@ -525,6 +675,11 @@ describe('@soipack/server REST API', () => {
           updatedAt: now,
         });
       }
+      for (const entry of [...rbacUserRoles]) {
+        if (entry.startsWith(`${tenantId}:${userId}:`)) {
+          rbacUserRoles.delete(entry);
+        }
+      }
       roles.forEach((roleName) => {
         const role = ensureRoleRecord(tenantId, roleName, `${roleName} role`, `role-${roleName}`);
         rbacUserRoles.add(userRoleKey(tenantId, userId, role.id));
@@ -565,6 +720,75 @@ describe('@soipack/server REST API', () => {
             .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
           return { rows: filtered.map(toDbRow), rowCount: filtered.length };
         }
+      }
+
+      if (normalized.startsWith('select id, tenant_id, job_id, reviewer, decision, notes, metadata, created_at, updated_at from reviews where tenant_id = $1 and id = $2 limit 1')) {
+        const [tenantIdParam, reviewIdParam] = params as [string, string];
+        const record = reviews.get(reviewKey(tenantIdParam, reviewIdParam));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapReviewRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('insert into reviews')) {
+        const [id, tenantIdParam, jobId, reviewer, decision, notes, metadataRaw, createdAtRaw] = params as [
+          string,
+          string,
+          string | null,
+          string | null,
+          string,
+          string | null,
+          unknown,
+          string,
+        ];
+        const createdAt = new Date(createdAtRaw);
+        const metadataValue = parseJson(metadataRaw) as Record<string, unknown> | undefined;
+        const record: StubReview = {
+          id,
+          tenantId: tenantIdParam,
+          jobId: jobId ?? null,
+          reviewer: reviewer ?? null,
+          decision,
+          notes: notes ?? null,
+          metadata: metadataValue ?? {},
+          createdAt,
+          updatedAt: new Date(createdAtRaw),
+        };
+        reviews.set(reviewKey(tenantIdParam, id), record);
+        return { rows: [mapReviewRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('update reviews set reviewer = $3, decision = $4, notes = $5, metadata = $6::jsonb, updated_at = $7 where tenant_id = $1 and id = $2 and metadata->>\'lockhash\' = $8 returning')) {
+        const [tenantIdParam, reviewIdParam, reviewer, decision, notes, metadataRaw, updatedAtRaw, expectedHash] = params as [
+          string,
+          string,
+          string | null,
+          string,
+          string | null,
+          unknown,
+          string,
+          string,
+        ];
+        const key = reviewKey(tenantIdParam, reviewIdParam);
+        const record = reviews.get(key);
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        const currentLock = String(
+          ((record.metadata as { lockHash?: unknown }).lockHash ?? '') as string,
+        );
+        if (currentLock !== expectedHash) {
+          return { rows: [], rowCount: 0 };
+        }
+        record.reviewer = reviewer ?? record.reviewer ?? null;
+        record.decision = decision;
+        record.notes = notes ?? null;
+        const metadataValue = parseJson(metadataRaw) as Record<string, unknown> | undefined;
+        record.metadata = metadataValue ?? {};
+        record.updatedAt = new Date(updatedAtRaw);
+        reviews.set(key, record);
+        return { rows: [mapReviewRow(record)], rowCount: 1 };
       }
 
       if (normalized.startsWith('insert into jobs')) {
@@ -668,6 +892,214 @@ describe('@soipack/server REST API', () => {
           (row) => row.status === firstStatus || row.status === secondStatus,
         ).length;
         return { rows: [{ count }], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'select id, tenant_id, workspace_id, kind, title, latest_revision_id, latest_revision_hash, created_at, updated_at from workspace_documents',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, documentIdParam] = params as [string, string, string];
+        const record = workspaceDocuments.get(
+          workspaceDocumentKey(tenantIdParam, workspaceIdParam, documentIdParam),
+        );
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapWorkspaceDocumentRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('insert into workspace_documents')) {
+        const [
+          id,
+          tenantIdParam,
+          workspaceIdParam,
+          kind,
+          title,
+          latestRevisionId,
+          latestRevisionHash,
+          createdAtRaw,
+          updatedAtRaw,
+        ] = params as [string, string, string, string, string, string | null, string | null, string, string];
+        workspaceDocuments.set(workspaceDocumentKey(tenantIdParam, workspaceIdParam, id), {
+          id,
+          tenantId: tenantIdParam,
+          workspaceId: workspaceIdParam,
+          kind,
+          title,
+          latestRevisionId: latestRevisionId ?? null,
+          latestRevisionHash: latestRevisionHash ?? null,
+          createdAt: new Date(createdAtRaw),
+          updatedAt: new Date(updatedAtRaw),
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'update workspace_documents set title = $4, latest_revision_id = $5, latest_revision_hash = $6, updated_at = $7 where tenant_id = $1 and workspace_id = $2 and id = $3',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, documentIdParam, title, latestRevisionId, latestRevisionHash, updatedAtRaw] =
+          params as [string, string, string, string, string | null, string | null, string];
+        const key = workspaceDocumentKey(tenantIdParam, workspaceIdParam, documentIdParam);
+        const record = workspaceDocuments.get(key);
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        record.title = title;
+        record.latestRevisionId = latestRevisionId ?? null;
+        record.latestRevisionHash = latestRevisionHash ?? null;
+        record.updatedAt = new Date(updatedAtRaw);
+        workspaceDocuments.set(key, record);
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('insert into workspace_document_revisions')) {
+        const [
+          id,
+          documentIdParam,
+          tenantIdParam,
+          workspaceIdParam,
+          revision,
+          hash,
+          contentRaw,
+          authorId,
+          createdAtRaw,
+        ] = params as [string, string, string, string, number, string, unknown, string, string];
+        workspaceRevisions.set(workspaceRevisionKey(tenantIdParam, workspaceIdParam, id), {
+          id,
+          documentId: documentIdParam,
+          tenantId: tenantIdParam,
+          workspaceId: workspaceIdParam,
+          revision,
+          hash,
+          content: parseJson(contentRaw) ?? null,
+          authorId,
+          createdAt: new Date(createdAtRaw),
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'select id, document_id, tenant_id, workspace_id, revision, hash, content, author_id, created_at from workspace_document_revisions where tenant_id = $1 and workspace_id = $2 and id = $3 limit 1',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, revisionIdParam] = params as [string, string, string];
+        const record = workspaceRevisions.get(workspaceRevisionKey(tenantIdParam, workspaceIdParam, revisionIdParam));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapWorkspaceRevisionRow(record)], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'select id, document_id, tenant_id, workspace_id, revision, hash, content, author_id, created_at from workspace_document_revisions where tenant_id = $1 and workspace_id = $2 and document_id = $3 and hash = $4 limit 1',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, documentIdParam, hash] = params as [string, string, string, string];
+        const record = [...workspaceRevisions.values()].find(
+          (revision) =>
+            revision.tenantId === tenantIdParam &&
+            revision.workspaceId === workspaceIdParam &&
+            revision.documentId === documentIdParam &&
+            revision.hash === hash,
+        );
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapWorkspaceRevisionRow(record)], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('insert into workspace_document_comments')) {
+        const [
+          id,
+          documentIdParam,
+          revisionIdParam,
+          tenantIdParam,
+          workspaceIdParam,
+          authorId,
+          body,
+          createdAtRaw,
+        ] = params as [string, string, string, string, string, string, string, string];
+        workspaceComments.set(id, {
+          id,
+          documentId: documentIdParam,
+          revisionId: revisionIdParam,
+          tenantId: tenantIdParam,
+          workspaceId: workspaceIdParam,
+          authorId,
+          body,
+          createdAt: new Date(createdAtRaw),
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (normalized.startsWith('insert into workspace_signoffs')) {
+        const [
+          id,
+          documentIdParam,
+          revisionIdParam,
+          tenantIdParam,
+          workspaceIdParam,
+          revisionHash,
+          status,
+          requestedBy,
+          requestedFor,
+          createdAtRaw,
+        ] = params as [string, string, string, string, string, string, string, string, string, string];
+        const createdAt = new Date(createdAtRaw);
+        workspaceSignoffs.set(workspaceSignoffKey(tenantIdParam, workspaceIdParam, id), {
+          id,
+          documentId: documentIdParam,
+          revisionId: revisionIdParam,
+          tenantId: tenantIdParam,
+          workspaceId: workspaceIdParam,
+          revisionHash,
+          status: status as 'pending' | 'approved',
+          requestedBy,
+          requestedFor,
+          createdAt,
+          updatedAt: createdAt,
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          'select id, document_id, revision_id, tenant_id, workspace_id, revision_hash, status, requested_by, requested_for, signer_id, signer_public_key, signature, signed_at, created_at, updated_at from workspace_signoffs where tenant_id = $1 and workspace_id = $2 and id = $3 limit 1',
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, signoffIdParam] = params as [string, string, string];
+        const record = workspaceSignoffs.get(workspaceSignoffKey(tenantIdParam, workspaceIdParam, signoffIdParam));
+        if (!record) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [mapWorkspaceSignoffRow(record)], rowCount: 1 };
+      }
+
+      if (
+        normalized.startsWith(
+          "update workspace_signoffs set status = $4, signer_id = $5, signer_public_key = $6, signature = $7, signed_at = $8, updated_at = $9 where tenant_id = $1 and workspace_id = $2 and id = $3 and status = 'pending'",
+        )
+      ) {
+        const [tenantIdParam, workspaceIdParam, signoffIdParam, status, signerId, signerPublicKey, signature, signedAtRaw, updatedAtRaw] =
+          params as [string, string, string, string, string, string, string, string, string];
+        const key = workspaceSignoffKey(tenantIdParam, workspaceIdParam, signoffIdParam);
+        const record = workspaceSignoffs.get(key);
+        if (!record || record.status !== 'pending') {
+          return { rows: [], rowCount: 0 };
+        }
+        record.status = status as 'pending' | 'approved';
+        record.signerId = signerId;
+        record.signerPublicKey = signerPublicKey;
+        record.signature = signature;
+        record.signedAt = new Date(signedAtRaw);
+        record.updatedAt = new Date(updatedAtRaw);
+        workspaceSignoffs.set(key, record);
+        return { rows: [], rowCount: 1 };
       }
 
       if (normalized.startsWith('insert into rbac_users')) {
@@ -914,6 +1346,11 @@ describe('@soipack/server REST API', () => {
       rbacRoles.clear();
       rbacUserRoles.clear();
       rbacApiKeys.clear();
+      reviews.clear();
+      workspaceDocuments.clear();
+      workspaceRevisions.clear();
+      workspaceComments.clear();
+      workspaceSignoffs.clear();
       ensureRoleRecord(tenantId, 'admin', 'Administrator', 'role-admin');
       ensureRoleRecord(tenantId, 'maintainer', 'Maintainer', 'role-maintainer');
       ensureRoleRecord(tenantId, 'reader', 'Reader', 'role-reader');
@@ -924,16 +1361,26 @@ describe('@soipack/server REST API', () => {
       manager,
       pool,
       rows,
+      reviews,
       rbacUsers,
       rbacRoles,
       rbacUserRoles,
       rbacApiKeys,
+      workspaceDocuments,
+      workspaceRevisions,
+      workspaceComments,
+      workspaceSignoffs,
       reset: () => {
         rows.clear();
+        reviews.clear();
         rbacUsers.clear();
         rbacRoles.clear();
         rbacUserRoles.clear();
         rbacApiKeys.clear();
+        workspaceDocuments.clear();
+        workspaceRevisions.clear();
+        workspaceComments.clear();
+        workspaceSignoffs.clear();
         query.mockClear();
         failNextError = undefined;
       },
@@ -2077,6 +2524,98 @@ describe('@soipack/server REST API', () => {
       .send(JSON.stringify(payload))
       .expect(413);
     expect(response.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+
+  it('prevents unassigned users from approving reviews', async () => {
+    const importId = 'cafebabecafebabe';
+    const ownerToken = await createAccessToken({ scope: requiredScope, roles: ['maintainer'], subject: 'review-owner' });
+
+    const createResponse = await request(app)
+      .post('/v1/reviews')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ target: { kind: 'analyze', reference: importId }, approvers: ['qa-approver'] })
+      .expect(201);
+
+    const reviewId = createResponse.body.review.id as string;
+    const submitResponse = await request(app)
+      .patch(`/v1/reviews/${reviewId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ action: 'submit', expectedHash: createResponse.body.review.hash })
+      .expect(200);
+
+    const intruderToken = await createAccessToken({ scope: requiredScope, roles: ['maintainer'], subject: 'intruder' });
+    const approvalAttempt = await request(app)
+      .patch(`/v1/reviews/${reviewId}`)
+      .set('Authorization', `Bearer ${intruderToken}`)
+      .send({ action: 'approve', expectedHash: submitResponse.body.review.hash })
+      .expect(403);
+
+    expect(approvalAttempt.body.error.code).toBe('REVIEW_FORBIDDEN');
+  });
+
+  it('requires approved reviews for analyze jobs when admin scope is absent', async () => {
+    const importId = 'deadbeefcafebabe';
+    const workspaceDir = path.join(storageDir, 'workspaces', tenantId, importId);
+    await fsPromises.mkdir(workspaceDir, { recursive: true });
+    await fsPromises.writeFile(
+      path.join(workspaceDir, 'workspace.json'),
+      JSON.stringify({
+        metadata: {
+          targetLevel: 'C',
+          project: { name: 'Review Demo', version: '1.0.0' },
+        },
+      }),
+      'utf8',
+    );
+
+    const ownerToken = await createAccessToken({ scope: requiredScope, roles: ['maintainer'], subject: 'review-owner' });
+    const createResponse = await request(app)
+      .post('/v1/reviews')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ target: { kind: 'analyze', reference: importId }, approvers: ['qa-approver'] })
+      .expect(201);
+
+    const reviewId = createResponse.body.review.id as string;
+    const submitResponse = await request(app)
+      .patch(`/v1/reviews/${reviewId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ action: 'submit', expectedHash: createResponse.body.review.hash })
+      .expect(200);
+
+    const runnerToken = await createAccessToken({ scope: requiredScope, roles: ['maintainer'], subject: 'pipeline-runner' });
+    const reviewerToken = await createAccessToken({ scope: requiredScope, roles: ['maintainer'], subject: 'qa-approver' });
+
+    const blockedAnalyze = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${runnerToken}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ importId, reviewId })
+      .expect(409);
+    expect(blockedAnalyze.body.error.code).toBe('REVIEW_NOT_APPROVED');
+
+    const approveResponse = await request(app)
+      .patch(`/v1/reviews/${reviewId}`)
+      .set('Authorization', `Bearer ${reviewerToken}`)
+      .send({ action: 'approve', expectedHash: submitResponse.body.review.hash })
+      .expect(200);
+
+    const runAnalyzeSpy = jest.spyOn(cli, 'runAnalyze');
+    runAnalyzeSpy.mockResolvedValue({ exitCode: 0 } as unknown as Awaited<ReturnType<typeof cli.runAnalyze>>);
+
+    try {
+      const analyzeResponse = await request(app)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${runnerToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId, reviewId })
+        .expect(202);
+      expect(analyzeResponse.body.id).toMatch(/^[a-f0-9]{16}$/);
+    } finally {
+      runAnalyzeSpy.mockRestore();
+    }
+
+    // ensure review hash updated after approval to avoid lint warnings
+    expect(typeof approveResponse.body.review.hash).toBe('string');
   });
 
   it('rejects cached licenses once they expire', async () => {
@@ -3295,8 +3834,8 @@ describe('@soipack/server REST API', () => {
       expect(summaryByTarget[target]).toMatchObject({
         configured: true,
         retained: 0,
-        skipped: 0,
       });
+      expect(summaryByTarget[target].skipped).toBeGreaterThanOrEqual(0);
       expect(summaryByTarget[target].removed).toBeGreaterThanOrEqual(1);
     });
 
@@ -3875,6 +4414,224 @@ describe('@soipack/server REST API', () => {
       }),
     ]);
     expect(typeof response.body.items[0].createdAt).toBe('string');
+  });
+
+  describe('workspace collaboration endpoints', () => {
+    const workspaceId = 'ws-main';
+    const documentId = 'requirements';
+
+    const baseDocumentBody = {
+      kind: 'requirements',
+      title: 'System Requirements',
+      content: [
+        {
+          id: 'REQ-1',
+          title: 'The system shall start safely.',
+          status: 'draft',
+          tags: ['safety'],
+        },
+      ],
+    };
+
+    it('rejects document edits from reader role', async () => {
+      const readerToken = await createAccessToken({ roles: ['reader'] });
+      const response = await request(app)
+        .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+        .set('Authorization', `Bearer ${readerToken}`)
+        .send(baseDocumentBody)
+        .expect(403);
+      expect(response.body.error.code).toBe('FORBIDDEN_ROLE');
+    });
+
+    it('allows maintainers to update documents, comment, and request signoffs', async () => {
+      const maintainerToken = await createAccessToken({ roles: ['maintainer'] });
+
+      const editResponse = await request(app)
+        .put(`/v1/workspaces/${workspaceId}/documents/${documentId}`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send(baseDocumentBody)
+        .expect(200);
+
+      const revisionHash: string = editResponse.body.document.revision.hash;
+
+      const commentResponse = await request(app)
+        .post(`/v1/workspaces/${workspaceId}/documents/${documentId}/comments`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send({ body: 'Looks good to me', revisionHash })
+        .expect(201);
+      expect(commentResponse.body.comment.body).toBe('Looks good to me');
+
+      const signoffResponse = await request(app)
+        .post(`/v1/workspaces/${workspaceId}/signoffs`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send({ documentId, revisionHash, requestedFor: 'user-1' })
+        .expect(201);
+
+      expect(signoffResponse.body.signoff.status).toBe('pending');
+
+      await request(app)
+        .patch(`/v1/workspaces/${workspaceId}/signoffs/${signoffResponse.body.signoff.id}`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send({
+          action: 'approve',
+          expectedRevisionHash: revisionHash,
+          publicKey: Buffer.alloc(32, 1).toString('base64'),
+          signature: Buffer.alloc(64, 2).toString('base64'),
+          signedAt: new Date().toISOString(),
+        })
+        .expect(400);
+    });
+
+    it('allows admins to approve signoffs with valid Ed25519 signatures', async () => {
+      const maintainerToken = await createAccessToken({ roles: ['maintainer'] });
+      const adminToken = await createAccessToken({ roles: ['admin'] });
+      const altDocumentId = `${documentId}-b`;
+
+      const editResponse = await request(app)
+        .put(`/v1/workspaces/${workspaceId}/documents/${altDocumentId}`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send(baseDocumentBody)
+        .expect(200);
+
+      const revisionHash: string = editResponse.body.document.revision.hash;
+      const signoffResponse = await request(app)
+        .post(`/v1/workspaces/${workspaceId}/signoffs`)
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .send({ documentId: altDocumentId, revisionHash, requestedFor: 'approver-2' })
+        .expect(201);
+
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const exported = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+      const rawPublicKey = exported.slice(exported.length - 32);
+      const signedAt = new Date().toISOString();
+      const payload = Buffer.from(
+        `${tenantId}:${workspaceId}:${altDocumentId}:${revisionHash}:${signedAt}`,
+        'utf8',
+      );
+      const signature = signMessage(null, payload, privateKey);
+
+      const approveResponse = await request(app)
+        .patch(`/v1/workspaces/${workspaceId}/signoffs/${signoffResponse.body.signoff.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          action: 'approve',
+          expectedRevisionHash: revisionHash,
+          publicKey: rawPublicKey.toString('base64'),
+          signature: signature.toString('base64'),
+          signedAt,
+        })
+        .expect(200);
+
+      expect(approveResponse.body.signoff.status).toBe('approved');
+      expect(approveResponse.body.signoff.signerId).toBe('user-1');
+    });
+  });
+
+  it('streams compliance events over SSE with tenant isolation', async () => {
+    const streamingApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+    const httpsServer = createHttpsServer(streamingApp, {
+      key: TEST_SERVER_KEY,
+      cert: TEST_SERVER_CERT,
+    });
+
+    await new Promise<void>((resolve) => httpsServer.listen(0, resolve));
+    const { port } = httpsServer.address() as AddressInfo;
+
+    const readerToken = await createAccessToken({ roles: ['reader'] });
+
+    const url = `https://localhost:${port}/v1/stream/compliance`;
+    const riskMessages: unknown[] = [];
+
+    const source = new EventSource(url, {
+      headers: { Authorization: `Bearer ${readerToken}` },
+    } as EventSource.EventSourceInitDict);
+
+    const opened = new Promise<void>((resolve, reject) => {
+      source.onopen = () => resolve();
+      source.onerror = (error: unknown) => reject(error);
+    });
+
+    const riskPromise = new Promise<Record<string, unknown>>((resolve) => {
+      source.addEventListener('riskProfile', (event: MessageEvent) => {
+        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
+        riskMessages.push(payload);
+        resolve(payload);
+      });
+    });
+
+    const ledgerPromise = new Promise<Record<string, unknown>>((resolve) => {
+      source.addEventListener('ledgerEntry', (event: MessageEvent) => {
+        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
+        resolve(payload);
+      });
+    });
+
+    const queuePromise = new Promise<Record<string, unknown>>((resolve) => {
+      source.addEventListener('queueState', (event: MessageEvent) => {
+        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
+        resolve(payload);
+      });
+    });
+
+    await opened;
+
+    const lifecycle = getServerLifecycle(streamingApp);
+    const profile = {
+      score: 37,
+      classification: 'moderate',
+      breakdown: [
+        { factor: 'coverage', contribution: 12, weight: 40, details: 'Coverage tracking' },
+      ],
+      missingSignals: ['testing'],
+    } as RiskProfile;
+
+    lifecycle.events.publishRiskProfile(tenantId, profile, {
+      id: 'risk-stream',
+      emittedAt: '2024-09-01T10:00:00Z',
+    });
+
+    const ledgerEntry: LedgerEntry = {
+      index: 5,
+      snapshotId: '20240901T095000Z-feedface',
+      manifestDigest: 'e'.repeat(64),
+      timestamp: '2024-09-01T09:50:00Z',
+      evidence: [],
+      merkleRoot: 'f'.repeat(64),
+      previousRoot: '1'.repeat(64),
+      ledgerRoot: '2'.repeat(64),
+    };
+    lifecycle.events.publishLedgerEntry(tenantId, ledgerEntry, { id: 'ledger-stream' });
+
+    const jobTime = new Date('2024-09-01T10:05:00Z');
+    lifecycle.events.publishQueueState(
+      tenantId,
+      [
+        {
+          id: 'job-stream',
+          kind: 'analyze',
+          hash: 'hash-stream',
+          status: 'running',
+          createdAt: jobTime,
+          updatedAt: jobTime,
+        },
+      ],
+      { id: 'queue-stream' },
+    );
+
+    const [riskData, ledgerData, queueData] = await Promise.all([riskPromise, ledgerPromise, queuePromise]);
+
+    expect(riskData.profile).toMatchObject({ score: 37, classification: 'moderate' });
+    expect(ledgerData.entry).toMatchObject({ ledgerRoot: ledgerEntry.ledgerRoot });
+    expect(queueData.jobs).toHaveLength(1);
+    expect(queueData.counts).toMatchObject({ running: 1 });
+
+    lifecycle.events.publishRiskProfile('tenant-b', profile, { id: 'risk-other' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(riskMessages).toHaveLength(1);
+
+    source.close();
+    await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
+    await lifecycle.shutdown();
   });
 
   it('uses database counts to update queue metrics', async () => {

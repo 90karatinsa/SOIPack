@@ -9,6 +9,134 @@ import {
   type PackJobResult,
 } from '../types/pipeline';
 
+export interface AuditLogEntry {
+  id: string;
+  tenantId: string;
+  actor: string;
+  action: string;
+  target?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface AuditLogListResponse {
+  items: AuditLogEntry[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+export type ReviewStatus = 'draft' | 'pending' | 'approved' | 'rejected';
+
+export interface ReviewTarget {
+  kind: 'analyze' | 'report' | 'pack';
+  reference: string | null;
+}
+
+export interface ReviewApprover {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected';
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  note?: string | null;
+}
+
+export interface ReviewArtifact {
+  id?: string;
+  label: string;
+  description?: string | null;
+  provided?: boolean;
+  providedBy?: string | null;
+  providedAt?: string | null;
+}
+
+export interface ReviewChangeRequest {
+  id: string;
+  authorId: string;
+  reason: string;
+  createdAt: string;
+}
+
+export interface ReviewResource {
+  id: string;
+  tenantId: string;
+  status: ReviewStatus;
+  target: ReviewTarget;
+  approvers: ReviewApprover[];
+  requiredArtifacts: ReviewArtifact[];
+  changeRequests: ReviewChangeRequest[];
+  hash: string;
+  notes?: string | null;
+  reviewer?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewListResponse {
+  reviews: ReviewResource[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+export interface WorkspaceRevision<TContent = unknown> {
+  id: string;
+  number: number;
+  hash: string;
+  authorId: string;
+  createdAt: string;
+  content: TContent;
+}
+
+export interface WorkspaceDocument<TContent = unknown> {
+  id: string;
+  tenantId: string;
+  workspaceId: string;
+  kind: 'requirements' | 'traceLinks' | 'evidence';
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: WorkspaceRevision<TContent>;
+}
+
+export interface WorkspaceComment {
+  id: string;
+  documentId: string;
+  revisionId: string;
+  tenantId: string;
+  workspaceId: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface WorkspaceSignoff {
+  id: string;
+  documentId: string;
+  revisionId: string;
+  tenantId: string;
+  workspaceId: string;
+  revisionHash: string;
+  status: 'pending' | 'approved' | 'rejected';
+  requestedBy: string;
+  requestedFor: string;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt?: string | null;
+  rejectedAt?: string | null;
+}
+
+export interface QueueJobSummary {
+  id: string;
+  kind: 'import' | 'analyze' | 'report' | 'pack';
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  hash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QueueMetricsResponse {
+  jobs: QueueJobSummary[];
+}
+
 type ImportMetaEnv = Record<string, string>;
 
 const IMPORT_META_ENV_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
@@ -47,6 +175,15 @@ const resolveBaseUrl = (): string => {
 
 const API_BASE_URL = resolveBaseUrl();
 
+export const getApiBaseUrl = (): string => API_BASE_URL;
+
+export const resolveApiUrl = (path: string): string => {
+  if (!API_BASE_URL) {
+    return path;
+  }
+  return `${API_BASE_URL}${path}`;
+};
+
 export const __test__ = {
   resolveBaseUrl,
   getConfiguredBaseUrl: (): string => API_BASE_URL,
@@ -54,11 +191,29 @@ export const __test__ = {
   getImportMetaEnv,
 };
 
-const joinUrl = (path: string): string => {
-  if (!API_BASE_URL) {
-    return path;
+const joinUrl = (path: string): string => resolveApiUrl(path);
+
+const buildQueryString = (params: Record<string, unknown> | undefined): string => {
+  if (!params) {
+    return '';
   }
-  return `${API_BASE_URL}${path}`;
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null) {
+          searchParams.append(key, String(item));
+        }
+      });
+      continue;
+    }
+    searchParams.append(key, String(value));
+  }
+  const query = searchParams.toString();
+  return query ? `?${query}` : '';
 };
 
 export class ApiError extends Error {
@@ -486,6 +641,501 @@ export const fetchPackageManifest = async ({
 
   await ensureOk(response);
   return response;
+};
+
+interface ListAuditLogsOptions extends AuthCredentials {
+  tenantId?: string;
+  actor?: string;
+  action?: string;
+  target?: string;
+  since?: string;
+  until?: string;
+  order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+}
+
+export const listAuditLogs = async ({
+  token,
+  license,
+  signal,
+  ...query
+}: ListAuditLogsOptions): Promise<AuditLogListResponse> => {
+  const response = await fetch(joinUrl(`/api/audit-logs${buildQueryString(query)}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<AuditLogListResponse>(response);
+};
+
+interface CreateReviewOptions extends AuthCredentials {
+  target: ReviewTarget;
+  approvers?: string[];
+  requiredArtifacts?: Array<{ id?: string; label: string; description?: string | null }>;
+  notes?: string | null;
+  signal?: AbortSignal;
+}
+
+export const createReview = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: CreateReviewOptions): Promise<{ review: ReviewResource }> => {
+  const response = await fetch(joinUrl('/v1/reviews'), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ review: ReviewResource }>(response);
+};
+
+interface UpdateReviewOptions extends AuthCredentials {
+  id: string;
+  action: 'configure' | 'submit' | 'approve' | 'reject';
+  expectedHash: string;
+  target?: ReviewTarget;
+  approvers?: string[];
+  requiredArtifacts?: Array<{ id?: string; label: string; description?: string | null }>;
+  notes?: string | null;
+  note?: string | null;
+  reason?: string | null;
+  signal?: AbortSignal;
+}
+
+export const updateReview = async ({
+  token,
+  license,
+  id,
+  signal,
+  ...body
+}: UpdateReviewOptions): Promise<{ review: ReviewResource }> => {
+  const response = await fetch(joinUrl(`/v1/reviews/${id}`), {
+    method: 'PATCH',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ review: ReviewResource }>(response);
+};
+
+interface ListReviewsOptions extends AuthCredentials {
+  status?: ReviewStatus | ReviewStatus[];
+  reviewer?: string;
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+}
+
+export const listReviews = async ({
+  token,
+  license,
+  signal,
+  ...query
+}: ListReviewsOptions): Promise<ReviewListResponse> => {
+  const response = await fetch(joinUrl(`/v1/reviews${buildQueryString(query)}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<ReviewListResponse>(response);
+};
+
+interface WorkspaceDocumentPayload<TContent = unknown> extends AuthCredentials {
+  workspaceId: string;
+  documentId: string;
+  expectedHash: string;
+  content: TContent;
+  title?: string;
+  signal?: AbortSignal;
+}
+
+export const updateWorkspaceDocument = async <TContent>({
+  token,
+  license,
+  workspaceId,
+  documentId,
+  signal,
+  ...body
+}: WorkspaceDocumentPayload<TContent>): Promise<{ document: WorkspaceDocument<TContent> }> => {
+  const response = await fetch(joinUrl(`/v1/workspaces/${workspaceId}/documents/${documentId}`), {
+    method: 'PUT',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ document: WorkspaceDocument<TContent> }>(response);
+};
+
+interface CreateWorkspaceCommentOptions extends AuthCredentials {
+  workspaceId: string;
+  documentId: string;
+  revisionId: string;
+  body: string;
+  signal?: AbortSignal;
+}
+
+export const createWorkspaceComment = async ({
+  token,
+  license,
+  workspaceId,
+  documentId,
+  signal,
+  ...body
+}: CreateWorkspaceCommentOptions): Promise<{ comment: WorkspaceComment }> => {
+  const response = await fetch(
+    joinUrl(`/v1/workspaces/${workspaceId}/documents/${documentId}/comments`),
+    {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders({ token, license }),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+
+  return readJson<{ comment: WorkspaceComment }>(response);
+};
+
+interface RequestWorkspaceSignoffOptions extends AuthCredentials {
+  workspaceId: string;
+  documentId: string;
+  revisionId: string;
+  requestedFor: string;
+  signal?: AbortSignal;
+}
+
+export const requestWorkspaceSignoff = async ({
+  token,
+  license,
+  workspaceId,
+  signal,
+  ...body
+}: RequestWorkspaceSignoffOptions): Promise<{ signoff: WorkspaceSignoff }> => {
+  const response = await fetch(joinUrl(`/v1/workspaces/${workspaceId}/signoffs`), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ signoff: WorkspaceSignoff }>(response);
+};
+
+interface ApproveWorkspaceSignoffOptions extends AuthCredentials {
+  workspaceId: string;
+  signoffId: string;
+  signature: string;
+  timestamp: string;
+  signal?: AbortSignal;
+}
+
+export const approveWorkspaceSignoff = async ({
+  token,
+  license,
+  workspaceId,
+  signoffId,
+  signal,
+  ...body
+}: ApproveWorkspaceSignoffOptions): Promise<{ signoff: WorkspaceSignoff }> => {
+  const response = await fetch(joinUrl(`/v1/workspaces/${workspaceId}/signoffs/${signoffId}`), {
+    method: 'PATCH',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ signoff: WorkspaceSignoff }>(response);
+};
+
+interface ListJobsOptions extends AuthCredentials {
+  status?: Array<'queued' | 'running' | 'completed' | 'failed'> | 'queued' | 'running' | 'completed' | 'failed';
+  kind?: Array<'import' | 'analyze' | 'report' | 'pack'> | 'import' | 'analyze' | 'report' | 'pack';
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+}
+
+export const listJobs = async ({
+  token,
+  license,
+  signal,
+  ...query
+}: ListJobsOptions): Promise<QueueMetricsResponse> => {
+  const response = await fetch(joinUrl(`/v1/jobs${buildQueryString(query)}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<QueueMetricsResponse>(response);
+};
+
+interface AdminRolePayload {
+  name: string;
+  description?: string | null;
+  permissions: string[];
+}
+
+interface AdminUserPayload {
+  email: string;
+  roleId: string;
+  displayName?: string | null;
+  password?: string | null;
+}
+
+interface AdminApiKeyPayload {
+  name: string;
+  scopes: string[];
+  expiresAt?: string | null;
+}
+
+interface AdminAuthOptions extends AuthCredentials {
+  signal?: AbortSignal;
+}
+
+export const listAdminRoles = async ({
+  token,
+  license,
+  signal,
+}: AdminAuthOptions): Promise<{ roles: AdminRolePayload[] }> => {
+  const response = await fetch(joinUrl('/v1/admin/roles'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<{ roles: AdminRolePayload[] }>(response);
+};
+
+export const createAdminRole = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: AdminAuthOptions & AdminRolePayload): Promise<{ role: AdminRolePayload }> => {
+  const response = await fetch(joinUrl('/v1/admin/roles'), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ role: AdminRolePayload }>(response);
+};
+
+export const updateAdminRole = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: AdminAuthOptions & AdminRolePayload & { roleId: string }): Promise<{ role: AdminRolePayload }> => {
+  const { roleId, ...payload } = body;
+  const response = await fetch(joinUrl(`/v1/admin/roles/${roleId}`), {
+    method: 'PUT',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  return readJson<{ role: AdminRolePayload }>(response);
+};
+
+export const deleteAdminRole = async ({
+  token,
+  license,
+  signal,
+  roleId,
+}: AdminAuthOptions & { roleId: string }): Promise<void> => {
+  const response = await fetch(joinUrl(`/v1/admin/roles/${roleId}`), {
+    method: 'DELETE',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  await ensureOk(response);
+};
+
+export const listAdminUsers = async ({
+  token,
+  license,
+  signal,
+}: AdminAuthOptions): Promise<{ users: AdminUserPayload[] }> => {
+  const response = await fetch(joinUrl('/v1/admin/users'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<{ users: AdminUserPayload[] }>(response);
+};
+
+export const createAdminUser = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: AdminAuthOptions & AdminUserPayload): Promise<{ user: AdminUserPayload }> => {
+  const response = await fetch(joinUrl('/v1/admin/users'), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ user: AdminUserPayload }>(response);
+};
+
+export const updateAdminUser = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: AdminAuthOptions & AdminUserPayload & { userId: string }): Promise<{ user: AdminUserPayload }> => {
+  const { userId, ...payload } = body;
+  const response = await fetch(joinUrl(`/v1/admin/users/${userId}`), {
+    method: 'PUT',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  return readJson<{ user: AdminUserPayload }>(response);
+};
+
+export const deleteAdminUser = async ({
+  token,
+  license,
+  signal,
+  userId,
+}: AdminAuthOptions & { userId: string }): Promise<void> => {
+  const response = await fetch(joinUrl(`/v1/admin/users/${userId}`), {
+    method: 'DELETE',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  await ensureOk(response);
+};
+
+export const listAdminApiKeys = async ({
+  token,
+  license,
+  signal,
+}: AdminAuthOptions): Promise<{ apiKeys: AdminApiKeyPayload[] }> => {
+  const response = await fetch(joinUrl('/v1/admin/api-keys'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<{ apiKeys: AdminApiKeyPayload[] }>(response);
+};
+
+export const createAdminApiKey = async ({
+  token,
+  license,
+  signal,
+  ...body
+}: AdminAuthOptions & AdminApiKeyPayload): Promise<{ apiKey: AdminApiKeyPayload; secret?: string }> => {
+  const response = await fetch(joinUrl('/v1/admin/api-keys'), {
+    method: 'POST',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ apiKey: AdminApiKeyPayload; secret?: string }>(response);
+};
+
+export const getAdminApiKey = async ({
+  token,
+  license,
+  signal,
+  keyId,
+}: AdminAuthOptions & { keyId: string }): Promise<{ apiKey: AdminApiKeyPayload }> => {
+  const response = await fetch(joinUrl(`/v1/admin/api-keys/${keyId}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<{ apiKey: AdminApiKeyPayload }>(response);
+};
+
+export const rotateAdminApiKey = async ({
+  token,
+  license,
+  signal,
+  keyId,
+  ...body
+}: AdminAuthOptions & AdminApiKeyPayload & { keyId: string }): Promise<{ apiKey: AdminApiKeyPayload; secret?: string }> => {
+  const response = await fetch(joinUrl(`/v1/admin/api-keys/${keyId}`), {
+    method: 'PUT',
+    headers: {
+      ...buildAuthHeaders({ token, license }),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  return readJson<{ apiKey: AdminApiKeyPayload; secret?: string }>(response);
+};
+
+export const deleteAdminApiKey = async ({
+  token,
+  license,
+  signal,
+  keyId,
+}: AdminAuthOptions & { keyId: string }): Promise<void> => {
+  const response = await fetch(joinUrl(`/v1/admin/api-keys/${keyId}`), {
+    method: 'DELETE',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  await ensureOk(response);
 };
 
 const extractAssetPath = (fullPath: string, reportId: string): string => {

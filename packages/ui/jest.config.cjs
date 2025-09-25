@@ -9,7 +9,8 @@ module.exports = {
   testMatch: ['<rootDir>/src/**/*.test.ts?(x)'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
-    '^@soipack/([^/]+)(.*)$': '<rootDir>/../$1/src$2'
+    '^@soipack/([^/]+)(.*)$': '<rootDir>/../$1/src$2',
+    '^@bora/ui-kit$': '<rootDir>/src/testUtils/ui-kit.tsx'
   },
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]

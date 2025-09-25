@@ -225,6 +225,78 @@
     color: #1e293b;
   }
 
+  .risk-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .risk-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+    min-height: 140px;
+  }
+
+  .risk-score {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .risk-score-value {
+    font-size: 32px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .risk-breakdown {
+    margin-top: 24px;
+  }
+
+  .risk-breakdown-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .timeline-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+
+  .timeline-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+  }
+
+  .timeline-status {
+    margin-bottom: 12px;
+  }
+
+  .timeline-events li {
+    position: relative;
+    padding-left: 16px;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 4px;
+  }
+
+  .timeline-events li::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3b82f6;
+    position: absolute;
+    left: -5px;
+    top: 8px;
+  }
+
   footer {
     padding: 0 48px 32px;
     color: #475569;
@@ -256,7 +328,7 @@
           <p class="report-meta">Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü</p>
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>20240201T120000Z-8ba2ab075223</strong>
+          Snapshot: <strong>20240201T120000Z-66fea11722a1</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
           <div class="git-meta">

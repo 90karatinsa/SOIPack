@@ -1,41 +1,132 @@
-import { Alert, Badge, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
-import type { AuditLogEntry } from '@soipack/ui-mocks';
+import { Alert, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
 import { useEffect, useMemo, useState } from 'react';
 
-import { useAuditTrail } from '../providers/AuditTrailProvider';
 import { useT } from '../providers/I18nProvider';
-import { fetchDashboard, fetchLogs, type DashboardPayload } from '../services/mockService';
+import {
+  ApiError,
+  listJobs,
+  listReviews,
+  type QueueMetricsResponse,
+  type ReviewResource,
+} from '../services/api';
 
-export default function DashboardPage() {
-  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
-  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { events } = useAuditTrail();
+type DashboardPageProps = {
+  token?: string;
+  license?: string;
+};
+
+interface QueueMetrics {
+  total: number;
+  queued: number;
+  running: number;
+  completed: number;
+  failed: number;
+}
+
+const deriveQueueMetrics = (payload: QueueMetricsResponse): QueueMetrics => {
+  const counts = payload.jobs.reduce(
+    (acc, job) => {
+      acc.total += 1;
+      acc[job.status] = (acc[job.status] ?? 0) + 1;
+      return acc;
+    },
+    { total: 0, queued: 0, running: 0, completed: 0, failed: 0 } as QueueMetrics,
+  );
+  return counts;
+};
+
+export default function DashboardPage({ token = '', license = '' }: DashboardPageProps) {
+  const [queueState, setQueueState] = useState<{
+    loading: boolean;
+    error: string | null;
+    metrics: QueueMetrics | null;
+  }>({ loading: true, error: null, metrics: null });
+  const [reviewState, setReviewState] = useState<{
+    loading: boolean;
+    error: string | null;
+    reviews: ReviewResource[];
+  }>({ loading: true, error: null, reviews: [] });
   const t = useT();
+  const trimmedToken = token.trim();
+  const trimmedLicense = license.trim();
 
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const [dashboardData, logData] = await Promise.all([fetchDashboard(), fetchLogs()]);
-      setDashboard(dashboardData);
-      setLogs(logData);
-      setLoading(false);
+    if (!trimmedToken || !trimmedLicense) {
+      setQueueState({ loading: false, error: t('dashboard.credentialsRequired'), metrics: null });
+      setReviewState({ loading: false, error: t('dashboard.credentialsRequired'), reviews: [] });
+      return;
     }
-    void load();
-  }, []);
 
-  const recentActivity = useMemo(() => {
-    const synthetic = events.map((event) => ({
-      id: event.id,
-      correlationId: event.correlationId,
-      actor: event.actor,
-      role: event.role as AuditLogEntry['role'],
-      action: event.action,
-      severity: 'info' as AuditLogEntry['severity'],
-      createdAt: event.timestamp
-    }));
-    return [...synthetic, ...logs].slice(0, 6);
-  }, [events, logs]);
+    const queueController = new AbortController();
+    const reviewController = new AbortController();
+
+    setQueueState((previous) => ({ ...previous, loading: true, error: null }));
+    setReviewState((previous) => ({ ...previous, loading: true, error: null }));
+
+    listJobs({
+      token: trimmedToken,
+      license: trimmedLicense,
+      status: ['queued', 'running', 'completed', 'failed'],
+      limit: 200,
+      signal: queueController.signal,
+    })
+      .then((response) => {
+        setQueueState({ loading: false, error: null, metrics: deriveQueueMetrics(response) });
+      })
+      .catch((error) => {
+        if (queueController.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof ApiError ? error.message : t('dashboard.queueError');
+        setQueueState({ loading: false, error: message, metrics: null });
+      });
+
+    listReviews({
+      token: trimmedToken,
+      license: trimmedLicense,
+      status: 'pending',
+      limit: 10,
+      signal: reviewController.signal,
+    })
+      .then((response) => {
+        setReviewState({ loading: false, error: null, reviews: response.reviews });
+      })
+      .catch((error) => {
+        if (reviewController.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof ApiError ? error.message : t('dashboard.reviewError');
+        setReviewState({ loading: false, error: message, reviews: [] });
+      });
+
+    return () => {
+      queueController.abort();
+      reviewController.abort();
+    };
+  }, [trimmedToken, trimmedLicense, t]);
+
+  const queueMetrics = queueState.metrics ?? {
+    total: 0,
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+  };
+
+  const reviewRows = useMemo(
+    () =>
+      reviewState.reviews.map((review) => ({
+        id: review.id,
+        target: review.target.kind,
+        approvers: review.approvers
+          .map((approver) => `${approver.id} (${approver.status})`)
+          .join(', '),
+        updatedAt: new Date(review.updatedAt).toLocaleString(),
+      })),
+    [reviewState.reviews],
+  );
 
   return (
     <div className="space-y-8">
@@ -45,66 +136,57 @@ export default function DashboardPage() {
         breadcrumb={[{ label: t('dashboard.title') }]}
       />
 
-      {loading && (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <Skeleton key={index} className="h-36 w-full" />
-          ))}
-        </div>
-      )}
-
-      {!loading && dashboard && (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {dashboard.metrics.map((metric) => (
-            <Card key={metric.id} title={metric.label} description={`${metric.value}${metric.unit ?? ''}`}>
-              <div className="flex items-end justify-between text-xs text-[color:var(--fg-muted)]">
-                <span>{metric.trend === 'up' ? '▲' : metric.trend === 'down' ? '▼' : '–'}</span>
-                <span>{metric.delta.toFixed(2)}</span>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {!loading && dashboard?.notices.length ? (
-        <div className="grid gap-3">
-          {dashboard.notices.map((notice) => (
-            <Alert
-              key={notice.id}
-              title={t('dashboard.notices')}
-              description={notice.message}
-              variant={notice.scope === 'internal' ? 'warning' : 'info'}
-            />
-          ))}
-        </div>
-      ) : null}
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-white">{t('dashboard.queueMetrics')}</h2>
+        {queueState.loading ? (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4" data-testid="queue-loading">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <Skeleton key={index} className="h-24 w-full" />
+            ))}
+          </div>
+        ) : queueState.error ? (
+          <Alert title={t('dashboard.queueErrorTitle')} description={queueState.error} variant="error" />
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div data-testid="queue-total">
+              <Card title={t('dashboard.queueTotal')} description={queueMetrics.total.toString()} />
+            </div>
+            <div data-testid="queue-queued">
+              <Card title={t('dashboard.queueQueued')} description={queueMetrics.queued.toString()} />
+            </div>
+            <div data-testid="queue-running">
+              <Card title={t('dashboard.queueRunning')} description={queueMetrics.running.toString()} />
+            </div>
+            <div data-testid="queue-completed">
+              <Card title={t('dashboard.queueCompleted')} description={queueMetrics.completed.toString()} />
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="space-y-4">
-        <header className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{t('dashboard.auditFeed')}</h2>
-          {dashboard?.health && (
-            <Badge variant="outline">
-              {t('dashboard.health')}: {t(`status.${dashboard.health.status.toLowerCase()}`)}
-            </Badge>
-          )}
-        </header>
-        {recentActivity.length === 0 ? (
-          <EmptyState title={t('logs.empty')} description="" />
+        <h2 className="text-lg font-semibold text-white">{t('dashboard.pendingReviews')}</h2>
+        {reviewState.loading ? (
+          <div data-testid="reviews-loading" className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : reviewState.error ? (
+          <Alert title={t('dashboard.reviewErrorTitle')} description={reviewState.error} variant="error" />
+        ) : reviewRows.length === 0 ? (
+          <EmptyState title={t('dashboard.noPendingReviews')} description="" />
         ) : (
-          <Table
-            columns={[
-              { key: 'actor', title: 'Kullanıcı' },
-              { key: 'role', title: 'Rol' },
-              { key: 'action', title: 'Eylem' },
-              { key: 'createdAt', title: 'Zaman' }
-            ]}
-            rows={recentActivity.map((item) => ({
-              actor: item.actor,
-              role: item.role,
-              action: item.action,
-              createdAt: new Date(item.createdAt).toLocaleString()
-            }))}
-          />
+          <div data-testid="pending-review-table">
+            <Table
+              columns={[
+                { key: 'id', title: t('dashboard.reviewId') },
+                { key: 'target', title: t('dashboard.reviewTarget') },
+                { key: 'approvers', title: t('dashboard.reviewApprovers') },
+                { key: 'updatedAt', title: t('dashboard.reviewUpdatedAt') },
+              ]}
+              rows={reviewRows}
+            />
+          </div>
         )}
       </section>
     </div>

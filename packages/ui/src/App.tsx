@@ -8,6 +8,8 @@ import { TokenInput } from './components/TokenInput';
 import { TraceabilityMatrix } from './components/TraceabilityMatrix';
 import { UploadAndRun } from './components/UploadAndRun';
 import { usePipeline } from './hooks/usePipeline';
+import { TimelinePage } from './pages/TimelinePage';
+import { RiskCockpitPage } from './pages/RiskCockpitPage';
 import type { CoverageStatus } from './types/pipeline';
 
 export default function App() {
@@ -161,6 +163,12 @@ export default function App() {
               isEnabled={Boolean(reportData)}
               generatedAt={reportData?.generatedAt}
             />
+          )}
+          {activeView === 'risk' && (
+            <RiskCockpitPage token={token} license={license} isAuthorized={isAuthorized} />
+          )}
+          {activeView === 'timeline' && (
+            <TimelinePage token={token} license={license} isAuthorized={isAuthorized} />
           )}
         </main>
       </div>

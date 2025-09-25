@@ -16,12 +16,16 @@ import {
   TraceEngine,
   generateComplianceSnapshot,
 } from '@soipack/engine';
+import type { AuditFlagSignal, CoverageSnapshot } from '@soipack/engine';
+
+import type { SignoffTimelineEntry } from '../index';
 
 export interface ReportFixture {
   snapshot: ComplianceSnapshot;
   traces: RequirementTrace[];
   objectives: Objective[];
   manifestId: string;
+  signoffs: SignoffTimelineEntry[];
 }
 
 const allLevels = { A: true, B: true, C: true, D: true, E: false } as const;
@@ -128,6 +132,18 @@ const testResultsFixture = (): TestResult[] => [
   },
 ];
 
+const coverageHistoryFixture = (): CoverageSnapshot[] => [
+  { timestamp: '2023-12-20T12:00:00Z', coverage: 60 },
+  { timestamp: '2024-01-05T12:00:00Z', coverage: 63 },
+  { timestamp: '2024-01-15T12:00:00Z', coverage: 65 },
+  { timestamp: '2024-02-01T12:00:00Z', coverage: 68 },
+];
+
+const auditFlagsFixture = (): AuditFlagSignal[] => [
+  { severity: 'high', acknowledged: false, ageDays: 14 },
+  { severity: 'medium', acknowledged: true, ageDays: 6 },
+];
+
 const objectivesFixture = (): Objective[] => [
   {
     id: 'A-3-04',
@@ -204,6 +220,37 @@ const evidenceFixture = (): ImportBundle['evidenceIndex'] => ({
   ],
 });
 
+export const signoffTimelineFixture = (): SignoffTimelineEntry[] => [
+  {
+    id: 'signoff-001',
+    documentId: 'DOC-SEC-PLAN',
+    revisionId: 'rev-main-001',
+    revisionHash: 'a9f4c2d1e3b56789',
+    requestedBy: 'auditor-istanbul',
+    requestedFor: 'lead-reviewer',
+    requestedAt: '2024-01-15T09:45:00Z',
+    status: 'approved',
+    approvedAt: '2024-01-16T13:20:00Z',
+    signerId: 'lead-reviewer',
+    signerPublicKey: 'MCowBQYDK2VwAyEA7L9sExampleKeyFragment123456==',
+    signature: 'SIG-APPROVED-001-BASE64',
+    workspaceId: 'workspace-flight',
+  },
+  {
+    id: 'signoff-002',
+    documentId: 'DOC-SEC-REPORT',
+    revisionId: 'rev-main-002',
+    revisionHash: 'b1e2c3d4f5a67890',
+    requestedBy: 'auditor-istanbul',
+    requestedFor: 'compliance-owner',
+    requestedAt: '2024-01-20T10:15:00Z',
+    status: 'pending',
+    signerPublicKey: null,
+    signature: null,
+    workspaceId: 'workspace-flight',
+  },
+];
+
 export const createReportFixture = (): ReportFixture => {
   const requirements = requirementFixture();
   const objectives = objectivesFixture();
@@ -211,6 +258,22 @@ export const createReportFixture = (): ReportFixture => {
   const coverage = coverageSummaryFixture();
   const structuralCoverage = structuralCoverageFixture();
   const evidenceIndex = evidenceFixture();
+  const findings = [
+    {
+      tool: 'polyspace' as const,
+      id: 'FND-SEC-001',
+      severity: 'error' as const,
+      message: 'Null pointer analizi başarısız oldu.',
+      status: 'open' as const,
+    },
+    {
+      tool: 'vectorcast' as const,
+      id: 'FND-SEC-002',
+      severity: 'warn' as const,
+      message: 'Zamanlama toleransı azalıyor.',
+      status: 'open' as const,
+    },
+  ];
   const bundle: ImportBundle = {
     requirements,
     objectives,
@@ -218,6 +281,7 @@ export const createReportFixture = (): ReportFixture => {
     coverage,
     structuralCoverage,
     evidenceIndex,
+    findings,
     testToCodeMap: {
       'TC-LOGIN-1': ['src/auth/login.ts'],
       'TC-LOGIN-2': ['src/auth/login.ts', 'src/security/audit.ts'],
@@ -226,14 +290,22 @@ export const createReportFixture = (): ReportFixture => {
     generatedAt: '2024-02-01T12:00:00Z',
   };
 
-  const snapshot = generateComplianceSnapshot(bundle);
+  const snapshot = generateComplianceSnapshot(bundle, {
+    includeRisk: true,
+    risk: {
+      audit: auditFlagsFixture(),
+      coverageHistory: coverageHistoryFixture(),
+    },
+  });
   const engine = new TraceEngine(bundle);
   const traces = requirements.map((requirement) => engine.getRequirementTrace(requirement.id));
+  const signoffs = signoffTimelineFixture();
 
   return {
     snapshot,
     traces,
     objectives,
     manifestId: 'MAN-TR-2024-0001',
+    signoffs,
   };
 };

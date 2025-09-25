@@ -4,15 +4,31 @@ import path from 'node:path';
 
 import { Manifest } from '@soipack/core';
 
+type ManifestLedgerMetadata = {
+  ledger?: {
+    root: string | null;
+    previousRoot?: string | null;
+  } | null;
+};
+
+type LedgerAwareManifest = Manifest & ManifestLedgerMetadata;
+
 export interface ManifestDigest {
   algorithm: 'SHA-256';
   hash: string;
+}
+
+export interface LedgerProofMetadata {
+  root: string;
+  previousRoot?: string | null;
 }
 
 export interface ManifestSignatureBundle {
   signature: string;
   certificate: string;
   manifestDigest: ManifestDigest;
+  ledgerRoot?: string | null;
+  previousLedgerRoot?: string | null;
 }
 
 export interface SecuritySignerOptions {
@@ -22,6 +38,7 @@ export interface SecuritySignerOptions {
   certificatePem?: string;
   privateKeyPath?: string;
   privateKeyPem?: string;
+  ledger?: LedgerProofMetadata;
 }
 
 export type VerificationFailureReason =
@@ -30,12 +47,18 @@ export type VerificationFailureReason =
   | 'DIGEST_MISMATCH'
   | 'SIGNATURE_INVALID'
   | 'CERT_EXPIRED'
-  | 'CERTIFICATE_MISSING';
+  | 'CERTIFICATE_MISSING'
+  | 'LEDGER_ROOT_MISSING'
+  | 'LEDGER_ROOT_MISMATCH'
+  | 'LEDGER_PREVIOUS_MISMATCH';
 
 export interface VerificationOptions {
   certificatePem?: string;
   publicKeyPem?: string;
   now?: Date;
+  expectedLedgerRoot?: string | null;
+  expectedPreviousLedgerRoot?: string | null;
+  requireLedgerProof?: boolean;
 }
 
 export interface VerificationResult {
@@ -47,6 +70,8 @@ export interface VerificationResult {
     validFrom: string;
     validTo: string;
   };
+  ledgerRoot?: string | null;
+  previousLedgerRoot?: string | null;
 }
 
 const DEFAULT_BUNDLE_PATH = path.resolve(__dirname, '../../../../test/certs/dev.pem');
@@ -69,13 +94,29 @@ const base64UrlDecode = (value: string): Buffer => {
   return Buffer.from(normalized + padding, 'base64');
 };
 
-const canonicalizeManifest = (manifest: Manifest): Manifest => ({
-  files: [...manifest.files]
-    .map((file) => ({ path: file.path, sha256: file.sha256 }))
-    .sort((a, b) => a.path.localeCompare(b.path)),
-  createdAt: manifest.createdAt,
-  toolVersion: manifest.toolVersion,
-});
+const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata): Manifest => {
+  const canonical: LedgerAwareManifest = {
+    files: [...manifest.files]
+      .map((file) => ({ path: file.path, sha256: file.sha256 }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    createdAt: manifest.createdAt,
+    toolVersion: manifest.toolVersion,
+  };
+
+  if (manifest.ledger !== undefined) {
+    canonical.ledger = manifest.ledger
+      ? {
+          root: manifest.ledger.root ?? null,
+          previousRoot:
+            manifest.ledger.previousRoot === undefined
+              ? null
+              : manifest.ledger.previousRoot,
+        }
+      : null;
+  }
+
+  return canonical;
+};
 
 const computeManifestDigest = (manifest: Manifest): ManifestDigest => {
   const canonical = canonicalizeManifest(manifest);
@@ -158,6 +199,19 @@ export const signManifestWithSecuritySigner = (
 ): ManifestSignatureBundle => {
   const credentials = resolveCredentials(options);
   const digest = computeManifestDigest(manifest);
+  const manifestLedger = (manifest as ManifestLedgerMetadata).ledger;
+  const ledgerSource =
+    options.ledger ??
+    (manifestLedger && typeof manifestLedger.root === 'string'
+      ? {
+          root: manifestLedger.root,
+          previousRoot: manifestLedger.previousRoot ?? null,
+        }
+      : undefined);
+
+  const ledgerRoot = ledgerSource?.root ?? null;
+  const previousLedgerRoot =
+    ledgerSource?.previousRoot ?? manifestLedger?.previousRoot ?? null;
 
   const x509 = new X509Certificate(credentials.certificatePem);
   const header = {
@@ -168,6 +222,8 @@ export const signManifestWithSecuritySigner = (
   const payload = {
     digest: digest.hash,
     algorithm: digest.algorithm,
+    ledgerRoot,
+    previousLedgerRoot,
   };
 
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
@@ -180,6 +236,8 @@ export const signManifestWithSecuritySigner = (
     signature: `${signingInput}.${encodedSignature}`,
     certificate: credentials.certificatePem.trim(),
     manifestDigest: digest,
+    ledgerRoot,
+    previousLedgerRoot,
   };
 };
 
@@ -210,19 +268,48 @@ export const verifyManifestSignatureWithSecuritySigner = (
     return { valid: false, reason: 'UNSUPPORTED_ALGORITHM' };
   }
 
-  let payload: { digest?: string; algorithm?: string };
+  let payload: {
+    digest?: string;
+    algorithm?: string;
+    ledgerRoot?: string | null;
+    previousLedgerRoot?: string | null;
+  };
   try {
     payload = JSON.parse(base64UrlDecode(encodedPayload).toString('utf8')) as {
       digest?: string;
       algorithm?: string;
+      ledgerRoot?: string | null;
+      previousLedgerRoot?: string | null;
     };
   } catch (error) {
     return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
   const digest = computeManifestDigest(manifest);
+  const ledgerRoot = typeof payload.ledgerRoot === 'string' ? payload.ledgerRoot : payload.ledgerRoot ?? null;
+  const previousLedgerRoot =
+    typeof payload.previousLedgerRoot === 'string'
+      ? payload.previousLedgerRoot
+      : payload.previousLedgerRoot ?? null;
+  const ledgerContext = { ledgerRoot, previousLedgerRoot };
+
   if (payload.algorithm !== digest.algorithm || payload.digest !== digest.hash) {
-    return { valid: false, reason: 'DIGEST_MISMATCH' };
+    return { valid: false, reason: 'DIGEST_MISMATCH', ...ledgerContext };
+  }
+
+  if (options.requireLedgerProof && !ledgerRoot) {
+    return { valid: false, reason: 'LEDGER_ROOT_MISSING', ...ledgerContext };
+  }
+
+  if (typeof options.expectedLedgerRoot !== 'undefined' && ledgerRoot !== options.expectedLedgerRoot) {
+    return { valid: false, reason: 'LEDGER_ROOT_MISMATCH', ...ledgerContext };
+  }
+
+  if (
+    typeof options.expectedPreviousLedgerRoot !== 'undefined' &&
+    previousLedgerRoot !== options.expectedPreviousLedgerRoot
+  ) {
+    return { valid: false, reason: 'LEDGER_PREVIOUS_MISMATCH', ...ledgerContext };
   }
 
   let certificatePem = options.certificatePem;
@@ -242,18 +329,18 @@ export const verifyManifestSignatureWithSecuritySigner = (
   if (certificatePem) {
     certificate = loadCertificate(certificatePem);
     if (!certificate) {
-      return { valid: false, reason: 'FORMAT_INVALID' };
+      return { valid: false, reason: 'FORMAT_INVALID', ...ledgerContext };
     }
   } else if (!verificationKey && header.x5c?.length) {
     try {
       certificatePem = formatCertificateFromDer(header.x5c[0]);
     } catch (error) {
-      return { valid: false, reason: 'FORMAT_INVALID' };
+      return { valid: false, reason: 'FORMAT_INVALID', ...ledgerContext };
     }
 
     certificate = loadCertificate(certificatePem);
     if (!certificate) {
-      return { valid: false, reason: 'FORMAT_INVALID' };
+      return { valid: false, reason: 'FORMAT_INVALID', ...ledgerContext };
     }
   }
 
@@ -272,6 +359,7 @@ export const verifyManifestSignatureWithSecuritySigner = (
         valid: false,
         reason: 'CERT_EXPIRED',
         certificateInfo,
+        ...ledgerContext,
       };
     }
 
@@ -279,7 +367,7 @@ export const verifyManifestSignatureWithSecuritySigner = (
   }
 
   if (!verificationKey) {
-    return { valid: false, reason: 'CERTIFICATE_MISSING' };
+    return { valid: false, reason: 'CERTIFICATE_MISSING', ...ledgerContext };
   }
 
   let isValid: boolean;
@@ -291,17 +379,18 @@ export const verifyManifestSignatureWithSecuritySigner = (
       base64UrlDecode(encodedSignature),
     );
   } catch (error) {
-    return { valid: false, reason: 'FORMAT_INVALID', certificateInfo };
+    return { valid: false, reason: 'FORMAT_INVALID', certificateInfo, ...ledgerContext };
   }
 
   if (!isValid) {
-    return { valid: false, reason: 'SIGNATURE_INVALID', certificateInfo };
+    return { valid: false, reason: 'SIGNATURE_INVALID', certificateInfo, ...ledgerContext };
   }
 
   return {
     valid: true,
     digest,
     certificateInfo,
+    ...ledgerContext,
   };
 };
 

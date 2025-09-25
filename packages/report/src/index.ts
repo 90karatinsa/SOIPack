@@ -43,6 +43,7 @@ interface LayoutContext extends BaseReportOptions {
 
 export interface ComplianceMatrixOptions extends BaseReportOptions {
   objectivesMetadata?: Objective[];
+  signoffs?: SignoffTimelineEntry[];
 }
 
 export interface TraceMatrixOptions extends BaseReportOptions {
@@ -86,11 +87,77 @@ interface QualityFindingRow {
   relatedTests: string[];
 }
 
+export interface SignoffTimelineEntry {
+  id: string;
+  documentId: string;
+  revisionId: string;
+  revisionHash: string;
+  requestedBy: string;
+  requestedFor: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | string;
+  approvedAt?: string | null;
+  signerId?: string | null;
+  signerPublicKey?: string | null;
+  signature?: string | null;
+  workspaceId?: string;
+}
+
+interface RiskBreakdownView {
+  factorLabel: string;
+  contributionLabel: string;
+  weightLabel: string;
+  severityClass: string;
+  details: string;
+}
+
+interface RiskDriftView {
+  classificationLabel: string;
+  summary: string;
+  slopeLabel: string;
+  projectionLabel: string;
+  confidenceLabel: string;
+}
+
+interface RiskView {
+  score: number;
+  scoreLabel: string;
+  classification: string;
+  classificationLabel: string;
+  classificationClass: string;
+  breakdown: RiskBreakdownView[];
+  missingSignals: string[];
+  drift?: RiskDriftView;
+}
+
+interface SignoffTimelineEventView {
+  label: string;
+  actor: string;
+  timestamp: string;
+  details?: string;
+}
+
+interface SignoffTimelineEntryView {
+  id: string;
+  documentId: string;
+  revisionId: string;
+  revisionHash: string;
+  statusLabel: string;
+  statusClass: string;
+  events: SignoffTimelineEventView[];
+}
+
+interface SignoffTimelineView {
+  entries: SignoffTimelineEntryView[];
+}
+
 interface ComplianceMatrixView {
   objectives: ComplianceMatrixRow[];
   requirementCoverage: RequirementCoverageRow[];
   qualityFindings: QualityFindingRow[];
   summaryMetrics: LayoutSummaryMetric[];
+  risk?: RiskView;
+  signoffs?: SignoffTimelineView;
 }
 
 interface TraceMatrixRow {
@@ -181,6 +248,8 @@ export interface ComplianceMatrixJson {
     viaTestId?: string;
   }>;
   git?: BuildInfo | null;
+  risk?: ComplianceSnapshot['risk'] | null;
+  signoffs: SignoffTimelineEntry[];
 }
 
 export interface ComplianceMatrixResult {
@@ -294,6 +363,44 @@ const artifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
   qa_record: 'QA Kaydı',
   problem_report: 'Problem Raporu',
   conformity: 'Uygunluk Desteği',
+};
+
+type RiskClassification = NonNullable<ComplianceSnapshot['risk']>['profile']['classification'];
+type CoverageDriftClassification = NonNullable<
+  NonNullable<ComplianceSnapshot['risk']>['coverageDrift']
+>['classification'];
+
+const riskClassificationMeta: Record<RiskClassification, { label: string; className: string }> = {
+  low: { label: 'Düşük Risk', className: 'status-covered' },
+  moderate: { label: 'Orta Risk', className: 'status-partial' },
+  high: { label: 'Yüksek Risk', className: 'status-missing' },
+  critical: { label: 'Kritik Risk', className: 'status-missing' },
+};
+
+const riskFactorLabels: Record<string, string> = {
+  coverage: 'Kapsam',
+  testing: 'Testler',
+  analysis: 'Statik Analiz',
+  audit: 'Denetim Bulguları',
+};
+
+const missingSignalLabels: Record<string, string> = {
+  coverage: 'Kapsam Sinyali',
+  testing: 'Test Sinyali',
+  analysis: 'Analiz Sinyali',
+  audit: 'Denetim Sinyali',
+};
+
+const coverageDriftLabels: Record<CoverageDriftClassification, string> = {
+  improving: 'Kapsam İyileşiyor',
+  declining: 'Kapsam Düşüşte',
+  stable: 'Kapsam Stabil',
+  unknown: 'Eğilim Bilinmiyor',
+};
+
+const signoffStatusLabels: Record<string, { label: string; className: string }> = {
+  pending: { label: 'Onay Bekliyor', className: 'status-partial' },
+  approved: { label: 'Onaylandı', className: 'status-covered' },
 };
 
 const formatCoverageMetrics = (
@@ -615,6 +722,78 @@ const baseStyles = `
     color: #1e293b;
   }
 
+  .risk-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .risk-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+    min-height: 140px;
+  }
+
+  .risk-score {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .risk-score-value {
+    font-size: 32px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .risk-breakdown {
+    margin-top: 24px;
+  }
+
+  .risk-breakdown-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .timeline-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+
+  .timeline-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+  }
+
+  .timeline-status {
+    margin-bottom: 12px;
+  }
+
+  .timeline-events li {
+    position: relative;
+    padding-left: 16px;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 4px;
+  }
+
+  .timeline-events li::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3b82f6;
+    position: absolute;
+    left: -5px;
+    top: 8px;
+  }
+
   footer {
     padding: 0 48px 32px;
     color: #475569;
@@ -710,6 +889,56 @@ const layoutTemplate = nunjucks.compile(
     </footer>
   </body>
 </html>`,
+  env,
+);
+
+const riskTemplate = nunjucks.compile(
+  `<section class="section">
+    <h2>Risk Profili</h2>
+    <p class="section-lead">
+      Kanıt boşlukları, test sonuçları, statik analiz bulguları ve denetim uyarıları tek bir risk skorunda toplanır.
+    </p>
+    <div class="risk-grid">
+      <article class="risk-card">
+        <h3>Toplam Skor</h3>
+        <div class="risk-score">
+          <span class="risk-score-value">{{ score }}</span>
+          <span class="badge {{ classificationClass }}">{{ classificationLabel }}</span>
+        </div>
+        <p class="muted">{{ scoreLabel }}</p>
+      </article>
+      {% if drift %}
+        <article class="risk-card">
+          <h3>Kapsam Eğilimi</h3>
+          <div class="cell-title">{{ drift.classificationLabel }}</div>
+          <div class="muted">{{ drift.summary }}</div>
+          <div class="risk-breakdown-stats">
+            <span class="badge badge-soft">{{ drift.slopeLabel }}</span>
+            <span class="badge badge-soft">{{ drift.projectionLabel }}</span>
+            <span class="badge badge-soft">{{ drift.confidenceLabel }}</span>
+          </div>
+        </article>
+      {% endif %}
+    </div>
+    <div class="risk-breakdown">
+      <h3>Faktör Katkıları</h3>
+      <ul class="list">
+        {% for entry in breakdown %}
+          <li>
+            <div class="cell-title">{{ entry.factorLabel }}</div>
+            <div class="muted">{{ entry.details }}</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">{{ entry.weightLabel }}</span>
+              <span class="badge {{ entry.severityClass }}">{{ entry.contributionLabel }}</span>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% if missingSignals.length %}
+      <p class="muted">Eksik sinyaller: {{ missingSignals | join(', ') }}</p>
+    {% endif %}
+  </section>`,
   env,
 );
 
@@ -951,6 +1180,42 @@ const traceTemplate = nunjucks.compile(
   env,
 );
 
+const signoffTimelineTemplate = nunjucks.compile(
+  `<section class="section">
+    <h2>Signoff Zaman Çizelgesi</h2>
+    <p class="section-lead">
+      Workspace belgelerindeki signoff istekleri ve imza onayları denetim izi için tutulur.
+    </p>
+    <div class="timeline-grid">
+      {% for entry in entries %}
+        <article class="timeline-card">
+          <header>
+            <div class="cell-title">{{ entry.documentId }}</div>
+            <div class="muted">Revizyon: {{ entry.revisionId }}</div>
+          </header>
+          <div class="timeline-status">
+            <span class="badge {{ entry.statusClass }}">{{ entry.statusLabel }}</span>
+            <div class="muted">Revizyon Hash: {{ entry.revisionHash }}</div>
+          </div>
+          <ul class="list timeline-events">
+            {% for event in entry.events %}
+              <li>
+                <div class="cell-title">{{ event.label }}</div>
+                <div class="muted">{{ event.timestamp }}</div>
+                <div class="muted">Aktör: {{ event.actor }}</div>
+                {% if event.details %}
+                  <div class="cell-description">{{ event.details }}</div>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        </article>
+      {% endfor %}
+    </div>
+  </section>`,
+  env,
+);
+
 const gapsTemplate = nunjucks.compile(
   `<section class="section">
     <h2>Uyum Boşlukları</h2>
@@ -1031,19 +1296,183 @@ const escapeHtml = (value: string): string =>
 const formatArtifact = (artifact: ObjectiveArtifactType): string =>
   artifactLabels[artifact] ?? artifact.toUpperCase();
 
+const contributionClass = (weight: number, contribution: number): string => {
+  if (weight <= 0) {
+    return 'badge-soft';
+  }
+  const ratio = contribution / weight;
+  if (ratio >= 0.75) {
+    return 'status-missing';
+  }
+  if (ratio >= 0.4) {
+    return 'status-partial';
+  }
+  return 'status-covered';
+};
+
+const buildRiskView = (risk?: ComplianceSnapshot['risk']): RiskView | undefined => {
+  if (!risk) {
+    return undefined;
+  }
+
+  const classification = riskClassificationMeta[risk.profile.classification] ?? {
+    label: risk.profile.classification,
+    className: 'badge-soft',
+  };
+
+  const breakdown: RiskBreakdownView[] = risk.profile.breakdown.map((entry) => ({
+    factorLabel: riskFactorLabels[entry.factor] ?? entry.factor,
+    contributionLabel: `Katkı ${entry.contribution.toFixed(1)} puan`,
+    weightLabel: `Ağırlık %${entry.weight.toFixed(0)}`,
+    severityClass: contributionClass(entry.weight, entry.contribution),
+    details: entry.details,
+  }));
+
+  const missingSignals = (risk.profile.missingSignals ?? []).map(
+    (signal) => missingSignalLabels[signal] ?? signal,
+  );
+
+  let drift: RiskDriftView | undefined;
+  if (risk.coverageDrift) {
+    const driftMeta = coverageDriftLabels[risk.coverageDrift.classification] ?? 'Eğilim';
+    drift = {
+      classificationLabel: driftMeta,
+      summary: `${risk.coverageDrift.horizonDays} günlük ufuk için projeksiyon.`,
+      slopeLabel: `Eğim: ${risk.coverageDrift.slope.toFixed(2)} puan/gün`,
+      projectionLabel: `Projeksiyon: ${risk.coverageDrift.projected.toFixed(1)}%`,
+      confidenceLabel: `Güven: ${(risk.coverageDrift.confidence * 100).toFixed(0)}%`,
+    };
+  }
+
+  return {
+    score: Number(risk.profile.score.toFixed(1)),
+    scoreLabel: '0 en düşük, 100 en yüksek riski temsil eder.',
+    classification: risk.profile.classification,
+    classificationLabel: classification.label,
+    classificationClass: classification.className,
+    breakdown,
+    missingSignals,
+    drift,
+  };
+};
+
+const formatActor = (value?: string | null): string => {
+  if (!value) {
+    return 'Bilinmiyor';
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : 'Bilinmiyor';
+};
+
+const formatKeyFingerprint = (value?: string | null): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, '');
+  const suffix = normalized.slice(-12) || normalized;
+  return `Anahtar: …${suffix}`;
+};
+
+const formatSignaturePreview = (value?: string | null): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  const preview = trimmed.length > 12 ? `${trimmed.slice(0, 12)}…` : trimmed;
+  return `İmza: ${preview}`;
+};
+
+const buildSignoffTimelineView = (
+  signoffs?: SignoffTimelineEntry[],
+): SignoffTimelineView | undefined => {
+  if (!signoffs || signoffs.length === 0) {
+    return undefined;
+  }
+
+  const entries = [...signoffs]
+    .map((entry) => ({
+      ...entry,
+      requestedTime: Date.parse(entry.requestedAt),
+    }))
+    .sort((a, b) => (a.requestedTime || 0) - (b.requestedTime || 0))
+    .map((entry) => {
+      const statusMeta = signoffStatusLabels[entry.status] ?? {
+        label: entry.status,
+        className: 'badge-soft',
+      };
+
+      const events: SignoffTimelineEventView[] = [
+        {
+          label: 'İstek Gönderildi',
+          actor: formatActor(entry.requestedBy),
+          timestamp: formatDate(entry.requestedAt),
+          details: `Onay talep edilen kişi: ${formatActor(entry.requestedFor)}`,
+        },
+      ];
+
+      if (entry.status === 'approved' && entry.approvedAt) {
+        const details: string[] = [];
+        const key = formatKeyFingerprint(entry.signerPublicKey);
+        if (key) {
+          details.push(key);
+        }
+        const signature = formatSignaturePreview(entry.signature);
+        if (signature) {
+          details.push(signature);
+        }
+        events.push({
+          label: 'İmza Doğrulandı',
+          actor: formatActor(entry.signerId ?? entry.requestedFor),
+          timestamp: formatDate(entry.approvedAt),
+          details: details.length ? details.join(' • ') : undefined,
+        });
+      }
+
+      return {
+        id: entry.id,
+        documentId: entry.documentId,
+        revisionId: entry.revisionId,
+        revisionHash: entry.revisionHash,
+        statusLabel: statusMeta.label,
+        statusClass: statusMeta.className,
+        events,
+      };
+    });
+
+  return { entries };
+};
+
 const buildSummaryMetrics = (
   stats: ComplianceStatistics,
   requirementCoverage: RequirementCoverageStatus[] = [],
   qualityFindings: ComplianceSnapshot['qualityFindings'] = [],
+  risk?: ComplianceSnapshot['risk'],
 ): LayoutSummaryMetric[] => {
-  const metrics: LayoutSummaryMetric[] = [
+  const metrics: LayoutSummaryMetric[] = [];
+
+  if (risk) {
+    const classification = riskClassificationMeta[risk.profile.classification] ?? {
+      label: risk.profile.classification,
+      className: 'badge-soft',
+    };
+    metrics.push({
+      label: 'Risk Skoru',
+      value: `${risk.profile.score.toFixed(1)}/100 (${classification.label})`,
+      accent: risk.profile.classification === 'low',
+    });
+  }
+
+  metrics.push(
     { label: 'Hedefler', value: stats.objectives.total.toString() },
     { label: 'Tamamlanan', value: stats.objectives.covered.toString() },
     { label: 'Kısmi', value: stats.objectives.partial.toString() },
     { label: 'Eksik', value: stats.objectives.missing.toString() },
     { label: 'Testler', value: stats.tests.total.toString() },
     { label: 'Kod Yolları', value: stats.codePaths.total.toString() },
-  ];
+  );
 
   if (requirementCoverage.length > 0) {
     const coverageCounts = requirementCoverage.reduce<Record<CoverageStatus, number>>(
@@ -1144,7 +1573,10 @@ const buildComplianceMatrixView = (
       snapshot.stats,
       snapshot.requirementCoverage,
       snapshot.qualityFindings,
+      snapshot.risk,
     ),
+    risk: buildRiskView(snapshot.risk),
+    signoffs: buildSignoffTimelineView(options.signoffs),
   };
 };
 
@@ -1228,6 +1660,8 @@ const buildComplianceMatrixJson = (
     viaTestId: suggestion.viaTestId,
   })),
   git: options.git ?? null,
+  risk: snapshot.risk ?? null,
+  signoffs: (options.signoffs ?? []).map((signoff) => ({ ...signoff })),
 });
 
 const renderLayout = (context: LayoutContext): string => {
@@ -1246,6 +1680,21 @@ export const renderComplianceMatrix = (
 ): ComplianceMatrixResult => {
   const view = buildComplianceMatrixView(snapshot, options);
 
+  const sections: string[] = [];
+  if (view.risk) {
+    sections.push(riskTemplate.render(view.risk));
+  }
+  sections.push(
+    complianceTemplate.render({
+      objectives: view.objectives,
+      requirementCoverage: view.requirementCoverage,
+      qualityFindings: view.qualityFindings,
+    }),
+  );
+  if (view.signoffs) {
+    sections.push(signoffTimelineTemplate.render(view.signoffs));
+  }
+
   const html = renderLayout({
     title: options.title ?? 'SOIPack Uyum Matrisi',
     manifestId: options.manifestId ?? 'N/A',
@@ -1254,11 +1703,7 @@ export const renderComplianceMatrix = (
     snapshotId: options.snapshotId ?? snapshot.version.id,
     snapshotVersion: options.snapshotVersion ?? snapshot.version,
     summaryMetrics: view.summaryMetrics,
-    content: complianceTemplate.render({
-      objectives: view.objectives,
-      requirementCoverage: view.requirementCoverage,
-      qualityFindings: view.qualityFindings,
-    }),
+    content: sections.join(''),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
     git: options.git,
   });
@@ -1276,14 +1721,22 @@ export const renderComplianceCoverageReport = (
   const view = buildComplianceMatrixView(snapshot, options);
   const coverageWarnings = options.coverageWarnings ?? [];
 
-  const content = [
+  const sections: string[] = [];
+  if (view.risk) {
+    sections.push(riskTemplate.render(view.risk));
+  }
+  sections.push(
     complianceTemplate.render({
       objectives: view.objectives,
       requirementCoverage: view.requirementCoverage,
       qualityFindings: view.qualityFindings,
     }),
-    renderCoverageSummarySection({ coverage, warnings: coverageWarnings }),
-  ].join('');
+  );
+  if (view.signoffs) {
+    sections.push(signoffTimelineTemplate.render(view.signoffs));
+  }
+  sections.push(renderCoverageSummarySection({ coverage, warnings: coverageWarnings }));
+  const content = sections.join('');
 
   const html = renderLayout({
     title: options.title ?? 'SOIPack Uyum ve Kapsam Raporu',

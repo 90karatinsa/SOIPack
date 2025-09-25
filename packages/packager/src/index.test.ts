@@ -12,6 +12,8 @@ import {
   signManifestBundle,
   verifyManifestSignature,
   verifyManifestSignatureDetailed,
+  LedgerAwareManifest,
+  ManifestLedgerOptions,
 } from './index';
 
 const computeSha256 = (filePath: string): string => {
@@ -40,9 +42,13 @@ describe('packager', () => {
   const evidenceDir = path.join(fixturesRoot, 'evidence', 'sample');
   const timestamp = new Date('2024-02-01T10:15:00Z');
   const toolVersion = '0.2.0';
+  const ledger: ManifestLedgerOptions = {
+    root: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    previousRoot: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  };
 
   let manifestResult: ManifestBuildResult;
-  let expectedManifest: Manifest;
+  let expectedManifest: LedgerAwareManifest;
 
   beforeAll(async () => {
     manifestResult = await buildManifest({
@@ -50,6 +56,7 @@ describe('packager', () => {
       evidenceDirs: [evidenceDir],
       toolVersion,
       now: timestamp,
+      ledger,
     });
 
     expectedManifest = {
@@ -69,6 +76,10 @@ describe('packager', () => {
           sha256: computeSha256(path.join(reportDir, 'summary.txt')),
         },
       ],
+      ledger: {
+        root: ledger.root,
+        previousRoot: ledger.previousRoot,
+      },
     };
   });
 
@@ -93,6 +104,16 @@ describe('packager', () => {
     const detailed = verifyManifestSignatureDetailed(tamperedManifest, signature, { certificatePem });
     expect(detailed.valid).toBe(false);
     expect(detailed.reason).toBe('DIGEST_MISMATCH');
+
+    const detailedLedger = verifyManifestSignatureDetailed(manifestResult.manifest, signature, {
+      certificatePem,
+      expectedLedgerRoot: ledger.root,
+      expectedPreviousLedgerRoot: ledger.previousRoot,
+      requireLedgerProof: true,
+    });
+    expect(detailedLedger.valid).toBe(true);
+    expect(detailedLedger.ledgerRoot).toBe(ledger.root);
+    expect(detailedLedger.previousLedgerRoot).toBe(ledger.previousRoot);
   });
 
   it('packages reports and evidence into a signed archive', async () => {
@@ -109,6 +130,7 @@ describe('packager', () => {
         credentialsPath: bundlePath,
         outputDir: workDir,
         now: timestamp,
+        ledger,
       });
 
       expect(path.basename(result.outputPath)).toBe('soi-pack-20240201_1015.zip');

@@ -1,10 +1,13 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DefaultBodyType, ResponseComposition, RestContext, RestRequest } from 'msw';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
 
 import App from './App';
+import { createComplianceEventStream } from './services/events';
+import type { ComplianceEvent, ComplianceStreamOptions } from './services/events';
+import { RbacProvider } from './providers/RbacProvider';
 import type {
   AnalyzeJobResult,
   ApiJob,
@@ -21,9 +24,38 @@ jest.mock('file-saver', () => ({
   saveAs: jest.fn()
 }));
 
+jest.mock('./services/events', () => {
+  const actual = jest.requireActual('./services/events');
+  return {
+    ...actual,
+    createComplianceEventStream: jest.fn(),
+  };
+});
+
 const saveAsMock = jest.requireMock('file-saver').saveAs as jest.Mock;
 
 jest.setTimeout(15000);
+
+const createStreamMock = jest.mocked(createComplianceEventStream);
+
+interface StreamInstance {
+  options: ComplianceStreamOptions;
+  close: jest.Mock;
+}
+
+const streamInstances: StreamInstance[] = [];
+
+beforeEach(() => {
+  streamInstances.length = 0;
+  createStreamMock.mockImplementation((options: ComplianceStreamOptions) => {
+    const close = jest.fn();
+    streamInstances.push({ options, close });
+    return {
+      close,
+      getState: () => ({ connected: false, retries: 0, lastEventId: undefined }),
+    };
+  });
+});
 
 interface JobState<T = unknown> {
   id: string;
@@ -376,6 +408,7 @@ afterEach(() => {
   jobStore.clear();
   capturedLicenses.length = 0;
   saveAsMock.mockReset();
+  createStreamMock.mockReset();
 });
 afterAll(() => server.close());
 
@@ -439,11 +472,239 @@ describe('App integration', () => {
     const content = await blob.text();
     expect(content).toBe('FAKEZIP');
 
+    const timelineTab = screen.getByRole('button', { name: 'Zaman Çizelgesi' });
+    await act(async () => {
+      await user.click(timelineTab);
+    });
+
+    await screen.findByText('Gerçek zamanlı bağlantı kuruluyor…');
+    expect(streamInstances).toHaveLength(1);
+
+    const timelineStream = streamInstances[0];
+
+    act(() => {
+      timelineStream.options.onStatusChange?.('open', { attempt: 1 });
+    });
+
+    await screen.findByText('Canlı akış aktif. Yeni olaylar anında görünecek.');
+
+    const ledgerEvent: ComplianceEvent = {
+      type: 'ledgerEntry',
+      tenantId: 'demo',
+      emittedAt: '2024-05-01T12:00:00Z',
+      entry: {
+        index: 1,
+        snapshotId: 'SNAP-1',
+        manifestDigest: 'a'.repeat(64),
+        timestamp: '2024-05-01T12:00:00Z',
+        merkleRoot: 'b'.repeat(64),
+        previousRoot: 'c'.repeat(64),
+        ledgerRoot: 'd'.repeat(64),
+        evidence: [],
+      },
+    };
+
+    act(() => {
+      timelineStream.options.onEvent?.(ledgerEvent);
+    });
+
+    await screen.findByText('Ledger kaydı eklendi');
+    expect(screen.getByText(/Snapshot SNAP-1/)).toBeInTheDocument();
+
+    act(() => {
+      timelineStream.options.onStatusChange?.('retrying', { delayMs: 2000, attempt: 2 });
+    });
+
+    await screen.findByText('Bağlantı koptu, 2 saniye içinde yeniden denenecek.');
+
+    act(() => {
+      timelineStream.options.onError?.(new Error('Kimlik doğrulama başarısız oldu'));
+    });
+
+    const disconnectNotices = await screen.findAllByText('Bağlantı hatası: Kimlik doğrulama başarısız oldu');
+    expect(disconnectNotices.length).toBeGreaterThanOrEqual(1);
+
     expect(capturedLicenses.length).toBeGreaterThan(0);
     capturedLicenses.forEach((value) => {
       expect(value).toBe(expectedLicenseHeader);
       expect(value).not.toMatch(/\s/);
     });
+  });
+
+  it('renders risk cockpit analytics and enforces RBAC gating', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <RbacProvider roles={['risk:read', 'ledger:read']}>
+        <App />
+      </RbacProvider>,
+    );
+
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
+    const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    const riskTab = screen.getByRole('button', { name: 'Risk Kokpiti' });
+    await act(async () => {
+      await user.click(riskTab);
+    });
+
+    await screen.findByText('Risk akışı bağlanıyor…');
+    expect(streamInstances).toHaveLength(1);
+
+    const riskStream = streamInstances[0];
+
+    act(() => {
+      riskStream.options.onStatusChange?.('open', { attempt: 1 });
+    });
+
+    await screen.findByText('Canlı risk akışı aktif. Yeni veriler otomatik olarak güncellenecek.');
+
+    const riskEvent: ComplianceEvent = {
+      type: 'riskProfile',
+      tenantId: 'demo',
+      emittedAt: '2024-05-01T10:00:00Z',
+      profile: {
+        score: 74,
+        classification: 'orta',
+        missingSignals: ['threat', 'pen-test'],
+        breakdown: [
+          { factor: 'Kapsam Açığı', contribution: 0.4, weight: 0.5, details: 'Bazı kritik fonksiyonlar izlenmiyor.' },
+          { factor: 'Test Başarısızlığı', contribution: 0.3, weight: 0.3 },
+          { factor: 'Statik Analiz Bulguları', contribution: 0.2, weight: 0.15 },
+          { factor: 'Audit Bayrakları', contribution: 0.1, weight: 0.05 },
+        ],
+      },
+    };
+
+    act(() => {
+      riskStream.options.onEvent?.(riskEvent);
+    });
+
+    const topFactor = await screen.findByText('Kapsam Açığı');
+    const heatmapRow = topFactor.closest('li');
+    expect(heatmapRow).not.toBeNull();
+    if (heatmapRow) {
+      const scoped = within(heatmapRow);
+      expect(scoped.getByText('0.50')).toBeInTheDocument();
+      expect(scoped.getByText('0.40')).toBeInTheDocument();
+      expect(scoped.getByText('0.20')).toBeInTheDocument();
+      expect(scoped.getByText('%62')).toBeInTheDocument();
+    }
+
+    const summary = screen.getByText('Skor').closest('dl');
+    expect(summary).not.toBeNull();
+    if (summary) {
+      const scoped = within(summary);
+      expect(scoped.getByText('74')).toBeInTheDocument();
+      expect(scoped.getByText('orta')).toBeInTheDocument();
+      expect(scoped.getByText('2')).toBeInTheDocument();
+    }
+
+    const previousRoot = 'a'.repeat(64);
+    const ledgerRoot = `${'a'.repeat(56)}${'b'.repeat(8)}`;
+
+    const ledgerEvent: ComplianceEvent = {
+      type: 'ledgerEntry',
+      tenantId: 'demo',
+      emittedAt: '2024-05-01T12:00:00Z',
+      entry: {
+        index: 2,
+        snapshotId: 'SNAP-2',
+        manifestDigest: 'd'.repeat(64),
+        timestamp: '2024-05-01T12:00:00Z',
+        merkleRoot: 'f'.repeat(64),
+        previousRoot,
+        ledgerRoot,
+        evidence: [],
+      },
+    };
+
+    act(() => {
+      riskStream.options.onEvent?.(ledgerEvent);
+    });
+
+    const ledgerCardTitle = await screen.findByText('Snapshot SNAP-2');
+    const ledgerCard = ledgerCardTitle.closest('li');
+    expect(ledgerCard).not.toBeNull();
+    if (ledgerCard) {
+      const scoped = within(ledgerCard);
+      const diffLabel = scoped.getByText('Fark pozisyonu:');
+      const diffContainer = diffLabel.closest('p');
+      expect(diffContainer).not.toBeNull();
+      expect(diffContainer?.textContent?.trim()).toContain('56');
+      expect(scoped.getByText('Önceki: aaaaaaaa → Yeni: bbbbbbbb')).toBeInTheDocument();
+    }
+
+    unmount();
+    expect(riskStream.close).toHaveBeenCalled();
+
+    streamInstances.length = 0;
+    createStreamMock.mockClear();
+
+    const { unmount: unmountNoLedger } = render(
+      <RbacProvider roles={['risk:read']}>
+        <App />
+      </RbacProvider>,
+    );
+
+    const tokenInput2 = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput2, 'demo-token');
+    });
+
+    const licenseTextarea2 = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea2, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    const riskTab2 = screen.getByRole('button', { name: 'Risk Kokpiti' });
+    await act(async () => {
+      await user.click(riskTab2);
+    });
+
+    await screen.findByText('Ledger verilerine erişim yetkiniz yok.');
+
+    unmountNoLedger();
+
+    streamInstances.length = 0;
+    createStreamMock.mockClear();
+
+    const { unmount: unmountNoRisk } = render(
+      <RbacProvider roles={['ledger:read']}>
+        <App />
+      </RbacProvider>,
+    );
+
+    const tokenInput3 = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput3, 'demo-token');
+    });
+
+    const licenseTextarea3 = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea3, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    const riskTab3 = screen.getByRole('button', { name: 'Risk Kokpiti' });
+    await act(async () => {
+      await user.click(riskTab3);
+    });
+
+    await screen.findByText('Risk verilerine erişim yetkiniz yok.');
+
+    unmountNoRisk();
   });
 
   it('surfaces an error when the license is missing', async () => {
