@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { BuildInfo } from '@soipack/adapters';
@@ -29,6 +29,11 @@ type PlaywrightModule = typeof import('playwright');
 describe('@soipack/report', () => {
   const mockedValidator = htmlValidator as jest.MockedFunction<typeof htmlValidator>;
   const goldenDir = path.resolve(__dirname, '__fixtures__', 'goldens');
+  const maybeUpdateGolden = (fileName: string, value: string) => {
+    if (process.env.UPDATE_GOLDENS === '1') {
+      writeFileSync(path.join(goldenDir, fileName), value, 'utf-8');
+    }
+  };
   const sanitizeHtml = (value: string): string => value.replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ').trim();
   const hashHtml = (value: string): string => {
     const normalized = sanitizeHtml(value).replace(
@@ -59,6 +64,7 @@ describe('@soipack/report', () => {
       objectivesMetadata: fixture.objectives,
       title: 'Kurumsal Uyum Matrisi',
       git: gitFixture,
+      signoffs: fixture.signoffs,
     });
 
     expect(result.json.manifestId).toBe(fixture.manifestId);
@@ -72,13 +78,18 @@ describe('@soipack/report', () => {
     expect(result.json.git).toEqual(gitFixture);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
+    expect(result.json.risk?.profile.score).toBeGreaterThan(0);
+    expect(result.json.signoffs).toHaveLength(fixture.signoffs.length);
 
+    maybeUpdateGolden('compliance-matrix.html', result.html);
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
     expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
     expect(result.html).toContain('Kanıt Manifest ID');
     expect(result.html).toContain('Commit:');
     expect(result.html).toContain('Kalite Bulguları');
     expect(result.html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
+    expect(result.html).toContain('Risk Profili');
+    expect(result.html).toContain('Signoff Zaman Çizelgesi');
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
@@ -92,6 +103,7 @@ describe('@soipack/report', () => {
       title: 'Uyum ve Kapsam Özeti',
       git: gitFixture,
       coverageWarnings,
+      signoffs: fixture.signoffs,
     });
 
     expect(result.coverageWarnings).toEqual(coverageWarnings);
@@ -102,6 +114,8 @@ describe('@soipack/report', () => {
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
+    expect(result.html).toContain('Risk Profili');
+    expect(result.html).toContain('Signoff Zaman Çizelgesi');
 
     mockedValidator.mockResolvedValueOnce({ messages: [] });
     const validation = await htmlValidator({ data: result.html, format: 'json' });
@@ -122,6 +136,7 @@ describe('@soipack/report', () => {
       snapshotVersion: fixture.snapshot.version,
     });
 
+    maybeUpdateGolden('trace-matrix.html', html);
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');
     expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
     expect(html).toContain('Gereksinim → Test → Kod');
@@ -164,6 +179,7 @@ describe('@soipack/report', () => {
       snapshotVersion: fixture.snapshot.version,
     });
 
+    maybeUpdateGolden('gaps.html', html);
     const goldenHtml = readFileSync(path.join(goldenDir, 'gaps.html'), 'utf-8');
     expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
     expect(html).toContain('Boşluk');
@@ -184,6 +200,7 @@ describe('@soipack/report', () => {
       title: 'Uyum ve Kapsam Raporu',
       coverageWarnings: warnings,
       git: gitFixture,
+      signoffs: fixture.signoffs,
     });
     const actions: string[] = [];
 
@@ -193,6 +210,7 @@ describe('@soipack/report', () => {
         expect(content).toContain('<h1>Uyum ve Kapsam Raporu</h1>');
         expect(content).toContain('Rapor Tarihi: 2024-02-01 12:00 UTC');
         expect(content).toContain('<li class="muted">MC/DC kapsam verisi eksik: PDF-WARN-1</li>');
+        expect(content).toContain('Signoff Zaman Çizelgesi');
       },
       async pdf(options: {
         format: string;

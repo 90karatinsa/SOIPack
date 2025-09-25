@@ -22,9 +22,18 @@ import {
 
 import { evaluateQualityFindings, QualityFinding } from './quality';
 import { generateTraceSuggestions, type TraceSuggestion } from './traceSuggestions';
+import {
+  computeRiskProfile,
+  predictCoverageDrift,
+  type CoverageDriftForecast,
+  type CoverageSnapshot,
+  type RiskInput,
+  type RiskProfile,
+} from './risk';
 
 export * from './coverage';
 export * from './gaps';
+export * from './risk';
 
 const canonicalStringify = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -853,6 +862,20 @@ export interface ComplianceStatistics {
   codePaths: { total: number };
 }
 
+export interface ComplianceSnapshotRiskBlock {
+  profile: RiskProfile;
+  coverageDrift?: CoverageDriftForecast;
+}
+
+export interface ComplianceSnapshotRiskOptions extends Partial<RiskInput> {
+  coverageHistory?: CoverageSnapshot[];
+}
+
+export interface ComplianceSnapshotOptions {
+  includeRisk?: boolean;
+  risk?: ComplianceSnapshotRiskOptions;
+}
+
 export interface ComplianceSnapshot {
   version: SnapshotVersion;
   generatedAt: string;
@@ -863,6 +886,7 @@ export interface ComplianceSnapshot {
   requirementCoverage: RequirementCoverageStatus[];
   qualityFindings: QualityFinding[];
   traceSuggestions: TraceSuggestion[];
+  risk?: ComplianceSnapshotRiskBlock;
 }
 
 const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
@@ -893,7 +917,10 @@ const summarizeTests = (tests: TestResult[]): TestStatistics => {
   );
 };
 
-export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnapshot => {
+export const generateComplianceSnapshot = (
+  bundle: ImportBundle,
+  options: ComplianceSnapshotOptions = {},
+): ComplianceSnapshot => {
   const fingerprint = computeBundleFingerprint(bundle);
   const baseTimestamp = bundle.generatedAt ?? bundle.snapshot?.createdAt ?? new Date().toISOString();
   let version: SnapshotVersion;
@@ -931,7 +958,7 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
   const gapAnalysis = buildGapAnalysis(objectiveCoverage);
   const codePathCount = traceGraph.nodes.filter((node) => node.type === 'code').length;
 
-  return {
+  const snapshot: ComplianceSnapshot = {
     version,
     generatedAt: bundle.generatedAt ?? new Date().toISOString(),
     objectives: objectiveCoverage,
@@ -947,6 +974,60 @@ export const generateComplianceSnapshot = (bundle: ImportBundle): ComplianceSnap
     qualityFindings,
     traceSuggestions,
   };
+
+  if (options.includeRisk) {
+    const riskOptions = options.risk ?? {};
+    const coverageSignal =
+      riskOptions.coverage ??
+      (requirementCoverage.length > 0
+        ? {
+            total: requirementCoverage.length,
+            missing: requirementCoverage.filter((item) => item.status === 'missing').length,
+            partial: requirementCoverage.filter((item) => item.status === 'partial').length,
+          }
+        : undefined);
+
+    const testsSignal =
+      riskOptions.tests ??
+      (bundle.testResults.length > 0
+        ? {
+            total: bundle.testResults.length,
+            failing: bundle.testResults.filter((test) => test.status === 'failed').length,
+            quarantined: bundle.testResults.filter((test) => test.status === 'skipped').length,
+          }
+        : undefined);
+
+    const analysisSignal =
+      riskOptions.analysis ??
+      (bundle.findings
+        ? bundle.findings.map((finding) => {
+            const severity = finding.severity?.toLowerCase();
+            if (severity === 'error') {
+              return { severity: 'error' as const };
+            }
+            if (severity === 'warn' || severity === 'warning') {
+              return { severity: 'warn' as const };
+            }
+            return { severity: 'info' as const };
+          })
+        : undefined);
+
+    const riskProfile = computeRiskProfile({
+      coverage: coverageSignal,
+      tests: testsSignal,
+      analysis: analysisSignal,
+      audit: riskOptions.audit,
+    });
+
+    const riskBlock: ComplianceSnapshotRiskBlock = { profile: riskProfile };
+    if (riskOptions.coverageHistory && riskOptions.coverageHistory.length > 0) {
+      riskBlock.coverageDrift = predictCoverageDrift(riskOptions.coverageHistory);
+    }
+
+    snapshot.risk = riskBlock;
+  }
+
+  return snapshot;
 };
 
 export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } from './quality';

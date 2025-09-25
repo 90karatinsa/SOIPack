@@ -219,6 +219,148 @@ components:
               type: string
             archive:
               type: string
+    ReviewTarget:
+      type: object
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum:
+            - analyze
+            - report
+            - pack
+          description: İncelemenin ilişkilendirildiği işlem türü.
+        reference:
+          type: string
+          nullable: true
+          description: İşlemle ilişkilendirilen hedef kimlik (ör. import veya analysis kimliği).
+    ReviewApprover:
+      type: object
+      required:
+        - userId
+        - status
+      properties:
+        userId:
+          type: string
+          description: İncelemeyi onaylaması gereken kullanıcı kimliği.
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - rejected
+        decidedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Onay veya red işleminin zamanı.
+        note:
+          type: string
+          nullable: true
+          description: Onay/ret sırasında bırakılan not.
+    ReviewArtifact:
+      type: object
+      required:
+        - id
+        - label
+        - provided
+      properties:
+        id:
+          type: string
+          description: Kanıt girdisinin benzersiz kimliği.
+        label:
+          type: string
+          description: Gereken kanıtın kısa açıklaması.
+        description:
+          type: string
+          nullable: true
+          description: Kanıt için ek açıklama.
+        provided:
+          type: boolean
+          description: Kanıtın sağlanıp sağlanmadığını belirtir.
+        providedBy:
+          type: string
+          nullable: true
+          description: Kanıtı sağlayan kullanıcı kimliği.
+        providedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Kanıtın yüklendiği zaman.
+    ReviewChangeRequest:
+      type: object
+      required:
+        - id
+        - authorId
+        - reason
+        - createdAt
+      properties:
+        id:
+          type: string
+        authorId:
+          type: string
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ReviewResource:
+      type: object
+      required:
+        - id
+        - tenantId
+        - status
+        - target
+        - approvers
+        - requiredArtifacts
+        - changeRequests
+        - hash
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: İncelemenin benzersiz kimliği.
+        tenantId:
+          type: string
+        status:
+          type: string
+          enum:
+            - draft
+            - pending
+            - approved
+            - rejected
+          description: İncelemenin geçerli durumu.
+        target:
+          $ref: '#/components/schemas/ReviewTarget'
+        approvers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewApprover'
+        requiredArtifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewArtifact'
+        changeRequests:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewChangeRequest'
+        hash:
+          type: string
+          description: Eşzamanlı güncellemeleri koruyan hash kilidi.
+        notes:
+          type: string
+          nullable: true
+        reviewer:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     AuditLogEntry:
       type: object
       required:
@@ -336,6 +478,161 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JobSummary'
+    ComplianceRiskBreakdownEntry:
+      type: object
+      required: [factor, contribution, weight, details]
+      properties:
+        factor:
+          type: string
+          enum: [coverage, testing, analysis, audit]
+        contribution:
+          type: number
+          format: double
+        weight:
+          type: number
+          format: double
+        details:
+          type: string
+    ComplianceRiskProfile:
+      type: object
+      required: [score, classification, breakdown, missingSignals]
+      properties:
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        classification:
+          type: string
+          enum: [low, moderate, high, critical]
+        breakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceRiskBreakdownEntry'
+        missingSignals:
+          type: array
+          items:
+            type: string
+            enum: [coverage, testing, analysis, audit]
+    ComplianceLedgerEvidenceLink:
+      type: object
+      required: [snapshotId, hash]
+      properties:
+        snapshotId:
+          type: string
+        hash:
+          type: string
+        path:
+          type: string
+          nullable: true
+    ComplianceLedgerSignature:
+      type: object
+      required: [algorithm, publicKey, signature]
+      properties:
+        algorithm:
+          type: string
+          enum: [Ed25519]
+        publicKey:
+          type: string
+        signature:
+          type: string
+        keyId:
+          type: string
+          nullable: true
+    ComplianceLedgerEntry:
+      type: object
+      required:
+        - index
+        - snapshotId
+        - manifestDigest
+        - timestamp
+        - merkleRoot
+        - previousRoot
+        - ledgerRoot
+        - evidence
+      properties:
+        index:
+          type: integer
+          format: int32
+        snapshotId:
+          type: string
+        manifestDigest:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        merkleRoot:
+          type: string
+        previousRoot:
+          type: string
+        ledgerRoot:
+          type: string
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceLedgerEvidenceLink'
+        signature:
+          $ref: '#/components/schemas/ComplianceLedgerSignature'
+          nullable: true
+    ComplianceQueueJob:
+      type: object
+      required: [id, kind, status, hash, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [import, analyze, report, pack]
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        hash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ComplianceQueueCounts:
+      type: object
+      required: [queued, running, completed, failed]
+      additionalProperties: false
+      properties:
+        queued:
+          type: integer
+          format: int32
+        running:
+          type: integer
+          format: int32
+        completed:
+          type: integer
+          format: int32
+        failed:
+          type: integer
+          format: int32
+    ComplianceStreamEvent:
+      type: object
+      required: [type, tenantId, emittedAt]
+      properties:
+        type:
+          type: string
+          enum: [riskProfile, ledgerEntry, queueState]
+        tenantId:
+          type: string
+        emittedAt:
+          type: string
+          format: date-time
+        profile:
+          $ref: '#/components/schemas/ComplianceRiskProfile'
+        entry:
+          $ref: '#/components/schemas/ComplianceLedgerEntry'
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceQueueJob'
+        counts:
+          $ref: '#/components/schemas/ComplianceQueueCounts'
     JobMutationResponse:
       type: object
       required:
@@ -603,6 +900,197 @@ components:
             - type: string
             - type: number
             - type: 'null'
+    WorkspaceRequirement:
+      type: object
+      required: [id, title, status, tags]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [draft, approved, implemented, verified]
+        tags:
+          type: array
+          items:
+            type: string
+    WorkspaceRevision:
+      type: object
+      required: [id, number, hash, authorId, createdAt, content]
+      properties:
+        id:
+          type: string
+        number:
+          type: integer
+        hash:
+          type: string
+        authorId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        content:
+          type: array
+          description: Belge türüne bağlı içerik. requirements belgeleri WorkspaceRequirement kayıtları içerir.
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/WorkspaceRequirement'
+              - type: object
+    WorkspaceDocument:
+      type: object
+      required: [id, tenantId, workspaceId, kind, title, createdAt, updatedAt, revision]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        workspaceId:
+          type: string
+        kind:
+          type: string
+          enum: [requirements, traceLinks, evidence]
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        revision:
+          $ref: '#/components/schemas/WorkspaceRevision'
+    WorkspaceComment:
+      type: object
+      required: [id, documentId, revisionId, tenantId, workspaceId, authorId, body, createdAt]
+      properties:
+        id:
+          type: string
+        documentId:
+          type: string
+        revisionId:
+          type: string
+        tenantId:
+          type: string
+        workspaceId:
+          type: string
+        authorId:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    WorkspaceSignoff:
+      type: object
+      required:
+        - id
+        - documentId
+        - revisionId
+        - tenantId
+        - workspaceId
+        - revisionHash
+        - status
+        - requestedBy
+        - requestedFor
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        documentId:
+          type: string
+        revisionId:
+          type: string
+        tenantId:
+          type: string
+        workspaceId:
+          type: string
+        revisionHash:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved]
+        requestedBy:
+          type: string
+        requestedFor:
+          type: string
+        signerId:
+          type: string
+          nullable: true
+        signerPublicKey:
+          type: string
+          nullable: true
+        signature:
+          type: string
+          nullable: true
+        signedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkspaceDocumentUpdateRequest:
+      type: object
+      required: [kind, title, content]
+      properties:
+        kind:
+          type: string
+          enum: [requirements, traceLinks, evidence]
+        title:
+          type: string
+        expectedHash:
+          type: string
+          nullable: true
+        content:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/WorkspaceRequirement'
+              - type: object
+    WorkspaceCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+        revisionId:
+          type: string
+        revisionHash:
+          type: string
+    WorkspaceSignoffRequest:
+      type: object
+      required: [documentId, revisionHash, requestedFor]
+      properties:
+        documentId:
+          type: string
+        revisionHash:
+          type: string
+        requestedFor:
+          type: string
+    WorkspaceSignoffApprovalRequest:
+      type: object
+      required: [action, expectedRevisionHash, publicKey, signature, signedAt]
+      properties:
+        action:
+          type: string
+          enum: [approve]
+        expectedRevisionHash:
+          type: string
+        publicKey:
+          type: string
+        signature:
+          type: string
+        signedAt:
+          type: string
+          format: date-time
 paths:
   /health:
     get:
@@ -786,6 +1274,341 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/reviews:
+    post:
+      operationId: createReview
+      summary: İnceleme kaydı oluşturur.
+      description: >-
+        İncelemeler `draft → pending → approved/rejected` yaşam döngüsünü izler. İnceleme oluşturulduktan sonra
+        atanan onaycılar ve gerekli kanıtlar bu uç noktadan yönetilebilir.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - target
+              properties:
+                target:
+                  $ref: '#/components/schemas/ReviewTarget'
+                approvers:
+                  type: array
+                  items:
+                    type: string
+                  description: İncelemeyi onaylaması gereken kullanıcı kimlikleri.
+                requiredArtifacts:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - label
+                    properties:
+                      id:
+                        type: string
+                        description: Önceden belirlenmiş kanıt kimliği (opsiyonel).
+                      label:
+                        type: string
+                      description:
+                        type: string
+                        nullable: true
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        '201':
+          description: İnceleme oluşturuldu.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - review
+                properties:
+                  review:
+                    $ref: '#/components/schemas/ReviewResource'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/reviews/{id}:
+    patch:
+      operationId: updateReview
+      summary: İnceleme durumunu veya atamalarını günceller.
+      description: >-
+        `configure` eylemi taslak/ret durumundaki incelemeleri değiştirir, `submit` incelemeyi onaya gönderir,
+        `approve` ve `reject` ise atanan onaycılar tarafından yürütülür.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: İnceleme kimliği.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+                - expectedHash
+              properties:
+                action:
+                  type: string
+                  enum: [configure, submit, approve, reject]
+                expectedHash:
+                  type: string
+                  description: Güncel inceleme hash değeri (iyimser kilit).
+                target:
+                  $ref: '#/components/schemas/ReviewTarget'
+                approvers:
+                  type: array
+                  items:
+                    type: string
+                requiredArtifacts:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - label
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      description:
+                        type: string
+                        nullable: true
+                notes:
+                  type: string
+                  nullable: true
+                  description: İncelemenin genel notu (configure için).
+                note:
+                  type: string
+                  nullable: true
+                  description: Onay notu (approve eylemi için).
+                reason:
+                  type: string
+                  description: Ret gerekçesi (reject eylemi için).
+      responses:
+        '200':
+          description: İnceleme güncellendi.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - review
+                properties:
+                  review:
+                    $ref: '#/components/schemas/ReviewResource'
+        '400':
+          description: İstek verisi hatalı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İnceleme işlemi için yetki yetersiz.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: İnceleme bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Hash kilidi uyuşmadı veya geçersiz durum geçişi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/workspaces/{workspaceId}/documents/{documentId}:
+    put:
+      operationId: updateWorkspaceDocument
+      summary: Çalışma alanı belgesini oluşturur veya günceller.
+      tags:
+        - Workspaces
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceDocumentUpdateRequest'
+      responses:
+        '200':
+          description: Belge güncellendi.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document:
+                    $ref: '#/components/schemas/WorkspaceDocument'
+        '400':
+          description: İstek gövdesi geçersiz.
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+        '404':
+          description: Belge bulunamadı.
+        '409':
+          description: Belge güncellemesi çakıştı.
+  /v1/workspaces/{workspaceId}/documents/{documentId}/comments:
+    post:
+      operationId: commentWorkspaceDocument
+      summary: Bir belge revizyonuna yorum ekler.
+      tags:
+        - Workspaces
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceCommentRequest'
+      responses:
+        '201':
+          description: Yorum oluşturuldu.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment:
+                    $ref: '#/components/schemas/WorkspaceComment'
+        '400':
+          description: İstek gövdesi geçersiz.
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+        '404':
+          description: Belge veya revizyon bulunamadı.
+  /v1/workspaces/{workspaceId}/signoffs:
+    post:
+      operationId: requestWorkspaceSignoff
+      summary: Belge için imza isteği açar.
+      tags:
+        - Workspaces
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceSignoffRequest'
+      responses:
+        '201':
+          description: İmza isteği oluşturuldu.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signoff:
+                    $ref: '#/components/schemas/WorkspaceSignoff'
+        '400':
+          description: İstek gövdesi geçersiz.
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+        '404':
+          description: Belge veya revizyon bulunamadı.
+  /v1/workspaces/{workspaceId}/signoffs/{signoffId}:
+    patch:
+      operationId: approveWorkspaceSignoff
+      summary: İmza isteğini onaylar.
+      tags:
+        - Workspaces
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: signoffId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceSignoffApprovalRequest'
+      responses:
+        '200':
+          description: İmza isteği güncellendi.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signoff:
+                    $ref: '#/components/schemas/WorkspaceSignoff'
+        '400':
+          description: İmza doğrulanamadı.
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+        '404':
+          description: İmza isteği bulunamadı.
+        '409':
+          description: İmza isteği güncel değil.
   /v1/analyze:
     post:
       operationId: createAnalyzeJob
@@ -806,6 +1629,9 @@ paths:
                 importId:
                   type: string
                   description: Import işlemi kimliği.
+                reviewId:
+                  type: string
+                  description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
                 level:
                   type: string
                   description: Sertifikasyon seviyesi (A-E).
@@ -828,6 +1654,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İnceleme gereksinimi karşılanmadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: İnceleme henüz onaylanmadı.
           content:
             application/json:
               schema:
@@ -860,6 +1698,9 @@ paths:
                 manifestId:
                   type: string
                   description: Rapor başlıklarında kullanılacak manifest kimliği.
+                reviewId:
+                  type: string
+                  description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
       responses:
         '200':
           description: Rapor üretildi.
@@ -875,6 +1716,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İnceleme gereksinimi karşılanmadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: İnceleme henüz onaylanmadı.
           content:
             application/json:
               schema:
@@ -908,6 +1761,9 @@ paths:
                   type: string
                   description: Oluşturulacak zip dosyası adı. Yalnızca `.zip` uzantılı ve harf/rakam, nokta, alt çizgi veya tire içeren düz dosya adları kabul edilir.
                   pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$'
+                reviewId:
+                  type: string
+                  description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
       responses:
         '200':
           description: Paket başarıyla oluşturuldu.
@@ -923,6 +1779,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İnceleme gereksinimi karşılanmadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: İnceleme henüz onaylanmadı.
           content:
             application/json:
               schema:
@@ -975,6 +1843,51 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/stream/compliance:
+    get:
+      operationId: streamCompliance
+      summary: Risk profilleri ve kuyruk durumları için SSE akışı.
+      description: |-
+        Tenant kimliğiyle ilişkilendirilmiş risk profili güncellemelerini, ledger
+        zinciri girişlerini ve kuyruk durum değişimlerini gerçek zamanlı olarak
+        yayınlar. Yanıt `text/event-stream` içerik türünde standart SSE
+        mesajlarından oluşur. Her mesajın verisi JSON olarak kodlanır ve
+        `ComplianceStreamEvent` şemasını takip eder.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: SSE akışı başarıyla başlatıldı.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Her satır `event:` ve `data:` alanlarından oluşan SSE mesajıdır.
+              examples:
+                riskProfile:
+                  summary: Risk profili olayı
+                  value: |
+                    event: riskProfile
+                    data: {"type":"riskProfile","tenantId":"tenant-a","profile":{"score":37,"classification":"moderate"}}
+                queueState:
+                  summary: Kuyruk durumu olayı
+                  value: |
+                    event: queueState
+                    data: {"type":"queueState","tenantId":"tenant-a","counts":{"queued":0,"running":1,"completed":0,"failed":0}}
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
           content:
             application/json:
               schema:

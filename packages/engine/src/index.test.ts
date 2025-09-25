@@ -410,6 +410,27 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.stats.codePaths).toEqual({ total: 2 });
   });
 
+  it('omits risk blocks by default for backward compatibility', () => {
+    expect(snapshot.risk).toBeUndefined();
+  });
+
+  it('attaches computed risk insights when requested', () => {
+    const withRisk = generateComplianceSnapshot(bundle, {
+      includeRisk: true,
+      risk: {
+        coverageHistory: [
+          { timestamp: '2024-01-01T00:00:00Z', coverage: 82 },
+          { timestamp: '2024-01-08T00:00:00Z', coverage: 80 },
+          { timestamp: '2024-01-15T00:00:00Z', coverage: 78 },
+        ],
+      },
+    });
+
+    expect(withRisk.risk?.profile.score).toBeGreaterThanOrEqual(0);
+    expect(withRisk.risk?.profile.breakdown.length).toBeGreaterThan(0);
+    expect(withRisk.risk?.coverageDrift?.classification).toBeDefined();
+  });
+
   it('derives gap analysis grouped by artifact category', () => {
     expect(snapshot.gaps.reviews).toEqual(
       expect.arrayContaining([

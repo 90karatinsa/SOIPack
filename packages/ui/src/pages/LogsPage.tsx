@@ -1,65 +1,246 @@
-import { Button, EmptyState, Input, PageHeader, Pagination, Select, Table, Toolbar } from '@bora/ui-kit';
-import type { AuditLogEntry } from '@soipack/ui-mocks';
-import { useEffect, useMemo, useState } from 'react';
+import { Alert, Button, EmptyState, Input, PageHeader, Skeleton, Table, Toolbar } from '@bora/ui-kit';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { useAuditTrail } from '../providers/AuditTrailProvider';
 import { useT } from '../providers/I18nProvider';
 import { RoleGate } from '../providers/RbacProvider';
-import { fetchLogs } from '../services/mockService';
+import { ApiError, listAuditLogs, type AuditLogEntry } from '../services/api';
 
-const severityOptions = [
-  { value: 'all', label: 'Tümü' },
-  { value: 'info', label: 'Bilgi' },
-  { value: 'warning', label: 'Uyarı' },
-  { value: 'danger', label: 'Kritik' }
-];
+type LogsPageProps = {
+  token?: string;
+  license?: string;
+  onExport?: (filters: { tenantId?: string; actor?: string }) => void;
+  pageSize?: number;
+};
 
-export default function LogsPage() {
-  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
-  const [query, setQuery] = useState('');
-  const [severity, setSeverity] = useState('all');
-  const [page, setPage] = useState(1);
-  const pageSize = 8;
+interface LogsState {
+  loading: boolean;
+  error: string | null;
+  items: AuditLogEntry[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+const PAGE_SIZE_DEFAULT = 25;
+
+export default function LogsPage({
+  token = '',
+  license = '',
+  onExport,
+  pageSize = PAGE_SIZE_DEFAULT,
+}: LogsPageProps) {
   const t = useT();
-  const { logEvent } = useAuditTrail();
+  const [filters, setFilters] = useState<{ tenantId: string; actor: string }>({ tenantId: '', actor: '' });
+  const [state, setState] = useState<LogsState>({
+    loading: false,
+    error: null,
+    items: [],
+    hasMore: false,
+    nextOffset: null,
+  });
+  const [isAppending, setIsAppending] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const appendGuardRef = useRef(false);
+  const filterSignatureRef = useRef('');
+
+  const trimmedToken = token.trim();
+  const trimmedLicense = license.trim();
+  const tenantFilter = filters.tenantId.trim();
+  const actorFilter = filters.actor.trim();
+  const filterSignature = `${tenantFilter}::${actorFilter}`;
 
   useEffect(() => {
-    void fetchLogs().then(setLogs);
-  }, []);
+    if (!trimmedToken || !trimmedLicense) {
+      filterSignatureRef.current = filterSignature;
+      appendGuardRef.current = false;
+      setIsAppending(false);
+      setState({
+        loading: false,
+        error: t('logs.credentialsRequired'),
+        items: [],
+        hasMore: false,
+        nextOffset: null,
+      });
+      return;
+    }
 
-  const filtered = useMemo(() => {
-    return logs
-      .filter((entry) =>
-        severity === 'all' ? true : entry.severity === severity
-      )
-      .filter((entry) =>
-        [entry.actor, entry.role, entry.action, entry.correlationId]
-          .join(' ')
-          .toLowerCase()
-          .includes(query.toLowerCase())
-      );
-  }, [logs, query, severity]);
+    filterSignatureRef.current = filterSignature;
+    appendGuardRef.current = false;
+    setIsAppending(false);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const visible = filtered.slice((page - 1) * pageSize, page * pageSize);
+    const controller = new AbortController();
+    setState((previous) => ({ ...previous, loading: true, error: null, items: [] }));
+
+    listAuditLogs({
+      token: trimmedToken,
+      license: trimmedLicense,
+      tenantId: tenantFilter || undefined,
+      actor: actorFilter || undefined,
+      order: 'desc',
+      limit: pageSize,
+      offset: 0,
+      signal: controller.signal,
+    })
+      .then((response) => {
+        setState({
+          loading: false,
+          error: null,
+          items: response.items,
+          hasMore: response.hasMore,
+          nextOffset: response.nextOffset,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message = error instanceof ApiError ? error.message : t('logs.error');
+        setState({ loading: false, error: message, items: [], hasMore: false, nextOffset: null });
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [
+    trimmedToken,
+    trimmedLicense,
+    tenantFilter,
+    actorFilter,
+    pageSize,
+    t,
+    filterSignature,
+  ]);
+
+  const loadMore = useCallback(() => {
+    if (appendGuardRef.current) {
+      return;
+    }
+    if (!trimmedToken || !trimmedLicense) {
+      return;
+    }
+    if (!state.hasMore || state.nextOffset === null) {
+      return;
+    }
+
+    appendGuardRef.current = true;
+    setIsAppending(true);
+
+    const requestSignature = filterSignature;
+
+    listAuditLogs({
+      token: trimmedToken,
+      license: trimmedLicense,
+      tenantId: tenantFilter || undefined,
+      actor: actorFilter || undefined,
+      order: 'desc',
+      limit: pageSize,
+      offset: state.nextOffset,
+    })
+      .then((response) => {
+        if (filterSignatureRef.current !== requestSignature) {
+          return;
+        }
+        setState((previous) => ({
+          loading: previous.loading,
+          error: null,
+          items: [...previous.items, ...response.items],
+          hasMore: response.hasMore,
+          nextOffset: response.nextOffset,
+        }));
+      })
+      .catch((error) => {
+        const message = error instanceof ApiError ? error.message : t('logs.error');
+        setState((previous) => ({
+          ...previous,
+          error: message,
+        }));
+      })
+      .finally(() => {
+        appendGuardRef.current = false;
+        setIsAppending(false);
+      });
+  }, [
+    actorFilter,
+    filterSignature,
+    pageSize,
+    state.hasMore,
+    state.nextOffset,
+    tenantFilter,
+    t,
+    trimmedLicense,
+    trimmedToken,
+  ]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) {
+      return;
+    }
+    if (!state.hasMore) {
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          loadMore();
+        }
+      });
+    }, { rootMargin: '200px' });
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [loadMore, state.hasMore]);
+
+  const rows = useMemo(
+    () =>
+      state.items.map((entry) => ({
+        id: entry.id,
+        actor: entry.actor,
+        tenantId: entry.tenantId,
+        action: entry.action,
+        target: entry.target ?? '-',
+        createdAt: new Date(entry.createdAt).toLocaleString(),
+      })),
+    [state.items],
+  );
 
   const handleExport = () => {
-    const header = 'actor,role,action,severity,createdAt,correlationId\n';
-    const rows = filtered
+    const exportFilters = {
+      tenantId: tenantFilter || undefined,
+      actor: actorFilter || undefined,
+    };
+
+    if (onExport) {
+      onExport(exportFilters);
+      return;
+    }
+
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const header = 'id,tenantId,actor,action,target,createdAt\n';
+    const rowsAsString = state.items
       .map((entry) =>
-        [entry.actor, entry.role, entry.action, entry.severity, entry.createdAt, entry.correlationId]
-          .map((value) => `"${value.replace(/"/g, '""')}"`)
-          .join(',')
+        [entry.id, entry.tenantId, entry.actor, entry.action, entry.target ?? '', entry.createdAt]
+          .map((value) => {
+            const text = value ?? '';
+            return `"${String(text).replace(/"/g, '""')}"`;
+          })
+          .join(','),
       )
       .join('\n');
-    const blob = new Blob([header + rows], { type: 'text/csv' });
+
+    const blob = new Blob([header + rowsAsString], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = 'audit-logs.csv';
     anchor.click();
     URL.revokeObjectURL(url);
-    logEvent('Denetim kayıtları CSV dışa aktarıldı');
   };
 
   return (
@@ -79,46 +260,48 @@ export default function LogsPage() {
 
       <Toolbar>
         <Input
-          placeholder="Ara"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setPage(1);
-          }}
-          aria-label="Kayıt filtrele"
+          value={filters.tenantId}
+          onChange={(event) => setFilters((previous) => ({ ...previous, tenantId: event.target.value }))}
+          placeholder={t('logs.filter.tenant')}
+          aria-label={t('logs.filter.tenant')}
         />
-        <Select
-          value={severity}
-          onValueChange={(value) => {
-            setSeverity(value);
-            setPage(1);
-          }}
-          options={severityOptions}
+        <Input
+          value={filters.actor}
+          onChange={(event) => setFilters((previous) => ({ ...previous, actor: event.target.value }))}
+          placeholder={t('logs.filter.actor')}
+          aria-label={t('logs.filter.actor')}
         />
-        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
       </Toolbar>
 
-      {visible.length === 0 ? (
+      {state.loading ? (
+        <div data-testid="logs-loading" className="space-y-2">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} className="h-12 w-full" />
+          ))}
+        </div>
+      ) : state.error ? (
+        <Alert title={t('logs.errorTitle')} description={state.error} variant="error" />
+      ) : rows.length === 0 ? (
         <EmptyState title={t('logs.empty')} description="" />
       ) : (
-        <Table
-          columns={[
-            { key: 'actor', title: 'Kullanıcı' },
-            { key: 'role', title: 'Rol' },
-            { key: 'action', title: 'Eylem' },
-            { key: 'severity', title: 'Seviye' },
-            { key: 'createdAt', title: 'Zaman' },
-            { key: 'correlationId', title: 'Correlation' }
-          ]}
-          rows={visible.map((entry) => ({
-            actor: entry.actor,
-            role: entry.role,
-            action: entry.action,
-            severity: entry.severity,
-            createdAt: new Date(entry.createdAt).toLocaleString(),
-            correlationId: entry.correlationId
-          }))}
-        />
+        <div className="space-y-4">
+          <Table
+            columns={[
+              { key: 'createdAt', title: t('logs.table.timestamp') },
+              { key: 'actor', title: t('logs.table.actor') },
+              { key: 'tenantId', title: t('logs.table.tenant') },
+              { key: 'action', title: t('logs.table.action') },
+              { key: 'target', title: t('logs.table.target') },
+            ]}
+            rows={rows}
+          />
+          <div ref={sentinelRef} data-testid="logs-sentinel" className="h-2 w-full" />
+          {isAppending && (
+            <div data-testid="logs-appending" className="space-y-2">
+              <Skeleton className="h-12 w-full" />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

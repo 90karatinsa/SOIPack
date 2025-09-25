@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --project tsconfig.json --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "jest --config jest.config.cjs"
   },
   "dependencies": {
     "react": "^18.2.0",

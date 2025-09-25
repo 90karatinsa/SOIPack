@@ -62,6 +62,32 @@ import {
   UploadedFileMap,
 } from './storage';
 import { RbacStore, type RbacApiKey, type RbacRole, type RbacUser } from './rbac';
+import {
+  ReviewStore,
+  ReviewConflictError,
+  ReviewNotFoundError,
+  ReviewPermissionError,
+  ReviewTransitionError,
+  type Review,
+  type ReviewTargetKind,
+} from './reviews';
+import {
+  WorkspaceService,
+  WorkspaceDocumentConflictError,
+  WorkspaceDocumentNotFoundError,
+  WorkspaceDocumentValidationError,
+  WorkspaceRevisionNotFoundError,
+  WorkspaceSignoffConflictError,
+  WorkspaceSignoffNotFoundError,
+  WorkspaceSignoffPermissionError,
+  WorkspaceSignoffVerificationError,
+  workspaceDocumentSchemas,
+  type WorkspaceComment,
+  type WorkspaceDocument,
+  type WorkspaceDocumentKind,
+  type WorkspaceSignoff,
+} from './workspaces/service';
+import { ComplianceEventStream } from './events';
 
 type FileMap = Record<string, Express.Multer.File[]>;
 
@@ -141,6 +167,7 @@ export interface ServerLifecycle {
   runTenantRetention: (tenantId: string) => Promise<RetentionStats[]>;
   runAllTenantRetention: () => Promise<Record<string, RetentionStats[]>>;
   logger: Logger;
+  events: ComplianceEventStream;
 }
 
 const setRequestContext = (req: Request, context: RequestContext): void => {
@@ -1326,6 +1353,11 @@ export interface ServerConfig {
   licenseLimits?: LicenseLimitsConfig;
   licenseCache?: LicenseCacheConfig;
   retentionScheduler?: RetentionSchedulerConfig;
+  events?: EventStreamConfig;
+}
+
+export interface EventStreamConfig {
+  heartbeatMs?: number;
 }
 
 export interface LicenseLimitsConfig {
@@ -2177,8 +2209,11 @@ export const createServer = (config: ServerConfig): Express => {
   const jobLicenses = new Map<string, VerifiedLicense>();
   const knownTenants = new Set<string>();
   const logger: Logger = config.logger ?? pino({ name: 'soipack-server' });
+  const events = new ComplianceEventStream({ heartbeatMs: config.events?.heartbeatMs });
 
   const rbacStore = new RbacStore(config.database);
+  const reviewStore = new ReviewStore(config.database);
+  const workspaceService = new WorkspaceService(config.database);
 
   const jwtUserLoader: JwtUserLoader = {
     loadUser: async (tenantId, subject) => {
@@ -2256,6 +2291,173 @@ export const createServer = (config: ServerConfig): Express => {
     hash: license.hash,
     expiresAt: license.payload.expiresAt ?? null,
   });
+
+  const toReviewResponse = (review: Review): Record<string, unknown> => ({
+    id: review.id,
+    tenantId: review.tenantId,
+    status: review.status,
+    target: {
+      kind: review.target.kind,
+      reference: review.target.reference ?? null,
+    },
+    approvers: review.approvers.map((approver) => ({
+      userId: approver.userId,
+      status: approver.status,
+      decidedAt: approver.decidedAt ? approver.decidedAt.toISOString() : null,
+      note: approver.note ?? null,
+    })),
+    requiredArtifacts: review.requiredArtifacts.map((artifact) => ({
+      id: artifact.id,
+      label: artifact.label,
+      description: artifact.description ?? null,
+      provided: artifact.provided,
+      providedBy: artifact.providedBy ?? null,
+      providedAt: artifact.providedAt ? artifact.providedAt.toISOString() : null,
+    })),
+    changeRequests: review.changeRequests.map((entry) => ({
+      id: entry.id,
+      authorId: entry.authorId,
+      reason: entry.reason,
+      createdAt: entry.createdAt.toISOString(),
+    })),
+    hash: review.hash,
+    notes: review.notes ?? null,
+    reviewer: review.reviewer ?? null,
+    createdAt: review.createdAt.toISOString(),
+    updatedAt: review.updatedAt.toISOString(),
+  });
+
+  const allowedWorkspaceKinds = new Set(
+    Object.keys(workspaceDocumentSchemas) as WorkspaceDocumentKind[],
+  );
+
+  const isWorkspaceKind = (value: string): value is WorkspaceDocumentKind =>
+    allowedWorkspaceKinds.has(value as WorkspaceDocumentKind);
+
+  const toWorkspaceDocumentResponse = (document: WorkspaceDocument): Record<string, unknown> => ({
+    id: document.id,
+    tenantId: document.tenantId,
+    workspaceId: document.workspaceId,
+    kind: document.kind,
+    title: document.title,
+    createdAt: document.createdAt.toISOString(),
+    updatedAt: document.updatedAt.toISOString(),
+    revision: {
+      id: document.latestRevision.id,
+      number: document.latestRevision.revision,
+      hash: document.latestRevision.hash,
+      authorId: document.latestRevision.authorId,
+      createdAt: document.latestRevision.createdAt.toISOString(),
+      content: document.latestRevision.content,
+    },
+  });
+
+  const toWorkspaceCommentResponse = (comment: WorkspaceComment): Record<string, unknown> => ({
+    id: comment.id,
+    documentId: comment.documentId,
+    revisionId: comment.revisionId,
+    tenantId: comment.tenantId,
+    workspaceId: comment.workspaceId,
+    authorId: comment.authorId,
+    body: comment.body,
+    createdAt: comment.createdAt.toISOString(),
+  });
+
+  const toWorkspaceSignoffResponse = (signoff: WorkspaceSignoff): Record<string, unknown> => ({
+    id: signoff.id,
+    documentId: signoff.documentId,
+    revisionId: signoff.revisionId,
+    tenantId: signoff.tenantId,
+    workspaceId: signoff.workspaceId,
+    revisionHash: signoff.revisionHash,
+    status: signoff.status,
+    requestedBy: signoff.requestedBy,
+    requestedFor: signoff.requestedFor,
+    signerId: signoff.signerId ?? null,
+    signerPublicKey: signoff.signerPublicKey ?? null,
+    signature: signoff.signature ?? null,
+    signedAt: signoff.signedAt ? signoff.signedAt.toISOString() : null,
+    createdAt: signoff.createdAt.toISOString(),
+    updatedAt: signoff.updatedAt.toISOString(),
+  });
+
+  const handleWorkspaceError = (error: unknown): never => {
+    if (error instanceof WorkspaceDocumentValidationError) {
+      throw new HttpError(400, 'INVALID_REQUEST', error.message, { issues: error.issues });
+    }
+    if (
+      error instanceof WorkspaceDocumentConflictError ||
+      error instanceof WorkspaceSignoffConflictError
+    ) {
+      throw new HttpError(409, 'CONFLICT', error.message);
+    }
+    if (
+      error instanceof WorkspaceDocumentNotFoundError ||
+      error instanceof WorkspaceRevisionNotFoundError ||
+      error instanceof WorkspaceSignoffNotFoundError
+    ) {
+      throw new HttpError(404, 'NOT_FOUND', error.message);
+    }
+    if (error instanceof WorkspaceSignoffVerificationError) {
+      throw new HttpError(400, 'INVALID_SIGNATURE', error.message);
+    }
+    if (error instanceof WorkspaceSignoffPermissionError) {
+      throw new HttpError(403, 'FORBIDDEN_ROLE', error.message);
+    }
+    throw error;
+  };
+
+  const handleReviewError = (error: unknown): never => {
+    if (error instanceof ReviewNotFoundError) {
+      throw new HttpError(404, 'REVIEW_NOT_FOUND', 'İnceleme kaydı bulunamadı.');
+    }
+    if (error instanceof ReviewConflictError) {
+      throw new HttpError(409, 'REVIEW_CONFLICT', 'İnceleme başka bir işlem tarafından güncellendi.');
+    }
+    if (error instanceof ReviewPermissionError) {
+      throw new HttpError(403, 'REVIEW_FORBIDDEN', 'Bu inceleme için gerekli yetkiye sahip değilsiniz.');
+    }
+    if (error instanceof ReviewTransitionError) {
+      throw new HttpError(400, 'REVIEW_INVALID_TRANSITION', error.message);
+    }
+    throw error;
+  };
+
+  const requireApprovedReviewForRequest = async (
+    req: Request,
+    reviewId: string | undefined,
+    targetKind: ReviewTargetKind,
+    reference?: string,
+  ): Promise<void> => {
+    const { tenantId, hasAdminScope } = getAuthContext(req);
+    if (hasAdminScope) {
+      return;
+    }
+    if (!reviewId || typeof reviewId !== 'string' || reviewId.trim().length === 0) {
+      throw new HttpError(403, 'REVIEW_REQUIRED', 'Bu işlem için onaylanmış bir inceleme gereklidir.');
+    }
+    const review = await reviewStore.getReview(tenantId, reviewId);
+    if (!review) {
+      throw new HttpError(404, 'REVIEW_NOT_FOUND', 'İnceleme kaydı bulunamadı.');
+    }
+    if (review.status !== 'approved') {
+      throw new HttpError(409, 'REVIEW_NOT_APPROVED', 'İnceleme henüz onaylanmadı.', {
+        status: review.status,
+      });
+    }
+    if (review.target.kind !== targetKind) {
+      throw new HttpError(400, 'REVIEW_TARGET_MISMATCH', 'İnceleme bu işlem için geçerli değil.', {
+        expected: targetKind,
+        actual: review.target.kind,
+      });
+    }
+    if (reference && review.target.reference && review.target.reference !== reference) {
+      throw new HttpError(400, 'REVIEW_REFERENCE_MISMATCH', 'İnceleme farklı bir hedef için geçerlidir.', {
+        expected: reference,
+        actual: review.target.reference,
+      });
+    }
+  };
 
   interface EvidenceRecord {
     id: string;
@@ -3542,12 +3744,14 @@ export const createServer = (config: ServerConfig): Express => {
   const getTotalActiveJobCount = async (): Promise<number> => jobStore.countTotalActiveJobs();
 
   const updateQueueDepth = async (tenantId: string): Promise<void> => {
-    const [tenantCount, totalCount] = await Promise.all([
+    const [tenantCount, totalCount, jobs] = await Promise.all([
       getActiveJobCount(tenantId),
       getTotalActiveJobCount(),
+      jobStore.listJobs(tenantId),
     ]);
     jobQueueDepthGauge.set({ tenantId }, tenantCount);
     jobQueueTotalGauge.set(totalCount);
+    events.publishQueueState(tenantId, jobs);
   };
 
   const ensureQueueWithinLimit = async (tenantId: string): Promise<void> => {
@@ -3793,6 +3997,26 @@ export const createServer = (config: ServerConfig): Express => {
       res.json(serializeEvidenceRecord(record, { includeContent: true }));
     }),
   );
+
+  app.get('/v1/stream/compliance', requireAuth, (req, res, next) => {
+    ensureRole(req, ['reader', 'maintainer', 'admin'])
+      .then((principal) => {
+        const { tenantId } = getAuthContext(req);
+        try {
+          events.connect({
+            tenantId,
+            actorTenantId: principal.tenantId ?? tenantId,
+            response: res,
+            request: req,
+            heartbeatMs: config.events?.heartbeatMs,
+            actorLabel: principal.label ?? principal.preview,
+          });
+        } catch (error) {
+          next(error);
+        }
+      })
+      .catch(next);
+  });
 
   app.get(
     '/v1/admin/storage/health',
@@ -4799,6 +5023,404 @@ export const createServer = (config: ServerConfig): Express => {
     }),
   );
 
+  const parseReviewTarget = (value: unknown): { kind: ReviewTargetKind; reference?: string | null } | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!value || typeof value !== 'object') {
+      throw new HttpError(400, 'INVALID_REQUEST', 'target alanı nesne olmalıdır.');
+    }
+    const record = value as { kind?: unknown; reference?: unknown };
+    if (typeof record.kind !== 'string') {
+      throw new HttpError(400, 'INVALID_REQUEST', 'target.kind alanı zorunludur.');
+    }
+    const reference =
+      record.reference === undefined || record.reference === null
+        ? null
+        : typeof record.reference === 'string'
+          ? record.reference
+          : (() => {
+              throw new HttpError(400, 'INVALID_REQUEST', 'target.reference değeri metin olmalıdır.');
+            })();
+    return { kind: record.kind as ReviewTargetKind, reference };
+  };
+
+  const parseReviewApprovers = (value: unknown): string[] | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!Array.isArray(value)) {
+      throw new HttpError(400, 'INVALID_REQUEST', 'approvers alanı bir dizi olmalıdır.');
+    }
+    return value.map((entry) => {
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'approvers dizisi yalnızca metin değerleri içerebilir.');
+      }
+      return entry;
+    });
+  };
+
+  const parseReviewArtifacts = (
+    value: unknown,
+  ): Array<{ id?: string; label: string; description?: string | null }> | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!Array.isArray(value)) {
+      throw new HttpError(400, 'INVALID_REQUEST', 'requiredArtifacts alanı bir dizi olmalıdır.');
+    }
+    return value.map((entry, index) => {
+      if (!entry || typeof entry !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', `requiredArtifacts[${index}] geçerli bir nesne olmalıdır.`);
+      }
+      const record = entry as { id?: unknown; label?: unknown; description?: unknown };
+      if (typeof record.label !== 'string' || record.label.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', `requiredArtifacts[${index}].label zorunludur.`);
+      }
+      const id = record.id === undefined ? undefined : String(record.id);
+      const description =
+        record.description === undefined || record.description === null
+          ? null
+          : typeof record.description === 'string'
+            ? record.description
+            : (() => {
+                throw new HttpError(400, 'INVALID_REQUEST', `requiredArtifacts[${index}].description metin olmalıdır.`);
+              })();
+      return { id, label: record.label, description };
+    });
+  };
+
+  app.put(
+    '/v1/workspaces/:id/documents/:documentId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const { id: workspaceId, documentId } = req.params as { id?: string; documentId?: string };
+      if (!workspaceId || !documentId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
+      }
+      await ensureRole(req, ['maintainer', 'admin']);
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const kindRaw = body.kind;
+      if (typeof kindRaw !== 'string' || !isWorkspaceKind(kindRaw)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'kind alanı desteklenmeyen bir belge türü.');
+      }
+      const titleRaw = body.title;
+      if (typeof titleRaw !== 'string' || titleRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'title alanı zorunludur.');
+      }
+      if (!('content' in body)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'content alanı zorunludur.');
+      }
+      const expectedHashRaw = body.expectedHash;
+      let expectedHash: string | undefined;
+      if (expectedHashRaw !== undefined && expectedHashRaw !== null) {
+        if (typeof expectedHashRaw !== 'string' || expectedHashRaw.trim().length === 0) {
+          throw new HttpError(400, 'INVALID_REQUEST', 'expectedHash metin olmalıdır.');
+        }
+        expectedHash = expectedHashRaw;
+      }
+      try {
+        const document = await workspaceService.saveRevision({
+          tenantId,
+          workspaceId,
+          documentId,
+          kind: kindRaw,
+          title: titleRaw,
+          authorId: subject,
+          content: (body as { content: unknown }).content,
+          expectedHash: expectedHash ?? null,
+        });
+        res.json({ document: toWorkspaceDocumentResponse(document) });
+      } catch (error) {
+        handleWorkspaceError(error);
+      }
+    }),
+  );
+
+  app.post(
+    '/v1/workspaces/:id/documents/:documentId/comments',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const { id: workspaceId, documentId } = req.params as { id?: string; documentId?: string };
+      if (!workspaceId || !documentId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
+      }
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const messageRaw = body.body;
+      if (typeof messageRaw !== 'string' || messageRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'body alanı zorunludur.');
+      }
+      const revisionIdRaw = body.revisionId;
+      const revisionHashRaw = body.revisionHash;
+      const revisionId = typeof revisionIdRaw === 'string' && revisionIdRaw.trim().length > 0 ? revisionIdRaw : undefined;
+      const revisionHash =
+        typeof revisionHashRaw === 'string' && revisionHashRaw.trim().length > 0 ? revisionHashRaw : undefined;
+      try {
+        const comment = await workspaceService.addComment({
+          tenantId,
+          workspaceId,
+          documentId,
+          authorId: subject,
+          body: messageRaw,
+          revisionId,
+          revisionHash,
+        });
+        res.status(201).json({ comment: toWorkspaceCommentResponse(comment) });
+      } catch (error) {
+        handleWorkspaceError(error);
+      }
+    }),
+  );
+
+  app.post(
+    '/v1/workspaces/:id/signoffs',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const { id: workspaceId } = req.params as { id?: string };
+      if (!workspaceId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Workspace kimliği belirtilmelidir.');
+      }
+      await ensureRole(req, ['maintainer', 'admin']);
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const documentIdRaw = body.documentId;
+      if (typeof documentIdRaw !== 'string' || documentIdRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'documentId alanı zorunludur.');
+      }
+      const revisionHashRaw = body.revisionHash;
+      if (typeof revisionHashRaw !== 'string' || revisionHashRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'revisionHash alanı zorunludur.');
+      }
+      const requestedForRaw = body.requestedFor;
+      if (typeof requestedForRaw !== 'string' || requestedForRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'requestedFor alanı zorunludur.');
+      }
+      try {
+        const signoff = await workspaceService.requestSignoff({
+          tenantId,
+          workspaceId,
+          documentId: documentIdRaw,
+          revisionHash: revisionHashRaw,
+          requestedBy: subject,
+          requestedFor: requestedForRaw,
+        });
+        res.status(201).json({ signoff: toWorkspaceSignoffResponse(signoff) });
+      } catch (error) {
+        handleWorkspaceError(error);
+      }
+    }),
+  );
+
+  app.patch(
+    '/v1/workspaces/:id/signoffs/:signoffId',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const { id: workspaceId, signoffId } = req.params as { id?: string; signoffId?: string };
+      if (!workspaceId || !signoffId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve signoff kimliği belirtilmelidir.');
+      }
+      const principal = await ensureRole(req, ['maintainer', 'admin']);
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const actionRaw = body.action;
+      if (typeof actionRaw !== 'string' || actionRaw.trim() !== 'approve') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'action alanı desteklenmiyor.');
+      }
+      const expectedHashRaw = body.expectedRevisionHash;
+      if (typeof expectedHashRaw !== 'string' || expectedHashRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'expectedRevisionHash alanı zorunludur.');
+      }
+      const publicKeyRaw = body.publicKey;
+      if (typeof publicKeyRaw !== 'string' || publicKeyRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'publicKey alanı zorunludur.');
+      }
+      const signatureRaw = body.signature;
+      if (typeof signatureRaw !== 'string' || signatureRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'signature alanı zorunludur.');
+      }
+      const signedAtRaw = body.signedAt;
+      if (typeof signedAtRaw !== 'string' || signedAtRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'signedAt alanı zorunludur.');
+      }
+      try {
+        const signoff = await workspaceService.approveSignoff({
+          tenantId,
+          workspaceId,
+          signoffId,
+          actorId: subject,
+          expectedRevisionHash: expectedHashRaw,
+          publicKey: publicKeyRaw,
+          signature: signatureRaw,
+          signedAt: signedAtRaw,
+          allowBypass: principal.roles.includes('admin'),
+        });
+        res.json({ signoff: toWorkspaceSignoffResponse(signoff) });
+      } catch (error) {
+        handleWorkspaceError(error);
+      }
+    }),
+  );
+
+  app.post(
+    '/v1/reviews',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+
+      const target = parseReviewTarget(body.target);
+      const approvers = parseReviewApprovers(body.approvers);
+      const requiredArtifacts = parseReviewArtifacts(body.requiredArtifacts);
+      let notes: string | null | undefined;
+      if (body.notes !== undefined) {
+        if (body.notes === null) {
+          notes = null;
+        } else if (typeof body.notes === 'string') {
+          notes = body.notes;
+        } else {
+          throw new HttpError(400, 'INVALID_REQUEST', 'notes alanı metin olmalıdır.');
+        }
+      }
+
+      try {
+        const review = await reviewStore.createReview({
+          tenantId,
+          authorId: subject,
+          target: target ?? { kind: 'analyze', reference: null },
+          approvers,
+          requiredArtifacts,
+          notes: notes ?? null,
+        });
+        res.status(201).json({ review: toReviewResponse(review) });
+      } catch (error) {
+        handleReviewError(error);
+      }
+    }),
+  );
+
+  app.patch(
+    '/v1/reviews/:id',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId, subject } = getAuthContext(req);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Review kimliği belirtilmelidir.');
+      }
+      const body = req.body as Record<string, unknown> | undefined;
+      if (!body || typeof body !== 'object') {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+      const actionRaw = body.action;
+      if (typeof actionRaw !== 'string' || actionRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'action alanı zorunludur.');
+      }
+      const expectedHashRaw = body.expectedHash;
+      if (typeof expectedHashRaw !== 'string' || expectedHashRaw.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'expectedHash alanı zorunludur.');
+      }
+      const expectedHash = expectedHashRaw;
+      const action = actionRaw.trim();
+
+      try {
+        let review: Review;
+        switch (action) {
+          case 'configure': {
+            const target = parseReviewTarget(body.target);
+            const approvers = parseReviewApprovers(body.approvers);
+            const requiredArtifacts = parseReviewArtifacts(body.requiredArtifacts);
+            let notes: string | null | undefined;
+            if (body.notes !== undefined) {
+              if (body.notes === null) {
+                notes = null;
+              } else if (typeof body.notes === 'string') {
+                notes = body.notes;
+              } else {
+                throw new HttpError(400, 'INVALID_REQUEST', 'notes alanı metin olmalıdır.');
+              }
+            }
+            review = await reviewStore.updateConfiguration({
+              tenantId,
+              reviewId: id,
+              expectedHash,
+              target,
+              approvers,
+              requiredArtifacts,
+              notes,
+            });
+            break;
+          }
+          case 'submit': {
+            review = await reviewStore.submitReview({
+              tenantId,
+              reviewId: id,
+              expectedHash,
+              actorId: subject,
+            });
+            break;
+          }
+          case 'approve': {
+            let note: string | null | undefined;
+            if (body.note !== undefined) {
+              if (body.note === null) {
+                note = null;
+              } else if (typeof body.note === 'string') {
+                note = body.note;
+              } else {
+                throw new HttpError(400, 'INVALID_REQUEST', 'note alanı metin olmalıdır.');
+              }
+            }
+            review = await reviewStore.approveReview({
+              tenantId,
+              reviewId: id,
+              expectedHash,
+              approverId: subject,
+              note: note ?? null,
+            });
+            break;
+          }
+          case 'reject': {
+            const reasonRaw = body.reason;
+            if (typeof reasonRaw !== 'string' || reasonRaw.trim().length === 0) {
+              throw new HttpError(400, 'INVALID_REQUEST', 'reason alanı zorunludur.');
+            }
+            review = await reviewStore.rejectReview({
+              tenantId,
+              reviewId: id,
+              expectedHash,
+              approverId: subject,
+              reason: reasonRaw,
+            });
+            break;
+          }
+          default:
+            throw new HttpError(400, 'INVALID_REQUEST', 'action alanı desteklenmiyor.');
+        }
+        res.json({ review: toReviewResponse(review) });
+      } catch (error) {
+        handleReviewError(error);
+      }
+    }),
+  );
+
   app.get(
     '/api/audit-logs',
     requireAuth,
@@ -5271,6 +5893,7 @@ export const createServer = (config: ServerConfig): Express => {
         level?: string;
         projectName?: string;
         projectVersion?: string;
+        reviewId?: string;
       };
 
       if (!body.importId) {
@@ -5278,6 +5901,8 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       assertJobId(body.importId);
+
+      await requireApprovedReviewForRequest(req, body.reviewId, 'analyze', body.importId);
 
       const workspaceDir = path.join(directories.workspaces, tenantId, body.importId);
       await assertDirectoryExists(storage, workspaceDir, 'Çalışma alanı');
@@ -5398,12 +6023,14 @@ export const createServer = (config: ServerConfig): Express => {
       const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
-      const body = req.body as { analysisId?: string; manifestId?: string };
+      const body = req.body as { analysisId?: string; manifestId?: string; reviewId?: string };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
       }
 
       assertJobId(body.analysisId);
+
+      await requireApprovedReviewForRequest(req, body.reviewId, 'report', body.analysisId);
 
       const analysisDir = path.join(directories.analyses, tenantId, body.analysisId);
       await assertDirectoryExists(storage, analysisDir, 'Analiz çıktısı');
@@ -5495,12 +6122,14 @@ export const createServer = (config: ServerConfig): Express => {
       const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
-      const body = req.body as { reportId?: string; packageName?: string };
+      const body = req.body as { reportId?: string; packageName?: string; reviewId?: string };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
       }
 
       assertJobId(body.reportId);
+
+      await requireApprovedReviewForRequest(req, body.reviewId, 'pack', body.reportId);
 
       let packageName: string | undefined;
       if (body.packageName !== undefined) {
@@ -5708,10 +6337,12 @@ export const createServer = (config: ServerConfig): Express => {
         await retentionSweepPromise.catch(() => undefined);
       }
       await fsPromises.rm(uploadTempDir, { recursive: true, force: true }).catch(() => undefined);
+      events.closeAll();
     },
     runTenantRetention: (tenantId: string) => runTenantRetention(tenantId, 'manual'),
     runAllTenantRetention: () => runAllTenantRetention('manual'),
     logger,
+    events,
   };
 
   Reflect.set(app, SERVER_CONTEXT_SYMBOL, lifecycle);

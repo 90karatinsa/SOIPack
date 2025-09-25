@@ -70,6 +70,75 @@ CREATE UNIQUE INDEX IF NOT EXISTS audit_logs_id_idx ON audit_logs (id);
 CREATE INDEX IF NOT EXISTS audit_logs_tenant_idx
   ON audit_logs (tenant_id, created_at DESC);
 
+-- Workspace collaboration artifacts.
+CREATE TABLE IF NOT EXISTS workspace_documents (
+  id TEXT,
+  tenant_id TEXT,
+  workspace_id TEXT,
+  kind TEXT,
+  title TEXT,
+  latest_revision_id TEXT,
+  latest_revision_hash TEXT,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_documents_pk
+  ON workspace_documents (tenant_id, workspace_id, id);
+
+CREATE TABLE IF NOT EXISTS workspace_document_revisions (
+  id TEXT,
+  document_id TEXT,
+  tenant_id TEXT,
+  workspace_id TEXT,
+  revision INTEGER,
+  hash TEXT,
+  content JSONB,
+  author_id TEXT,
+  created_at TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_document_revisions_pk
+  ON workspace_document_revisions (tenant_id, workspace_id, document_id, revision);
+
+CREATE INDEX IF NOT EXISTS workspace_document_revisions_lookup
+  ON workspace_document_revisions (tenant_id, workspace_id, document_id, hash);
+
+CREATE TABLE IF NOT EXISTS workspace_document_comments (
+  id TEXT,
+  document_id TEXT,
+  revision_id TEXT,
+  tenant_id TEXT,
+  workspace_id TEXT,
+  author_id TEXT,
+  body TEXT,
+  created_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS workspace_document_comments_doc_idx
+  ON workspace_document_comments (tenant_id, workspace_id, document_id);
+
+CREATE TABLE IF NOT EXISTS workspace_signoffs (
+  id TEXT,
+  document_id TEXT,
+  revision_id TEXT,
+  tenant_id TEXT,
+  workspace_id TEXT,
+  revision_hash TEXT,
+  status TEXT,
+  requested_by TEXT,
+  requested_for TEXT,
+  signer_id TEXT,
+  signer_public_key TEXT,
+  signature TEXT,
+  signed_at TIMESTAMP,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS workspace_signoffs_doc_idx
+  ON workspace_signoffs (tenant_id, workspace_id, document_id);
+
 -- Pipeline execution history.
 CREATE TABLE IF NOT EXISTS pipeline_jobs (
   id TEXT,

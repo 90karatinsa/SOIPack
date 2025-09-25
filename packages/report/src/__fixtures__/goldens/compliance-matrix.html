@@ -225,6 +225,78 @@
     color: #1e293b;
   }
 
+  .risk-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .risk-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+    min-height: 140px;
+  }
+
+  .risk-score {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .risk-score-value {
+    font-size: 32px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .risk-breakdown {
+    margin-top: 24px;
+  }
+
+  .risk-breakdown-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .timeline-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+
+  .timeline-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    background: #ffffff;
+  }
+
+  .timeline-status {
+    margin-bottom: 12px;
+  }
+
+  .timeline-events li {
+    position: relative;
+    padding-left: 16px;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 4px;
+  }
+
+  .timeline-events li::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3b82f6;
+    position: absolute;
+    left: -5px;
+    top: 8px;
+  }
+
   footer {
     padding: 0 48px 32px;
     color: #475569;
@@ -256,7 +328,7 @@
           <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>20240201T120000Z-8ba2ab075223</strong>
+          Snapshot: <strong>20240201T120000Z-66fea11722a1</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
           <div class="git-meta">
@@ -274,6 +346,10 @@
           </div>
       </div>
       <div class="summary-grid">
+          <div class="summary-card">
+            <span>Risk Skoru</span>
+            <strong>63.4/100 (Yüksek Risk)</strong>
+          </div>
           <div class="summary-card">
             <span>Hedefler</span>
             <strong>5</strong>
@@ -308,16 +384,78 @@
           </div>
           <div class="summary-card">
             <span>Kalite Bulguları</span>
-            <strong>2</strong>
+            <strong>4</strong>
           </div>
           <div class="summary-card">
             <span>Kritik/Uyarı</span>
-            <strong>1/1</strong>
+            <strong>2/2</strong>
           </div>
       </div>
     </header>
     <main>
       <section class="section">
+    <h2>Risk Profili</h2>
+    <p class="section-lead">
+      Kanıt boşlukları, test sonuçları, statik analiz bulguları ve denetim uyarıları tek bir risk skorunda toplanır.
+    </p>
+    <div class="risk-grid">
+      <article class="risk-card">
+        <h3>Toplam Skor</h3>
+        <div class="risk-score">
+          <span class="risk-score-value">63.4</span>
+          <span class="badge status-missing">Yüksek Risk</span>
+        </div>
+        <p class="muted">0 en düşük, 100 en yüksek riski temsil eder.</p>
+      </article>
+        <article class="risk-card">
+          <h3>Kapsam Eğilimi</h3>
+          <div class="cell-title">Kapsam İyileşiyor</div>
+          <div class="muted">14 günlük ufuk için projeksiyon.</div>
+          <div class="risk-breakdown-stats">
+            <span class="badge badge-soft">Eğim: 0.19 puan/gün</span>
+            <span class="badge badge-soft">Projeksiyon: 70.7%</span>
+            <span class="badge badge-soft">Güven: 100%</span>
+          </div>
+        </article>
+    </div>
+    <div class="risk-breakdown">
+      <h3>Faktör Katkıları</h3>
+      <ul class="list">
+          <li>
+            <div class="cell-title">Kapsam</div>
+            <div class="muted">1 missing, 2 partial across 3 items</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %40</span>
+              <span class="badge status-partial">Katkı 26.7 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Statik Analiz</div>
+            <div class="muted">2 findings (error, warn)</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %20</span>
+              <span class="badge status-missing">Katkı 17.2 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Denetim Bulguları</div>
+            <div class="muted">2 active audit flags</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %15</span>
+              <span class="badge status-partial">Katkı 10.8 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Testler</div>
+            <div class="muted">1 failing, 1 quarantined of 4 tests</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %25</span>
+              <span class="badge status-covered">Katkı 8.8 puan</span>
+            </div>
+          </li>
+      </ul>
+    </div>
+  </section><section class="section">
     <h2>Uyum Matrisi</h2>
     <p class="section-lead">
       Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
@@ -472,6 +610,20 @@ A-6 • Değişiklik Kontrolü                </div>
               <div class="muted">Gereksinim: REQ-AUTH-2</div>
               <div class="cell-description">Eksik kapsamı tamamlayın veya gereksinim durumunu güncelleyin.</div>
           </li>
+          <li>
+            <div>
+              <span class="badge status-missing">Kritik</span>
+              <span class="cell-title">Polyspace bulgusu FND-SEC-001 (error) açık durumda: Null pointer analizi başarısız oldu.</span>
+            </div>
+              <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+          </li>
+          <li>
+            <div>
+              <span class="badge status-partial">Uyarı</span>
+              <span class="cell-title">VectorCAST bulgusu FND-SEC-002 (warn) açık durumda: Zamanlama toleransı azalıyor.</span>
+            </div>
+              <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+          </li>
       </ul>
     </section>
     <section class="section">
@@ -535,7 +687,56 @@ A-6 • Değişiklik Kontrolü                </div>
         </tbody>
       </table>
     </section>
-
+<section class="section">
+    <h2>Signoff Zaman Çizelgesi</h2>
+    <p class="section-lead">
+      Workspace belgelerindeki signoff istekleri ve imza onayları denetim izi için tutulur.
+    </p>
+    <div class="timeline-grid">
+        <article class="timeline-card">
+          <header>
+            <div class="cell-title">DOC-SEC-PLAN</div>
+            <div class="muted">Revizyon: rev-main-001</div>
+          </header>
+          <div class="timeline-status">
+            <span class="badge status-covered">Onaylandı</span>
+            <div class="muted">Revizyon Hash: a9f4c2d1e3b56789</div>
+          </div>
+          <ul class="list timeline-events">
+              <li>
+                <div class="cell-title">İstek Gönderildi</div>
+                <div class="muted">2024-01-15 09:45 UTC</div>
+                <div class="muted">Aktör: auditor-istanbul</div>
+                  <div class="cell-description">Onay talep edilen kişi: lead-reviewer</div>
+              </li>
+              <li>
+                <div class="cell-title">İmza Doğrulandı</div>
+                <div class="muted">2024-01-16 13:20 UTC</div>
+                <div class="muted">Aktör: lead-reviewer</div>
+                  <div class="cell-description">Anahtar: …ment123456== • İmza: SIG-APPROVED…</div>
+              </li>
+          </ul>
+        </article>
+        <article class="timeline-card">
+          <header>
+            <div class="cell-title">DOC-SEC-REPORT</div>
+            <div class="muted">Revizyon: rev-main-002</div>
+          </header>
+          <div class="timeline-status">
+            <span class="badge status-partial">Onay Bekliyor</span>
+            <div class="muted">Revizyon Hash: b1e2c3d4f5a67890</div>
+          </div>
+          <ul class="list timeline-events">
+              <li>
+                <div class="cell-title">İstek Gönderildi</div>
+                <div class="muted">2024-01-20 10:15 UTC</div>
+                <div class="muted">Aktör: auditor-istanbul</div>
+                  <div class="cell-description">Onay talep edilen kişi: compliance-owner</div>
+              </li>
+          </ul>
+        </article>
+    </div>
+  </section>
     </main>
     <footer>
       <span>SOIPack Sürüm 0.1.0</span>

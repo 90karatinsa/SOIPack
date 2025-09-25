@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-export type View = 'upload' | 'compliance' | 'traceability';
+export type View = 'upload' | 'compliance' | 'traceability' | 'risk' | 'timeline';
 
 interface NavigationTabsProps {
   activeView: View;
@@ -11,7 +11,9 @@ interface NavigationTabsProps {
 const viewLabels: Record<View, string> = {
   upload: 'Yükleme & Çalıştırma',
   compliance: 'Uyum Matrisi',
-  traceability: 'İzlenebilirlik'
+  traceability: 'İzlenebilirlik',
+  risk: 'Risk Kokpiti',
+  timeline: 'Zaman Çizelgesi'
 };
 
 const viewIcons: Record<View, JSX.Element> = {
@@ -28,6 +30,20 @@ const viewIcons: Record<View, JSX.Element> = {
   traceability: (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9M7.5 12h9m-9 3.75h9M4.5 4.5l15 15" />
+    </svg>
+  ),
+  risk: (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4.5 3.75l2.25 16.5L12 18l5.25 2.25 2.25-16.5m-6.75 11.25V9M9 13.5l3-3 3 3"
+      />
+    </svg>
+  ),
+  timeline: (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h18M12 3v18m6-11.25l-3 3 3 3m-12-6l3 3-3 3" />
     </svg>
   )
 };
