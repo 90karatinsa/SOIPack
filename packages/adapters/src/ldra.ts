@@ -104,10 +104,18 @@ const toCoverage = (entries: LdraCoverageEntry[] | undefined): CoverageSummary |
     return undefined;
   }
 
+  const objectiveLinks = new Set<string>(['A-5-08']);
+  if (files.some((file) => file.dec !== undefined && file.dec.total > 0)) {
+    objectiveLinks.add('A-5-09');
+  }
+  if (files.some((file) => file.mcdc !== undefined && file.mcdc.total > 0)) {
+    objectiveLinks.add('A-5-10');
+  }
+
   return {
     tool: 'ldra',
     files,
-    objectiveLinks: ['A-5-08'],
+    objectiveLinks: Array.from(objectiveLinks),
   };
 };
 

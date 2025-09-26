@@ -887,6 +887,10 @@ interface PackJobMetadata extends BaseJobMetadata {
     manifestPath: string;
     archivePath: string;
     manifestId: string;
+    manifestDigest: string;
+    ledgerPath?: string;
+    ledgerRoot?: string;
+    previousLedgerRoot?: string | null;
   };
 }
 
@@ -925,10 +929,14 @@ interface ReportJobResult {
 
 interface PackJobResult {
   manifestId: string;
+  manifestDigest: string;
+  ledgerRoot?: string;
+  previousLedgerRoot?: string | null;
   outputs: {
     directory: string;
     manifest: string;
     archive: string;
+    ledger?: string;
   };
 }
 
@@ -1571,10 +1579,16 @@ const toReportResult = (
 
 const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): PackJobResult => ({
   manifestId: metadata.outputs.manifestId,
+  manifestDigest: metadata.outputs.manifestDigest,
+  ledgerRoot: metadata.outputs.ledgerRoot,
+  previousLedgerRoot: metadata.outputs.previousLedgerRoot,
   outputs: {
     directory: storage.toRelativePath(metadata.directory),
     manifest: storage.toRelativePath(metadata.outputs.manifestPath),
     archive: storage.toRelativePath(metadata.outputs.archivePath),
+    ...(metadata.outputs.ledgerPath
+      ? { ledger: storage.toRelativePath(metadata.outputs.ledgerPath) }
+      : {}),
   },
 });
 
@@ -3243,13 +3257,22 @@ export const createServer = (config: ServerConfig): Express => {
       await storage.ensureDirectory(payload.packageDir);
       try {
         const signingKey = await fsPromises.readFile(payload.signingKeyPath, 'utf8');
+        const tenantLedgerDir = path.join(storage.directories.ledgers, context.tenantId);
+        await storage.ensureDirectory(tenantLedgerDir);
+        const tenantLedgerPath = path.join(tenantLedgerDir, 'ledger.json');
+        const packageLedgerPath = path.join(payload.packageDir, 'ledger.json');
         const packOptions: PackOptions = {
           input: payload.reportDir,
           output: payload.packageDir,
           packageName: payload.packageName,
           signingKey,
+          ledger: { path: tenantLedgerPath },
         };
         const result = await runPack(packOptions);
+
+        if (result.ledger) {
+          await storage.writeJson(packageLedgerPath, result.ledger);
+        }
 
         const metadata: PackJobMetadata = {
           tenantId: context.tenantId,
@@ -3267,10 +3290,20 @@ export const createServer = (config: ServerConfig): Express => {
             manifestPath: result.manifestPath,
             archivePath: result.archivePath,
             manifestId: result.manifestId,
+            manifestDigest: result.manifestDigest,
+            ledgerPath: result.ledger ? packageLedgerPath : undefined,
+            ledgerRoot: result.ledgerEntry?.ledgerRoot,
+            previousLedgerRoot: result.ledgerEntry?.previousRoot ?? null,
           },
         };
 
         await writeJobMetadata(storage, payload.packageDir, metadata);
+
+        if (result.ledgerEntry) {
+          events.publishLedgerEntry(context.tenantId, result.ledgerEntry, {
+            id: `ledger-${context.id}-${result.ledgerEntry.index}`,
+          });
+        }
 
         return toPackResult(storage, metadata);
       } catch (error) {

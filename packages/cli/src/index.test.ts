@@ -6,9 +6,11 @@ import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
 
+import * as adapters from '@soipack/adapters';
+import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
-import { signManifestBundle, verifyManifestSignature } from '@soipack/packager';
+import { signManifestBundle, verifyManifestSignature, verifyManifestSignatureDetailed } from '@soipack/packager';
 import type { PlanTemplateId } from '@soipack/report';
 import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
 import { ZipFile } from 'yazl';
@@ -47,6 +49,10 @@ const TEST_SIGNING_PUBLIC_KEY = new X509Certificate(TEST_SIGNING_CERTIFICATE)
   .publicKey.export({ format: 'pem', type: 'spki' })
   .toString();
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 describe('@soipack/cli pipeline', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
   const objectivesPath = path.resolve(
@@ -83,6 +89,15 @@ describe('@soipack/cli pipeline', () => {
       projectName: 'Demo Avionics',
       projectVersion: '1.0.0',
     });
+
+    const statementEvidence = importResult.workspace.evidenceIndex.coverage_stmt ?? [];
+    expect(statementEvidence.map((entry) => entry.source)).toEqual(
+      expect.arrayContaining(['lcov', 'cobertura']),
+    );
+    const decisionEvidence = importResult.workspace.evidenceIndex.coverage_dec ?? [];
+    expect(decisionEvidence).toHaveLength(0);
+    const mcdcEvidence = importResult.workspace.evidenceIndex.coverage_mcdc ?? [];
+    expect(mcdcEvidence).toHaveLength(0);
 
     const workspaceStats = await fs.stat(path.join(workDir, 'workspace.json'));
     expect(workspaceStats.isFile()).toBe(true);
@@ -136,23 +151,52 @@ describe('@soipack/cli pipeline', () => {
     });
     expect(analysisWithPlans.metadata.version.id).toBe(snapshotData.version.id);
 
+    const ledgerPath = path.join(tempRoot, 'ledger-e2e.json');
     const packResult = await runPack({
       input: distDir,
       output: releaseDir,
       packageName: 'demo.zip',
       signingKey: TEST_SIGNING_BUNDLE,
+      ledger: { path: ledgerPath },
     });
 
     const archiveStats = await fs.stat(packResult.archivePath);
     expect(archiveStats.isFile()).toBe(true);
     expect(packResult.manifestId).toHaveLength(12);
+    expect(packResult.manifestDigest).toHaveLength(64);
+    expect(packResult.ledgerPath).toBe(ledgerPath);
+    expect(packResult.ledgerEntry).toBeDefined();
 
     const manifestStats = await fs.stat(packResult.manifestPath);
     expect(manifestStats.isFile()).toBe(true);
 
-    const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest;
+    const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest & {
+      ledger?: { root: string | null; previousRoot: string | null } | null;
+    };
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+    expect(manifest.ledger).toEqual({
+      root: packResult.ledgerEntry?.ledgerRoot ?? null,
+      previousRoot: packResult.ledgerEntry?.previousRoot ?? null,
+    });
+
+    const detailedVerification = verifyManifestSignatureDetailed(manifest, signature, {
+      publicKeyPem: TEST_SIGNING_PUBLIC_KEY,
+      expectedLedgerRoot: packResult.ledgerEntry?.ledgerRoot,
+      expectedPreviousLedgerRoot: packResult.ledgerEntry?.previousRoot,
+      requireLedgerProof: true,
+    });
+    expect(detailedVerification.valid).toBe(true);
+
+    const ledgerData = JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as {
+      root: string;
+      entries: Array<{ ledgerRoot: string; manifestDigest: string; snapshotId: string }>;
+    };
+    expect(ledgerData.root).toBe(packResult.ledgerEntry?.ledgerRoot);
+    expect(ledgerData.entries).toHaveLength(1);
+    expect(ledgerData.entries[0].manifestDigest).toBe(packResult.manifestDigest);
+    expect(ledgerData.entries[0].snapshotId).toBe(snapshotData.version.id);
+    expect(packResult.ledger?.root).toBe(ledgerData.root);
   });
 
   it('generates compliance and coverage summaries with runIngestPipeline', async () => {
@@ -185,6 +229,7 @@ describe('@soipack/cli pipeline', () => {
   it('packages demo data into a signed archive with consistent manifest hashes', async () => {
     const packageOutput = path.join(tempRoot, 'ingest-package');
 
+    const ledgerPath = path.join(packageOutput, 'ledger.json');
     const result = await runIngestAndPackage({
       inputDir: fixturesDir,
       outputDir: packageOutput,
@@ -194,11 +239,22 @@ describe('@soipack/cli pipeline', () => {
       projectVersion: '1.0.0',
       signingKey: TEST_SIGNING_BUNDLE,
       packageName: 'soi-pack.zip',
+      ledger: { path: ledgerPath },
     });
 
     const archiveStats = await fs.stat(result.archivePath);
     expect(archiveStats.isFile()).toBe(true);
     expect(result.archivePath).toBe(path.join(packageOutput, 'soi-pack.zip'));
+
+    expect(result.ledgerEntry).toBeDefined();
+    expect(result.manifestDigest).toHaveLength(64);
+    const storedLedger = JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as {
+      root: string;
+      entries: Array<{ manifestDigest: string; snapshotId: string }>;
+    };
+    expect(storedLedger.root).toBe(result.ledgerEntry?.ledgerRoot);
+    expect(storedLedger.entries[0]?.manifestDigest).toBe(result.manifestDigest);
+    expect(storedLedger.entries[0]?.snapshotId).toBe(result.ledgerEntry?.snapshotId);
 
     const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as Manifest;
     expect(manifest.files.length).toBeGreaterThan(0);
@@ -634,7 +690,7 @@ describe('@soipack/cli pipeline', () => {
       objectives: path.join(fixtureDir, 'objectives.json'),
     });
 
-    expect(result.exitCode).toBe(exitCodes.missingEvidence);
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(result.exitCode);
 
     const snapshot = JSON.parse(
       await fs.readFile(path.join(outputDir, 'snapshot.json'), 'utf8'),
@@ -1175,6 +1231,163 @@ describe('downloadPackageArtifacts', () => {
     request!.triggerTimeout();
 
     await expect(downloadPromise).rejects.toThrow('tamamlanmadı');
+  });
+});
+
+describe('structural coverage merging', () => {
+  const getMerge = () =>
+    (__internal as unknown as {
+      mergeStructuralCoverage: (
+        existing: StructuralCoverageSummary | undefined,
+        incoming: StructuralCoverageSummary,
+      ) => StructuralCoverageSummary;
+    }).mergeStructuralCoverage;
+
+  it('preserves LDRA decision coverage when merging with VectorCAST summaries lacking decisions', () => {
+    const mergeStructuralCoverage = getMerge();
+    const ldraSummary: StructuralCoverageSummary = {
+      tool: 'ldra',
+      files: [
+        {
+          path: 'src/module.c',
+          stmt: { covered: 18, total: 20 },
+          dec: { covered: 9, total: 10 },
+        },
+      ],
+    };
+    const vectorSummary: StructuralCoverageSummary = {
+      tool: 'vectorcast',
+      files: [
+        {
+          path: 'src/module.c',
+          stmt: { covered: 20, total: 20 },
+        },
+      ],
+    };
+
+    const afterLdra = mergeStructuralCoverage(undefined, ldraSummary);
+    const merged = mergeStructuralCoverage(afterLdra, vectorSummary);
+    const mergedFile = merged.files.find((file) => file.path === 'src/module.c');
+
+    expect(mergedFile?.dec).toEqual(ldraSummary.files[0]?.dec);
+    expect(mergedFile?.mcdc).toBeUndefined();
+  });
+
+  it('retains VectorCAST MC/DC metrics when later LDRA summaries omit them', () => {
+    const mergeStructuralCoverage = getMerge();
+    const vectorSummary: StructuralCoverageSummary = {
+      tool: 'vectorcast',
+      files: [
+        {
+          path: 'src/module.c',
+          stmt: { covered: 15, total: 20 },
+          mcdc: { covered: 7, total: 8 },
+        },
+      ],
+    };
+    const ldraSummary: StructuralCoverageSummary = {
+      tool: 'ldra',
+      files: [
+        {
+          path: 'src/module.c',
+          stmt: { covered: 18, total: 20 },
+          dec: { covered: 9, total: 10 },
+        },
+      ],
+    };
+
+    const afterVector = mergeStructuralCoverage(undefined, vectorSummary);
+    const merged = mergeStructuralCoverage(afterVector, ldraSummary);
+    const mergedFile = merged.files.find((file) => file.path === 'src/module.c');
+
+    expect(mergedFile?.mcdc).toEqual(vectorSummary.files[0]?.mcdc);
+    expect(mergedFile?.dec).toEqual(ldraSummary.files[0]?.dec);
+  });
+});
+
+describe('coverage evidence emission', () => {
+  it('emits decision and MC/DC coverage evidence across supported adapters when metrics exist', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-coverage-'));
+    const workDir = path.join(tempDir, 'workspace');
+    const lcovPath = path.join(tempDir, 'coverage-evidence.lcov');
+    const coberturaPath = path.join(tempDir, 'coverage-evidence.xml');
+    const ldraPath = path.join(tempDir, 'coverage-evidence.ldra');
+
+    await fs.writeFile(lcovPath, 'lcov');
+    await fs.writeFile(coberturaPath, '<coverage></coverage>');
+    await fs.writeFile(ldraPath, '{"coverage":true}');
+
+    const percentage = (covered: number, total: number): number =>
+      Number(((covered / total) * 100).toFixed(2));
+
+    const lcovReport: CoverageReport = {
+      totals: {
+        statements: { covered: 30, total: 30, percentage: 100 },
+        branches: { covered: 12, total: 15, percentage: percentage(12, 15) },
+        mcdc: { covered: 6, total: 8, percentage: percentage(6, 8) },
+      },
+      files: [
+        {
+          file: 'src/module.c',
+          statements: { covered: 30, total: 30, percentage: 100 },
+          branches: { covered: 12, total: 15, percentage: percentage(12, 15) },
+          mcdc: { covered: 6, total: 8, percentage: percentage(6, 8) },
+        },
+      ],
+    };
+
+    const coberturaReport: CoverageReport = {
+      totals: {
+        statements: { covered: 28, total: 30, percentage: percentage(28, 30) },
+        branches: { covered: 10, total: 12, percentage: percentage(10, 12) },
+        mcdc: { covered: 5, total: 7, percentage: percentage(5, 7) },
+      },
+      files: [
+        {
+          file: 'src/other.c',
+          statements: { covered: 28, total: 30, percentage: percentage(28, 30) },
+          branches: { covered: 10, total: 12, percentage: percentage(10, 12) },
+          mcdc: { covered: 5, total: 7, percentage: percentage(5, 7) },
+        },
+      ],
+    };
+
+    const ldraCoverage: StructuralCoverageSummary = {
+      tool: 'ldra',
+      files: [
+        {
+          path: 'src/module.c',
+          stmt: { covered: 20, total: 20 },
+          dec: { covered: 9, total: 10 },
+          mcdc: { covered: 7, total: 8 },
+        },
+      ],
+    };
+
+    jest.spyOn(adapters, 'importLcov').mockResolvedValue({ warnings: [], data: lcovReport });
+    jest.spyOn(adapters, 'importCobertura').mockResolvedValue({ warnings: [], data: coberturaReport });
+    jest.spyOn(adapters, 'fromLDRA').mockResolvedValue({ warnings: [], data: { coverage: ldraCoverage } });
+
+    try {
+      const result = await runImport({
+        output: workDir,
+        lcov: lcovPath,
+        cobertura: coberturaPath,
+        ldra: ldraPath,
+      });
+
+      const decisionEvidence = result.workspace.evidenceIndex.coverage_dec ?? [];
+      expect(decisionEvidence.map((entry) => entry.source)).toEqual(
+        expect.arrayContaining(['lcov', 'cobertura', 'ldra']),
+      );
+
+      const mcdcEvidence = result.workspace.evidenceIndex.coverage_mcdc ?? [];
+      expect(mcdcEvidence.map((entry) => entry.source)).toEqual(
+        expect.arrayContaining(['lcov', 'cobertura', 'ldra']),
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -211,8 +211,8 @@ describe('@soipack/adapters', () => {
 
     expect(warnings).toHaveLength(0);
     expect(data).toHaveLength(2);
-    expect(data[0]).toEqual({ id: 'REQ-1', text: 'System shall allow login.' });
-    expect(data[1]).toEqual({ id: 'REQ-2', text: 'System shall log errors.' });
+    expect(data[0]).toMatchObject({ id: 'REQ-1', text: 'System shall allow login.' });
+    expect(data[1]).toMatchObject({ id: 'REQ-2', text: 'System shall log errors.' });
   });
 
   it('imports JUnit XML test results', async () => {

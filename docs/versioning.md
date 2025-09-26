@@ -28,6 +28,7 @@ SOIPack kanıt ve rapor üretim süreçlerinde her veri kümesi, Git benzeri bir
   ```
 
   Komut, `/v1/config/freeze` uç noktasına POST isteği gönderir ve yanıt olarak aktif versiyonun `id`, `fingerprint` ve `frozenAt` alanlarını döndürür.
+- `runPack` ve `package` komutları `--ledger`, `--ledger-key` ve `--ledger-key-id` bayraklarıyla paketleme ledger'ını yönetir. Komutlar `snapshot.json` dosyasını okuyup manifest karmasını hesaplar, `appendEntry` ile `ledger.json` dosyasına yeni bir kayıt ekler ve elde edilen ledger kökünü manifest imzasına dahil eder.
 
 ## Sunucu tarafı
 
@@ -37,6 +38,7 @@ SOIPack kanıt ve rapor üretim süreçlerinde her veri kümesi, Git benzeri bir
   - `/v1/config/freeze` çağrısı mevcut fingerprint’i dondurur ve `isFrozen` bayrağını `true` yapar.
   - Freeze’den sonra yapılan tüm yeni kanıt yüklemeleri `409 CONFIG_FROZEN` hatası ile reddedilir.
 - Sunucudaki snapshot versiyonları bellekte tutulur; yeniden başlatma sonrasında ilk istek fingerprint’i yeniden hesaplar ve versiyonu otomatik olarak oluşturur.
+- Paketleme kuyruğu, her manifest üretiminde kiracıya özel `ledger.json` dosyasını günceller ve yeni `ledgerEntry` kayıtlarını SSE üzerinden yayınlar.
 
 ## Rapor çıktıları
 
