@@ -53,6 +53,12 @@ import {
   createSnapshotVersion,
   deriveFingerprint,
   traceLinkSchema,
+  appendEntry,
+  createLedger,
+  Ledger,
+  LedgerEntry,
+  LedgerSignerOptions,
+  AppendEntryOptions,
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -65,9 +71,11 @@ import {
 } from '@soipack/engine';
 import {
   buildManifest,
+  computeManifestDigestHex,
   signManifestBundle,
   verifyManifestSignature,
   verifyManifestSignatureDetailed,
+  LedgerAwareManifest,
 } from '@soipack/packager';
 import {
   renderComplianceMatrix,
@@ -1206,6 +1214,10 @@ const mergeObjectiveLinks = (...lists: Array<string[] | undefined>): string[] | 
   return merged.size > 0 ? Array.from(merged).sort() : undefined;
 };
 
+const cloneStructuralMetric = <T extends { covered: number; total: number }>(
+  metric: T | undefined,
+): T | undefined => (metric ? { ...metric } : undefined);
+
 const mergeStructuralCoverage = (
   existing: StructuralCoverageSummary | undefined,
   incoming: StructuralCoverageSummary,
@@ -1213,17 +1225,34 @@ const mergeStructuralCoverage = (
   if (!existing) {
     return {
       tool: incoming.tool,
-      files: incoming.files.map((file) => ({ ...file })),
+      files: incoming.files.map((file) => ({
+        path: file.path,
+        stmt: { ...file.stmt },
+        dec: cloneStructuralMetric(file.dec),
+        mcdc: cloneStructuralMetric(file.mcdc),
+      })),
       objectiveLinks: incoming.objectiveLinks ? [...incoming.objectiveLinks] : undefined,
     };
   }
 
   const files = new Map<string, StructuralCoverageSummary['files'][number]>();
   existing.files.forEach((file) => {
-    files.set(file.path, { ...file });
+    files.set(file.path, {
+      path: file.path,
+      stmt: { ...file.stmt },
+      dec: cloneStructuralMetric(file.dec),
+      mcdc: cloneStructuralMetric(file.mcdc),
+    });
   });
   incoming.files.forEach((file) => {
-    files.set(file.path, { ...file });
+    const prior = files.get(file.path);
+    const mergedFile = {
+      path: file.path,
+      stmt: file.stmt ? { ...file.stmt } : prior ? { ...prior.stmt } : { covered: 0, total: 0 },
+      dec: cloneStructuralMetric(file.dec) ?? cloneStructuralMetric(prior?.dec),
+      mcdc: cloneStructuralMetric(file.mcdc) ?? cloneStructuralMetric(prior?.mcdc),
+    };
+    files.set(file.path, mergedFile);
   });
 
   return {
@@ -1241,6 +1270,23 @@ const structuralCoverageHasMetric = (
     return false;
   }
   return summary.files.some((file) => {
+    const metricValue = file[metric];
+    return metricValue !== undefined && metricValue.total > 0;
+  });
+};
+
+const coverageReportHasMetric = (
+  report: CoverageReport | undefined,
+  metric: 'branches' | 'mcdc',
+): boolean => {
+  if (!report) {
+    return false;
+  }
+  const totalMetric = report.totals[metric];
+  if (totalMetric && totalMetric.total > 0) {
+    return true;
+  }
+  return report.files.some((file) => {
     const metricValue = file[metric];
     return metricValue !== undefined && metricValue.total > 0;
   });
@@ -1597,6 +1643,12 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
     if (result.data.files.length > 0) {
       await appendEvidence('coverage_stmt', 'lcov', options.lcov, 'LCOV kapsam raporu');
+      if (coverageReportHasMetric(result.data, 'branches')) {
+        await appendEvidence('coverage_dec', 'lcov', options.lcov, 'LCOV karar kapsamı');
+      }
+      if (coverageReportHasMetric(result.data, 'mcdc')) {
+        await appendEvidence('coverage_mcdc', 'lcov', options.lcov, 'LCOV MC/DC kapsamı');
+      }
     }
   }
 
@@ -1609,6 +1661,12 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
     if (result.data.files.length > 0) {
       await appendEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu');
+      if (coverageReportHasMetric(result.data, 'branches')) {
+        await appendEvidence('coverage_dec', 'cobertura', options.cobertura, 'Cobertura karar kapsamı');
+      }
+      if (coverageReportHasMetric(result.data, 'mcdc')) {
+        await appendEvidence('coverage_mcdc', 'cobertura', options.cobertura, 'Cobertura MC/DC kapsamı');
+      }
     }
   } else if (options.cobertura) {
     const result = await importCobertura(options.cobertura);
@@ -1618,6 +1676,12 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
     if (result.data.files.length > 0) {
       await appendEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu');
+      if (coverageReportHasMetric(result.data, 'branches')) {
+        await appendEvidence('coverage_dec', 'cobertura', options.cobertura, 'Cobertura karar kapsamı');
+      }
+      if (coverageReportHasMetric(result.data, 'mcdc')) {
+        await appendEvidence('coverage_mcdc', 'cobertura', options.cobertura, 'Cobertura MC/DC kapsamı');
+      }
     }
   }
 
@@ -1642,6 +1706,12 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.data.coverage) {
       structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
       await appendEvidence('coverage_stmt', 'ldra', options.ldra, 'LDRA kapsam özeti');
+      if (structuralCoverageHasMetric(result.data.coverage, 'dec')) {
+        await appendEvidence('coverage_dec', 'ldra', options.ldra, 'LDRA karar kapsamı');
+      }
+      if (structuralCoverageHasMetric(result.data.coverage, 'mcdc')) {
+        await appendEvidence('coverage_mcdc', 'ldra', options.ldra, 'LDRA MC/DC kapsamı');
+      }
     }
     if ((result.data.findings?.length ?? 0) > 0) {
       await appendEvidence('review', 'ldra', options.ldra, 'LDRA kural ihlalleri');
@@ -1964,14 +2034,13 @@ const coverageArtifactLabels: Partial<Record<ObjectiveArtifactType, string>> = {
   coverage_mcdc: 'MC/DC coverage evidence',
 };
 
-const certificationGatingConfig: Record<
-  ObjectiveArtifactType,
-  { fail: CertificationLevel[]; warn: CertificationLevel[] }
-> = {
+const certificationGatingConfig = {
   coverage_stmt: { fail: ['A', 'B'], warn: ['C'] },
   coverage_dec: { fail: ['A', 'B'], warn: ['C'] },
   coverage_mcdc: { fail: ['A'], warn: ['B', 'C'] },
-} as const;
+} as const satisfies Partial<
+  Record<ObjectiveArtifactType, { fail: readonly CertificationLevel[]; warn: readonly CertificationLevel[] }>
+>;
 
 interface CertificationGatingEvaluation {
   shouldFail: boolean;
@@ -1997,8 +2066,9 @@ const evaluateCertificationGating = (
   const warnings: string[] = [];
   let shouldFail = false;
 
-  (Object.keys(certificationGatingConfig) as ObjectiveArtifactType[]).forEach((artifact) => {
-    const config = certificationGatingConfig[artifact];
+  (Object.entries(certificationGatingConfig) as Array<
+    [ObjectiveArtifactType, { fail: readonly CertificationLevel[]; warn: readonly CertificationLevel[] }]
+  >).forEach(([artifact, config]) => {
     const missingObjectives = missingByArtifact.get(artifact);
     if (!missingObjectives || missingObjectives.size === 0) {
       return;
@@ -2663,17 +2733,28 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   };
 };
 
+export interface PackLedgerOptions {
+  path: string;
+  signerKey?: string;
+  signerKeyId?: string;
+}
+
 export interface PackOptions {
   input: string;
   output: string;
   signingKey: string;
   packageName?: string;
+  ledger?: PackLedgerOptions;
 }
 
 export interface PackResult {
   manifestPath: string;
   archivePath: string;
   manifestId: string;
+  manifestDigest: string;
+  ledgerPath?: string;
+  ledger?: Ledger;
+  ledgerEntry?: LedgerEntry;
 }
 
 const createArchive = async (
@@ -2782,17 +2863,100 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const evidenceDirs = await resolveEvidenceDirectories(inputDir, reportDir);
   const now = getCurrentDate();
 
-  const { manifest, files } = await buildManifest({
+  const { manifest: baseManifest, files } = await buildManifest({
     reportDir,
     evidenceDirs,
     toolVersion: packageInfo.version,
     now,
   });
 
+  let manifest: LedgerAwareManifest = baseManifest;
+  let manifestDigest = computeManifestDigestHex(baseManifest);
+  let ledgerPath: string | undefined;
+  let updatedLedger: Ledger | undefined;
+  let ledgerEntry: LedgerEntry | undefined;
+
+  if (options.ledger) {
+    ledgerPath = path.resolve(options.ledger.path);
+
+    let ledger: Ledger;
+    try {
+      ledger = await readJsonFile<Ledger>(ledgerPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        ledger = createLedger();
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Ledger dosyası okunamadı (${ledgerPath}): ${message}`);
+      }
+    }
+
+    const snapshotPath = path.join(reportDir, 'snapshot.json');
+    let snapshot: ComplianceSnapshot;
+    try {
+      snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Ledger kaydı için snapshot verisi okunamadı (${snapshotPath}): ${message}`);
+    }
+
+    const signer: LedgerSignerOptions | undefined = options.ledger.signerKey
+      ? {
+          privateKeyPem: options.ledger.signerKey,
+          keyId: options.ledger.signerKeyId,
+        }
+      : undefined;
+
+    const appendOptions: AppendEntryOptions = {
+      expectedPreviousRoot: ledger.root,
+      ...(signer ? { signer } : {}),
+    };
+
+    const manifestDigestForLedger = computeManifestDigestHex(baseManifest);
+    const appended = appendEntry(
+      ledger,
+      {
+        snapshotId: snapshot.version.id,
+        manifestDigest: manifestDigestForLedger,
+        timestamp: baseManifest.createdAt,
+      },
+      appendOptions,
+    );
+
+    const entry = appended.entries[appended.entries.length - 1];
+    manifest = {
+      ...baseManifest,
+      files: baseManifest.files.map((file) => ({ ...file })),
+      ledger: {
+        root: entry.ledgerRoot,
+        previousRoot: entry.previousRoot,
+      },
+    };
+    manifestDigest = manifestDigestForLedger;
+    updatedLedger = appended;
+    ledgerEntry = entry;
+  }
+
   const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
-  const signatureBundle = signManifestBundle(manifest, { bundlePem: options.signingKey });
+  const signatureBundle = signManifestBundle(manifest, {
+    bundlePem: options.signingKey,
+    ledger: ledgerEntry
+      ? { root: ledgerEntry.ledgerRoot, previousRoot: ledgerEntry.previousRoot }
+      : undefined,
+  });
   const signature = signatureBundle.signature;
-  const verification = verifyManifestSignatureDetailed(manifest, signature);
+  const verification = verifyManifestSignatureDetailed(
+    manifest,
+    signature,
+    ledgerEntry
+      ? {
+          expectedLedgerRoot: ledgerEntry.ledgerRoot,
+          expectedPreviousLedgerRoot: ledgerEntry.previousRoot,
+          requireLedgerProof: true,
+        }
+      : undefined,
+  );
   if (!verification.valid) {
     const reason = verification.reason ?? 'bilinmeyen';
     throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
@@ -2805,6 +2969,11 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const signaturePath = path.join(outputDir, 'manifest.sig');
   await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
+  if (ledgerPath && updatedLedger) {
+    await ensureDirectory(path.dirname(ledgerPath));
+    await writeJsonFile(ledgerPath, updatedLedger);
+  }
+
   const archiveName =
     options.packageName !== undefined
       ? normalizePackageName(options.packageName)
@@ -2812,7 +2981,15 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const archivePath = path.join(outputDir, archiveName);
   await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
 
-  return { manifestPath, archivePath, manifestId };
+  return {
+    manifestPath,
+    archivePath,
+    manifestId,
+    manifestDigest,
+    ledgerPath,
+    ledger: updatedLedger,
+    ledgerEntry,
+  };
 };
 
 interface CoverageSummaryTotals {
@@ -2994,12 +3171,17 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
 export interface PackagePipelineOptions extends IngestPipelineOptions {
   signingKey: string;
   packageName?: string;
+  ledger?: PackLedgerOptions;
 }
 
 export interface PackagePipelineResult extends IngestPipelineResult {
   manifestPath: string;
   archivePath: string;
   manifestId: string;
+  manifestDigest: string;
+  ledgerPath?: string;
+  ledger?: Ledger;
+  ledgerEntry?: LedgerEntry;
 }
 
 export const runIngestAndPackage = async (
@@ -3012,6 +3194,7 @@ export const runIngestAndPackage = async (
     output: path.resolve(options.outputDir),
     packageName: packageName ?? 'soi-pack.zip',
     signingKey,
+    ledger: options.ledger,
   });
 
   return {
@@ -3019,6 +3202,10 @@ export const runIngestAndPackage = async (
     manifestPath: packResult.manifestPath,
     archivePath: packResult.archivePath,
     manifestId: packResult.manifestId,
+    manifestDigest: packResult.manifestDigest,
+    ledgerPath: packResult.ledgerPath,
+    ledger: packResult.ledger,
+    ledgerEntry: packResult.ledgerEntry,
   };
 };
 
@@ -4094,11 +4281,23 @@ if (require.main === module) {
             describe: 'Ed25519 özel anahtar PEM dosyası.',
             type: 'string',
             demandOption: true,
+          })
+          .option('ledger', {
+            describe: 'Güncellenecek ledger.json dosya yolu.',
+            type: 'string',
+          })
+          .option('ledger-key', {
+            describe: 'Ledger girdilerini imzalamak için Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+          })
+          .option('ledger-key-id', {
+            describe: 'Ledger girdisi imzası için anahtar kimliği.',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
-        const context = {
+        const context: Record<string, unknown> = {
           command: 'pack',
           licensePath,
           input: argv.input,
@@ -4118,11 +4317,39 @@ if (require.main === module) {
           context.signingKeyPath = signingKeyPath;
           const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
 
+          const ledgerPathOption = Array.isArray(argv.ledger)
+            ? (argv.ledger[0] as string | undefined)
+            : (argv.ledger as string | undefined);
+          const ledgerKeyOption = Array.isArray(argv.ledgerKey)
+            ? (argv.ledgerKey[0] as string | undefined)
+            : (argv.ledgerKey as string | undefined);
+          const ledgerKeyIdOption = Array.isArray(argv.ledgerKeyId)
+            ? (argv.ledgerKeyId[0] as string | undefined)
+            : (argv.ledgerKeyId as string | undefined);
+
+          let ledgerOptions: PackLedgerOptions | undefined;
+          if (ledgerPathOption) {
+            const ledgerResolved = path.resolve(ledgerPathOption);
+            context.ledgerPath = ledgerResolved;
+            let ledgerSignerKey: string | undefined;
+            if (ledgerKeyOption) {
+              const ledgerKeyPath = path.resolve(ledgerKeyOption);
+              context.ledgerKeyPath = ledgerKeyPath;
+              ledgerSignerKey = await fsPromises.readFile(ledgerKeyPath, 'utf8');
+            }
+            ledgerOptions = {
+              path: ledgerResolved,
+              signerKey: ledgerSignerKey,
+              signerKeyId: ledgerKeyIdOption,
+            };
+          }
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
             packageName: argv.name,
             signingKey,
+            ledger: ledgerOptions,
           });
 
           logger.info(
@@ -4183,6 +4410,18 @@ if (require.main === module) {
             describe: 'Çıktı paketi dosya adı.',
             type: 'string',
             default: 'soi-pack.zip',
+          })
+          .option('ledger', {
+            describe: 'Paketleme ledger dosyasının yolu.',
+            type: 'string',
+          })
+          .option('ledger-key', {
+            describe: 'Ledger girdilerini imzalamak için Ed25519 özel anahtar PEM dosyası.',
+            type: 'string',
+          })
+          .option('ledger-key-id', {
+            describe: 'Ledger girdisi imzası için anahtar kimliği.',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -4225,6 +4464,33 @@ if (require.main === module) {
           context.packageName = packageName ?? 'soi-pack.zip';
           const signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
 
+          const ledgerPathOption = Array.isArray(argv.ledger)
+            ? (argv.ledger[0] as string | undefined)
+            : (argv.ledger as string | undefined);
+          const ledgerKeyOption = Array.isArray(argv.ledgerKey)
+            ? (argv.ledgerKey[0] as string | undefined)
+            : (argv.ledgerKey as string | undefined);
+          const ledgerKeyIdOption = Array.isArray(argv.ledgerKeyId)
+            ? (argv.ledgerKeyId[0] as string | undefined)
+            : (argv.ledgerKeyId as string | undefined);
+
+          let ledgerOptions: PackLedgerOptions | undefined;
+          if (ledgerPathOption) {
+            const ledgerResolved = path.resolve(ledgerPathOption);
+            context.ledgerPath = ledgerResolved;
+            let ledgerSignerKey: string | undefined;
+            if (ledgerKeyOption) {
+              const ledgerKeyPath = path.resolve(ledgerKeyOption);
+              context.ledgerKeyPath = ledgerKeyPath;
+              ledgerSignerKey = await fsPromises.readFile(ledgerKeyPath, 'utf8');
+            }
+            ledgerOptions = {
+              path: ledgerResolved,
+              signerKey: ledgerSignerKey,
+              signerKeyId: ledgerKeyIdOption,
+            };
+          }
+
           const result = await runIngestAndPackage({
             inputDir,
             outputDir,
@@ -4234,6 +4500,7 @@ if (require.main === module) {
             projectVersion: argv.projectVersion as string | undefined,
             signingKey,
             packageName,
+            ledger: ledgerOptions,
           });
 
           logger.info(
@@ -4441,6 +4708,7 @@ if (require.main === module) {
 export const __internal = {
   logLicenseValidated,
   logCliError,
+  mergeStructuralCoverage,
 };
 
 export {

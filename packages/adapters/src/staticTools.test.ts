@@ -55,7 +55,7 @@ describe('Static analysis adapters', () => {
       dec: { covered: 30, total: 40 },
       mcdc: { covered: 28, total: 40 },
     });
-    expect(data.coverage?.objectiveLinks).toEqual(['A-5-08']);
+    expect(data.coverage?.objectiveLinks).toEqual(['A-5-08', 'A-5-09', 'A-5-10']);
   });
 
   it('imports VectorCAST coverage and findings', async () => {

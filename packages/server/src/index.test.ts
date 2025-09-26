@@ -3772,6 +3772,9 @@ describe('@soipack/server REST API', () => {
     expect(reportReuse.body.reused).toBe(true);
     expect(reportReuse.body.id).toBe(reportQueued.body.id);
 
+    const lifecycle = getServerLifecycle(app);
+    const publishLedgerSpy = jest.spyOn(lifecycle.events, 'publishLedgerEntry');
+
     const packQueued = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
@@ -3782,6 +3785,22 @@ describe('@soipack/server REST API', () => {
     const packJob = await waitForJobCompletion(app, token, packQueued.body.id);
     expect(packJob.result.outputs.archive).toMatch(/^packages\//);
     expect(packJob.result.manifestId).toHaveLength(12);
+    expect(packJob.result.manifestDigest).toHaveLength(64);
+    expect(packJob.result.outputs.ledger).toMatch(/^packages\//);
+
+    const ledgerAbsolutePath = path.resolve(storageDir, packJob.result.outputs.ledger!);
+    const ledgerContent = JSON.parse(await fsPromises.readFile(ledgerAbsolutePath, 'utf8')) as {
+      root: string;
+      entries: Array<{ manifestDigest: string }>;
+    };
+    expect(packJob.result.ledgerRoot).toBe(ledgerContent.root);
+    expect(ledgerContent.entries[0]?.manifestDigest).toBe(packJob.result.manifestDigest);
+
+    expect(publishLedgerSpy).toHaveBeenCalledWith(
+      tenantId,
+      expect.objectContaining({ ledgerRoot: packJob.result.ledgerRoot }),
+      expect.objectContaining({ id: expect.stringContaining(packQueued.body.id) }),
+    );
 
     const packDetails = await request(app)
       .get(`/v1/jobs/${packQueued.body.id}`)
@@ -3789,6 +3808,8 @@ describe('@soipack/server REST API', () => {
       .expect(200);
     expect(packDetails.body.result.outputs.archive).toBe(packJob.result.outputs.archive);
     expect(packDetails.body.result.manifestId).toBe(packJob.result.manifestId);
+    expect(packDetails.body.result.manifestDigest).toBe(packJob.result.manifestDigest);
+    expect(packDetails.body.result.outputs.ledger).toBe(packJob.result.outputs.ledger);
 
     const packReuse = await request(app)
       .post('/v1/pack')
@@ -3808,6 +3829,11 @@ describe('@soipack/server REST API', () => {
     const manifest = JSON.parse(await fsPromises.readFile(manifestPath, 'utf8')) as Manifest;
     const signature = (await fsPromises.readFile(signaturePath, 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
+
+    const packageLedgerCopy = JSON.parse(
+      await fsPromises.readFile(path.join(manifestDir, 'ledger.json'), 'utf8'),
+    ) as { root: string };
+    expect(packageLedgerCopy.root).toBe(packJob.result.ledgerRoot);
 
     const packFilter = await request(app)
       .get('/v1/jobs')
@@ -3845,6 +3871,8 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${otherTenantToken}`)
       .expect(404);
     expect(manifestForbidden.body.error.code).toBe('MANIFEST_NOT_FOUND');
+
+    publishLedgerSpy.mockRestore();
 
     const packageDownload = await request(app)
       .get(`/v1/packages/${packQueued.body.id}/archive`)

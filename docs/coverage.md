@@ -9,6 +9,10 @@ SOIPack motoru, farklı kapsama çıktılarından birleşik özetler üretmek i�
 
 Her iki içe aktarım da dosya yollarını normalize eder ve sonuçları motorun diğer bileşenlerinde kullanılan `CoverageReport` tipine dönüştürür. Böylece izlenebilirlik raporları ve kalite kontrolleri tek bir kapsama temsilinden beslenir.
 
+## Otomatik kanıt eşlemeleri
+
+`runImport` komutu, kapsam raporlarında karar (branch) veya MC/DC metrikleri bulunduğunda bu değerleri otomatik olarak DO-178C kanıt türleriyle eşleştirir. LCOV ve Cobertura raporlarında dallanma metrikleri tespit edilirse `coverage_dec`, MC/DC metrikleri tespit edilirse `coverage_mcdc` kanıt girdileri oluşturulur. Yapısal kapsam sağlayan LDRA ve VectorCAST özetleri için de aynı eşleme geçerlidir; böylece farklı araçlardan gelen veriler tek bir çalışma alanında karar ve MC/DC kanıtı olarak saklanır.
+
 ## Hesaplama yöntemi
 
 Toplayıcılar tüm metrikleri 0,1 hassasiyetinde hesaplar:

@@ -70,6 +70,7 @@ export interface PipelineDirectories {
   analyses: string;
   reports: string;
   packages: string;
+  ledgers: string;
 }
 
 export interface PersistableFile {
@@ -110,6 +111,7 @@ export class FileSystemStorage implements StorageProvider {
       analyses: path.join(baseDir, 'analyses'),
       reports: path.join(baseDir, 'reports'),
       packages: path.join(baseDir, 'packages'),
+      ledgers: path.join(baseDir, 'ledgers'),
     };
 
     this.directories = directories;
