@@ -3,6 +3,7 @@ import {
   approveWorkspaceSignoff,
   buildAuthHeaders,
   createAdminApiKey,
+  createAdminUser,
   createReview,
   createWorkspaceComment,
   deleteAdminApiKey,
@@ -15,6 +16,7 @@ import {
   listAdminUsers,
   listAuditLogs,
   listJobs,
+  listManifestProofs,
   listReviews,
   requestWorkspaceSignoff,
   rotateAdminApiKey,
@@ -22,6 +24,7 @@ import {
   updateAdminUser,
   updateReview,
   updateWorkspaceDocument,
+  getManifestProof,
 } from './api';
 
 const IMPORT_META_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
@@ -199,6 +202,44 @@ describe('API integrations', () => {
     const reviewCall = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(reviewCall[0]).toContain('/v1/reviews?status=pending&status=approved&limit=25');
     expect(reviewCall[1]).toMatchObject({ method: 'GET' });
+  });
+
+  it('fetches manifest proof listings with encoded identifiers', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({ body: { manifestId: 'm1', jobId: 'j1', merkle: null, files: [] } }),
+    );
+
+    await listManifestProofs({ ...credentials, manifestId: 'manifest/with/slash' });
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/v1/manifests/manifest%2Fwith%2Fslash/proofs');
+    expect(options).toMatchObject({ method: 'GET' });
+  });
+
+  it('retrieves individual manifest proof payloads', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          manifestId: 'm1',
+          jobId: 'j1',
+          path: 'reports/manifest.json',
+          sha256: 'abc',
+          verified: true,
+          merkle: null,
+          proof: { algorithm: 'ledger-merkle-v1', merkleRoot: 'root', proof: '{"path":[]}' },
+        },
+      }),
+    );
+
+    const result = await getManifestProof({
+      ...credentials,
+      manifestId: 'm1',
+      filePath: 'reports/manifest.json',
+    });
+
+    expect(result.path).toBe('reports/manifest.json');
+    const [url] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/v1/manifests/m1/proofs/reports%2Fmanifest.json');
   });
 
   it('updates workspace documents and comments', async () => {

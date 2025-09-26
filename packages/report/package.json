@@ -8,6 +8,7 @@
   "dependencies": {
     "@soipack/core": "workspace:*",
     "@soipack/engine": "workspace:*",
+    "@soipack/packager": "workspace:*",
     "@types/handlebars": "^4.1.0",
     "@types/nunjucks": "^3.2.5",
     "docx": "^8.5.0",
@@ -17,7 +18,8 @@
     "playwright": "^1.45.0"
   },
   "devDependencies": {
-    "html-validator": "^6.0.1"
+    "html-validator": "^6.0.1",
+    "jszip": "^3.10.1"
   },
   "files": [
     "dist",

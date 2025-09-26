@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { Manifest } from '@soipack/core';
+import forge from 'node-forge';
 
 import {
   DEFAULT_POST_QUANTUM_ALGORITHM,
@@ -28,6 +29,27 @@ export interface PostQuantumVerificationOptions {
   required?: boolean;
 }
 
+export interface CmsSigningOptions {
+  bundlePath?: string;
+  bundlePem?: string;
+  certificatePath?: string;
+  certificatePem?: string;
+  privateKeyPath?: string;
+  privateKeyPem?: string;
+  chainPath?: string;
+  chainPem?: string;
+  digestAlgorithm?: 'sha256';
+}
+
+export interface CmsVerificationOptions {
+  signatureDer?: string;
+  signaturePem?: string;
+  signaturePath?: string;
+  required?: boolean;
+  certificatePem?: string;
+  certificatePath?: string;
+}
+
 type ManifestLedgerMetadata = {
   ledger?: {
     root: string | null;
@@ -47,6 +69,26 @@ export interface LedgerProofMetadata {
   previousRoot?: string | null;
 }
 
+export interface CmsSignatureBundle {
+  der: string;
+  pem: string;
+  certificates: string[];
+  digestAlgorithm: string;
+  signerSerialNumber?: string;
+  signerIssuer?: string;
+  signerSubject?: string;
+  signatureAlgorithm?: string;
+}
+
+export interface CmsVerificationResult {
+  verified: boolean;
+  digestVerified: boolean;
+  signerSerialNumber?: string;
+  signerIssuer?: string;
+  signerSubject?: string;
+  signatureAlgorithm?: string;
+}
+
 export interface ManifestSignatureBundle {
   signature: string;
   certificate: string;
@@ -59,6 +101,7 @@ export interface ManifestSignatureBundle {
     signature: string;
     publicKey: string;
   };
+  cmsSignature?: CmsSignatureBundle;
 }
 
 export interface SecuritySignerOptions {
@@ -71,6 +114,7 @@ export interface SecuritySignerOptions {
   ledger?: LedgerProofMetadata;
   pkcs11?: Pkcs11SigningOptions;
   postQuantum?: PostQuantumSigningOptions | false;
+  cms?: CmsSigningOptions | false;
 }
 
 type Pkcs11Attribute = { type: number; value?: Buffer };
@@ -175,7 +219,12 @@ export type VerificationFailureReason =
   | 'CERTIFICATE_MISSING'
   | 'LEDGER_ROOT_MISSING'
   | 'LEDGER_ROOT_MISMATCH'
-  | 'LEDGER_PREVIOUS_MISMATCH';
+  | 'LEDGER_PREVIOUS_MISMATCH'
+  | 'CMS_SIGNATURE_REQUIRED'
+  | 'CMS_SIGNATURE_MISSING'
+  | 'CMS_SIGNATURE_INVALID'
+  | 'CMS_DIGEST_MISMATCH'
+  | 'CMS_CERTIFICATE_MISMATCH';
 
 export interface VerificationOptions {
   certificatePem?: string;
@@ -185,6 +234,7 @@ export interface VerificationOptions {
   expectedPreviousLedgerRoot?: string | null;
   requireLedgerProof?: boolean;
   postQuantum?: PostQuantumVerificationOptions;
+  cms?: CmsVerificationOptions;
 }
 
 export interface VerificationResult {
@@ -203,11 +253,13 @@ export interface VerificationResult {
     publicKey: string;
     verified: boolean;
   };
+  cms?: CmsVerificationResult;
 }
 
 const DEFAULT_BUNDLE_PATH = path.resolve(__dirname, '../../../../test/certs/dev.pem');
 
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+const ALL_CERTIFICATES_PATTERN = new RegExp(CERTIFICATE_PATTERN.source, 'g');
 const PRIVATE_KEY_PATTERN = /-----BEGIN (?:RSA )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA )?PRIVATE KEY-----/;
 
 const base64UrlEncode = (value: Buffer | string): string => {
@@ -231,6 +283,13 @@ type PostQuantumSigningMaterial = {
   algorithm: PostQuantumAlgorithm;
   privateKey: string;
   publicKey: string;
+};
+
+type CmsSigningMaterial = {
+  certificatePem: string;
+  privateKeyPem: string;
+  certificateChain: string[];
+  digestAlgorithm: 'sha256';
 };
 
 const resolvePostQuantumSigningMaterial = (
@@ -286,6 +345,93 @@ const resolvePostQuantumSigningMaterial = (
   };
 };
 
+const resolveCmsSigningMaterial = (
+  options: SecuritySignerOptions,
+): CmsSigningMaterial | undefined => {
+  if (options.cms === false) {
+    return undefined;
+  }
+
+  const cmsOptions = options.cms;
+  if (!cmsOptions) {
+    return undefined;
+  }
+
+  let certificatePem: string | undefined;
+  let privateKeyPem: string | undefined;
+  let certificateChain: string[] = [];
+
+  const appendChain = (pem?: string): void => {
+    if (!pem) {
+      return;
+    }
+    certificateChain.push(...extractCertificateChain(pem));
+  };
+
+  if (cmsOptions.bundlePem) {
+    const pair = extractCredentialPair(cmsOptions.bundlePem);
+    certificatePem = pair.certificatePem;
+    privateKeyPem = pair.privateKeyPem;
+    certificateChain = [...pair.certificateChain];
+  } else if (cmsOptions.bundlePath) {
+    const bundlePem = readFileSync(cmsOptions.bundlePath, 'utf8');
+    const pair = extractCredentialPair(bundlePem);
+    certificatePem = pair.certificatePem;
+    privateKeyPem = pair.privateKeyPem;
+    certificateChain = [...pair.certificateChain];
+  } else {
+    if (cmsOptions.certificatePem) {
+      certificatePem = cmsOptions.certificatePem;
+      appendChain(cmsOptions.certificatePem);
+    } else if (cmsOptions.certificatePath) {
+      const pem = readFileSync(cmsOptions.certificatePath, 'utf8');
+      certificatePem = pem;
+      appendChain(pem);
+    }
+
+    if (cmsOptions.privateKeyPem) {
+      privateKeyPem = cmsOptions.privateKeyPem;
+    } else if (cmsOptions.privateKeyPath) {
+      privateKeyPem = readFileSync(cmsOptions.privateKeyPath, 'utf8');
+    }
+  }
+
+  if (!certificatePem || !privateKeyPem) {
+    return undefined;
+  }
+
+  if (!certificateChain.length) {
+    certificateChain.push(certificatePem.trim());
+  }
+
+  appendChain(cmsOptions.chainPem);
+  if (cmsOptions.chainPath) {
+    appendChain(readFileSync(cmsOptions.chainPath, 'utf8'));
+  }
+
+  const digestAlgorithm = cmsOptions.digestAlgorithm ?? 'sha256';
+  if (digestAlgorithm !== 'sha256') {
+    throw new Error('Desteklenmeyen CMS özet algoritması.');
+  }
+
+  const seen = new Set<string>();
+  const uniqueChain = certificateChain.filter((certificate) => {
+    const key = certificate.trim();
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  return {
+    certificatePem,
+    privateKeyPem,
+    certificateChain: uniqueChain,
+    digestAlgorithm,
+  };
+};
+
 const createPostQuantumSignature = (
   signingInput: string,
   material?: PostQuantumSigningMaterial,
@@ -311,6 +457,339 @@ const createPostQuantumSignature = (
     publicKey: material.publicKey,
     signature,
   };
+};
+
+const resolveSignatureAlgorithmName = (certificate: forge.pki.Certificate): string | undefined => {
+  const oid = certificate.signatureOid ?? certificate.siginfo?.algorithmOid;
+  if (!oid) {
+    return undefined;
+  }
+  const friendly = forge.pki.oids[oid];
+  return typeof friendly === 'string' ? friendly : oid;
+};
+
+const resolveNodeDigestAlgorithm = (oid?: string): 'sha256' | undefined => {
+  if (!oid) {
+    return undefined;
+  }
+  switch (oid) {
+    case forge.pki.oids.sha256:
+    case forge.pki.oids.sha256WithRSAEncryption:
+      return 'sha256';
+    default:
+      return undefined;
+  }
+};
+
+type ForgeSignedData = forge.pkcs7.PkcsSignedData;
+
+const createCmsSignatureBundle = (
+  serializedManifest: string,
+  digest: ManifestDigest,
+  material?: CmsSigningMaterial,
+): CmsSignatureBundle | undefined => {
+  if (!material) {
+    return undefined;
+  }
+
+  const signerCertificate = forge.pki.certificateFromPem(material.certificatePem);
+  const privateKey = forge.pki.privateKeyFromPem(material.privateKeyPem);
+  const signedData = forge.pkcs7.createSignedData();
+  signedData.content = forge.util.createBuffer(serializedManifest, 'utf8');
+
+  for (const certificate of material.certificateChain) {
+    signedData.addCertificate(forge.pki.certificateFromPem(certificate));
+  }
+
+  signedData.addSigner({
+    key: privateKey,
+    certificate: signerCertificate,
+    digestAlgorithm: forge.pki.oids.sha256,
+    authenticatedAttributes: [
+      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
+      { type: forge.pki.oids.messageDigest },
+    ],
+  });
+
+  signedData.sign({ detached: false });
+
+  const derBytes = forge.asn1.toDer(signedData.toAsn1()).getBytes();
+  const derBuffer = Buffer.from(derBytes, 'binary');
+  const pem = forge.pkcs7.messageToPem(signedData);
+
+  const x509 = new X509Certificate(material.certificatePem);
+  const signatureAlgorithm = resolveSignatureAlgorithmName(signerCertificate);
+
+  return {
+    der: derBuffer.toString('base64'),
+    pem: pem.trim(),
+    certificates: material.certificateChain.map((certificate) => certificate.trim()),
+    digestAlgorithm: digest.algorithm,
+    signerSerialNumber: x509.serialNumber,
+    signerIssuer: x509.issuer,
+    signerSubject: x509.subject,
+    signatureAlgorithm,
+  };
+};
+
+const extractCmsSignerVerificationInputs = (
+  signedMessage: ForgeSignedData,
+): {
+  digestOid?: string;
+  signature?: Buffer;
+  signedAttributes?: Buffer;
+  attributesPresent: boolean;
+} => {
+  const capture = (signedMessage as unknown as {
+    rawCapture?: {
+      signerInfos?: forge.asn1.Asn1[];
+      digestAlgorithm?: string;
+      signature?: string;
+    };
+  }).rawCapture;
+
+  const signerInfos = Array.isArray(capture?.signerInfos) ? capture?.signerInfos : [];
+  const signerInfo = signerInfos && signerInfos.length > 0 ? signerInfos[0] : undefined;
+
+  let digestOid: string | undefined;
+  let signatureBytes: string | undefined;
+  let signedAttributes: Buffer | undefined;
+  let attributesPresent = false;
+
+  if (signerInfo && Array.isArray(signerInfo.value)) {
+    const digestSequence = signerInfo.value[2];
+    if (
+      digestSequence &&
+      Array.isArray(digestSequence.value) &&
+      digestSequence.value.length > 0 &&
+      typeof digestSequence.value[0]?.value === 'string'
+    ) {
+      digestOid = forge.asn1.derToOid(digestSequence.value[0].value as string);
+    }
+
+    const attributesNode = signerInfo.value.find(
+      (node) =>
+        node.tagClass === forge.asn1.Class.CONTEXT_SPECIFIC &&
+        node.type === 0 &&
+        Array.isArray(node.value),
+    );
+
+    if (attributesNode) {
+      attributesPresent = true;
+      const attributeSet = forge.asn1.create(
+        forge.asn1.Class.UNIVERSAL,
+        forge.asn1.Type.SET,
+        true,
+        (attributesNode.value as forge.asn1.Asn1[]).map((attribute) => attribute),
+      );
+      const derBytes = forge.asn1.toDer(attributeSet).getBytes();
+      signedAttributes = Buffer.from(derBytes, 'binary');
+    }
+
+    const signatureNode = signerInfo.value.find(
+      (node) =>
+        node.tagClass === forge.asn1.Class.UNIVERSAL &&
+        node.type === forge.asn1.Type.OCTETSTRING &&
+        typeof node.value === 'string',
+    );
+
+    if (signatureNode) {
+      signatureBytes = signatureNode.value as string;
+    }
+  }
+
+  if (!digestOid && capture?.digestAlgorithm) {
+    digestOid = forge.asn1.derToOid(capture.digestAlgorithm);
+  }
+
+  if (!signatureBytes && typeof capture?.signature === 'string') {
+    signatureBytes = capture.signature;
+  }
+
+  return {
+    digestOid,
+    signature: signatureBytes ? Buffer.from(signatureBytes, 'binary') : undefined,
+    signedAttributes,
+    attributesPresent,
+  };
+};
+
+const extractCmsContentBuffer = (signedMessage: ForgeSignedData): Buffer | undefined => {
+  const rawContent = (signedMessage as unknown as { content?: string | forge.util.ByteBuffer }).content;
+
+  if (typeof rawContent === 'string' && rawContent.length > 0) {
+    return Buffer.from(rawContent, 'binary');
+  }
+
+  if (rawContent && typeof (rawContent as forge.util.ByteBuffer).bytes === 'function') {
+    const byteString = (rawContent as forge.util.ByteBuffer).bytes();
+    if (byteString.length > 0) {
+      return Buffer.from(byteString, 'binary');
+    }
+  }
+
+  const captureContent = (signedMessage as unknown as { rawCapture?: { content?: forge.asn1.Asn1 } }).rawCapture?.content;
+  if (!captureContent) {
+    return undefined;
+  }
+
+  if (typeof captureContent.value === 'string') {
+    return Buffer.from(captureContent.value, 'binary');
+  }
+
+  if (Array.isArray(captureContent.value)) {
+    const chunks: string[] = [];
+    for (const element of captureContent.value) {
+      if (typeof element.value === 'string') {
+        chunks.push(element.value as string);
+      }
+    }
+    if (chunks.length > 0) {
+      return Buffer.from(chunks.join(''), 'binary');
+    }
+  }
+
+  return undefined;
+};
+
+const verifyCmsSignatureArtifact = (
+  serializedManifest: string,
+  digest: ManifestDigest,
+  options?: CmsVerificationOptions,
+): { result?: CmsVerificationResult; failure?: { reason: VerificationFailureReason; cms?: CmsVerificationResult } } => {
+  if (!options) {
+    return {};
+  }
+
+  const required = options.required ?? false;
+
+  let signaturePem = options.signaturePem;
+  let signatureDer = options.signatureDer;
+
+  if (options.signaturePath) {
+    const content = readFileSync(options.signaturePath, 'utf8');
+    if (content.includes('-----BEGIN')) {
+      signaturePem = content;
+      signatureDer = undefined;
+    } else {
+      signatureDer = content.trim();
+      signaturePem = undefined;
+    }
+  }
+
+  if (!signaturePem && !signatureDer) {
+    if (required) {
+      return { failure: { reason: 'CMS_SIGNATURE_MISSING' } };
+    }
+    return {};
+  }
+
+  let signedMessage: ForgeSignedData;
+
+  try {
+    if (signaturePem) {
+      const parsed = forge.pkcs7.messageFromPem(signaturePem);
+      if (!('certificates' in parsed)) {
+        return { failure: { reason: 'CMS_SIGNATURE_INVALID' } };
+      }
+      signedMessage = parsed as ForgeSignedData;
+    } else {
+      const derBuffer = Buffer.from(signatureDer!, 'base64');
+      const asn1 = forge.asn1.fromDer(derBuffer.toString('binary'));
+      const parsed = forge.pkcs7.messageFromAsn1(asn1);
+      if (!('certificates' in parsed)) {
+        return { failure: { reason: 'CMS_SIGNATURE_INVALID' } };
+      }
+      signedMessage = parsed as ForgeSignedData;
+    }
+  } catch (error) {
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID' } };
+  }
+
+  const contentBuffer = extractCmsContentBuffer(signedMessage);
+
+  if (!contentBuffer) {
+    const cmsResult: CmsVerificationResult = { verified: false, digestVerified: false };
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID', cms: cmsResult } };
+  }
+
+  let signerForgeCertificate: forge.pki.Certificate | undefined;
+  let signerX509: X509Certificate | undefined;
+  if (signedMessage.certificates && signedMessage.certificates.length > 0) {
+    try {
+      signerForgeCertificate = signedMessage.certificates[0];
+      const signerPem = forge.pki.certificateToPem(signerForgeCertificate);
+      signerX509 = new X509Certificate(signerPem);
+    } catch (error) {
+      signerX509 = undefined;
+    }
+  }
+
+  const signerInputs = extractCmsSignerVerificationInputs(signedMessage);
+  const digestAlgorithm = resolveNodeDigestAlgorithm(signerInputs.digestOid);
+
+  if (!signerInputs.signature || !digestAlgorithm || !signerX509) {
+    const cmsResult: CmsVerificationResult = { verified: false, digestVerified: false };
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID', cms: cmsResult } };
+  }
+
+  if (signerInputs.attributesPresent && !signerInputs.signedAttributes) {
+    const cmsResult: CmsVerificationResult = { verified: false, digestVerified: false };
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID', cms: cmsResult } };
+  }
+
+  const signedContent = signerInputs.signedAttributes ?? contentBuffer;
+  if (!signedContent) {
+    const cmsResult: CmsVerificationResult = { verified: false, digestVerified: false };
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID', cms: cmsResult } };
+  }
+
+  let verified = false;
+  try {
+    verified = verifySignature(digestAlgorithm, signedContent, signerX509.publicKey, signerInputs.signature);
+  } catch (error) {
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID' } };
+  }
+
+  const digestVerified = createHash('sha256').update(contentBuffer).digest('hex') === digest.hash;
+
+  const signatureAlgorithm = signerForgeCertificate
+    ? resolveSignatureAlgorithmName(signerForgeCertificate)
+    : undefined;
+
+  const cmsResult: CmsVerificationResult = {
+    verified,
+    digestVerified,
+    signerSerialNumber: signerX509?.serialNumber,
+    signerIssuer: signerX509?.issuer,
+    signerSubject: signerX509?.subject,
+    signatureAlgorithm,
+  };
+
+  if (!verified) {
+    return { failure: { reason: 'CMS_SIGNATURE_INVALID', cms: cmsResult } };
+  }
+
+  if (!digestVerified || !contentBuffer.equals(Buffer.from(serializedManifest, 'utf8'))) {
+    return { failure: { reason: 'CMS_DIGEST_MISMATCH', cms: cmsResult } };
+  }
+
+  let expectedCertificatePem = options.certificatePem;
+  if (!expectedCertificatePem && options.certificatePath) {
+    expectedCertificatePem = readFileSync(options.certificatePath, 'utf8');
+  }
+
+  if (expectedCertificatePem) {
+    if (!signerX509) {
+      return { failure: { reason: 'CMS_CERTIFICATE_MISMATCH', cms: cmsResult } };
+    }
+    const expectedX509 = new X509Certificate(expectedCertificatePem);
+    if (expectedX509.raw.toString('base64') !== signerX509.raw.toString('base64')) {
+      return { failure: { reason: 'CMS_CERTIFICATE_MISMATCH', cms: cmsResult } };
+    }
+  }
+
+  return { result: cmsResult };
 };
 
 const encodePkcs11Uint = (value: number): Buffer => {
@@ -381,17 +860,30 @@ const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata): Mani
   return canonical;
 };
 
-const computeManifestDigest = (manifest: Manifest): ManifestDigest => {
+const serializeCanonicalManifest = (manifest: Manifest): string => JSON.stringify(manifest);
+
+const computeManifestDigestContext = (
+  manifest: Manifest,
+): { digest: ManifestDigest; canonical: Manifest; serialized: string } => {
   const canonical = canonicalizeManifest(manifest);
-  const serialized = JSON.stringify(canonical);
+  const serialized = serializeCanonicalManifest(canonical);
   const hash = createHash('sha256').update(serialized).digest('hex');
-  return { algorithm: 'SHA-256', hash };
+  return { digest: { algorithm: 'SHA-256', hash }, canonical, serialized };
 };
+
+const computeManifestDigest = (manifest: Manifest): ManifestDigest =>
+  computeManifestDigestContext(manifest).digest;
 
 interface CredentialPair {
   certificatePem: string;
   privateKeyPem: string;
+  certificateChain: string[];
 }
+
+const extractCertificateChain = (pemBundle: string): string[] => {
+  const certificateMatches = pemBundle.match(ALL_CERTIFICATES_PATTERN) ?? [];
+  return certificateMatches.map((certificate) => certificate.trim());
+};
 
 const extractCredentialPair = (pemBundle: string): CredentialPair => {
   const certificateMatch = pemBundle.match(CERTIFICATE_PATTERN);
@@ -403,6 +895,7 @@ const extractCredentialPair = (pemBundle: string): CredentialPair => {
   return {
     certificatePem: certificateMatch[0],
     privateKeyPem: privateKeyMatch[0],
+    certificateChain: extractCertificateChain(pemBundle),
   };
 };
 
@@ -419,6 +912,7 @@ const resolveCredentials = (options: SecuritySignerOptions = {}): CredentialPair
     return {
       certificatePem: options.certificatePem,
       privateKeyPem: options.privateKeyPem,
+      certificateChain: [options.certificatePem.trim()],
     };
   }
 
@@ -440,9 +934,11 @@ const resolveCredentials = (options: SecuritySignerOptions = {}): CredentialPair
   }
 
   if (options.certificatePath && options.privateKeyPath) {
+    const certificatePem = readFileSync(options.certificatePath, 'utf8');
     return {
-      certificatePem: readFileSync(options.certificatePath, 'utf8'),
+      certificatePem,
       privateKeyPem: readFileSync(options.privateKeyPath, 'utf8'),
+      certificateChain: extractCertificateChain(certificatePem),
     };
   }
 
@@ -531,6 +1027,7 @@ const buildBundleFromSignature = (
     publicKey: string;
     signature: Buffer;
   },
+  cmsSignature?: CmsSignatureBundle,
 ): ManifestSignatureBundle => {
   const segments = [signingInput, base64UrlEncode(signatureBuffer)];
   let pqSignature: ManifestSignatureBundle['postQuantumSignature'];
@@ -552,6 +1049,7 @@ const buildBundleFromSignature = (
     ledgerRoot,
     previousLedgerRoot,
     postQuantumSignature: pqSignature,
+    cmsSignature,
   };
 };
 
@@ -639,6 +1137,8 @@ const signManifestWithPkcs11 = (
   previousLedgerRoot: string | null,
   options: SecuritySignerOptions,
   postQuantumMaterial?: PostQuantumSigningMaterial,
+  serializedManifest?: string,
+  cmsMaterial?: CmsSigningMaterial,
 ): ManifestSignatureBundle => {
   const pkcs11Options = options.pkcs11!;
   if (!pkcs11Options.privateKey.label && !pkcs11Options.privateKey.idHex) {
@@ -696,6 +1196,9 @@ const signManifestWithPkcs11 = (
     const signatureBuffer = pkcs11.C_Sign(session, Buffer.from(signingInput, 'utf8'));
 
     const postQuantumSignature = createPostQuantumSignature(signingInput, postQuantumMaterial);
+    const cmsSignature = serializedManifest
+      ? createCmsSignatureBundle(serializedManifest, digest, cmsMaterial)
+      : undefined;
 
     const bundle = buildBundleFromSignature(
       trimmedCertificate,
@@ -705,6 +1208,7 @@ const signManifestWithPkcs11 = (
       signingInput,
       signatureBuffer,
       postQuantumSignature,
+      cmsSignature,
     );
 
     const hardwareMetadata: HardwareSignatureMetadata = {
@@ -768,7 +1272,7 @@ export const signManifestWithSecuritySigner = (
   manifest: Manifest,
   options: SecuritySignerOptions = {},
 ): ManifestSignatureBundle => {
-  const digest = computeManifestDigest(manifest);
+  const { digest, serialized } = computeManifestDigestContext(manifest);
   const manifestLedger = (manifest as ManifestLedgerMetadata).ledger;
   const ledgerSource =
     options.ledger ??
@@ -784,6 +1288,7 @@ export const signManifestWithSecuritySigner = (
     ledgerSource?.previousRoot ?? manifestLedger?.previousRoot ?? null;
 
   const postQuantumMaterial = resolvePostQuantumSigningMaterial(options.postQuantum);
+  const cmsMaterial = resolveCmsSigningMaterial(options);
 
   if (options.pkcs11) {
     return signManifestWithPkcs11(
@@ -792,6 +1297,8 @@ export const signManifestWithSecuritySigner = (
       previousLedgerRoot,
       options,
       postQuantumMaterial,
+      serialized,
+      cmsMaterial,
     );
   }
 
@@ -813,6 +1320,7 @@ export const signManifestWithSecuritySigner = (
   );
 
   const postQuantumSignature = createPostQuantumSignature(signingInput, postQuantumMaterial);
+  const cmsSignature = createCmsSignatureBundle(serialized, digest, cmsMaterial);
 
   return buildBundleFromSignature(
     credentials.certificatePem,
@@ -822,6 +1330,7 @@ export const signManifestWithSecuritySigner = (
     signingInput,
     signatureBuffer,
     postQuantumSignature,
+    cmsSignature,
   );
 };
 
@@ -879,7 +1388,7 @@ export const verifyManifestSignatureWithSecuritySigner = (
     return { valid: false, reason: 'FORMAT_INVALID' };
   }
 
-  const digest = computeManifestDigest(manifest);
+  const { digest, serialized } = computeManifestDigestContext(manifest);
   const ledgerRoot = typeof payload.ledgerRoot === 'string' ? payload.ledgerRoot : payload.ledgerRoot ?? null;
   const previousLedgerRoot =
     typeof payload.previousLedgerRoot === 'string'
@@ -1016,12 +1525,25 @@ export const verifyManifestSignatureWithSecuritySigner = (
     }
   }
 
+  const cmsVerification = verifyCmsSignatureArtifact(serialized, digest, options.cms);
+  if (cmsVerification.failure) {
+    return {
+      valid: false,
+      reason: cmsVerification.failure.reason,
+      certificateInfo,
+      ...ledgerContext,
+      postQuantum: postQuantumResult,
+      cms: cmsVerification.failure.cms,
+    };
+  }
+
   return {
     valid: true,
     digest,
     certificateInfo,
     ...ledgerContext,
     postQuantum: postQuantumResult,
+    cms: cmsVerification.result,
   };
 };
 

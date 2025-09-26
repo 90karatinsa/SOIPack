@@ -12,6 +12,7 @@ import {
   ImportWorkspace,
   LicenseError,
   normalizePackageName,
+  PackCmsOptions,
   PackOptions,
   ReportOptions,
   runAnalyze,
@@ -28,13 +29,19 @@ import {
 import {
   CertificationLevel,
   DEFAULT_LOCALE,
+  LedgerProofError,
+  Manifest,
+  ManifestFileEntry,
+  ManifestMerkleSummary,
   SnapshotVersion,
   createSnapshotIdentifier,
   createSnapshotVersion,
   deriveFingerprint,
+  deserializeLedgerProof,
   freezeSnapshotVersion,
   resolveLocale,
   translate,
+  verifyLedgerProof,
 } from '@soipack/core';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
@@ -92,6 +99,7 @@ import {
   type WorkspaceSignoff,
 } from './workspaces/service';
 import { ComplianceEventStream } from './events';
+import { verifyManifestSignatureWithSecuritySigner } from './security/signer';
 
 type FileMap = Record<string, Express.Multer.File[]>;
 
@@ -125,6 +133,17 @@ const buildContentDisposition = (fileName: string): string => {
   const fallback = fileName.replace(/"/g, "'");
   const encoded = encodeURIComponent(fileName);
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+};
+
+const PEM_BLOCK_PATTERN = /-----BEGIN [^-]+-----|-----END [^-]+-----/g;
+
+const extractPemBody = (pem: string): string => pem.replace(PEM_BLOCK_PATTERN, '').replace(/\s+/g, '');
+
+const CERTIFICATE_PEM_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+
+const extractFirstCertificate = (pem: string): string | undefined => {
+  const match = pem.match(CERTIFICATE_PEM_PATTERN);
+  return match ? match[0] : undefined;
 };
 
 const CHANGE_REQUEST_CACHE_TTL_MS = 300_000;
@@ -881,6 +900,19 @@ interface ReportJobMetadata extends BaseJobMetadata {
   };
 }
 
+interface CmsSignatureMetadata {
+  path: string;
+  sha256: string;
+  der: string;
+  digestAlgorithm: string;
+  verified: boolean;
+  digestVerified: boolean;
+  signerSerialNumber?: string | null;
+  signerIssuer?: string | null;
+  signerSubject?: string | null;
+  signatureAlgorithm?: string | null;
+}
+
 interface PackJobMetadata extends BaseJobMetadata {
   kind: 'pack';
   outputs: {
@@ -891,6 +923,7 @@ interface PackJobMetadata extends BaseJobMetadata {
     ledgerPath?: string;
     ledgerRoot?: string;
     previousLedgerRoot?: string | null;
+    cmsSignature?: CmsSignatureMetadata;
   };
 }
 
@@ -932,6 +965,7 @@ interface PackJobResult {
   manifestDigest: string;
   ledgerRoot?: string;
   previousLedgerRoot?: string | null;
+  cmsSignature?: CmsSignatureMetadata;
   outputs: {
     directory: string;
     manifest: string;
@@ -1354,6 +1388,13 @@ export interface JwtAuthConfig {
 
 type AuditLogAdapter = Pick<AuditLogStore, 'append' | 'query'>;
 
+export interface ServerCmsSigningConfig {
+  bundlePath?: string;
+  certificatePath?: string;
+  privateKeyPath?: string;
+  chainPath?: string;
+}
+
 export interface ServerConfig {
   auth: JwtAuthConfig;
   storageDir: string;
@@ -1380,6 +1421,7 @@ export interface ServerConfig {
   licenseCache?: LicenseCacheConfig;
   retentionScheduler?: RetentionSchedulerConfig;
   events?: EventStreamConfig;
+  cmsSigning?: ServerCmsSigningConfig;
 }
 
 export interface EventStreamConfig {
@@ -1582,6 +1624,18 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
   manifestDigest: metadata.outputs.manifestDigest,
   ledgerRoot: metadata.outputs.ledgerRoot,
   previousLedgerRoot: metadata.outputs.previousLedgerRoot,
+  ...(metadata.outputs.cmsSignature
+    ? {
+        cmsSignature: {
+          ...metadata.outputs.cmsSignature,
+          path: storage.toRelativePath(metadata.outputs.cmsSignature.path),
+          signerSerialNumber: metadata.outputs.cmsSignature.signerSerialNumber ?? null,
+          signerIssuer: metadata.outputs.cmsSignature.signerIssuer ?? null,
+          signerSubject: metadata.outputs.cmsSignature.signerSubject ?? null,
+          signatureAlgorithm: metadata.outputs.cmsSignature.signatureAlgorithm ?? null,
+        },
+      }
+    : {}),
   outputs: {
     directory: storage.toRelativePath(metadata.directory),
     manifest: storage.toRelativePath(metadata.outputs.manifestPath),
@@ -1835,6 +1889,48 @@ const findPackMetadataByManifestId = async (
   }
 
   return undefined;
+};
+
+const evaluateManifestProofs = (
+  manifest: Manifest,
+): { merkle: ManifestMerkleSummary | null; files: Array<{ file: ManifestFileEntry; verified: boolean }> } => {
+  const merkle = manifest.merkle ?? null;
+  const merkleRoot = merkle?.root ?? null;
+
+  return {
+    merkle,
+    files: manifest.files.map((file) => {
+      if (file.proof) {
+        if (!merkleRoot) {
+          throw new LedgerProofError('Manifest merkle kökü kanıt doğrulaması için gerekli.');
+        }
+        const parsed = deserializeLedgerProof(file.proof.proof);
+        verifyLedgerProof(parsed, { expectedMerkleRoot: merkleRoot });
+        return { file, verified: true };
+      }
+      return { file, verified: false };
+    }),
+  };
+};
+
+const resolveManifestRecord = async (
+  storage: StorageProvider,
+  directories: PipelineDirectories,
+  tenantId: string,
+  manifestId: string,
+): Promise<{ metadata: PackJobMetadata; manifest: Manifest; manifestPath: string }> => {
+  const metadata = await findPackMetadataByManifestId(storage, directories, tenantId, manifestId);
+  if (!metadata) {
+    throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'İstenen manifest bulunamadı.');
+  }
+
+  const manifestPath = metadata.outputs?.manifestPath;
+  if (!manifestPath || !(await storage.fileExists(manifestPath))) {
+    throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'Manifest dosyası bulunamadı.');
+  }
+
+  const manifest = await storage.readJson<Manifest>(manifestPath);
+  return { metadata, manifest, manifestPath };
 };
 
 const resolvePackageMetadata = async (
@@ -2206,6 +2302,42 @@ export const createServer = (config: ServerConfig): Express => {
   const expectedHealthcheckAuthorization = config.healthcheckToken
     ? `Bearer ${config.healthcheckToken}`
     : null;
+
+  const resolvePemFile = (targetPath?: string): string | undefined => {
+    if (!targetPath) {
+      return undefined;
+    }
+    return fs.readFileSync(path.resolve(targetPath), 'utf8');
+  };
+
+  const cmsSigningConfig = config.cmsSigning;
+  const cmsSigningMaterial = cmsSigningConfig
+    ? {
+        bundlePem: resolvePemFile(cmsSigningConfig.bundlePath),
+        certificatePem: resolvePemFile(cmsSigningConfig.certificatePath),
+        privateKeyPem: resolvePemFile(cmsSigningConfig.privateKeyPath),
+        chainPem: resolvePemFile(cmsSigningConfig.chainPath),
+      }
+    : undefined;
+
+  const cmsSigningOptions: PackCmsOptions | undefined =
+    cmsSigningMaterial &&
+    (cmsSigningMaterial.bundlePem ||
+      cmsSigningMaterial.certificatePem ||
+      cmsSigningMaterial.privateKeyPem ||
+      cmsSigningMaterial.chainPem)
+      ? {
+          bundlePem: cmsSigningMaterial.bundlePem,
+          certificatePem: cmsSigningMaterial.certificatePem,
+          privateKeyPem: cmsSigningMaterial.privateKeyPem,
+          chainPem: cmsSigningMaterial.chainPem,
+        }
+      : undefined;
+
+  const cmsVerificationCertificate =
+    cmsSigningMaterial?.certificatePem ??
+    (cmsSigningMaterial?.bundlePem ? extractFirstCertificate(cmsSigningMaterial.bundlePem) : undefined) ??
+    (cmsSigningMaterial?.chainPem ? extractFirstCertificate(cmsSigningMaterial.chainPem) : undefined);
   interface LicenseCacheEntry {
     payload: LicensePayload;
     expiresAtMs: number | null;
@@ -3267,11 +3399,78 @@ export const createServer = (config: ServerConfig): Express => {
           packageName: payload.packageName,
           signingKey,
           ledger: { path: tenantLedgerPath },
+          ...(cmsSigningOptions
+            ? {
+                cms: {
+                  bundlePem: cmsSigningOptions.bundlePem,
+                  certificatePem: cmsSigningOptions.certificatePem,
+                  privateKeyPem: cmsSigningOptions.privateKeyPem,
+                  chainPem: cmsSigningOptions.chainPem,
+                },
+              }
+            : {}),
         };
         const result = await runPack(packOptions);
 
+        const manifestContent = await fsPromises.readFile(result.manifestPath, 'utf8');
+        let manifest: Manifest;
+        try {
+          manifest = JSON.parse(manifestContent) as Manifest;
+        } catch (error) {
+          throw new Error(`Manifest JSON parse edilemedi: ${(error as Error).message}`);
+        }
+
+        let proofEvaluation: ReturnType<typeof evaluateManifestProofs>;
+        try {
+          proofEvaluation = evaluateManifestProofs(manifest);
+        } catch (error) {
+          throw new Error(`Manifest Merkle kanıtları doğrulanamadı: ${(error as Error).message}`);
+        }
+
         if (result.ledger) {
           await storage.writeJson(packageLedgerPath, result.ledger);
+        }
+
+        if (cmsSigningOptions && !result.cmsSignaturePath) {
+          throw new Error('CMS signature output missing for pack job.');
+        }
+
+        let cmsSignatureMetadata: CmsSignatureMetadata | undefined;
+        if (result.cmsSignaturePath) {
+          const [cmsPem, signatureContent] = await Promise.all([
+            fsPromises.readFile(result.cmsSignaturePath, 'utf8'),
+            fsPromises.readFile(path.join(path.dirname(result.manifestPath), 'manifest.sig'), 'utf8'),
+          ]);
+          const signature = signatureContent.trim();
+          const verification = verifyManifestSignatureWithSecuritySigner(manifest, signature, {
+            cms: {
+              signaturePem: cmsPem,
+              required: Boolean(cmsSigningOptions),
+              ...(cmsVerificationCertificate ? { certificatePem: cmsVerificationCertificate } : {}),
+            },
+          });
+          if (!verification.valid || !verification.cms) {
+            const reason = verification.reason ?? 'unknown';
+            throw new Error(`CMS signature verification failed: ${reason}`);
+          }
+          if (!verification.cms.verified || !verification.cms.digestVerified) {
+            const reason = verification.reason ?? 'CMS_DIGEST_MISMATCH';
+            throw new Error(`CMS signature verification failed: ${reason}`);
+          }
+          const cmsSha256 =
+            result.cmsSignatureSha256 ?? createHash('sha256').update(cmsPem).digest('hex');
+          cmsSignatureMetadata = {
+            path: result.cmsSignaturePath,
+            sha256: cmsSha256,
+            der: extractPemBody(cmsPem),
+            digestAlgorithm: verification.digest?.algorithm ?? 'SHA-256',
+            verified: verification.cms.verified,
+            digestVerified: verification.cms.digestVerified,
+            signerSerialNumber: verification.cms.signerSerialNumber ?? null,
+            signerIssuer: verification.cms.signerIssuer ?? null,
+            signerSubject: verification.cms.signerSubject ?? null,
+            signatureAlgorithm: verification.cms.signatureAlgorithm ?? null,
+          };
         }
 
         const metadata: PackJobMetadata = {
@@ -3294,6 +3493,7 @@ export const createServer = (config: ServerConfig): Express => {
             ledgerPath: result.ledger ? packageLedgerPath : undefined,
             ledgerRoot: result.ledgerEntry?.ledgerRoot,
             previousLedgerRoot: result.ledgerEntry?.previousRoot ?? null,
+            ...(cmsSignatureMetadata ? { cmsSignature: cmsSignatureMetadata } : {}),
           },
         };
 
@@ -3304,6 +3504,22 @@ export const createServer = (config: ServerConfig): Express => {
             id: `ledger-${context.id}-${result.ledgerEntry.index}`,
           });
         }
+
+        events.publishManifestProof(
+          context.tenantId,
+          {
+            manifestId: metadata.outputs.manifestId,
+            jobId: metadata.id,
+            merkle: proofEvaluation.merkle,
+            files: proofEvaluation.files.map(({ file, verified }) => ({
+              path: file.path,
+              sha256: file.sha256,
+              hasProof: Boolean(file.proof),
+              verified,
+            })),
+          },
+          { id: `manifest-proof-${context.id}` },
+        );
 
         return toPackResult(storage, metadata);
       } catch (error) {
@@ -5751,26 +5967,128 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'manifestId değeri geçerli değil.');
       }
 
-      const metadata = await findPackMetadataByManifestId(
+      const { metadata, manifest } = await resolveManifestRecord(
         storage,
         directories,
         tenantId,
         manifestId,
       );
-      if (!metadata) {
-        throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'İstenen manifest bulunamadı.');
-      }
-
-      const manifestPath = metadata.outputs?.manifestPath;
-      if (!manifestPath || !(await storage.fileExists(manifestPath))) {
-        throw new HttpError(404, 'MANIFEST_NOT_FOUND', 'Manifest dosyası bulunamadı.');
-      }
-
-      const manifest = await storage.readJson<Record<string, unknown>>(manifestPath);
       res.json({
         manifestId: metadata.outputs.manifestId,
         jobId: metadata.id,
         manifest,
+        ...(metadata.outputs.cmsSignature
+          ? {
+              cmsSignature: {
+                ...metadata.outputs.cmsSignature,
+                path: storage.toRelativePath(metadata.outputs.cmsSignature.path),
+                signerSerialNumber: metadata.outputs.cmsSignature.signerSerialNumber ?? null,
+                signerIssuer: metadata.outputs.cmsSignature.signerIssuer ?? null,
+                signerSubject: metadata.outputs.cmsSignature.signerSubject ?? null,
+                signatureAlgorithm: metadata.outputs.cmsSignature.signatureAlgorithm ?? null,
+              },
+            }
+          : {}),
+      });
+    }),
+  );
+
+  app.get(
+    '/v1/manifests/:manifestId/proofs',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      const { manifestId } = req.params as { manifestId?: string };
+      if (!manifestId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');
+      }
+      if (!/^[A-Za-z0-9._-]+$/.test(manifestId)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId değeri geçerli değil.');
+      }
+
+      const { metadata, manifest } = await resolveManifestRecord(
+        storage,
+        directories,
+        tenantId,
+        manifestId,
+      );
+
+      let evaluation;
+      try {
+        evaluation = evaluateManifestProofs(manifest);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'bilinmeyen';
+        throw new HttpError(500, 'PROOF_INVALID', `Manifest kanıtları doğrulanamadı: ${message}`);
+      }
+
+      res.json({
+        manifestId: metadata.outputs.manifestId,
+        jobId: metadata.id,
+        merkle: evaluation.merkle,
+        files: evaluation.files.map(({ file, verified }) => ({
+          path: file.path,
+          sha256: file.sha256,
+          proof: file.proof ?? null,
+          verified,
+        })),
+      });
+    }),
+  );
+
+  app.get(
+    '/v1/manifests/:manifestId/proofs/:filePath(*)',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      const { manifestId, filePath } = req.params as { manifestId?: string; filePath?: string };
+      if (!manifestId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');
+      }
+      if (!/^[A-Za-z0-9._-]+$/.test(manifestId)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'manifestId değeri geçerli değil.');
+      }
+      if (!filePath || filePath.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Dosya yolu belirtilmelidir.');
+      }
+
+      const { metadata, manifest } = await resolveManifestRecord(
+        storage,
+        directories,
+        tenantId,
+        manifestId,
+      );
+
+      const entry = manifest.files.find((file) => file.path === filePath);
+      if (!entry) {
+        throw new HttpError(404, 'MANIFEST_FILE_NOT_FOUND', 'İstenen dosya manifestte bulunamadı.');
+      }
+      if (!entry.proof) {
+        throw new HttpError(404, 'PROOF_NOT_AVAILABLE', 'İstenen dosya için Merkle kanıtı bulunamadı.');
+      }
+
+      const merkleRoot = manifest.merkle?.root;
+      if (!merkleRoot) {
+        throw new HttpError(500, 'PROOF_INVALID', 'Manifest Merkle kökü eksik.');
+      }
+
+      try {
+        const parsed = deserializeLedgerProof(entry.proof.proof);
+        verifyLedgerProof(parsed, { expectedMerkleRoot: merkleRoot });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'bilinmeyen';
+        throw new HttpError(500, 'PROOF_INVALID', `Merkle kanıtı doğrulanamadı: ${message}`);
+      }
+
+      res.json({
+        manifestId: metadata.outputs.manifestId,
+        jobId: metadata.id,
+        path: entry.path,
+        sha256: entry.sha256,
+        proof: entry.proof,
+        merkle: manifest.merkle ?? null,
+        verified: true,
       });
     }),
   );
@@ -5808,6 +6126,17 @@ export const createServer = (config: ServerConfig): Express => {
       'MANIFEST_NOT_FOUND',
       'Manifest dosyası bulunamadı.',
       { contentType: 'application/json; charset=utf-8', fallbackName: 'manifest.json' },
+    ),
+  );
+
+  app.get(
+    '/v1/packages/:id(*)/manifest.cms',
+    requireAuth,
+    createPackageStreamHandler(
+      (metadata) => metadata.outputs?.cmsSignature?.path,
+      'MANIFEST_NOT_FOUND',
+      'PKCS#7 imza dosyası bulunamadı.',
+      { contentType: 'application/pkcs7-signature', fallbackName: 'manifest.cms' },
     ),
   );
 

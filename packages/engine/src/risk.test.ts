@@ -1,4 +1,4 @@
-import { computeRiskProfile, predictCoverageDrift } from './risk';
+import { computeRiskProfile, predictCoverageDrift, simulateComplianceRisk } from './risk';
 
 describe('computeRiskProfile', () => {
   it('blends weighted signals and sorts contributors deterministically', () => {
@@ -93,5 +93,49 @@ describe('predictCoverageDrift', () => {
 
     expect(forecast.classification).toBe('unknown');
     expect(forecast.confidence).toBe(0);
+  });
+});
+
+describe('simulateComplianceRisk', () => {
+  it('produces deterministic percentiles with seeded input', () => {
+    const result = simulateComplianceRisk({
+      coverageHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', covered: 80, total: 100 },
+        { timestamp: '2024-02-01T00:00:00Z', covered: 78, total: 100 },
+        { timestamp: '2024-03-01T00:00:00Z', covered: 75, total: 100 },
+      ],
+      testHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', passed: 90, failed: 10 },
+        { timestamp: '2024-02-01T00:00:00Z', passed: 88, failed: 12 },
+        { timestamp: '2024-03-01T00:00:00Z', passed: 85, failed: 15 },
+      ],
+      iterations: 500,
+      seed: 1337,
+    });
+
+    expect(result.iterations).toBe(500);
+    expect(result.baseline.coverage).toBeCloseTo(75, 1);
+    expect(result.baseline.failureRate).toBeCloseTo(15, 1);
+    expect(result.percentiles.p90).toBeGreaterThan(result.percentiles.p50);
+    expect(result.percentiles.p99).toBeLessThanOrEqual(100);
+  });
+
+  it('keeps probabilities low for stable histories', () => {
+    const result = simulateComplianceRisk({
+      coverageHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', covered: 96, total: 100 },
+        { timestamp: '2024-02-01T00:00:00Z', covered: 97, total: 100 },
+        { timestamp: '2024-03-01T00:00:00Z', covered: 97, total: 100 },
+      ],
+      testHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', passed: 98, failed: 2 },
+        { timestamp: '2024-02-01T00:00:00Z', passed: 99, failed: 1 },
+      ],
+      iterations: 400,
+      seed: 7,
+    });
+
+    expect(result.mean).toBeLessThan(35);
+    expect(result.percentiles.p95).toBeLessThan(45);
   });
 });

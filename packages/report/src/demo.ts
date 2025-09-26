@@ -23,12 +23,13 @@ const main = async (): Promise<void> => {
     'utf-8',
   );
 
-  const traceHtml = renderTraceMatrix(fixture.traces, {
+  const traceReport = renderTraceMatrix(fixture.traces, {
     manifestId: fixture.manifestId,
     title: 'SOIPack İzlenebilirlik Matrisi',
     coverage: fixture.snapshot.requirementCoverage,
   });
-  await fs.writeFile(path.join(outputDir, 'trace-matrix.html'), traceHtml, 'utf-8');
+  await fs.writeFile(path.join(outputDir, 'trace-matrix.html'), traceReport.html, 'utf-8');
+  await fs.writeFile(path.join(outputDir, 'trace-matrix.csv'), traceReport.csv.csv, 'utf-8');
 
   const gapsHtml = renderGaps(fixture.snapshot, {
     manifestId: fixture.manifestId,

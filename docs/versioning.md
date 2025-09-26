@@ -29,6 +29,8 @@ SOIPack kanıt ve rapor üretim süreçlerinde her veri kümesi, Git benzeri bir
 
   Komut, `/v1/config/freeze` uç noktasına POST isteği gönderir ve yanıt olarak aktif versiyonun `id`, `fingerprint` ve `frozenAt` alanlarını döndürür.
 - `runPack` ve `package` komutları `--ledger`, `--ledger-key` ve `--ledger-key-id` bayraklarıyla paketleme ledger'ını yönetir. Komutlar `snapshot.json` dosyasını okuyup manifest karmasını hesaplar, `appendEntry` ile `ledger.json` dosyasına yeni bir kayıt ekler ve elde edilen ledger kökünü manifest imzasına dahil eder.
+- `runPack` ve `package` komutları `--ledger`, `--ledger-key` ve `--ledger-key-id` bayraklarıyla paketleme ledger'ını yönetir. Komutlar `snapshot.json` dosyasını okuyup manifest karmasını hesaplar, `appendEntry` ile `ledger.json` dosyasına yeni bir kayıt ekler ve elde edilen ledger kökünü manifest imzasına dahil eder.
+- Paketleme sırasında `manifest.json` artık her dosya için Merkle kanıtı içerir. Kök bilgi `manifest.merkle` alanına `{ algorithm: 'ledger-merkle-v1', root, manifestDigest, snapshotId }` şeklinde yazılır; her `files[]` girdisi altında `proof` alanı bulunur ve `serializeLedgerProof` çıktısını base64 yerine JSON olarak (`proof.proof`) saklar. Kanıt doğrulaması için `@soipack/core` içindeki `deserializeLedgerProof` ve `verifyLedgerProof` fonksiyonları kullanılabilir; beklenen kök değeri `manifest.merkle.root` olarak yayınlanır.
 
 ## Sunucu tarafı
 

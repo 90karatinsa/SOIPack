@@ -188,9 +188,26 @@ describe('@soipack/report', () => {
     expect(errors).toHaveLength(0);
   });
 
+  const traceDesigns = [
+    {
+      requirementId: 'REQ-AUTH-1',
+      designId: 'DES-AUTH-API',
+      designName: 'Kimlik Doğrulama Tasarımı',
+      status: 'Onaylandı',
+      codeRefs: ['src/auth/login.ts'],
+    },
+    {
+      requirementId: 'REQ-AUTH-2',
+      designId: 'DES-AUDIT-PIPE',
+      designName: 'Audit Boru Hattı',
+      status: 'Taslak',
+      codeRefs: ['src/security/audit.ts'],
+    },
+  ];
+
   it('renders trace matrix with trace information', () => {
     const fixture = createReportFixture();
-    const html = renderTraceMatrix(fixture.traces, {
+    const report = renderTraceMatrix(fixture.traces, {
       manifestId: fixture.manifestId,
       title: 'Kurumsal İzlenebilirlik Matrisi',
       generatedAt: fixture.snapshot.generatedAt,
@@ -198,18 +215,21 @@ describe('@soipack/report', () => {
       git: gitFixture,
       snapshotId: fixture.snapshot.version.id,
       snapshotVersion: fixture.snapshot.version,
+      designs: traceDesigns,
     });
 
-    maybeUpdateGolden('trace-matrix.html', html);
+    maybeUpdateGolden('trace-matrix.html', report.html);
     const goldenHtml = readFileSync(path.join(goldenDir, 'trace-matrix.html'), 'utf-8');
-    expect(hashHtml(html)).toBe(hashHtml(goldenHtml));
-    expect(html).toContain('Gereksinim → Test → Kod');
-    expect(html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
+    expect(hashHtml(report.html)).toBe(hashHtml(goldenHtml));
+    expect(report.html).toContain('Gereksinim → Test → Kod');
+    expect(report.html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
+    expect(report.csv.headers).toContain('Requirement ID');
+    expect(report.csv.rows[0].designId).toBe('DES-AUTH-API');
   });
 
   it('renders suggestion blocks when trace recommendations are present', () => {
     const fixture = createReportFixture();
-    const html = renderTraceMatrix(fixture.traces, {
+    const report = renderTraceMatrix(fixture.traces, {
       manifestId: fixture.manifestId,
       generatedAt: fixture.snapshot.generatedAt,
       coverage: fixture.snapshot.requirementCoverage,
@@ -226,10 +246,35 @@ describe('@soipack/report', () => {
           reason: 'Test kimliği gereksinim kodunu içeriyor.',
         },
       ],
+      designs: traceDesigns,
     });
 
-    expect(html).toContain('Önerilen İz Bağlantıları');
-    expect(html).toContain('TC-SUGGEST');
+    expect(report.html).toContain('Önerilen İz Bağlantıları');
+    expect(report.html).toContain('TC-SUGGEST');
+  });
+
+  it('produces trace matrix CSV with flattened relationships', () => {
+    const fixture = createReportFixture();
+    const report = renderTraceMatrix(fixture.traces, {
+      manifestId: fixture.manifestId,
+      generatedAt: fixture.snapshot.generatedAt,
+      coverage: fixture.snapshot.requirementCoverage,
+      git: gitFixture,
+      snapshotId: fixture.snapshot.version.id,
+      snapshotVersion: fixture.snapshot.version,
+      designs: traceDesigns,
+    });
+
+    if (process.env.UPDATE_GOLDENS === '1') {
+      writeFileSync(path.join(goldenDir, 'trace-matrix.csv'), report.csv.csv, 'utf-8');
+    }
+
+    const goldenCsv = readFileSync(path.join(goldenDir, 'trace-matrix.csv'), 'utf-8');
+    expect(report.csv.csv).toBe(goldenCsv);
+    const requirementRows = report.csv.rows.filter((row) => row.requirementId === 'REQ-AUTH-2');
+    expect(requirementRows[0]?.designId).toBe('DES-AUDIT-PIPE');
+    const statuses = requirementRows.map((row) => row.testStatus);
+    expect(statuses).toEqual(expect.arrayContaining(['Başarılı', 'Başarısız']));
   });
 
   it('renders gap analysis with objective metadata', () => {

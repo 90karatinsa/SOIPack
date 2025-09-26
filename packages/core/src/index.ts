@@ -102,15 +102,30 @@ export const traceLinkSchema: z.ZodType<TraceLink> = z.object({
   type: z.enum(traceLinkTypes),
 });
 
+export interface ManifestMerkleProof {
+  algorithm: 'ledger-merkle-v1';
+  merkleRoot: string;
+  proof: string;
+}
+
+export interface ManifestMerkleSummary {
+  algorithm: 'ledger-merkle-v1';
+  root: string;
+  manifestDigest: string;
+  snapshotId: string;
+}
+
 export interface ManifestFileEntry {
   path: string;
   sha256: string;
+  proof?: ManifestMerkleProof;
 }
 
 export interface Manifest {
   files: ManifestFileEntry[];
   createdAt: string;
   toolVersion: string;
+  merkle?: ManifestMerkleSummary;
 }
 
 export * from './versioning';

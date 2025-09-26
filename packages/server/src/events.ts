@@ -1,11 +1,11 @@
 import type { Request, Response } from 'express';
 
-import type { LedgerEntry } from '@soipack/core';
+import type { LedgerEntry, ManifestMerkleSummary } from '@soipack/core';
 import type { RiskProfile } from '@soipack/engine';
 
 import type { JobSummary } from './queue';
 
-export type ComplianceEventType = 'riskProfile' | 'ledgerEntry' | 'queueState';
+export type ComplianceEventType = 'riskProfile' | 'ledgerEntry' | 'queueState' | 'manifestProof';
 
 export interface ComplianceEventBase {
   tenantId: string;
@@ -36,10 +36,19 @@ export interface ComplianceQueueEvent extends ComplianceEventBase {
   counts: Record<JobSummary['status'], number>;
 }
 
+export interface ComplianceManifestProofEvent extends ComplianceEventBase {
+  type: 'manifestProof';
+  manifestId: string;
+  jobId?: string;
+  merkle?: ManifestMerkleSummary | null;
+  files: Array<{ path: string; sha256: string; hasProof: boolean; verified: boolean }>;
+}
+
 export type ComplianceEvent =
   | ComplianceRiskEvent
   | ComplianceLedgerEvent
-  | ComplianceQueueEvent;
+  | ComplianceQueueEvent
+  | ComplianceManifestProofEvent;
 
 export class EventAuthorizationError extends Error {
   constructor(message: string) {
@@ -272,6 +281,25 @@ export class ComplianceEventStream {
         tenantId,
         jobs: normalizedJobs,
         counts,
+        emittedAt: options.emittedAt,
+      },
+      options,
+    );
+  }
+
+  public publishManifestProof(
+    tenantId: string,
+    payload: { manifestId: string; jobId?: string; merkle?: ManifestMerkleSummary | null; files: ComplianceManifestProofEvent['files'] },
+    options: PublishOptions = {},
+  ): void {
+    this.publish(
+      {
+        type: 'manifestProof',
+        tenantId,
+        manifestId: payload.manifestId,
+        jobId: payload.jobId,
+        merkle: payload.merkle ?? null,
+        files: payload.files,
         emittedAt: options.emittedAt,
       },
       options,

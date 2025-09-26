@@ -5,9 +5,14 @@ import {
   createLedger,
   GENESIS_ROOT,
   LedgerBranchError,
+  LedgerProofError,
   LedgerSignatureError,
   LedgerSignerOptions,
+  deserializeLedgerProof,
+  generateLedgerProof,
+  serializeLedgerProof,
   verifyLedger,
+  verifyLedgerProof,
 } from './ledger';
 
 describe('ledger', () => {
@@ -130,5 +135,60 @@ describe('ledger', () => {
     };
 
     expect(() => verifyLedger(tampered)).toThrow(LedgerSignatureError);
+  });
+
+  it('generates inclusion proofs for ledger leaves and verifies them', () => {
+    let ledger = createLedger();
+    ledger = appendEntry(ledger, {
+      snapshotId: 'SNAP-001',
+      manifestDigest: buildDigest('manifest-a'),
+      timestamp: '2024-02-01T12:00:00Z',
+      evidence: [
+        { snapshotId: 'SNAP-001', path: 'reports/summary.html', hash: buildDigest('summary-v1') },
+        { snapshotId: 'SNAP-001', path: 'evidence/logs.csv', hash: buildDigest('logs-v1') },
+      ],
+    });
+
+    const entry = ledger.entries[0];
+    const manifestProof = generateLedgerProof(entry, { type: 'manifest' });
+    expect(manifestProof.leaf.hash).toHaveLength(64);
+    expect(verifyLedgerProof(manifestProof, { expectedMerkleRoot: entry.merkleRoot })).toBe(entry.merkleRoot);
+
+    const evidenceProof = generateLedgerProof(entry, {
+      type: 'evidence',
+      snapshotId: 'SNAP-001',
+      path: 'reports/summary.html',
+      hash: buildDigest('summary-v1'),
+    });
+    const serialized = serializeLedgerProof(evidenceProof);
+    const roundTripped = deserializeLedgerProof(serialized);
+    expect(verifyLedgerProof(roundTripped, { expectedMerkleRoot: entry.merkleRoot })).toBe(entry.merkleRoot);
+  });
+
+  it('rejects tampered inclusion proofs', () => {
+    let ledger = createLedger();
+    ledger = appendEntry(ledger, {
+      snapshotId: 'SNAP-002',
+      manifestDigest: buildDigest('manifest-b'),
+      timestamp: '2024-02-02T12:00:00Z',
+      evidence: [{ snapshotId: 'SNAP-002', path: 'logs.txt', hash: buildDigest('logs-v2') }],
+    });
+
+    const entry = ledger.entries[0];
+    const proof = generateLedgerProof(entry, { type: 'timestamp' });
+    const tampered = {
+      ...proof,
+      path: proof.path.map((node, index) =>
+        index === 0 ? { ...node, hash: '00'.repeat(32) } : node,
+      ),
+    };
+
+    expect(() => verifyLedgerProof(tampered, { expectedMerkleRoot: entry.merkleRoot })).toThrow(LedgerProofError);
+    expect(() => generateLedgerProof(entry, {
+      type: 'evidence',
+      snapshotId: 'SNAP-002',
+      path: 'missing.txt',
+      hash: buildDigest('missing'),
+    })).toThrow(LedgerProofError);
   });
 });

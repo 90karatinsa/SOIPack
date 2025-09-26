@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode } from 'react';
 
 export function Alert({ title, description, children }: { title: ReactNode; description?: ReactNode; children?: ReactNode }) {
   return (
@@ -86,8 +86,8 @@ export function Select() {
   return <select />;
 }
 
-export function Skeleton({ className }: { className?: string }) {
-  return <div className={className ?? ''} data-testid="skeleton" />;
+export function Skeleton({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={className ?? ''} data-testid="skeleton" {...rest} />;
 }
 
 export function Table({ columns, rows }: { columns: Array<{ key: string; title: ReactNode }>; rows: Array<Record<string, ReactNode>> }) {

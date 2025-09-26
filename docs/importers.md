@@ -48,6 +48,14 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - `--jira-defects` bayrağı aynı dönüştürücüyü kullanarak `Issue Type` değeri `Bug`/`Defect` olan satırları `problem_report` kanıtı olarak ekler, açık (`Status` ≠ `Done/Closed/Resolved`) ve toplam kayıt sayılarını çalışma alanı metaverisine işler.
 - Eksik `Issue Type` sütunları veya eşleşmeyen satırlar kullanıcıya uyarı olarak iletilir; yine de CSV dosyasının tamamı kanıt olarak saklanır.
 
+## Jama REST API entegrasyonu
+
+- `fetchJamaArtifacts(options)` Jama Cloud ya da şirket içi dağıtımların REST API uç noktalarından gereksinim, test ve ilişki kayıtlarını okuyup tek bir `ImportBundle` yapısına dönüştürür.
+- Zorunlu parametreler `baseUrl`, `projectId` ve `token` (REST API erişim jetonu) değerleridir; `pageSize`, `maxPages`, `timeoutMs` ve özel uç nokta şablonları gerektiğinde özelleştirilebilir.
+- Dönüştürücü, Jama sayfa yapısını `pageInfo.next` veya `links.next` alanlarından takip eder; `Retry-After` üstbilgisine göre bekleyerek oran sınırı (rate limit) hatalarını otomatik olarak yeniden dener.
+- Jama öğelerindeki HTML açıklamalar temizlenir, eksik başlıklar için uyarılar üretilir ve test-gereksinim ilişkileri `trace` kanıtları olarak `traceLinks` listesine eklenir. Her test kaydı, bağlı gereksinim kimliklerini `requirementsRefs` alanında taşır.
+- REST API kullanımının mümkün olmadığı ortamlarda Jama raporlarını CSV/Excel olarak dışa aktarabilir, ardından CSV dosyalarını `importJiraCsv` veya özel dönüştürücülerle SOIPack’e alarak kanıt indeksine ekleyebilirsiniz.
+
 ## QA denetim kayıtları
 
 Dosya: `packages/adapters/src/qaLogs.ts`

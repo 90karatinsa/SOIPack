@@ -1,6 +1,10 @@
 import { buildAuthHeaders, resolveApiUrl, type AuthCredentials } from './api';
 
-export type ComplianceEventType = 'riskProfile' | 'ledgerEntry' | 'queueState';
+export type ComplianceEventType =
+  | 'riskProfile'
+  | 'ledgerEntry'
+  | 'queueState'
+  | 'manifestProof';
 
 export interface ComplianceEventBase {
   tenantId: string;
@@ -97,7 +101,26 @@ export interface ComplianceQueueEvent extends ComplianceEventBase {
   counts: Record<'queued' | 'running' | 'completed' | 'failed', number>;
 }
 
-export type ComplianceEvent = ComplianceRiskEvent | ComplianceLedgerEvent | ComplianceQueueEvent;
+export interface ManifestMerkleSummary {
+  algorithm: 'ledger-merkle-v1';
+  root: string;
+  manifestDigest: string;
+  snapshotId: string;
+}
+
+export interface ComplianceManifestProofEvent extends ComplianceEventBase {
+  type: 'manifestProof';
+  manifestId: string;
+  jobId?: string;
+  merkle?: ManifestMerkleSummary | null;
+  files: Array<{ path: string; sha256: string; hasProof: boolean; verified: boolean }>;
+}
+
+export type ComplianceEvent =
+  | ComplianceRiskEvent
+  | ComplianceLedgerEvent
+  | ComplianceQueueEvent
+  | ComplianceManifestProofEvent;
 
 export type EventStreamStatus = 'connecting' | 'open' | 'retrying' | 'closed';
 
@@ -193,7 +216,12 @@ const parseEventPayload = (data: string): ComplianceEvent | null => {
     if (!payload || typeof payload !== 'object') {
       return null;
     }
-    if (payload.type === 'riskProfile' || payload.type === 'ledgerEntry' || payload.type === 'queueState') {
+    if (
+      payload.type === 'riskProfile' ||
+      payload.type === 'ledgerEntry' ||
+      payload.type === 'queueState' ||
+      payload.type === 'manifestProof'
+    ) {
       return payload;
     }
     return null;

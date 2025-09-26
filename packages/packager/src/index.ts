@@ -3,7 +3,15 @@ import { promises as fsPromises, createReadStream, createWriteStream } from 'fs'
 import path from 'path';
 import { finished } from 'stream/promises';
 
-import { Manifest } from '@soipack/core';
+import {
+  Manifest,
+  ManifestMerkleProof,
+  ManifestMerkleSummary,
+  appendEntry,
+  createLedger,
+  generateLedgerProof,
+  serializeLedgerProof,
+} from '@soipack/core';
 import { ZipFile } from 'yazl';
 
 import {
@@ -13,6 +21,7 @@ import {
   VerificationResult,
   signManifestWithSecuritySigner,
   verifyManifestSignatureWithSecuritySigner,
+  computeManifestDigestHex,
 } from './security/signer';
 
 const { readdir, stat, readFile, mkdir } = fsPromises;
@@ -34,7 +43,55 @@ export interface ManifestLedgerMetadata {
   } | null;
 }
 
-export type LedgerAwareManifest = Manifest & ManifestLedgerMetadata;
+export interface ManifestMerkleMetadata {
+  merkle?: ManifestMerkleSummary;
+}
+
+export type LedgerAwareManifest = Manifest & ManifestLedgerMetadata & ManifestMerkleMetadata;
+
+const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
+
+const computeManifestProofs = (
+  manifest: Manifest,
+): { summary: ManifestMerkleSummary; proofs: Map<string, ManifestMerkleProof> } => {
+  const digest = computeManifestDigestHex(manifest);
+  const ledger = appendEntry(createLedger(), {
+    snapshotId: `manifest:${digest}`,
+    manifestDigest: digest,
+    timestamp: manifest.createdAt,
+    evidence: manifest.files.map((file) => ({
+      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      path: file.path,
+      hash: file.sha256,
+    })),
+  });
+  const entry = ledger.entries[ledger.entries.length - 1];
+
+  const summary: ManifestMerkleSummary = {
+    algorithm: 'ledger-merkle-v1',
+    root: entry.merkleRoot,
+    manifestDigest: digest,
+    snapshotId: entry.snapshotId,
+  };
+
+  const proofs = new Map<string, ManifestMerkleProof>();
+
+  manifest.files.forEach((file) => {
+    const proof = generateLedgerProof(entry, {
+      type: 'evidence',
+      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      path: file.path,
+      hash: file.sha256,
+    });
+    proofs.set(file.path, {
+      algorithm: 'ledger-merkle-v1',
+      merkleRoot: entry.merkleRoot,
+      proof: serializeLedgerProof(proof),
+    });
+  });
+
+  return { summary, proofs };
+};
 
 const canonicalizeManifest = (manifest: LedgerAwareManifest): LedgerAwareManifest => {
   const ledgerMetadata = manifest.ledger
@@ -180,7 +237,7 @@ export const buildManifest = async ({
     files.push({ ...entry, sha256 });
   }
 
-  const manifest = canonicalizeManifest({
+  const manifestBase = canonicalizeManifest({
     files: files.map((file) => ({ path: file.manifestPath, sha256: file.sha256 })),
     createdAt: timestamp.toISOString(),
     toolVersion,
@@ -193,6 +250,17 @@ export const buildManifest = async ({
         ? null
         : undefined,
   });
+
+  const { summary, proofs } = computeManifestProofs(manifestBase);
+
+  const manifest: LedgerAwareManifest = {
+    ...manifestBase,
+    merkle: summary,
+    files: manifestBase.files.map((file) => {
+      const proof = proofs.get(file.path);
+      return proof ? { ...file, proof } : file;
+    }),
+  };
 
   return { manifest, files };
 };

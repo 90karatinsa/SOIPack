@@ -32,7 +32,15 @@ dizinleri tanımlanır.
     { "id": "sdp", "overrides": { "sections": { "introduction": "<p>CLI intro override.</p>" } } },
     { "id": "svp" },
     { "id": "scmp" },
-    { "id": "sqap" }
+    { "id": "sqap" },
+    {
+      "id": "do330-ta",
+      "overrides": {
+        "sections": {
+          "qualificationStrategy": "<p>Kritik araçlar için TQL-4 doğrulama izleri bağımsız olarak gözden geçirilir.</p>"
+        }
+      }
+    }
   ]
 }
 ```
@@ -49,6 +57,51 @@ Alanlar:
 - **plans**: Üretilecek planların listesi. Her öğede `id` değeri (`psac`, `sdp`, vb.)
   ve isteğe bağlı `overrides` alanları bulunabilir. Overrides ile `overview`,
   belirli bölüm içerikleri veya ekstra notlar HTML olarak sağlanabilir.
+- `do330-ta` şablonu kullanıldığında `toolAssessment` nesnesi ile araç
+  nitelendirme sınıfları, doğrulama argümanları ve imza satırları yapılandırılabilir:
+
+```json
+{
+  "snapshot": "./snapshot.json",
+  "plans": [
+    {
+      "id": "do330-ta",
+      "toolAssessment": {
+        "summary": "Araç seti TQL-4 gereksinimlerini sağlamak üzere doğrulanmıştır.",
+        "qualificationArguments": [
+          "Regression paketi her sürümde referans sonuçlarla karşılaştırılıyor.",
+          "Araç bağımlılıkları konteyner imajında sabitlendi."
+        ],
+        "environmentNotes": ["CI Runner Ubuntu 22.04", "VectorCAST 2023R1"],
+        "tools": [
+          {
+            "id": "vectorcast",
+            "name": "VectorCAST",
+            "version": "2023R1",
+            "vendor": "Vector Informatik",
+            "toolClass": "TQL-4",
+            "usage": "Yapısal kapsam birleştirme",
+            "qualificationSummary": "Sürüm 5.2 referans veri setiyle kıyaslandı",
+            "evidence": ["reports/vectorcast-validation.pdf"],
+            "status": "Approved"
+          }
+        ],
+        "signatures": [
+          {
+            "role": "Lead Compliance Manager",
+            "name": "A. Inspector",
+            "organization": "Safety Org",
+            "date": "2024-05-01"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Bu bilgiler DOCX ve PDF çıktılarında araç sınıfı tablolarını, doğrulama argüman
+listelerini ve imza bloklarını oluşturur.
 
 ## CLI Kullanımı
 

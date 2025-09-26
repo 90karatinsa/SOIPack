@@ -7,10 +7,15 @@
   "license": "MIT",
   "dependencies": {
     "@soipack/core": "workspace:*",
+    "node-forge": "^1.3.1",
     "yazl": "^2.5.1"
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
     "test": "jest --config ./jest.config.cjs"
+  },
+  "devDependencies": {
+    "@types/node-forge": "^1.0.10",
+    "yauzl": "^2.10.0"
   }
 }

@@ -144,6 +144,41 @@ export interface QueueMetricsResponse {
   jobs: QueueJobSummary[];
 }
 
+export interface ManifestMerkleProofPayload {
+  algorithm: 'ledger-merkle-v1';
+  merkleRoot: string;
+  proof: string;
+}
+
+export interface ManifestMerkleSummaryPayload {
+  algorithm: 'ledger-merkle-v1';
+  root: string;
+  manifestDigest: string;
+  snapshotId: string;
+}
+
+export interface ManifestProofListResponse {
+  manifestId: string;
+  jobId?: string;
+  merkle: ManifestMerkleSummaryPayload | null;
+  files: Array<{
+    path: string;
+    sha256: string;
+    proof: ManifestMerkleProofPayload | null;
+    verified: boolean;
+  }>;
+}
+
+export interface ManifestProofResponse {
+  manifestId: string;
+  jobId?: string;
+  path: string;
+  sha256: string;
+  proof: ManifestMerkleProofPayload;
+  merkle: ManifestMerkleSummaryPayload | null;
+  verified: boolean;
+}
+
 type ImportMetaEnv = Record<string, string>;
 
 const IMPORT_META_ENV_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
@@ -650,6 +685,51 @@ export const fetchPackageManifest = async ({
 
   await ensureOk(response);
   return response;
+};
+
+interface ListManifestProofsOptions extends AuthCredentials {
+  manifestId: string;
+  signal?: AbortSignal;
+}
+
+export const listManifestProofs = async ({
+  token,
+  license,
+  manifestId,
+  signal,
+}: ListManifestProofsOptions): Promise<ManifestProofListResponse> => {
+  const encodedManifestId = encodeURIComponent(manifestId);
+  const response = await fetch(joinUrl(`/v1/manifests/${encodedManifestId}/proofs`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<ManifestProofListResponse>(response);
+};
+
+interface GetManifestProofOptions extends AuthCredentials {
+  manifestId: string;
+  filePath: string;
+  signal?: AbortSignal;
+}
+
+export const getManifestProof = async ({
+  token,
+  license,
+  manifestId,
+  filePath,
+  signal,
+}: GetManifestProofOptions): Promise<ManifestProofResponse> => {
+  const encodedManifestId = encodeURIComponent(manifestId);
+  const encodedPath = encodeURIComponent(filePath);
+  const response = await fetch(joinUrl(`/v1/manifests/${encodedManifestId}/proofs/${encodedPath}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<ManifestProofResponse>(response);
 };
 
 interface ListAuditLogsOptions extends AuthCredentials {

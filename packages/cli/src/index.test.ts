@@ -37,11 +37,20 @@ import {
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const TEST_SIGNING_BUNDLE = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
+const CMS_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/cms-test.pem');
+const TEST_CMS_BUNDLE = readFileSync(CMS_CERT_BUNDLE_PATH, 'utf8');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
 const TEST_SIGNING_CERTIFICATE = (() => {
   const match = TEST_SIGNING_BUNDLE.match(CERTIFICATE_PATTERN);
   if (!match) {
     throw new Error('Test certificate bundle is invalid.');
+  }
+  return match[0];
+})();
+const TEST_CMS_CERTIFICATE = (() => {
+  const match = TEST_CMS_BUNDLE.match(CERTIFICATE_PATTERN);
+  if (!match) {
+    throw new Error('Test CMS certificate bundle is invalid.');
   }
   return match[0];
 })();
@@ -158,6 +167,7 @@ describe('@soipack/cli pipeline', () => {
       packageName: 'demo.zip',
       signingKey: TEST_SIGNING_BUNDLE,
       ledger: { path: ledgerPath },
+      cms: { bundlePem: TEST_CMS_BUNDLE },
     });
 
     const archiveStats = await fs.stat(packResult.archivePath);
@@ -174,6 +184,12 @@ describe('@soipack/cli pipeline', () => {
       ledger?: { root: string | null; previousRoot: string | null } | null;
     };
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
+    const cmsPath = path.join(releaseDir, 'manifest.cms');
+    const cmsContent = await fs.readFile(cmsPath, 'utf8');
+    expect(cmsContent.trim()).toContain('BEGIN PKCS7');
+    expect(packResult.cmsSignaturePath).toBe(cmsPath);
+    const cmsHash = createHash('sha256').update(cmsContent).digest('hex');
+    expect(packResult.cmsSignatureSha256).toBe(cmsHash);
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
     expect(manifest.ledger).toEqual({
       root: packResult.ledgerEntry?.ledgerRoot ?? null,
@@ -185,8 +201,16 @@ describe('@soipack/cli pipeline', () => {
       expectedLedgerRoot: packResult.ledgerEntry?.ledgerRoot,
       expectedPreviousLedgerRoot: packResult.ledgerEntry?.previousRoot,
       requireLedgerProof: true,
+      cms: {
+        signaturePem: cmsContent.trim(),
+        certificatePem: TEST_CMS_CERTIFICATE,
+        required: true,
+      },
     });
     expect(detailedVerification.valid).toBe(true);
+    expect(detailedVerification.cms).toEqual(
+      expect.objectContaining({ verified: true, digestVerified: true }),
+    );
 
     const ledgerData = JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as {
       root: string;
@@ -240,6 +264,7 @@ describe('@soipack/cli pipeline', () => {
       signingKey: TEST_SIGNING_BUNDLE,
       packageName: 'soi-pack.zip',
       ledger: { path: ledgerPath },
+      cms: { bundlePem: TEST_CMS_BUNDLE },
     });
 
     const archiveStats = await fs.stat(result.archivePath);
@@ -267,6 +292,16 @@ describe('@soipack/cli pipeline', () => {
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
+    const cmsPath = path.join(packageOutput, 'manifest.cms');
+    const cmsContent = await fs.readFile(cmsPath, 'utf8');
+    expect(result.cmsSignaturePath).toBe(cmsPath);
+    const cmsHash = createHash('sha256').update(cmsContent).digest('hex');
+    expect(result.cmsSignatureSha256).toBe(cmsHash);
+    const detailed = verifyManifestSignatureDetailed(manifest, signature, {
+      publicKeyPem: TEST_SIGNING_PUBLIC_KEY,
+      cms: { signaturePem: cmsContent.trim(), certificatePem: TEST_CMS_CERTIFICATE, required: true },
+    });
+    expect(detailed.valid).toBe(true);
   });
 
   it('generates plan documents from configuration JSON', async () => {
@@ -636,9 +671,12 @@ describe('@soipack/cli pipeline', () => {
     });
 
     const traceHtml = await fs.readFile(path.join(reportDir, 'trace.html'), 'utf8');
+    const traceCsv = await fs.readFile(path.join(reportDir, 'trace.csv'), 'utf8');
     expect(traceHtml).toContain('Önerilen İz Bağlantıları');
     expect(traceHtml).toContain('TC-REQ-TRACE-1');
     expect(traceHtml).toContain('src/logger.c');
+    expect(traceCsv.split('\n')[0]).toContain('Requirement ID');
+    expect(traceCsv).toContain('REQ-TRACE-1');
   });
 
   it('marks configured evidence entries as independently reviewed', async () => {
