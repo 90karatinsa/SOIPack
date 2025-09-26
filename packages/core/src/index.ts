@@ -20,6 +20,78 @@ export const requirementSchema: z.ZodType<Requirement> = z.object({
   tags: z.array(z.string()),
 });
 
+export type DesignStatus = 'draft' | 'allocated' | 'implemented' | 'verified';
+
+export const designStatuses = ['draft', 'allocated', 'implemented', 'verified'] as const;
+
+const createUniqueNormalizedTags = (tags: string[]): string[] => {
+  const normalized = tags
+    .map((tag) => normalizeTag(tag))
+    .filter((tag) => tag.length > 0);
+  return Array.from(new Set(normalized));
+};
+
+const createReferenceArraySchema = (label: string) =>
+  z
+    .array(z.string())
+    .default([])
+    .transform((values: string[], ctx) => {
+      const trimmed = values.map((value) => value.trim());
+      const seen = new Set<string>();
+      trimmed.forEach((value, index) => {
+        if (!value) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${label} reference cannot be blank.`,
+            path: [index],
+          });
+          return;
+        }
+        if (seen.has(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${label} reference ${value} is duplicated.`,
+            path: [index],
+          });
+          return;
+        }
+        seen.add(value);
+      });
+      return trimmed;
+    });
+
+export const designRecordSchema = z.object({
+  id: z.string().min(1, 'Design identifier is required.'),
+  title: z.string().min(1, 'Design title is required.'),
+  description: z.string().optional(),
+  status: z.enum(designStatuses),
+  tags: z
+    .array(z.string())
+    .default([])
+    .transform((values: string[]) => createUniqueNormalizedTags(values)),
+  requirementRefs: createReferenceArraySchema('Requirement'),
+  codeRefs: createReferenceArraySchema('Code'),
+});
+
+export type DesignRecord = z.infer<typeof designRecordSchema>;
+
+export const createDesignRecord = (
+  id: string,
+  title: string,
+  options: Partial<
+    Pick<DesignRecord, 'description' | 'status' | 'tags' | 'requirementRefs' | 'codeRefs'>
+  > = {},
+): DesignRecord =>
+  designRecordSchema.parse({
+    id,
+    title,
+    description: options.description,
+    status: options.status ?? 'draft',
+    tags: options.tags ?? [],
+    requirementRefs: options.requirementRefs ?? [],
+    codeRefs: options.codeRefs ?? [],
+  });
+
 export interface TestCase {
   id: string;
   requirementId: string;
@@ -57,6 +129,7 @@ export const evidenceSources = [
   'polyspace',
   'ldra',
   'vectorcast',
+  'doorsNext',
   'staticAnalysis',
   'other',
 ] as const;

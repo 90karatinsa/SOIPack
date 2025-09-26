@@ -64,6 +64,17 @@ export interface RemoteTestRecord {
   finishedAt?: string;
 }
 
+export interface RemoteDesignRecord {
+  id: string;
+  title: string;
+  description?: string;
+  status?: string;
+  type?: string;
+  url?: string;
+  requirementIds?: string[];
+  codeRefs?: string[];
+}
+
 export interface RemoteBuildRecord {
   id: string;
   name?: string;

@@ -40,6 +40,14 @@ const sqapSections = [
   { id: 'records', title: '5. Records & Archiving' },
 ];
 
+const sasSections = [
+  { id: 'executiveSummary', title: '1. Executive Summary' },
+  { id: 'complianceStatus', title: '2. Compliance Status' },
+  { id: 'verificationResults', title: '3. Verification Results' },
+  { id: 'configurationStatus', title: '4. Configuration & Evidence Status' },
+  { id: 'openItems', title: '5. Outstanding Actions' },
+];
+
 const do330ToolAssessmentSections = [
   { id: 'qualificationStrategy', title: '1. DO-330 Qualification Strategy' },
   { id: 'toolInventory', title: '2. Tool Inventory & Usage Context' },
@@ -78,6 +86,13 @@ export const planTemplateDefinitions: Record<PlanTemplateId, PlanTemplateDefinit
     title: 'Software Quality Assurance Plan (SQAP)',
     purpose: 'Outlines the quality assurance policies, audits, and records used to ensure process compliance.',
     sections: sqapSections,
+  },
+  sas: {
+    id: 'sas',
+    title: 'Software Accomplishment Summary (SAS)',
+    purpose:
+      'Summarizes certification objectives, verification evidence, and remaining actions needed to achieve software approval.',
+    sections: sasSections,
   },
   'do330-ta': {
     id: 'do330-ta',

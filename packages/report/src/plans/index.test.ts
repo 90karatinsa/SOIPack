@@ -41,6 +41,22 @@ describe('plan templates', () => {
     expect(result.html).toContain('Custom verification cadence');
   });
 
+  it('renders SAS template with project metrics and objective tables', async () => {
+    const sasPlan = await renderPlanDocument('sas', baseOptions);
+
+    expect(sasPlan.title).toContain('Software Accomplishment Summary');
+    expect(sasPlan.sections).toHaveProperty('executiveSummary');
+    expect(sasPlan.sections.executiveSummary).toContain('Objective coverage');
+    expect(sasPlan.html).toContain('Software Accomplishment Summary');
+    expect(sasPlan.html).toContain('Objective coverage stands at');
+    expect(planTemplateSections.sas).toEqual(
+      expect.arrayContaining(['executiveSummary', 'complianceStatus', 'openItems']),
+    );
+
+    const sasPdf = await renderPlanPdf('sas', baseOptions);
+    expect(sasPdf.subarray(0, 4).toString('ascii')).toBe('%PDF');
+  });
+
   it('renders plan PDF output with pdfmake', async () => {
     const pdfBuffer = await renderPlanPdf('scmp', baseOptions);
     expect(pdfBuffer.subarray(0, 4).toString('ascii')).toBe('%PDF');

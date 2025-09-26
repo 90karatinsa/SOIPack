@@ -10,6 +10,7 @@ import {
 } from '@soipack/adapters';
 import {
   CertificationLevel,
+  DesignRecord,
   Evidence,
   Objective,
   ObjectiveArtifactType,
@@ -52,6 +53,7 @@ const canonicalStringify = (value: unknown): string => {
 const computeBundleFingerprint = (bundle: ImportBundle): string => {
   const canonical = {
     requirements: bundle.requirements,
+    designs: bundle.designs ?? [],
     objectives: bundle.objectives,
     testResults: bundle.testResults,
     coverage: bundle.coverage ?? null,
@@ -66,7 +68,7 @@ const computeBundleFingerprint = (bundle: ImportBundle): string => {
   return createHash('sha256').update(serialized).digest('hex');
 };
 
-export type TraceNodeType = 'requirement' | 'test' | 'code';
+export type TraceNodeType = 'requirement' | 'test' | 'code' | 'design';
 
 export interface CodePath {
   path: string;
@@ -85,12 +87,14 @@ export interface RequirementCoverageStatus {
     mcdc?: CoverageMetric;
   };
   codePaths: CodePath[];
+  designs: DesignRecord[];
 }
 
 export type EvidenceIndex = Partial<Record<ObjectiveArtifactType, Evidence[]>>;
 
 export interface ImportBundle {
   requirements: Requirement[];
+  designs?: DesignRecord[];
   objectives: Objective[];
   testResults: TestResult[];
   coverage?: CoverageReport;
@@ -125,7 +129,12 @@ interface CodeNode extends InternalNodeBase {
   data: CodePath;
 }
 
-type InternalNode = RequirementNode | TestNode | CodeNode;
+interface DesignNode extends InternalNodeBase {
+  type: 'design';
+  data: DesignRecord;
+}
+
+type InternalNode = RequirementNode | TestNode | CodeNode | DesignNode;
 
 interface TraceGraphNodeBase {
   key: string;
@@ -136,7 +145,8 @@ interface TraceGraphNodeBase {
 export type TraceGraphNode =
   | (TraceGraphNodeBase & { type: 'requirement'; data: Requirement })
   | (TraceGraphNodeBase & { type: 'test'; data: TestResult })
-  | (TraceGraphNodeBase & { type: 'code'; data: CodePath });
+  | (TraceGraphNodeBase & { type: 'code'; data: CodePath })
+  | (TraceGraphNodeBase & { type: 'design'; data: DesignRecord });
 
 export interface TraceGraph {
   nodes: TraceGraphNode[];
@@ -146,6 +156,7 @@ export interface RequirementTrace {
   requirement: Requirement;
   tests: TestResult[];
   code: CodePath[];
+  designs: DesignRecord[];
 }
 
 const createNodeKey = (type: TraceNodeType, id: string): string => `${type}:${id}`;
@@ -156,6 +167,7 @@ const isRequirementNode = (node: InternalNode): node is RequirementNode =>
   node.type === 'requirement';
 const isTestNode = (node: InternalNode): node is TestNode => node.type === 'test';
 const isCodeNode = (node: InternalNode): node is CodeNode => node.type === 'code';
+const isDesignNode = (node: InternalNode): node is DesignNode => node.type === 'design';
 
 export class TraceEngine {
   private readonly nodes = new Map<string, InternalNode>();
@@ -171,6 +183,7 @@ export class TraceEngine {
     this.indexCoverage(bundle.coverage);
     this.indexTraceLinks(bundle.traceLinks ?? []);
     this.buildRequirementNodes(bundle.requirements);
+    this.buildDesignNodes(bundle.designs ?? []);
     this.buildTestNodes(bundle.testResults, bundle.testToCodeMap ?? {});
     this.linkManualCodeNodes();
   }
@@ -239,7 +252,11 @@ export class TraceEngine {
   private determineCoverageStatus(
     codePaths: CodePath[],
     coverage: ReturnType<TraceEngine['aggregateCoverageMetrics']>,
+    designs: DesignRecord[],
   ): CoverageStatus {
+    if (designs.length === 0) {
+      return 'missing';
+    }
     if (codePaths.length === 0) {
       return 'missing';
     }
@@ -359,6 +376,57 @@ export class TraceEngine {
     });
   }
 
+  private buildDesignNodes(designs: DesignRecord[]): void {
+    designs.forEach((design) => {
+      const key = createNodeKey('design', design.id);
+      const node: DesignNode = {
+        key,
+        id: design.id,
+        type: 'design',
+        data: design,
+        links: new Set(),
+      };
+
+      this.nodes.set(key, node);
+
+      design.requirementRefs.forEach((requirementId) => {
+        const requirementKey = createNodeKey('requirement', requirementId);
+        const requirementNode = this.nodes.get(requirementKey);
+        if (requirementNode && isRequirementNode(requirementNode)) {
+          this.linkNodes(node.key, requirementNode.key);
+        }
+      });
+
+      design.codeRefs.forEach((codePath) => {
+        const normalized = normalizePath(codePath);
+        if (!normalized) {
+          return;
+        }
+        const coverage = this.coverageByFile.get(normalized) ?? this.coverageByFile.get(codePath);
+        const codeKey = createNodeKey('code', normalized);
+        const existing = this.nodes.get(codeKey);
+        if (existing && isCodeNode(existing)) {
+          this.linkNodes(node.key, existing.key);
+          return;
+        }
+
+        const codeNode: CodeNode = {
+          key: codeKey,
+          id: normalized,
+          type: 'code',
+          data: {
+            path: normalized,
+            coverage,
+          },
+          links: new Set(),
+        };
+
+        this.nodes.set(codeKey, codeNode);
+        this.linkNodes(node.key, codeNode.key);
+      });
+    });
+  }
+
   private buildTestNodes(testResults: TestResult[], testToCodeMap: Record<string, string[]>): void {
     testResults.forEach((test) => {
       const key = createNodeKey('test', test.testId);
@@ -455,6 +523,14 @@ export class TraceEngine {
           data: node.data,
           links,
         });
+      } else if (isDesignNode(node)) {
+        nodes.push({
+          key: node.key,
+          id: node.id,
+          type: 'design',
+          data: node.data,
+          links,
+        });
       }
     });
 
@@ -470,6 +546,8 @@ export class TraceEngine {
     }
 
     const tests: TestResult[] = [];
+    const designs: DesignRecord[] = [];
+    const seenDesigns = new Set<string>();
     const code = new Map<string, CodePath>();
 
     requirementNode.links.forEach((neighborKey) => {
@@ -490,6 +568,21 @@ export class TraceEngine {
         return;
       }
 
+      if (isDesignNode(neighbor)) {
+        if (!seenDesigns.has(neighbor.id)) {
+          designs.push(neighbor.data);
+          seenDesigns.add(neighbor.id);
+        }
+        neighbor.links.forEach((codeKey) => {
+          const codeNode = this.nodes.get(codeKey);
+          if (!codeNode || !isCodeNode(codeNode)) {
+            return;
+          }
+          code.set(codeKey, codeNode.data);
+        });
+        return;
+      }
+
       if (isCodeNode(neighbor)) {
         code.set(neighborKey, neighbor.data);
       }
@@ -498,6 +591,7 @@ export class TraceEngine {
     return {
       requirement: requirementNode.data,
       tests,
+      designs,
       code: Array.from(code.values()),
     };
   }
@@ -506,13 +600,14 @@ export class TraceEngine {
     for (const requirement of this.bundle.requirements) {
       const trace = this.getRequirementTrace(requirement.id);
       const coverage = this.aggregateCoverageMetrics(trace.code);
-      const status = this.determineCoverageStatus(trace.code, coverage);
+      const status = this.determineCoverageStatus(trace.code, coverage, trace.designs);
 
       yield {
         requirement,
         status,
         coverage,
         codePaths: trace.code,
+        designs: trace.designs,
       };
     }
   }
@@ -762,7 +857,7 @@ export class ObjectiveMapper {
 
 export interface GapItem {
   objectiveId: string;
-  missingArtifacts: ObjectiveArtifactType[];
+  missingArtifacts: Array<ObjectiveArtifactType | 'design'>;
 }
 
 export interface GapAnalysis {
@@ -860,6 +955,7 @@ export interface ComplianceStatistics {
   requirements: { total: number };
   tests: TestStatistics;
   codePaths: { total: number };
+  designs: { total: number };
 }
 
 const objectiveStatusRank: Record<ObjectiveCoverageStatus, number> = {
@@ -1065,8 +1161,19 @@ export const generateComplianceSnapshot = (
   );
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
-  const gapAnalysis = buildGapAnalysis(objectiveCoverage);
+  const baseGapAnalysis = buildGapAnalysis(objectiveCoverage);
+  const designGaps = requirementCoverage
+    .filter((entry) => entry.designs.length === 0)
+    .map((entry) => ({
+      objectiveId: entry.requirement.id,
+      missingArtifacts: ['design'] as Array<ObjectiveArtifactType | 'design'>,
+    }));
+  const gapAnalysis: GapAnalysis = {
+    ...baseGapAnalysis,
+    trace: [...baseGapAnalysis.trace, ...designGaps],
+  };
   const codePathCount = traceGraph.nodes.filter((node) => node.type === 'code').length;
+  const designCount = traceGraph.nodes.filter((node) => node.type === 'design').length;
 
   const snapshot: ComplianceSnapshot = {
     version,
@@ -1077,6 +1184,7 @@ export const generateComplianceSnapshot = (
       requirements: { total: bundle.requirements.length },
       tests: testStats,
       codePaths: { total: codePathCount },
+      designs: { total: designCount },
     },
     gaps: gapAnalysis,
     traceGraph,

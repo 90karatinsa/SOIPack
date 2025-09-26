@@ -7,6 +7,7 @@
   "license": "MIT",
   "dependencies": {
     "@soipack/core": "workspace:*",
+    "@noble/post-quantum": "^0.5.2",
     "node-forge": "^1.3.1",
     "yazl": "^2.5.1"
   },

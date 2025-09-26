@@ -2,7 +2,7 @@
 
 SOIPack'in plan ve standart belgeleri `packages/report/templates/plans/` dizinindeki
 Handlebars şablonları kullanılarak oluşturulur. Her plan tipi (`psac`, `sdp`, `svp`,
-`scmp`, `sqap`) aynı klasördeki `.hbs` dosyası üzerinden varsayılan içerik sağlar ve
+`scmp`, `sqap`, `sas`) aynı klasördeki `.hbs` dosyası üzerinden varsayılan içerik sağlar ve
 `base.hbs` düzeni HTML görünümünü oluşturur. Bu yaklaşım sayesinde planlar için varsayılan
 paragraflar projeye özel verilerle kolayca özelleştirilebilir.
 
@@ -33,6 +33,7 @@ dizinleri tanımlanır.
     { "id": "svp" },
     { "id": "scmp" },
     { "id": "sqap" },
+    { "id": "sas" },
     {
       "id": "do330-ta",
       "overrides": {
@@ -57,6 +58,8 @@ Alanlar:
 - **plans**: Üretilecek planların listesi. Her öğede `id` değeri (`psac`, `sdp`, vb.)
   ve isteğe bağlı `overrides` alanları bulunabilir. Overrides ile `overview`,
   belirli bölüm içerikleri veya ekstra notlar HTML olarak sağlanabilir.
+- `do330-ta` veya `sas` şablonları kullanıldığında ek bölüm içerikleri
+  `overrides.sections` ile HTML olarak özelleştirilebilir.
 - `do330-ta` şablonu kullanıldığında `toolAssessment` nesnesi ile araç
   nitelendirme sınıfları, doğrulama argümanları ve imza satırları yapılandırılabilir:
 
@@ -102,6 +105,17 @@ Alanlar:
 
 Bu bilgiler DOCX ve PDF çıktılarında araç sınıfı tablolarını, doğrulama argüman
 listelerini ve imza bloklarını oluşturur.
+
+### SAS (Software Accomplishment Summary)
+
+- Varsayılan şablon dosyası: `packages/report/templates/plans/sas.hbs`
+- Bölüm kimlikleri: `executiveSummary`, `complianceStatus`,
+  `verificationResults`, `configurationStatus`, `openItems`
+- Override anahtarları: `overrides.sections.executiveSummary` vb. ile HTML blokları
+  güncellenebilir.
+- Üretilen dosya adları: `sas.docx`, `sas.pdf`
+- Şablon; kapsanan/missing hedef sayıları, test sonuçları ve açık maddeler özetini otomatik olarak
+  `renderPlanDocument` ve `renderPlanPdf` çıktılarında sunar.
 
 ## CLI Kullanımı
 

@@ -56,6 +56,25 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - Jama öğelerindeki HTML açıklamalar temizlenir, eksik başlıklar için uyarılar üretilir ve test-gereksinim ilişkileri `trace` kanıtları olarak `traceLinks` listesine eklenir. Her test kaydı, bağlı gereksinim kimliklerini `requirementsRefs` alanında taşır.
 - REST API kullanımının mümkün olmadığı ortamlarda Jama raporlarını CSV/Excel olarak dışa aktarabilir, ardından CSV dosyalarını `importJiraCsv` veya özel dönüştürücülerle SOIPack’e alarak kanıt indeksine ekleyebilirsiniz.
 
+## DOORS Next Generation OSLC
+
+- CLI `import` komutu `--doors-url`, `--doors-project`, `--doors-username`,
+  `--doors-password` ve/veya `--doors-token` bayraklarıyla DOORS Next
+  proje alanına bağlanır. Token sağlanırsa OAuth bearer, aksi halde temel kimlik
+  doğrulaması kullanılır; başarısız token denemeleri otomatik olarak parolaya
+  düşer.
+- `fetchDoorsNextArtifacts(options)` gereksinim, test ve tasarım kayıtlarını `/rm`
+  koleksiyonundan sayfalar; `oslc.pageSize` ve `maxPages` parametreleri CLI’dan
+  opsiyonel olarak (`--doors-page-size`, `--doors-max-pages`) ayarlanabilir.
+  İstek zaman aşımı için `--doors-timeout` değeri kullanılabilir. Dönen paket gereksinimler, testler,
+  tasarımlar ve ilişki bağlantılarını içerir.
+- Adapter ETag önbelleğini (`etagCache`) CLI çalışma alanına yazar ve 304
+  yanıtlarında veri transferini atlar. API oran sınırı veya kimlik doğrulama
+  hataları alınırsa uyarılar `runImport` çıktısına aktarılır.
+- İçe aktarılan kayıtlar çalışma alanındaki gereksinim/test/tasarım dizilerine
+  birleştirilir, DO-178C `trace`/`test` kanıt indeksine `source=doorsNext`
+  olarak kaydedilir ve ilişki bağlantıları izlenebilirlik matrislerine eklenir.
+
 ## QA denetim kayıtları
 
 Dosya: `packages/adapters/src/qaLogs.ts`

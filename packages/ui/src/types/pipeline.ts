@@ -137,6 +137,8 @@ export interface CodePathEntry {
   };
 }
 
+import type { DesignRecord } from '@soipack/core';
+
 export interface RequirementTracePayload {
   requirement: {
     id: string;
@@ -147,6 +149,7 @@ export interface RequirementTracePayload {
   };
   tests: RequirementTraceTest[];
   code: CodePathEntry[];
+  designs?: DesignRecord[];
 }
 
 export interface RequirementViewModel {

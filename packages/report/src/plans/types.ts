@@ -1,4 +1,4 @@
-export type PlanTemplateId = 'psac' | 'sdp' | 'svp' | 'scmp' | 'sqap' | 'do330-ta';
+export type PlanTemplateId = 'psac' | 'sdp' | 'svp' | 'scmp' | 'sqap' | 'sas' | 'do330-ta';
 
 export interface PlanSectionDefinition {
   id: string;

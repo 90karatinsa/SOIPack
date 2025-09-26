@@ -19,6 +19,45 @@ import type { LicensePayload } from './license';
 import { setCliLocale } from './localization';
 import type { Logger } from './logging';
 
+jest.mock(
+  'yauzl',
+  () => ({
+    open: jest.fn(),
+    fromBuffer: jest.fn(),
+    ZipFile: function MockZipFile() {},
+  }),
+  { virtual: true },
+);
+
+jest.mock(
+  'saxes',
+  () => {
+    class MockSaxesParser {
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      on() {}
+      write() {
+        return this;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      close() {}
+    }
+    return { SaxesParser: MockSaxesParser, SaxesTagPlain: class {} };
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'fast-xml-parser',
+  () => ({
+    XMLParser: class {
+      parse() {
+        return {};
+      }
+    },
+  }),
+  { virtual: true },
+);
+
 import {
   downloadPackageArtifacts,
   exitCodes,
@@ -807,6 +846,244 @@ describe('@soipack/cli pipeline', () => {
         expect.arrayContaining([expect.stringContaining('Statement coverage evidence')]),
       );
     });
+  });
+});
+
+describe('design CSV importer', () => {
+  it('imports design records from CSV with normalization', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-design-import-'));
+    try {
+      const designCsvPath = path.join(tempDir, 'designs.csv');
+      await fs.writeFile(
+        designCsvPath,
+        [
+          'Design ID,Title,Status,Requirement IDs,Code Paths,Tags',
+          'DES-1,Flight Control,Implemented,"REQ-1; REQ-2","src/control/module.c","Core;Control"',
+          'DES-2,Invalid Status,Planned,REQ-3,"src/common/logger.ts","Audit"',
+          'DES-3,Duplicate Refs,Allocated,"REQ-3; REQ-3","src/common/logger.ts","Audit"',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const workDir = path.join(tempDir, 'work');
+      const result = await runImport({ output: workDir, designCsv: designCsvPath });
+
+      expect(result.workspace.designs).toEqual([
+        {
+          id: 'DES-1',
+          title: 'Flight Control',
+          description: undefined,
+          status: 'implemented',
+          tags: ['core', 'control'],
+          requirementRefs: ['REQ-1', 'REQ-2'],
+          codeRefs: ['src/control/module.c'],
+        },
+      ]);
+
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Design CSV designs.csv row 3 has unsupported status 'Planned'"),
+          expect.stringContaining('Design CSV designs.csv row 4 invalid: Requirement reference REQ-3 is duplicated.'),
+        ]),
+      );
+
+      const workspaceOnDisk = JSON.parse(
+        await fs.readFile(result.workspacePath, 'utf8'),
+      ) as { designs: unknown };
+      expect(Array.isArray(workspaceOnDisk.designs)).toBe(true);
+      expect((workspaceOnDisk.designs as unknown[])).toHaveLength(1);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates design nodes into trace analysis outputs', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-design-trace-'));
+    try {
+      const workDir = path.join(tempDir, 'work');
+      const analysisDir = path.join(tempDir, 'analysis');
+      const designCsvPath = path.join(tempDir, 'designs.csv');
+      await fs.writeFile(
+        designCsvPath,
+        [
+          'Design ID,Title,Status,Requirement IDs,Code Paths',
+          'DES-CLI,Traceable Design,Implemented,"REQ-1; REQ-2","src/auth/login.ts"',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
+      const objectivesPath = path.resolve(
+        __dirname,
+        '../../../data/objectives/do178c_objectives.min.json',
+      );
+
+      await runImport({
+        output: workDir,
+        jira: path.join(fixturesDir, 'issues.csv'),
+        designCsv: designCsvPath,
+      });
+
+      const analyzeResult = await runAnalyze({
+        input: workDir,
+        output: analysisDir,
+        objectives: objectivesPath,
+        level: 'C',
+      });
+
+      const traces = JSON.parse(
+        await fs.readFile(analyzeResult.tracePath, 'utf8'),
+      ) as Array<{ requirement: { id: string }; designs: Array<{ id: string }> }>;
+      const traceByRequirement = new Map(traces.map((trace) => [trace.requirement.id, trace]));
+      expect(traceByRequirement.get('REQ-1')?.designs.map((design) => design.id)).toEqual([
+        'DES-CLI',
+      ]);
+      expect(traceByRequirement.get('REQ-2')?.designs.map((design) => design.id)).toEqual([
+        'DES-CLI',
+      ]);
+
+      const snapshot = JSON.parse(
+        await fs.readFile(analyzeResult.snapshotPath, 'utf8'),
+      ) as {
+        stats: { designs: { total: number } };
+        traceGraph: { nodes: Array<{ type: string; id: string }> };
+      };
+      expect(snapshot.stats.designs.total).toBe(1);
+      expect(
+        snapshot.traceGraph.nodes.filter((node) => node.type === 'design').map((node) => node.id),
+      ).toEqual(['DES-CLI']);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('doors next importer', () => {
+  it('fetches remote artifacts, deduplicates entries, and surfaces warnings', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-doors-import-'));
+    try {
+      const workDir = path.join(tempDir, 'work');
+      const fetchSpy = jest.spyOn(adapters, 'fetchDoorsNextArtifacts').mockResolvedValue({
+        data: {
+          requirements: [
+            {
+              id: 'REQ-DOORS',
+              title: 'Remote Requirement',
+              description: 'Imported from DOORS Next',
+              status: 'verified',
+              type: 'System',
+            },
+          ],
+          tests: [
+            {
+              id: 'TEST-1',
+              name: 'Remote Test Execution',
+              status: 'passed',
+              requirementIds: ['REQ-DOORS'],
+            },
+            {
+              id: 'TEST-1',
+              name: 'Remote Test Execution Duplicate',
+              status: 'passed',
+              requirementIds: ['REQ-DOORS'],
+            },
+          ],
+          designs: [
+            {
+              id: 'DES-1',
+              title: 'Control Design',
+              description: 'Imported from DOORS Next',
+              status: 'implemented',
+              type: 'System',
+              requirementIds: ['REQ-DOORS'],
+              codeRefs: ['src/controls/controller.c'],
+            },
+          ],
+          relationships: [
+            { fromId: 'DES-1', toId: 'REQ-DOORS', type: 'implementsRequirement' },
+            { fromId: 'TEST-1', toId: 'REQ-DOORS', type: 'validatesRequirement' },
+          ],
+          etagCache: { 'https://doors.example.com/rm': 'etag-123' },
+        },
+        warnings: ['DOORS Next pagination aborted after 3 pages.'],
+      });
+
+      const result = await runImport({
+        output: workDir,
+        doorsNext: {
+          baseUrl: 'https://doors.example.com',
+          projectArea: 'Flight Controls',
+          username: 'alice',
+          password: 'secret',
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: 'https://doors.example.com',
+          projectArea: 'Flight Controls',
+          username: 'alice',
+          password: 'secret',
+        }),
+      );
+
+      expect(result.warnings).toEqual(
+        expect.arrayContaining(['DOORS Next pagination aborted after 3 pages.']),
+      );
+
+      expect(result.workspace.requirements.map((req) => req.id)).toEqual(['REQ-DOORS']);
+      expect(result.workspace.designs).toEqual([
+        {
+          id: 'DES-1',
+          title: 'Control Design',
+          description: 'Imported from DOORS Next',
+          status: 'implemented',
+          tags: ['type:system'],
+          requirementRefs: ['REQ-DOORS'],
+          codeRefs: ['src/controls/controller.c'],
+        },
+      ]);
+      expect(result.workspace.testResults).toHaveLength(1);
+      expect(result.workspace.testResults[0]).toEqual(
+        expect.objectContaining({
+          testId: 'TEST-1',
+          requirementsRefs: ['REQ-DOORS'],
+          status: 'passed',
+        }),
+      );
+
+      expect(result.workspace.traceLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: 'REQ-DOORS', to: 'TEST-1', type: 'verifies' }),
+          expect.objectContaining({ from: 'REQ-DOORS', to: 'DES-1', type: 'implements' }),
+        ]),
+      );
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence.some((entry) => entry.source === 'doorsNext')).toBe(true);
+      const testEvidence = result.workspace.evidenceIndex.test ?? [];
+      expect(testEvidence.some((entry) => entry.source === 'doorsNext')).toBe(true);
+
+      expect(result.workspace.metadata.sources?.doorsNext).toEqual(
+        expect.objectContaining({
+          baseUrl: 'https://doors.example.com',
+          projectArea: 'Flight Controls',
+          requirements: 1,
+          tests: 2,
+          designs: 1,
+          relationships: 2,
+          etagCacheSize: 1,
+        }),
+      );
+      expect(result.workspace.metadata.sources?.doorsNext?.etagCache).toEqual({
+        'https://doors.example.com/rm': 'etag-123',
+      });
+      expect(result.workspace.metadata.inputs.doorsNext).toBe(
+        'https://doors.example.com#Flight Controls',
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

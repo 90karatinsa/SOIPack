@@ -84,7 +84,8 @@ const compliancePayload: ComplianceMatrixPayload = {
     objectives: { total: 2, covered: 1, partial: 1, missing: 0 },
     requirements: { total: 2 },
     tests: { total: 3, passed: 1, failed: 1, skipped: 1 },
-    codePaths: { total: 2 }
+    codePaths: { total: 2 },
+    designs: { total: 0 }
   },
   objectives: [],
   requirementCoverage: [

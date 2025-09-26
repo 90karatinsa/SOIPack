@@ -8,6 +8,7 @@ import {
   Requirement,
   TraceLink,
   createRequirement,
+  createDesignRecord,
   createSnapshotIdentifier,
   freezeSnapshotVersion,
 } from '@soipack/core';
@@ -120,6 +121,19 @@ const testResultsFixture = (): TestResult[] => [
   },
 ];
 
+const designFixture = () => [
+  createDesignRecord('DES-1', 'Authentication component design', {
+    status: 'implemented',
+    requirementRefs: ['REQ-1'],
+    codeRefs: ['src/auth/login.ts'],
+  }),
+  createDesignRecord('DES-2', 'Audit logging design', {
+    status: 'allocated',
+    requirementRefs: ['REQ-2', 'REQ-3'],
+    codeRefs: ['src/common/logger.ts'],
+  }),
+];
+
 const objectivesFixture = (): Objective[] => [
   {
     id: 'A-3-01',
@@ -212,6 +226,7 @@ const traceLinksFixture = (): TraceLink[] => [{ from: 'REQ-3', to: 'TC-4', type:
 
 const bundleFixture = (): ImportBundle => ({
   requirements: requirementFixture(),
+  designs: designFixture(),
   objectives: objectivesFixture(),
   testResults: testResultsFixture(),
   coverage: coverageFixture(),
@@ -237,6 +252,9 @@ describe('TraceEngine', () => {
     expect(trace.tests.map((test) => test.testId)).toEqual(
       expect.arrayContaining(['TC-1', 'TC-2']),
     );
+    expect(trace.designs.map((design) => design.id)).toEqual(
+      expect.arrayContaining(['DES-1']),
+    );
     const codePaths = trace.code.map((item) => item.path);
     expect(codePaths).toEqual(
       expect.arrayContaining(['src/auth/login.ts', 'src/common/logger.ts']),
@@ -253,6 +271,14 @@ describe('TraceEngine', () => {
     if (codeNode?.type === 'code') {
       expect(codeNode.data.coverage?.statements?.percentage).toBeCloseTo(75, 2);
     }
+  });
+
+  it('includes design records in the trace graph', () => {
+    const graph = engine.getGraph();
+    const designNodes = graph.nodes.filter((node) => node.type === 'design');
+    expect(designNodes.map((node) => node.id)).toEqual(
+      expect.arrayContaining(['DES-1', 'DES-2']),
+    );
   });
 
   it('incorporates trace links when tests lack explicit requirement references', () => {
@@ -273,6 +299,42 @@ describe('TraceEngine', () => {
     expect(req3?.coverage?.mcdc?.percentage).toBe(75);
   });
 
+  it('treats coverage as missing when no design records are linked', () => {
+    const requirement = createRequirement('REQ-NO-DESIGN', 'Legacy mapping', { status: 'implemented' });
+    const coverage: CoverageReport = {
+      totals: { statements: { covered: 10, total: 10, percentage: 100 } },
+      files: [
+        {
+          file: 'src/control/module.c',
+          statements: { covered: 10, total: 10, percentage: 100 },
+        },
+      ],
+    };
+
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      designs: [],
+      objectives: [],
+      testResults: [],
+      coverage,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [{ from: 'REQ-NO-DESIGN', to: 'src/control/module.c', type: 'implements' }],
+      testToCodeMap: {},
+      generatedAt: '2024-02-01T00:00:00Z',
+    };
+
+    const engineWithoutDesigns = new TraceEngine(bundle);
+    const coverageStatus = engineWithoutDesigns
+      .getRequirementCoverage()
+      .find((item) => item.requirement.id === 'REQ-NO-DESIGN');
+
+    expect(coverageStatus?.status).toBe('missing');
+    const trace = engineWithoutDesigns.getRequirementTrace('REQ-NO-DESIGN');
+    expect(trace.designs).toHaveLength(0);
+    expect(trace.code.map((item) => item.path)).toContain('src/control/module.c');
+  });
+
   it('streams requirement coverage lazily to support large datasets', () => {
     const iterator = engine.streamRequirementCoverage();
     const first = iterator.next();
@@ -289,9 +351,16 @@ describe('TraceEngine', () => {
       status: 'draft',
     });
 
+    const manualDesign = createDesignRecord('DES-Manual', 'Manual trace design', {
+      status: 'allocated',
+      requirementRefs: ['REQ-Manual'],
+      codeRefs: ['src/auth/login.ts'],
+    });
+
     const manualBundle: ImportBundle = {
       ...bundle,
       requirements: [...bundle.requirements, manualRequirement],
+      designs: [...(bundle.designs ?? []), manualDesign],
       traceLinks: [
         ...(bundle.traceLinks ?? []),
         { from: 'REQ-Manual', to: 'src/auth/login.ts', type: 'implements' },
@@ -408,6 +477,7 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.stats.tests).toEqual({ total: 4, passed: 2, failed: 1, skipped: 1 });
     expect(snapshot.stats.requirements).toEqual({ total: 3 });
     expect(snapshot.stats.codePaths).toEqual({ total: 2 });
+    expect(snapshot.stats.designs).toEqual({ total: 2 });
   });
 
   it('omits risk blocks by default for backward compatibility', () => {
@@ -463,6 +533,22 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.gaps.conformity).toHaveLength(0);
   });
 
+  it('appends design gaps when requirements lack design coverage', () => {
+    const withoutDesigns = generateComplianceSnapshot({
+      ...bundleFixture(),
+      designs: [],
+    });
+
+    expect(withoutDesigns.gaps.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          objectiveId: 'REQ-1',
+          missingArtifacts: expect.arrayContaining(['design']),
+        }),
+      ]),
+    );
+  });
+
   it('exposes trace graph nodes for requirements, tests, and code paths', () => {
     const types = snapshot.traceGraph.nodes.reduce<Record<string, number>>((acc, node) => {
       acc[node.type] = (acc[node.type] ?? 0) + 1;
@@ -472,6 +558,7 @@ describe('Compliance snapshot generation', () => {
     expect(types.requirement).toBe(3);
     expect(types.test).toBe(4);
     expect(types.code).toBe(2);
+    expect(types.design).toBe(2);
   });
 
   it('includes requirement coverage breakdowns', () => {
@@ -484,6 +571,9 @@ describe('Compliance snapshot generation', () => {
     expect(coverageByRequirement.get('REQ-3')?.status).toBe('covered');
     expect(coverageByRequirement.get('REQ-3')?.coverage?.statements?.percentage).toBe(100);
     expect(coverageByRequirement.get('REQ-1')?.coverage?.mcdc?.percentage).toBe(75);
+    expect(coverageByRequirement.get('REQ-1')?.designs.map((design) => design.id)).toEqual(
+      expect.arrayContaining(['DES-1']),
+    );
   });
 
   it('does not emit quality findings when bundle is consistent', () => {
@@ -613,6 +703,13 @@ describe('Quality checks', () => {
 
     const bundle: ImportBundle = {
       requirements: [requirement],
+      designs: [
+        createDesignRecord('DES-F', 'Control logic design', {
+          status: 'implemented',
+          requirementRefs: ['REQ-F'],
+          codeRefs: ['src/control/module.c'],
+        }),
+      ],
       objectives: [],
       testResults: [test],
       coverage,
@@ -629,6 +726,62 @@ describe('Quality checks', () => {
       expect.arrayContaining([
         expect.objectContaining({ id: 'REQ-F-verified-failing-tests', severity: 'error', category: 'tests' }),
         expect.objectContaining({ id: 'REQ-F-coverage-partial', severity: 'warn', category: 'coverage' }),
+      ]),
+    );
+  });
+
+  it('flags ambiguous DO-178C wording for requirements', () => {
+    const requirement = createRequirement('REQ-CLAR', 'Authentication requirement TBD', {
+      status: 'draft',
+      description: 'The login process shall be tested as appropriate and TBD until criteria are defined.',
+    });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: {},
+      generatedAt: '2024-03-05T12:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.qualityFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'REQ-CLAR-clarity-placeholder-tbd', severity: 'warn', category: 'analysis' }),
+        expect.objectContaining({ id: 'REQ-CLAR-clarity-as-appropriate', severity: 'warn', category: 'analysis' }),
+        expect.objectContaining({ id: 'REQ-CLAR-clarity-passive-voice', severity: 'warn', category: 'analysis' }),
+      ]),
+    );
+  });
+
+  it('raises clarity conflicts when verified requirements retain placeholders or mismatched status tags', () => {
+    const requirement = createRequirement('REQ-STAT', 'Finalized safety constraint', {
+      status: 'verified',
+      description: 'Verification evidence TBD pending DER approval.',
+      tags: ['draft', 'safety-critical'],
+    });
+    const bundle: ImportBundle = {
+      requirements: [requirement],
+      objectives: [],
+      testResults: [],
+      coverage: undefined,
+      structuralCoverage: undefined,
+      evidenceIndex: {},
+      traceLinks: [],
+      testToCodeMap: {},
+      generatedAt: '2024-03-06T12:00:00Z',
+    };
+
+    const snapshot = generateComplianceSnapshot(bundle);
+
+    expect(snapshot.qualityFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'REQ-STAT-clarity-status-placeholder', severity: 'error', category: 'analysis' }),
+        expect.objectContaining({ id: 'REQ-STAT-clarity-status-tag-conflict', severity: 'warn', category: 'analysis' }),
       ]),
     );
   });
