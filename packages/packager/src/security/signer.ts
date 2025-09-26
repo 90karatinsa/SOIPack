@@ -9,11 +9,12 @@ import {
   DEFAULT_POST_QUANTUM_ALGORITHM,
   deriveSphincsPlusPublicKey,
   loadDefaultSphincsPlusKeyPair,
+  type SphincsPlusAlgorithm,
   signWithSphincsPlus,
   verifyWithSphincsPlus,
 } from './pqc';
 
-export type PostQuantumAlgorithm = typeof DEFAULT_POST_QUANTUM_ALGORITHM;
+export type PostQuantumAlgorithm = SphincsPlusAlgorithm;
 
 export interface PostQuantumSigningOptions {
   algorithm?: PostQuantumAlgorithm;
@@ -568,7 +569,7 @@ const extractCmsSignerVerificationInputs = (
     }
 
     const attributesNode = signerInfo.value.find(
-      (node) =>
+      (node: forge.asn1.Asn1) =>
         node.tagClass === forge.asn1.Class.CONTEXT_SPECIFIC &&
         node.type === 0 &&
         Array.isArray(node.value),
@@ -587,7 +588,7 @@ const extractCmsSignerVerificationInputs = (
     }
 
     const signatureNode = signerInfo.value.find(
-      (node) =>
+      (node: forge.asn1.Asn1) =>
         node.tagClass === forge.asn1.Class.UNIVERSAL &&
         node.type === forge.asn1.Type.OCTETSTRING &&
         typeof node.value === 'string',

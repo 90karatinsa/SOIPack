@@ -405,6 +405,7 @@ export interface ComplianceMatrixJson {
     status: RequirementCoverageStatus['status'];
     coverage?: RequirementCoverageStatus['coverage'];
     codePaths: string[];
+    designs: string[];
   }>;
   qualityFindings: Array<{
     id: string;
@@ -1911,8 +1912,12 @@ const escapeHtml = (value: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const formatArtifact = (artifact: ObjectiveArtifactType): string =>
-  artifactLabels[artifact] ?? artifact.toUpperCase();
+const formatArtifact = (artifact: ObjectiveArtifactType | 'design'): string => {
+  if (artifact === 'design') {
+    return 'DESIGN';
+  }
+  return artifactLabels[artifact] ?? artifact.toUpperCase();
+};
 
 const contributionClass = (weight: number, contribution: number): string => {
   if (weight <= 0) {
@@ -2196,6 +2201,7 @@ const buildSummaryMetrics = (
     { label: 'Eksik', value: stats.objectives.missing.toString() },
     { label: 'Testler', value: stats.tests.total.toString() },
     { label: 'Kod Yolları', value: stats.codePaths.total.toString() },
+    { label: 'Tasarım Kayıtları', value: stats.designs.total.toString() },
   );
 
   if (requirementCoverage.length > 0) {
@@ -2357,6 +2363,7 @@ const buildComplianceMatrixJson = (
     requirements: { ...snapshot.stats.requirements },
     tests: { ...snapshot.stats.tests },
     codePaths: { ...snapshot.stats.codePaths },
+    designs: { ...snapshot.stats.designs },
   },
   objectives: view.objectives.map((row) => ({
     id: row.id,
@@ -2374,6 +2381,7 @@ const buildComplianceMatrixJson = (
     status: entry.status,
     coverage: entry.coverage,
     codePaths: entry.codePaths.map((code) => code.path),
+    designs: entry.designs.map((design) => design.id),
   })),
   qualityFindings: snapshot.qualityFindings.map((finding) => ({
     id: finding.id,

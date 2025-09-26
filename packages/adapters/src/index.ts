@@ -29,6 +29,12 @@ export type {
   JiraChangeRequestAttachment,
   JiraChangeRequestTransition,
 } from './jiraCloud';
+export { fetchDoorsNextArtifacts } from './doorsNext';
+export type {
+  DoorsNextClientOptions,
+  DoorsNextArtifactBundle,
+  DoorsNextRelationship,
+} from './doorsNext';
 
 export interface AdapterMetadata {
   name: string;
@@ -59,4 +65,10 @@ export const toRequirement = (record: RawRecord): Requirement => ({
   description: record.description ?? undefined,
   status: 'draft',
   tags: [],
+});
+
+export const doorsNextAdapterMetadata = registerAdapter({
+  name: 'IBM DOORS Next Generation',
+  supportedArtifacts: ['requirements', 'tests', 'designs'],
+  description: 'Fetches DOORS Next /rm requirements, test cases, and design records via OSLC.',
 });

@@ -1,5 +1,5 @@
 import type { Finding } from '@soipack/adapters';
-import type { Requirement } from '@soipack/core';
+import { requirementStatuses, type Requirement } from '@soipack/core';
 
 import type { RequirementCoverageStatus, RequirementTrace } from './index';
 
@@ -20,6 +20,46 @@ interface RequirementQualityContext {
   trace: RequirementTrace;
   coverage?: RequirementCoverageStatus;
 }
+
+type RequirementStatusValue = (typeof requirementStatuses)[number];
+
+const ambiguousLanguagePatterns: Array<{
+  id: string;
+  regex: RegExp;
+  phrase?: string;
+  phraseFromMatch?: boolean;
+  recommendation?: string;
+}> = [
+  { id: 'placeholder-tbd', regex: /\bTBD\b/i, phrase: '"TBD"' },
+  { id: 'placeholder-tba', regex: /\bTBA\b/i, phrase: '"TBA"' },
+  { id: 'placeholder-tbc', regex: /\bTBC\b/i, phrase: '"TBC"' },
+  { id: 'and-or', regex: /\band\/or\b/i, phrase: '"and/or"' },
+  { id: 'as-appropriate', regex: /\bas appropriate\b/i, phrase: '"as appropriate"' },
+  { id: 'as-necessary', regex: /\bas (?:necessary|required)\b/i, phraseFromMatch: true },
+  { id: 'be-able-to', regex: /\bbe able to\b/i, phrase: '"be able to"' },
+  { id: 'etc', regex: /\betc\./i, phrase: '"etc."' },
+  { id: 'subjective-adjective', regex: /\b(adequate|sufficient|minimal|flexible)\b/i, phraseFromMatch: true },
+];
+
+const passiveVoicePattern = /\b(?:shall|will|must|should)\s+be\s+\w+(?:ed|en)\b/i;
+
+const placeholderRegexes = [
+  /\bTBD\b/i,
+  /\bTBA\b/i,
+  /\bTBC\b/i,
+  /\bto be determined\b/i,
+  /\bto be defined\b/i,
+  /\bto be decided\b/i,
+  /\bpending\b/i,
+  /\bplaceholder\b/i,
+  /\bunder review\b/i,
+];
+
+const placeholderTagIndicators = new Set(['tbd', 'pending', 'placeholder', 'draft', 'wip']);
+const statusTagSet = new Set<string>(requirementStatuses as readonly string[]);
+
+const clarityRecommendation =
+  'Belirsiz ifadeleri kaldırarak gereksinimi ölçülebilir ve doğrulanabilir hale getirin.';
 
 const failingTests = (trace: RequirementTrace): RequirementTrace['tests'] =>
   trace.tests.filter((test) => test.status === 'failed');
@@ -91,6 +131,83 @@ const evaluateAnalysisFindings = (findings: Finding[]): QualityFinding[] => {
         recommendation: 'Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.',
       } satisfies QualityFinding;
     });
+};
+
+const evaluateRequirementClarity = (requirement: Requirement): QualityFinding[] => {
+  const text = `${requirement.title} ${requirement.description ?? ''}`.trim();
+  if (!text) {
+    return [];
+  }
+
+  const findings: QualityFinding[] = [];
+
+  ambiguousLanguagePatterns.forEach((pattern) => {
+    const match = text.match(pattern.regex);
+    if (!match) {
+      return;
+    }
+    const phrase = pattern.phraseFromMatch ? `"${match[0].trim()}"` : pattern.phrase ?? `"${match[0].trim()}"`;
+    findings.push({
+      id: buildFindingId(requirement, `clarity-${pattern.id}`),
+      severity: 'warn',
+      category: 'analysis',
+      requirementId: requirement.id,
+      message: `${requirement.id} gereksinimi DO-178C netlik kriterleriyle uyumsuz ${phrase} ifadesini içeriyor.`,
+      recommendation: pattern.recommendation ?? clarityRecommendation,
+    });
+  });
+
+  const passiveMatch = text.match(passiveVoicePattern);
+  if (passiveMatch) {
+    findings.push({
+      id: buildFindingId(requirement, 'clarity-passive-voice'),
+      severity: 'warn',
+      category: 'analysis',
+      requirementId: requirement.id,
+      message: `${requirement.id} gereksinimi pasif yapı (${passiveMatch[0]}) kullanıyor; DO-178C aktif ve doğrulanabilir ifadeler bekler.`,
+      recommendation: 'Cümleyi etkin özneyle yeniden yazarak sorumluluğu açıkça belirtin.',
+    });
+  }
+
+  const placeholderMatch = placeholderRegexes
+    .map((regex) => text.match(regex))
+    .find((match): match is RegExpMatchArray => Boolean(match));
+
+  const normalizedTags = requirement.tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0);
+  const placeholderTag = normalizedTags.find((tag) => placeholderTagIndicators.has(tag));
+  const conflictingStatusTags = normalizedTags.filter(
+    (tag): tag is RequirementStatusValue => statusTagSet.has(tag),
+  );
+
+  if (
+    (placeholderMatch || placeholderTag) &&
+    (requirement.status === 'implemented' || requirement.status === 'verified')
+  ) {
+    const severity: QualityFindingSeverity = requirement.status === 'verified' ? 'error' : 'warn';
+    const evidence = placeholderMatch?.[0] ?? placeholderTag ?? 'belirsiz ifade';
+    findings.push({
+      id: buildFindingId(requirement, 'clarity-status-placeholder'),
+      severity,
+      category: 'analysis',
+      requirementId: requirement.id,
+      message: `${requirement.id} ${requirement.status} olarak işaretli ancak "${evidence}" gibi belirsiz yer tutucular içeriyor.`,
+      recommendation: 'Durumu doğrulamadan önce gereksinim metnindeki yer tutucuları ve açık olmayan ifadeleri netleştirin.',
+    });
+  }
+
+  const conflictingStatuses = conflictingStatusTags.filter((tag) => tag !== requirement.status);
+  if (conflictingStatuses.length > 0) {
+    findings.push({
+      id: buildFindingId(requirement, 'clarity-status-tag-conflict'),
+      severity: 'warn',
+      category: 'analysis',
+      requirementId: requirement.id,
+      message: `${requirement.id} gereksinimi ${requirement.status} olarak işaretli ancak etiketlerde ${conflictingStatuses.join(', ')} durumları bulunuyor.`,
+      recommendation: 'Gereksinim etiketlerini mevcut durumla uyumlu hale getirin veya statüyü gözden geçirin.',
+    });
+  }
+
+  return ensureUnique(findings);
 };
 
 const evaluateRequirement = ({ trace, coverage }: RequirementQualityContext): QualityFinding[] => {
@@ -172,7 +289,7 @@ const evaluateRequirement = ({ trace, coverage }: RequirementQualityContext): Qu
     }
   }
 
-  return findings;
+  return [...findings, ...evaluateRequirementClarity(requirement)];
 };
 
 export const evaluateQualityFindings = (

@@ -43,6 +43,41 @@ console.log(report.summary.highPriorityRequirements);
 
 `report` nesnesi gereksinim boşluklarını, yetim varlıkları ve çatışma kayıtlarını içerir. Çıktı, doğrulama planlarına beslenerek eksik kanıtların kapatılmasını sağlar.
 
+## Tasarım Kayıtlarının İçe Aktarımı
+
+SOIPack 2024.7 sürümüyle birlikte gereksinim ↔ tasarım ↔ kod zincirindeki ara halkaları da doğrulamak mümkündür. Tasarım kayıtları CSV üzerinden `--design-csv` bayrağı ile CLI'ya sağlanır ve çekirdek `DesignRecord` şeması kullanılarak normalize edilir.
+
+### CSV Şeması
+
+CSV dosyasında aşağıdaki sütunlar beklenir:
+
+| Sütun adı | Açıklama |
+| --- | --- |
+| `Design ID` | Tasarımın benzersiz kimliği (zorunlu). |
+| `Title` | Kısa başlık (zorunlu). |
+| `Description` | Opsiyonel açıklama metni. |
+| `Status` | `draft`, `allocated`, `implemented` veya `verified` durumlarından biri. |
+| `Tags` | Virgül veya noktalı virgül ile ayrılmış etiket listesi; içe aktarım sırasında normalize edilir. |
+| `Requirement IDs` | Tasarımın izlediği gereksinim kimlikleri; birden fazla değer `;` ile ayrılabilir. |
+| `Code Paths` | İlgili kod yolları veya modül etiketleri; `;` ile ayrılabilir. |
+
+Eksik kimlikler veya tekrarlanan referanslar bulunduğunda CLI çıktılarına uyarı olarak yansıtılır. Aynı tasarım kimliğinin birden fazla satırda yer alması hata olarak reddedilir.
+
+### CLI Kullanımı
+
+Aynı çalıştırmada gereksinim, test ve tasarım verilerini içe aktarmak için `analyze` ve `report` komutlarına `--design-csv` parametresini ekleyebilirsiniz:
+
+```bash
+soipack analyze --workspace workspace.json --design-csv designs.csv
+soipack report --workspace workspace.json --design-csv designs.csv
+```
+
+Bu bayrak, mevcut `workspace.json` içine normalize edilmiş `designs` alanını ekler ve takip eden analiz çalıştırmalarında tekrar kullanılabilir.
+
+### İz Matrisleri ve Boşluk Çıktıları
+
+İçe aktarılan tasarımlar, analiz motorunda gereksinim ve kod düğümleri arasındaki yeni bir katman olarak gösterilir. `trace.html` çıktısındaki iz matrisi her gereksinim için ilişkili tasarım kimliklerini listeler; hiçbir tasarımla eşleşmeyen gereksinimler “Design” sütununda `missing` etiketiyle vurgulanır. Aynı şekilde boşluk özetinde `summary.missingDesigns` alanı doldurulur ve `highPriorityRequirements` listesine tasarım halkası eksik olan kayıtlar eklenir. Böylece ekipler tasarım üretimi veya güncellemesi gereken gereksinimleri hızlıca belirleyebilir.
+
 ## Öneri motoru ile bağlantı kapatma
 
 Boşluk raporlarını desteklemek için SOIPack Engine `generateTraceSuggestions` fonksiyonunu sağlar. Bu modül, gereksinim tanımlarını, mevcut test sonuçlarını ve test→kod kapsam haritalarını tarayarak gözden geçiricilere sunulacak olası bağlantıları üretir. Öneri motoru aşağıdaki sezgileri kullanır:

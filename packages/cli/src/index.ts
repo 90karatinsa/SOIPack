@@ -15,6 +15,7 @@ import {
   importJUnitXml,
   importLcov,
   importQaLogs,
+  fetchDoorsNextArtifacts,
   fetchJenkinsArtifacts,
   fetchPolarionArtifacts,
   importReqIF,
@@ -28,8 +29,11 @@ import {
   type JiraRequirement,
   type JenkinsClientOptions,
   type PolarionClientOptions,
+  type DoorsNextClientOptions,
+  type DoorsNextRelationship,
   type RemoteRequirementRecord,
   type RemoteTestRecord,
+  type RemoteDesignRecord,
   type ReqIFRequirement,
   type TestResult,
   type TestStatus,
@@ -37,6 +41,8 @@ import {
 import {
   CertificationLevel,
   certificationLevels,
+  DesignRecord,
+  DesignStatus,
   Evidence,
   EvidenceSource,
   evidenceSources,
@@ -48,9 +54,11 @@ import {
   RequirementStatus,
   SnapshotVersion,
   TraceLink,
+  createDesignRecord,
   createRequirement,
   createSnapshotIdentifier,
   createSnapshotVersion,
+  designStatuses,
   deriveFingerprint,
   traceLinkSchema,
   appendEntry,
@@ -95,6 +103,7 @@ import YAML from 'yaml';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { ZipFile } from 'yazl';
+import { ZodError } from 'zod';
 
 import packageInfo from '../package.json';
 
@@ -131,6 +140,8 @@ interface ImportPaths {
   git?: string;
   traceLinksCsv?: string;
   traceLinksJson?: string;
+  designCsv?: string;
+  doorsNext?: string;
   polyspace?: string;
   ldra?: string;
   vectorcast?: string;
@@ -140,7 +151,7 @@ interface ImportPaths {
   qaLogs?: string[];
 }
 
-export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins'> & {
+export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext'> & {
   output: string;
   objectives?: string;
   level?: CertificationLevel;
@@ -148,12 +159,14 @@ export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins'> & {
   projectVersion?: string;
   polarion?: PolarionClientOptions;
   jenkins?: JenkinsClientOptions;
+  doorsNext?: DoorsNextClientOptions;
   independentSources?: Array<EvidenceSource | string>;
   independentArtifacts?: string[];
 };
 
 export interface ImportWorkspace {
   requirements: Requirement[];
+  designs: DesignRecord[];
   testResults: TestResult[];
   coverage?: CoverageReport;
   structuralCoverage?: StructuralCoverageSummary;
@@ -411,6 +424,16 @@ interface ExternalSourceMetadata {
     tests: number;
     builds: number;
   };
+  doorsNext?: {
+    baseUrl: string;
+    projectArea: string;
+    requirements: number;
+    tests: number;
+    designs: number;
+    relationships: number;
+    etagCacheSize: number;
+    etagCache?: Record<string, string>;
+  };
   jenkins?: {
     baseUrl: string;
     job: string;
@@ -557,6 +580,50 @@ const buildPolarionOptions = (
     testRunsEndpoint: coerceOptionalString(raw.polarionTestsEndpoint),
     buildsEndpoint: coerceOptionalString(raw.polarionBuildsEndpoint),
   };
+};
+
+const buildDoorsNextOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): DoorsNextClientOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.doorsUrl);
+  const projectArea = coerceOptionalString(raw.doorsProject);
+
+  if (!baseUrl || !projectArea) {
+    return undefined;
+  }
+
+  const options: DoorsNextClientOptions = { baseUrl, projectArea };
+  const username = coerceOptionalString(raw.doorsUsername);
+  const password = coerceOptionalString(raw.doorsPassword);
+  const token = coerceOptionalString(raw.doorsToken);
+
+  if (username) {
+    options.username = username;
+  }
+  if (password) {
+    options.password = password;
+  }
+  if (token) {
+    options.accessToken = token;
+  }
+
+  const pageSize = raw.doorsPageSize;
+  if (typeof pageSize === 'number' && Number.isFinite(pageSize) && pageSize > 0) {
+    options.pageSize = pageSize;
+  }
+
+  const maxPages = raw.doorsMaxPages;
+  if (typeof maxPages === 'number' && Number.isFinite(maxPages) && maxPages > 0) {
+    options.maxPages = maxPages;
+  }
+
+  const timeout = raw.doorsTimeout;
+  if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0) {
+    options.timeoutMs = timeout;
+  }
+
+  return options;
 };
 
 const buildJenkinsOptions = (
@@ -973,6 +1040,136 @@ const importTraceLinksCsv = async (filePath: string): Promise<TraceLinkImportRes
   });
 
   return { links, warnings };
+};
+
+interface DesignCsvImportResult {
+  designs: DesignRecord[];
+  warnings: string[];
+}
+
+const splitDelimitedValues = (value: string | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(/[;,|]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+};
+
+const importDesignCsv = async (filePath: string): Promise<DesignCsvImportResult> => {
+  const warnings: string[] = [];
+  const location = path.resolve(filePath);
+  const content = await fsPromises.readFile(location, 'utf8');
+  const rawLines = content.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const nonEmptyLines = rawLines.filter((line) => line.trim().length > 0);
+
+  if (nonEmptyLines.length === 0) {
+    warnings.push(`No rows found while parsing design CSV at ${location}.`);
+    return { designs: [], warnings };
+  }
+
+  const headerValues = parseCsvLine(nonEmptyLines[0]);
+  const headerCount = headerValues.length;
+  const headerIndex = new Map<string, number>();
+  headerValues.forEach((header, index) => {
+    headerIndex.set(header.trim().toLowerCase(), index);
+  });
+
+  const getCell = (row: string[], ...candidates: string[]): string | undefined => {
+    for (const candidate of candidates) {
+      const normalized = candidate.trim().toLowerCase();
+      const index = headerIndex.get(normalized);
+      if (index !== undefined && index < row.length) {
+        const value = row[index]?.trim();
+        if (value) {
+          return value;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const designs: DesignRecord[] = [];
+  const seen = new Set<string>();
+
+  nonEmptyLines.slice(1).forEach((line, rowIndex) => {
+    const parsedRow = parseCsvLine(line);
+    const normalizedRow = Array.from({ length: headerCount }, (_, index) => parsedRow[index] ?? '');
+    const rowNumber = rowIndex + 2;
+    const id = getCell(normalizedRow, 'design id', 'id');
+    if (!id) {
+      warnings.push(`Design CSV ${path.basename(location)} row ${rowNumber} missing design id.`);
+      return;
+    }
+    if (seen.has(id)) {
+      warnings.push(`Design CSV ${path.basename(location)} row ${rowNumber} duplicates design id ${id}.`);
+      return;
+    }
+
+    const title = getCell(normalizedRow, 'title', 'name');
+    if (!title) {
+      warnings.push(`Design CSV ${path.basename(location)} row ${rowNumber} missing title.`);
+      return;
+    }
+
+    const statusRaw = getCell(normalizedRow, 'status');
+    let status: DesignStatus | undefined;
+    if (statusRaw) {
+      const normalizedStatus = statusRaw.trim().toLowerCase();
+      const matched = designStatuses.find((value) => value === normalizedStatus);
+      if (!matched) {
+        warnings.push(
+          `Design CSV ${path.basename(location)} row ${rowNumber} has unsupported status '${statusRaw}'.`,
+        );
+        return;
+      }
+      status = matched;
+    }
+
+    const description = getCell(normalizedRow, 'description', 'summary');
+    const requirementRefs = splitDelimitedValues(
+      getCell(
+        normalizedRow,
+        'requirement ids',
+        'requirement id',
+        'requirements',
+        'req ids',
+        'requirement references',
+      ),
+    );
+    const codeRefs = splitDelimitedValues(
+      getCell(normalizedRow, 'code paths', 'code refs', 'code', 'implementation paths', 'source paths'),
+    );
+    const tags = splitDelimitedValues(getCell(normalizedRow, 'tags', 'tag', 'labels'));
+
+    try {
+      const record = createDesignRecord(id, title, {
+        description,
+        status,
+        tags,
+        requirementRefs,
+        codeRefs,
+      });
+      designs.push(record);
+      seen.add(record.id);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        error.issues.forEach((issue) => {
+          warnings.push(
+            `Design CSV ${path.basename(location)} row ${rowNumber} invalid: ${issue.message}`,
+          );
+        });
+      } else {
+        const reason = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Design CSV ${path.basename(location)} row ${rowNumber} could not be parsed: ${reason}`,
+        );
+      }
+    }
+  });
+
+  return { designs, warnings };
 };
 
 const importTraceLinksJson = async (filePath: string): Promise<TraceLinkImportResult> => {
@@ -1437,6 +1634,56 @@ const toRequirementFromPolarion = (entry: RemoteRequirementRecord): Requirement 
     tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
   });
 
+const requirementStatusFromDoorsNext = (status: string | undefined): RequirementStatus => {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) {
+    return 'draft';
+  }
+  if (/(verify|validated|approved|accepted|closed|done|complete)/u.test(normalized)) {
+    return 'verified';
+  }
+  if (/(implement|develop|in progress|executed|tested|complete)/u.test(normalized)) {
+    return 'implemented';
+  }
+  if (/(review|baseline|analysis|allocated)/u.test(normalized)) {
+    return 'approved';
+  }
+  return 'draft';
+};
+
+const designStatusFromDoorsNext = (status: string | undefined): DesignStatus => {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) {
+    return 'draft';
+  }
+  if (/(verified|approved|released|accepted)/u.test(normalized)) {
+    return 'verified';
+  }
+  if (/(implemented|complete|done|baseline)/u.test(normalized)) {
+    return 'implemented';
+  }
+  if (/(allocated|defined|analyzed|assigned)/u.test(normalized)) {
+    return 'allocated';
+  }
+  return 'draft';
+};
+
+const toRequirementFromDoorsNext = (entry: RemoteRequirementRecord): Requirement =>
+  createRequirement(entry.id, entry.title || entry.id, {
+    description: entry.description ?? entry.url,
+    status: requirementStatusFromDoorsNext(entry.status),
+    tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
+  });
+
+const toDesignFromDoorsNext = (entry: RemoteDesignRecord): DesignRecord =>
+  createDesignRecord(entry.id, entry.title || entry.id, {
+    description: entry.description ?? entry.url,
+    status: designStatusFromDoorsNext(entry.status),
+    tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
+    requirementRefs: entry.requirementIds ?? [],
+    codeRefs: entry.codeRefs ?? [],
+  });
+
 const remoteTestStatusToTestResult = (status: string): TestStatus => {
   const normalized = status.trim().toLowerCase();
   if (!normalized) {
@@ -1463,7 +1710,7 @@ const durationFromMilliseconds = (durationMs: number | undefined): number => {
 
 const toTestResultFromRemote = (
   entry: RemoteTestRecord,
-  provider: 'polarion' | 'jenkins',
+  provider: 'polarion' | 'jenkins' | 'doorsNext',
 ): TestResult => ({
   testId: entry.id,
   className: entry.className ?? provider,
@@ -1484,6 +1731,65 @@ const mergeRequirements = (sources: Requirement[][]): Requirement[] => {
   return Array.from(merged.values()).sort((a, b) => a.id.localeCompare(b.id));
 };
 
+const mergeDesigns = (sources: DesignRecord[][]): DesignRecord[] => {
+  const merged = new Map<string, DesignRecord>();
+  sources.forEach((list) => {
+    list.forEach((design) => {
+      merged.set(design.id, design);
+    });
+  });
+  return Array.from(merged.values()).sort((a, b) => a.id.localeCompare(b.id));
+};
+
+const toTraceLinksFromDoorsNext = (
+  relationships: DoorsNextRelationship[],
+  requirements: Set<string>,
+  tests: Set<string>,
+  designs: Set<string>,
+): TraceLink[] => {
+  const links: TraceLink[] = [];
+  const pushLink = (from: string, to: string, type: TraceLink['type']) => {
+    links.push({ from, to, type });
+  };
+
+  relationships.forEach((relationship) => {
+    const type = relationship.type?.toLowerCase() ?? '';
+    const fromId = relationship.fromId;
+    const toId = relationship.toId;
+    const fromIsRequirement = requirements.has(fromId);
+    const toIsRequirement = requirements.has(toId);
+    const fromIsTest = tests.has(fromId);
+    const toIsTest = tests.has(toId);
+    const fromIsDesign = designs.has(fromId);
+    const toIsDesign = designs.has(toId);
+
+    if (fromIsTest && toIsRequirement && /(verify|validate|test)/u.test(type)) {
+      pushLink(toId, fromId, 'verifies');
+      return;
+    }
+    if (fromIsRequirement && toIsTest && /(verify|validate|test)/u.test(type)) {
+      pushLink(fromId, toId, 'verifies');
+      return;
+    }
+
+    if (fromIsDesign && toIsRequirement && /(design|implement|model|satisf|allocat)/u.test(type)) {
+      pushLink(toId, fromId, 'implements');
+      return;
+    }
+    if (fromIsRequirement && toIsDesign && /(design|implement|model|satisf|allocat)/u.test(type)) {
+      pushLink(fromId, toId, 'implements');
+      return;
+    }
+
+    if (fromIsRequirement && toIsRequirement && /(satisf|derive|refine)/u.test(type)) {
+      pushLink(fromId, toId, 'satisfies');
+      return;
+    }
+  });
+
+  return uniqueTraceLinks(links);
+};
+
 const buildTraceLinksFromTests = (tests: TestResult[]): TraceLink[] => {
   const links: TraceLink[] = [];
   tests.forEach((test) => {
@@ -1498,6 +1804,7 @@ const buildTraceLinksFromTests = (tests: TestResult[]): TraceLink[] => {
 export const runImport = async (options: ImportOptions): Promise<ImportResult> => {
   const warnings: string[] = [];
   const requirements: Requirement[][] = [];
+  const designs: DesignRecord[][] = [];
   const evidenceIndex: EvidenceIndex = {};
   const independence = buildEvidenceIndependenceConfig(options);
   let coverage: CoverageReport | undefined;
@@ -1519,6 +1826,10 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     traceLinksCsv: options.traceLinksCsv ? normalizeRelativePath(options.traceLinksCsv) : undefined,
     traceLinksJson: options.traceLinksJson
       ? normalizeRelativePath(options.traceLinksJson)
+      : undefined,
+    designCsv: options.designCsv ? normalizeRelativePath(options.designCsv) : undefined,
+    doorsNext: options.doorsNext
+      ? `${options.doorsNext.baseUrl}#${options.doorsNext.projectArea}`
       : undefined,
     polyspace: options.polyspace ? normalizeRelativePath(options.polyspace) : undefined,
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
@@ -1759,6 +2070,80 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
   }
 
+  if (options.designCsv) {
+    const result = await importDesignCsv(options.designCsv);
+    warnings.push(...result.warnings);
+    if (result.designs.length > 0) {
+      designs.push(result.designs);
+    }
+  }
+
+  if (options.doorsNext) {
+    const doorsResult = await fetchDoorsNextArtifacts(options.doorsNext);
+    warnings.push(...doorsResult.warnings);
+    const doorsRequirements = doorsResult.data.requirements ?? [];
+    const doorsTests = doorsResult.data.tests ?? [];
+    const doorsDesigns = doorsResult.data.designs ?? [];
+    const doorsRelationships = doorsResult.data.relationships ?? [];
+    const sourceId = `remote:doorsNext:${options.doorsNext.projectArea}`;
+
+    if (doorsRequirements.length > 0) {
+      requirements.push(doorsRequirements.map(toRequirementFromDoorsNext));
+      await appendEvidence(
+        'trace',
+        'doorsNext',
+        sourceId,
+        'DOORS Next gereksinim kataloğu',
+      );
+    }
+
+    if (doorsTests.length > 0) {
+      const existingTestIds = new Set(testResults.map((test) => test.testId));
+      doorsTests.forEach((entry) => {
+        if (existingTestIds.has(entry.id)) {
+          return;
+        }
+        testResults.push(toTestResultFromRemote(entry, 'doorsNext'));
+        existingTestIds.add(entry.id);
+      });
+      await appendEvidence('test', 'doorsNext', sourceId, 'DOORS Next test kayıtları');
+    }
+
+    if (doorsDesigns.length > 0) {
+      designs.push(doorsDesigns.map(toDesignFromDoorsNext));
+      await appendEvidence('trace', 'doorsNext', sourceId, 'DOORS Next tasarım kayıtları');
+    }
+
+    if (doorsRelationships.length > 0) {
+      const requirementIds = new Set(doorsRequirements.map((item) => item.id));
+      const testIds = new Set(doorsTests.map((item) => item.id));
+      const designIds = new Set(doorsDesigns.map((item) => item.id));
+      const doorLinks = toTraceLinksFromDoorsNext(
+        doorsRelationships,
+        requirementIds,
+        testIds,
+        designIds,
+      );
+      if (doorLinks.length > 0) {
+        manualTraceLinks.push(...doorLinks);
+      }
+    }
+
+    const etagCacheSnapshot = doorsResult.data.etagCache ?? {};
+    const etagCacheSize = Object.keys(etagCacheSnapshot).length;
+
+    sourceMetadata.doorsNext = {
+      baseUrl: options.doorsNext.baseUrl,
+      projectArea: options.doorsNext.projectArea,
+      requirements: doorsRequirements.length,
+      tests: doorsTests.length,
+      designs: doorsDesigns.length,
+      relationships: doorsRelationships.length,
+      etagCacheSize,
+      etagCache: etagCacheSize > 0 ? etagCacheSnapshot : undefined,
+    };
+  }
+
   if (options.polarion) {
     const polarionResult = await fetchPolarionArtifacts(options.polarion);
     warnings.push(...polarionResult.warnings);
@@ -1950,6 +2335,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
 
   const workspace: ImportWorkspace = {
     requirements: mergedRequirements,
+    designs: mergeDesigns(designs),
     testResults,
     coverage,
     structuralCoverage,
@@ -2179,6 +2565,7 @@ const buildImportBundle = (
   level: CertificationLevel,
 ): ImportBundle => ({
   requirements: workspace.requirements,
+  designs: workspace.designs,
   objectives,
   testResults: workspace.testResults,
   coverage: workspace.coverage,
@@ -2249,6 +2636,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     objectiveCoverage: snapshot.objectives,
     gaps: snapshot.gaps,
     requirements: workspace.requirements,
+    designs: workspace.designs,
     tests: workspace.testResults,
     coverage: workspace.coverage,
     evidenceIndex: workspace.evidenceIndex,
@@ -3164,6 +3552,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     cobertura: await resolveInputFile(resolvedInputDir, ['coverage.xml']),
     traceLinksCsv: await resolveInputFile(resolvedInputDir, ['trace-links.csv']),
     traceLinksJson: await resolveInputFile(resolvedInputDir, ['trace-links.json']),
+    designCsv: await resolveInputFile(resolvedInputDir, ['designs.csv', 'design.csv']),
     objectives: options.objectives,
     level: options.level,
     projectName: options.projectName,
@@ -3538,6 +3927,9 @@ export const runPipeline = async (
     vectorcast: config.inputs?.vectorcast
       ? path.resolve(baseDir, config.inputs.vectorcast)
       : undefined,
+    designCsv: config.inputs?.designCsv
+      ? path.resolve(baseDir, config.inputs.designCsv)
+      : undefined,
     objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
     level,
     projectName: config.project?.name,
@@ -3818,6 +4210,38 @@ if (require.main === module) {
             describe: 'Git deposu kök dizini.',
             type: 'string',
           })
+          .option('doors-url', {
+            describe: 'DOORS Next OSLC temel adresi (ör. https://doors.example.com).',
+            type: 'string',
+          })
+          .option('doors-project', {
+            describe: 'DOORS Next proje alanı kimliği.',
+            type: 'string',
+          })
+          .option('doors-username', {
+            describe: 'DOORS Next kullanıcı adı (opsiyonel).',
+            type: 'string',
+          })
+          .option('doors-password', {
+            describe: 'DOORS Next parolası (opsiyonel, temel kimlik doğrulama için).',
+            type: 'string',
+          })
+          .option('doors-token', {
+            describe: 'DOORS Next OAuth erişim tokenı (opsiyonel).',
+            type: 'string',
+          })
+          .option('doors-page-size', {
+            describe: 'DOORS Next sayfalama boyutu (varsayılan 200).',
+            type: 'number',
+          })
+          .option('doors-max-pages', {
+            describe: 'DOORS Next sayfa üst sınırı (varsayılan 50).',
+            type: 'number',
+          })
+          .option('doors-timeout', {
+            describe: 'DOORS Next istek zaman aşımı (ms).',
+            type: 'number',
+          })
           .option('polarion-url', {
             describe: 'Polarion REST API temel adresi (ör. https://polarion.example.com).',
             type: 'string',
@@ -3903,6 +4327,10 @@ if (require.main === module) {
             describe: 'Manuel gereksinim izlenebilirlik bağlantıları JSON dosyası.',
             type: 'string',
           })
+          .option('design-csv', {
+            describe: 'Tasarım kayıtları CSV dosyası.',
+            type: 'string',
+          })
           .option('independent-source', {
             describe:
               'Belirtilen kanıt kaynaklarını bağımsız incelemeden geçmiş kabul eder (ör. junit, vectorcast).',
@@ -3962,6 +4390,7 @@ if (require.main === module) {
             git: argv.git,
             traceLinksCsv: argv.traceLinksCsv as string | undefined,
             traceLinksJson: argv.traceLinksJson as string | undefined,
+            designCsv: argv.designCsv as string | undefined,
             polyspace: importArguments.adapters.polyspace,
             ldra: importArguments.adapters.ldra,
             vectorcast: importArguments.adapters.vectorcast,
@@ -3969,6 +4398,7 @@ if (require.main === module) {
             qaLogs,
             polarion: buildPolarionOptions(argv),
             jenkins: buildJenkinsOptions(argv),
+            doorsNext: buildDoorsNextOptions(argv),
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,

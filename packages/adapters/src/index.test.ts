@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 
+
 import {
   importCobertura,
   importGitMetadata,
@@ -16,6 +17,8 @@ import {
   parseReqifStream,
   registerAdapter,
   toRequirement,
+  fetchDoorsNextArtifacts,
+  doorsNextAdapterMetadata,
 } from './index';
 
 const execFileAsync = promisify(execFile);
@@ -359,6 +362,15 @@ describe('@soipack/adapters', () => {
       const filePath = await createTempFilePath('soipack-bad-reqif-');
       await fs.writeFile(filePath, '<REQ-IF><SPEC-OBJECTS><SPEC-OBJECT>', 'utf8');
       await expect(parseReqifStream(filePath)).rejects.toThrow(/Invalid ReqIF XML/);
+    });
+  });
+
+  it('exposes the DOORS Next adapter through the barrel module', () => {
+    expect(typeof fetchDoorsNextArtifacts).toBe('function');
+    expect(doorsNextAdapterMetadata).toEqual({
+      name: 'IBM DOORS Next Generation',
+      supportedArtifacts: ['requirements', 'tests', 'designs'],
+      description: 'Fetches DOORS Next /rm requirements, test cases, and design records via OSLC.',
     });
   });
 

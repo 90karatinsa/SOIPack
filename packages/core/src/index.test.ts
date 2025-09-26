@@ -10,6 +10,9 @@ import {
   objectiveCatalog,
   objectiveCatalogById,
   evidenceSchema,
+  createDesignRecord,
+  designRecordSchema,
+  DesignStatus,
 } from './index';
 
 describe('@soipack/core', () => {
@@ -26,6 +29,67 @@ describe('@soipack/core', () => {
 
   it('normalizes tags', () => {
     expect(normalizeTag('  Critical ')).toBe('critical');
+  });
+
+  describe('design records', () => {
+    it('creates a design record with normalized tags and trimmed references', () => {
+      const record = createDesignRecord('DES-1', 'Authentication design', {
+        description: 'Auth module design overview',
+        status: 'allocated',
+        tags: [' Critical ', 'Auth ', 'critical'],
+        requirementRefs: [' REQ-1 ', 'REQ-2'],
+        codeRefs: [' src/auth/login.ts ', 'src/common/logger.ts'],
+      });
+
+      expect(record).toEqual({
+        id: 'DES-1',
+        title: 'Authentication design',
+        description: 'Auth module design overview',
+        status: 'allocated',
+        tags: ['critical', 'auth'],
+        requirementRefs: ['REQ-1', 'REQ-2'],
+        codeRefs: ['src/auth/login.ts', 'src/common/logger.ts'],
+      });
+    });
+
+    it('rejects blank identifiers', () => {
+      expect(() =>
+        designRecordSchema.parse({
+          id: '',
+          title: 'Missing id',
+          status: 'draft',
+          tags: [],
+          requirementRefs: [],
+          codeRefs: [],
+        }),
+      ).toThrow('Design identifier is required.');
+    });
+
+    it('rejects blank status values', () => {
+      expect(() =>
+        designRecordSchema.parse({
+          id: 'DES-2',
+          title: 'Missing status',
+          status: '' as unknown as DesignStatus,
+          tags: [],
+          requirementRefs: [],
+          codeRefs: [],
+        }),
+      ).toThrow(/Invalid enum value/);
+    });
+
+    it('rejects duplicate requirement references', () => {
+      expect(() =>
+        designRecordSchema.parse({
+          id: 'DES-3',
+          title: 'Duplicate requirements',
+          status: 'draft',
+          tags: [],
+          requirementRefs: ['REQ-1', 'REQ-1'],
+          codeRefs: [],
+        }),
+      ).toThrow('Requirement reference REQ-1 is duplicated.');
+    });
   });
 
   it('validates evidence independence flags', () => {
