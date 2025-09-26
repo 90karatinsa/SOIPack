@@ -11,7 +11,13 @@ import EventSource from 'eventsource';
 
 import * as cli from '@soipack/cli';
 import { fetchJiraChangeRequests, type JiraChangeRequest } from '@soipack/adapters';
-import { LedgerEntry, Manifest, createSnapshotVersion } from '@soipack/core';
+import {
+  LedgerEntry,
+  Manifest,
+  createSnapshotVersion,
+  deserializeLedgerProof,
+  verifyLedgerProof,
+} from '@soipack/core';
 import type { RiskProfile } from '@soipack/engine';
 import { verifyManifestSignature } from '@soipack/packager';
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
@@ -370,6 +376,7 @@ describe('@soipack/server REST API', () => {
   let app: ReturnType<typeof createServer>;
   let signingKeyPath: string;
   let licensePublicKeyPath: string;
+  let cmsBundlePath: string;
   let licenseHeader: string;
   let licenseExpiresAt: Date | undefined;
   let privateKey: KeyLike;
@@ -1603,6 +1610,11 @@ describe('@soipack/server REST API', () => {
     await fsPromises.writeFile(signingKeyPath, TEST_SIGNING_BUNDLE, 'utf8');
     licensePublicKeyPath = path.join(storageDir, 'license.pub');
     await fsPromises.writeFile(licensePublicKeyPath, LICENSE_PUBLIC_KEY_BASE64, 'utf8');
+    cmsBundlePath = path.join(storageDir, 'cms-bundle.pem');
+    await fsPromises.copyFile(
+      path.resolve(__dirname, '../../../test/certs/cms-test.pem'),
+      cmsBundlePath,
+    );
     const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
     licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
     const parsedLicense = JSON.parse(licenseContent) as { payload: string };
@@ -1657,6 +1669,7 @@ describe('@soipack/server REST API', () => {
       },
       requireAdminClientCertificate: false,
       auditLogStore: auditLogMock.store,
+      cmsSigning: { bundlePath: cmsBundlePath },
     };
 
     app = createServer(baseConfig);
@@ -3774,6 +3787,7 @@ describe('@soipack/server REST API', () => {
 
     const lifecycle = getServerLifecycle(app);
     const publishLedgerSpy = jest.spyOn(lifecycle.events, 'publishLedgerEntry');
+    const publishProofSpy = jest.spyOn(lifecycle.events, 'publishManifestProof');
 
     const packQueued = await request(app)
       .post('/v1/pack')
@@ -3787,6 +3801,16 @@ describe('@soipack/server REST API', () => {
     expect(packJob.result.manifestId).toHaveLength(12);
     expect(packJob.result.manifestDigest).toHaveLength(64);
     expect(packJob.result.outputs.ledger).toMatch(/^packages\//);
+    expect(packJob.result.cmsSignature).toBeDefined();
+    const cmsMetadata = packJob.result.cmsSignature!;
+    expect(cmsMetadata.path).toMatch(/^packages\//);
+    expect(cmsMetadata.sha256).toMatch(/^[0-9a-f]{64}$/i);
+    expect(typeof cmsMetadata.der).toBe('string');
+    expect(cmsMetadata.der.length).toBeGreaterThan(0);
+    expect(cmsMetadata.digestAlgorithm).toBe('SHA-256');
+    expect(cmsMetadata.verified).toBe(true);
+    expect(cmsMetadata.digestVerified).toBe(true);
+    expect(cmsMetadata.signerSerialNumber).toEqual(expect.any(String));
 
     const ledgerAbsolutePath = path.resolve(storageDir, packJob.result.outputs.ledger!);
     const ledgerContent = JSON.parse(await fsPromises.readFile(ledgerAbsolutePath, 'utf8')) as {
@@ -3801,6 +3825,14 @@ describe('@soipack/server REST API', () => {
       expect.objectContaining({ ledgerRoot: packJob.result.ledgerRoot }),
       expect.objectContaining({ id: expect.stringContaining(packQueued.body.id) }),
     );
+    expect(publishProofSpy).toHaveBeenCalledWith(
+      tenantId,
+      expect.objectContaining({
+        manifestId: packJob.result.manifestId,
+        files: expect.arrayContaining([expect.objectContaining({ hasProof: true, verified: true })]),
+      }),
+      expect.objectContaining({ id: expect.stringContaining(packQueued.body.id) }),
+    );
 
     const packDetails = await request(app)
       .get(`/v1/jobs/${packQueued.body.id}`)
@@ -3810,6 +3842,11 @@ describe('@soipack/server REST API', () => {
     expect(packDetails.body.result.manifestId).toBe(packJob.result.manifestId);
     expect(packDetails.body.result.manifestDigest).toBe(packJob.result.manifestDigest);
     expect(packDetails.body.result.outputs.ledger).toBe(packJob.result.outputs.ledger);
+    expect(packDetails.body.result.cmsSignature).toMatchObject({
+      path: cmsMetadata.path,
+      sha256: cmsMetadata.sha256,
+      der: cmsMetadata.der,
+    });
 
     const packReuse = await request(app)
       .post('/v1/pack')
@@ -3829,6 +3866,29 @@ describe('@soipack/server REST API', () => {
     const manifest = JSON.parse(await fsPromises.readFile(manifestPath, 'utf8')) as Manifest;
     const signature = (await fsPromises.readFile(signaturePath, 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_CERTIFICATE)).toBe(true);
+    expect(manifest.merkle).toMatchObject({ algorithm: 'ledger-merkle-v1' });
+    expect(manifest.merkle?.root).toMatch(/^[0-9a-f]{64}$/i);
+    manifest.files.forEach((file) => {
+      expect(file.proof?.algorithm).toBe('ledger-merkle-v1');
+      expect(file.proof?.merkleRoot).toBe(manifest.merkle?.root);
+      if (file.proof && manifest.merkle?.root) {
+        const parsedProof = deserializeLedgerProof(file.proof.proof);
+        expect(verifyLedgerProof(parsedProof, { expectedMerkleRoot: manifest.merkle.root })).toBe(
+          manifest.merkle.root,
+        );
+      }
+    });
+    const cmsPath = path.resolve(storageDir, cmsMetadata.path);
+    const cmsContent = await fsPromises.readFile(cmsPath, 'utf8');
+    const expectedDer = cmsContent
+      .replace(/-----BEGIN PKCS7-----/g, '')
+      .replace(/-----END PKCS7-----/g, '')
+      .replace(/\s+/g, '');
+    expect(cmsMetadata.der).toBe(expectedDer);
+    const expectedSha256 = createHash('sha256').update(cmsContent, 'utf8').digest('hex');
+    expect(cmsMetadata.sha256).toBe(expectedSha256);
+    expect(cmsMetadata.signerSubject).toEqual(expect.stringContaining('SOIPack CMS Test'));
+    expect(cmsMetadata.signatureAlgorithm).toEqual(expect.any(String));
 
     const packageLedgerCopy = JSON.parse(
       await fsPromises.readFile(path.join(manifestDir, 'ledger.json'), 'utf8'),
@@ -3865,6 +3925,31 @@ describe('@soipack/server REST API', () => {
     expect(manifestResponse.body.manifestId).toBe(packJob.result.manifestId);
     expect(manifestResponse.body.jobId).toBe(packQueued.body.id);
     expect(manifestResponse.body.manifest).toEqual(manifest);
+    expect(manifestResponse.body.cmsSignature).toMatchObject({
+      path: cmsMetadata.path,
+      sha256: cmsMetadata.sha256,
+      der: cmsMetadata.der,
+    });
+
+    const proofsResponse = await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}/proofs`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(proofsResponse.body.merkle).toMatchObject({ root: manifest.merkle?.root });
+    const listedProof = proofsResponse.body.files.find(
+      (entry: { path: string }) => entry.path === manifest.files[0].path,
+    );
+    expect(listedProof).toMatchObject({ verified: true });
+    expect(listedProof.proof).toEqual(manifest.files[0].proof);
+
+    const encodedPath = encodeURIComponent(manifest.files[0].path);
+    const proofResponse = await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}/proofs/${encodedPath}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(proofResponse.body.proof).toEqual(manifest.files[0].proof);
+    expect(proofResponse.body.verified).toBe(true);
+    expect(proofResponse.body.merkle).toMatchObject({ root: manifest.merkle?.root });
 
     const manifestForbidden = await request(app)
       .get(`/v1/manifests/${packJob.result.manifestId}`)
@@ -3872,7 +3957,18 @@ describe('@soipack/server REST API', () => {
       .expect(404);
     expect(manifestForbidden.body.error.code).toBe('MANIFEST_NOT_FOUND');
 
+    await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}/proofs`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+
+    await request(app)
+      .get(`/v1/manifests/${packJob.result.manifestId}/proofs/${encodedPath}`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+
     publishLedgerSpy.mockRestore();
+    publishProofSpy.mockRestore();
 
     const packageDownload = await request(app)
       .get(`/v1/packages/${packQueued.body.id}/archive`)
@@ -3904,6 +4000,20 @@ describe('@soipack/server REST API', () => {
     const downloadedManifest = JSON.parse((manifestDownload.body as Buffer).toString('utf8')) as Manifest;
     expect(downloadedManifest).toEqual(manifest);
 
+    const cmsDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/manifest.cms`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect('Content-Type', /pkcs7|application\/pkcs7-signature/)
+      .expect(200);
+    expect(cmsDownload.headers['content-disposition']).toContain('.cms');
+    expect((cmsDownload.body as Buffer).toString('utf8')).toBe(cmsContent);
+
     const packageForbidden = await request(app)
       .get(`/v1/packages/${packQueued.body.id}/archive`)
       .set('Authorization', `Bearer ${otherTenantToken}`)
@@ -3915,6 +4025,12 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${otherTenantToken}`)
       .expect(404);
     expect(manifestForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
+
+    const cmsForbiddenDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/manifest.cms`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(cmsForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
 
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
@@ -3992,6 +4108,66 @@ describe('@soipack/server REST API', () => {
       .get(`/v1/packages/${packQueued.body.id}/manifest`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
+  });
+
+  it('fails pack jobs when CMS signature verification fails', async () => {
+    const tamperedContent = '-----BEGIN PKCS7-----\nINVALID-CMS\n-----END PKCS7-----\n';
+    const originalRunPack = cli.runPack;
+    const runPackSpy = jest.spyOn(cli, 'runPack').mockImplementation(async (options) => {
+      const result = await originalRunPack(options);
+      if (result.cmsSignaturePath) {
+        await fsPromises.writeFile(result.cmsSignaturePath, tamperedContent, 'utf8');
+        const tamperedSha = createHash('sha256').update(tamperedContent, 'utf8').digest('hex');
+        result.cmsSignatureSha256 = tamperedSha;
+      }
+      return result;
+    });
+
+    try {
+      const importResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'CMS Failure Demo')
+        .field('projectVersion', `cms-failure-${Date.now()}`)
+        .expect(202);
+
+      await waitForJobCompletion(app, token, importResponse.body.id);
+
+      const analyzeResponse = await request(app)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId: importResponse.body.id })
+        .expect(202);
+
+      await waitForJobCompletion(app, token, analyzeResponse.body.id);
+
+      const reportResponse = await request(app)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ analysisId: analyzeResponse.body.id })
+        .expect(202);
+
+      await waitForJobCompletion(app, token, reportResponse.body.id);
+
+      const packResponse = await request(app)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ reportId: reportResponse.body.id })
+        .expect(202);
+
+      const failedJob = await waitForJobFailure(app, token, packResponse.body.id);
+      expect(failedJob.error?.code).toBe('PIPELINE_ERROR');
+      expect(failedJob.error?.message).toContain('Paket oluşturma işlemi başarısız oldu.');
+    } finally {
+      runPackSpy.mockRestore();
+    }
   });
 
   it('rejects pack jobs with unsafe package names', async () => {
@@ -4976,6 +5152,13 @@ describe('@soipack/server REST API', () => {
       });
     });
 
+    const proofPromise = new Promise<Record<string, unknown>>((resolve) => {
+      source.addEventListener('manifestProof', (event: MessageEvent) => {
+        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
+        resolve(payload);
+      });
+    });
+
     await opened;
 
     const lifecycle = getServerLifecycle(streamingApp);
@@ -5021,12 +5204,38 @@ describe('@soipack/server REST API', () => {
       { id: 'queue-stream' },
     );
 
-    const [riskData, ledgerData, queueData] = await Promise.all([riskPromise, ledgerPromise, queuePromise]);
+    lifecycle.events.publishManifestProof(
+      tenantId,
+      {
+        manifestId: 'manifest-stream',
+        jobId: 'job-stream',
+        merkle: {
+          algorithm: 'ledger-merkle-v1',
+          root: 'd'.repeat(64),
+          manifestDigest: 'c'.repeat(64),
+          snapshotId: 'snap-stream',
+        },
+        files: [
+          { path: 'reports/output.txt', sha256: 'e'.repeat(64), hasProof: true, verified: true },
+        ],
+      },
+      { id: 'manifest-proof-stream' },
+    );
+
+    const [riskData, ledgerData, queueData, proofData] = await Promise.all([
+      riskPromise,
+      ledgerPromise,
+      queuePromise,
+      proofPromise,
+    ]);
 
     expect(riskData.profile).toMatchObject({ score: 37, classification: 'moderate' });
     expect(ledgerData.entry).toMatchObject({ ledgerRoot: ledgerEntry.ledgerRoot });
     expect(queueData.jobs).toHaveLength(1);
     expect(queueData.counts).toMatchObject({ running: 1 });
+    expect(proofData.files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ hasProof: true, verified: true })]),
+    );
 
     lifecycle.events.publishRiskProfile('tenant-b', profile, { id: 'risk-other' });
     await new Promise((resolve) => setTimeout(resolve, 150));

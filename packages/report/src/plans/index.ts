@@ -118,6 +118,53 @@ const paragraph = (...sentences: string[]): string => {
   return `<p>${text}</p>`;
 };
 
+export interface ToolAssessmentTool {
+  id: string;
+  name: string;
+  version?: string;
+  vendor?: string;
+  toolClass: string;
+  usage: string;
+  qualificationSummary?: string;
+  evidence?: string[];
+  status?: string;
+}
+
+export interface ToolAssessmentSignature {
+  role: string;
+  name?: string;
+  organization?: string;
+  date?: string;
+}
+
+export interface ToolAssessmentOptions {
+  summary?: string;
+  qualificationArguments?: string[];
+  environmentNotes?: string[];
+  tools: ToolAssessmentTool[];
+  signatures?: ToolAssessmentSignature[];
+}
+
+interface ToolAssessmentToolView extends ToolAssessmentTool {
+  status: string;
+  qualificationSummary?: string;
+  evidence: string[];
+}
+
+interface ToolClassBreakdownEntry {
+  toolClass: string;
+  count: number;
+}
+
+interface ToolAssessmentView {
+  summary: string;
+  arguments: string[];
+  environmentNotes: string[];
+  classBreakdown: ToolClassBreakdownEntry[];
+  tools: ToolAssessmentToolView[];
+  signatures: ToolAssessmentSignature[];
+}
+
 interface DefaultContentContext {
   projectLabel: string;
   levelNarrative: string;
@@ -134,6 +181,7 @@ interface DefaultContentContext {
   codePaths: number;
   generatedAt: string;
   outstandingCount: number;
+  toolAssessment?: ToolAssessmentView;
 }
 
 interface DefaultPlanContent {
@@ -171,6 +219,7 @@ interface PlanHtmlTemplateContext {
   openSummary: string;
   additionalNotes?: string;
   packageVersion: string;
+  toolAssessment?: ToolAssessmentView;
 }
 
 type PlanContentTemplate = Handlebars.TemplateDelegate<DefaultContentContext>;
@@ -305,6 +354,59 @@ const buildDefaultContent = (
 const toArtifactLabel = (artifact: ObjectiveArtifactType): string =>
   artifactLabels[artifact] ?? artifact.replace(/_/g, ' ');
 
+const normalizeToolAssessment = (options?: ToolAssessmentOptions): ToolAssessmentView | undefined => {
+  if (!options || !Array.isArray(options.tools) || options.tools.length === 0) {
+    return undefined;
+  }
+
+  const tools: ToolAssessmentToolView[] = options.tools.map((tool) => ({
+    ...tool,
+    status: tool.status?.trim().length ? tool.status : 'Pending Approval',
+    qualificationSummary: tool.qualificationSummary?.trim(),
+    evidence: (tool.evidence ?? []).map((item) => item.trim()).filter((item) => item.length > 0),
+  }));
+
+  const classCounts = new Map<string, number>();
+  tools.forEach((tool) => {
+    const key = tool.toolClass?.trim().length ? tool.toolClass : 'Unclassified';
+    classCounts.set(key, (classCounts.get(key) ?? 0) + 1);
+  });
+
+  const classBreakdown: ToolClassBreakdownEntry[] = Array.from(classCounts.entries())
+    .map(([toolClass, count]) => ({ toolClass, count }))
+    .sort((a, b) => a.toolClass.localeCompare(b.toolClass));
+
+  const argumentsList = (options.qualificationArguments ?? [])
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const environmentNotes = (options.environmentNotes ?? [])
+    .map((note) => note.trim())
+    .filter((note) => note.length > 0);
+
+  const summary = options.summary?.trim().length
+    ? options.summary.trim()
+    : `Qualification addresses ${tools.length} tool${tools.length === 1 ? '' : 's'} across ${classBreakdown.length} class${
+        classBreakdown.length === 1 ? '' : 'es'
+      }.`;
+
+  const signatures = (options.signatures ?? []).map((signature) => ({
+    role: signature.role,
+    name: signature.name,
+    organization: signature.organization,
+    date: signature.date,
+  }));
+
+  return {
+    summary,
+    arguments: argumentsList,
+    environmentNotes,
+    classBreakdown,
+    tools,
+    signatures,
+  };
+};
+
 const htmlToPlainText = (html: string): string =>
   html
     .replace(/<br\s*\/?>/gi, '\n')
@@ -404,6 +506,7 @@ const buildPlanPdfDefinition = (
     projectLabel: string;
     levelLabel: string;
     generatedAt: string;
+    toolAssessment?: ToolAssessmentView;
   },
   stats: ComplianceSnapshot['stats'],
   manifestId?: string,
@@ -540,6 +643,104 @@ const buildPlanPdfDefinition = (
 
   content.push(objectiveTable);
 
+  if (context.toolAssessment) {
+    content.push({ text: 'Tool Assessment Summary', style: 'heading' });
+    content.push({ text: context.toolAssessment.summary, margin: [0, 0, 0, 8] });
+
+    if (context.toolAssessment.classBreakdown.length > 0) {
+      content.push({ text: 'Tool Class Breakdown', style: 'subheading' });
+      content.push({
+        table: {
+          headerRows: 1,
+          widths: ['*', 'auto'],
+          body: [
+            [
+              { text: 'Tool Class', style: 'tableHeader' },
+              { text: 'Count', style: 'tableHeader', alignment: 'center' },
+            ],
+            ...context.toolAssessment.classBreakdown.map((entry) => [
+              { text: entry.toolClass, style: 'tableCell' },
+              { text: String(entry.count), style: 'tableCell', alignment: 'center' },
+            ]),
+          ],
+        },
+        layout: 'lightHorizontalLines',
+        margin: [0, 0, 0, 12],
+      });
+    }
+
+    if (context.toolAssessment.arguments.length > 0) {
+      content.push({ text: 'Qualification Arguments', style: 'subheading' });
+      content.push({ ul: context.toolAssessment.arguments, margin: [0, 0, 0, 12] });
+    }
+
+    if (context.toolAssessment.environmentNotes.length > 0) {
+      content.push({ text: 'Execution Environment Notes', style: 'subheading' });
+      content.push({ ul: context.toolAssessment.environmentNotes, margin: [0, 0, 0, 12] });
+    }
+
+    if (context.toolAssessment.tools.length > 0) {
+      content.push({ text: 'Tool Inventory', style: 'subheading' });
+      content.push({
+        table: {
+          headerRows: 1,
+          widths: ['auto', '*', 'auto', '*', '*', '*', 'auto'],
+          body: [
+            [
+              { text: 'Tool ID', style: 'tableHeader' },
+              { text: 'Name & Version', style: 'tableHeader' },
+              { text: 'Class', style: 'tableHeader', alignment: 'center' },
+              { text: 'Usage', style: 'tableHeader' },
+              { text: 'Qualification Summary', style: 'tableHeader' },
+              { text: 'Evidence', style: 'tableHeader' },
+              { text: 'Status', style: 'tableHeader', alignment: 'center' },
+            ],
+            ...context.toolAssessment.tools.map((tool) => [
+              { text: tool.id, style: 'tableCell' },
+              {
+                text: [tool.name, tool.version ? `v${tool.version}` : undefined].filter(Boolean).join(' '),
+                style: 'tableCell',
+              },
+              { text: tool.toolClass, style: 'tableCell', alignment: 'center' },
+              { text: tool.usage, style: 'tableCell' },
+              { text: tool.qualificationSummary ?? '—', style: 'tableCell' },
+              { text: tool.evidence.length > 0 ? tool.evidence.join('\n') : '—', style: 'tableCell' },
+              { text: tool.status, style: 'tableCell', alignment: 'center' },
+            ]),
+          ],
+        },
+        layout: 'lightHorizontalLines',
+        margin: [0, 0, 0, 16],
+      });
+    }
+
+    if (context.toolAssessment.signatures.length > 0) {
+      content.push({ text: 'Tool Assessment Signatures', style: 'subheading' });
+      content.push({
+        table: {
+          headerRows: 1,
+          widths: ['*', '*', '*', 'auto'],
+          body: [
+            [
+              { text: 'Role', style: 'tableHeader' },
+              { text: 'Name', style: 'tableHeader' },
+              { text: 'Organization', style: 'tableHeader' },
+              { text: 'Date', style: 'tableHeader', alignment: 'center' },
+            ],
+            ...context.toolAssessment.signatures.map((signature) => [
+              { text: signature.role, style: 'tableCell' },
+              { text: signature.name ?? '—', style: 'tableCell' },
+              { text: signature.organization ?? '—', style: 'tableCell' },
+              { text: signature.date ?? '—', style: 'tableCell', alignment: 'center' },
+            ]),
+          ],
+        },
+        layout: 'lightHorizontalLines',
+        margin: [0, 0, 0, 16],
+      });
+    }
+  }
+
   if (context.openObjectives.length > 0) {
     content.push({ text: 'Open Compliance Items', style: 'heading' });
     content.push({ text: context.openSummary, margin: [0, 0, 0, 8] });
@@ -576,6 +777,7 @@ const buildPlanPdfDefinition = (
       title: { fontSize: 18, bold: true, color: '#0a5c9b', margin: [0, 0, 0, 4] },
       subtitle: { fontSize: 11, color: '#3e5974', margin: [0, 0, 0, 12] },
       heading: { fontSize: 14, bold: true, color: '#0a5c9b', margin: [0, 16, 0, 8] },
+      subheading: { fontSize: 12, bold: true, color: '#1d2b64', margin: [0, 12, 0, 6] },
       meta: { fontSize: 9, color: '#475569' },
       metricLabel: { fontSize: 9, bold: true, color: '#3b5773' },
       metricValue: { fontSize: 9, color: '#0f172a' },
@@ -648,6 +850,7 @@ const buildDocxDocument = async (context: {
   openObjectives: PlanObjectiveRow[];
   openSummary: string;
   additionalNotes?: string;
+  toolAssessment?: ToolAssessmentView;
 }): Promise<Buffer> => {
   const children: Array<Paragraph | Table> = [];
 
@@ -764,6 +967,106 @@ const buildDocxDocument = async (context: {
     });
   }
 
+  if (context.toolAssessment) {
+    children.push(new Paragraph({ text: 'Tool Assessment Summary', heading: HeadingLevel.HEADING_2 }));
+    children.push(new Paragraph({ text: context.toolAssessment.summary }));
+
+    if (context.toolAssessment.classBreakdown.length > 0) {
+      children.push(new Paragraph({ text: 'Tool Class Breakdown', heading: HeadingLevel.HEADING_3 }));
+      const classTable = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            tableHeader: true,
+            children: ['Tool Class', 'Count'].map((header) => createHeaderCell(header)),
+          }),
+          ...context.toolAssessment.classBreakdown.map((entry) =>
+            new TableRow({
+              children: [
+                createBodyCell(entry.toolClass),
+                createBodyCell(String(entry.count), { alignment: AlignmentType.CENTER }),
+              ],
+            }),
+          ),
+        ],
+      });
+      children.push(classTable);
+    }
+
+    if (context.toolAssessment.arguments.length > 0) {
+      children.push(new Paragraph({ text: 'Qualification Arguments', heading: HeadingLevel.HEADING_3 }));
+      context.toolAssessment.arguments.forEach((argument) => {
+        children.push(new Paragraph({ text: argument, bullet: { level: 0 } }));
+      });
+    }
+
+    if (context.toolAssessment.environmentNotes.length > 0) {
+      children.push(new Paragraph({ text: 'Execution Environment Notes', heading: HeadingLevel.HEADING_3 }));
+      context.toolAssessment.environmentNotes.forEach((note) => {
+        children.push(new Paragraph({ text: note, bullet: { level: 0 } }));
+      });
+    }
+
+    if (context.toolAssessment.tools.length > 0) {
+      children.push(new Paragraph({ text: 'Tool Inventory', heading: HeadingLevel.HEADING_3 }));
+      const toolTable = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            tableHeader: true,
+            children: [
+              'Tool ID',
+              'Name & Version',
+              'Class',
+              'Usage',
+              'Qualification Summary',
+              'Evidence',
+              'Status',
+            ].map((header) => createHeaderCell(header)),
+          }),
+          ...context.toolAssessment.tools.map((tool) =>
+            new TableRow({
+              children: [
+                createBodyCell(tool.id),
+                createBodyCell([tool.name, tool.version ? `v${tool.version}` : undefined].filter(Boolean).join(' ')),
+                createBodyCell(tool.toolClass),
+                createBodyCell(tool.usage),
+                createBodyCell(tool.qualificationSummary ?? '—'),
+                createBodyCell(tool.evidence.length > 0 ? tool.evidence : ['—']),
+                createBodyCell(tool.status),
+              ],
+            }),
+          ),
+        ],
+      });
+      children.push(toolTable);
+    }
+
+    if (context.toolAssessment.signatures.length > 0) {
+      children.push(new Paragraph({ text: 'Tool Assessment Signatures', heading: HeadingLevel.HEADING_3 }));
+      const signatureTable = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            tableHeader: true,
+            children: ['Role', 'Name', 'Organization', 'Date'].map((header) => createHeaderCell(header)),
+          }),
+          ...context.toolAssessment.signatures.map((signature) =>
+            new TableRow({
+              children: [
+                createBodyCell(signature.role),
+                createBodyCell(signature.name ?? '—'),
+                createBodyCell(signature.organization ?? '—'),
+                createBodyCell(signature.date ?? '—'),
+              ],
+            }),
+          ),
+        ],
+      });
+      children.push(signatureTable);
+    }
+  }
+
   if (context.additionalNotes) {
     children.push(new Paragraph({ text: 'Notes', heading: HeadingLevel.HEADING_2 }));
     children.push(...paragraphsFromHtml(context.additionalNotes));
@@ -797,6 +1100,7 @@ export interface PlanRenderOptions {
   overview?: string;
   sections?: Record<string, string>;
   additionalNotes?: string;
+  toolAssessment?: ToolAssessmentOptions;
 }
 
 export interface PlanRenderResult {
@@ -851,6 +1155,7 @@ const buildPlanContext = (
   projectLabel: string;
   levelLabel: string;
   generatedAt: string;
+  toolAssessment?: ToolAssessmentView;
 } => {
   const snapshot = options.snapshot;
   const metadataMap = new Map(
@@ -877,6 +1182,7 @@ const buildPlanContext = (
   };
 
   const outstandingCount = coverageStats.partial + coverageStats.missing;
+  const toolAssessment = templateId === 'do330-ta' ? normalizeToolAssessment(options.toolAssessment) : undefined;
 
   const defaultContent = buildDefaultContent(templateId, {
     projectLabel,
@@ -894,6 +1200,7 @@ const buildPlanContext = (
     codePaths: snapshot.stats.codePaths.total,
     generatedAt,
     outstandingCount,
+    toolAssessment,
   });
 
   const sections: Record<string, string> = {};
@@ -947,6 +1254,7 @@ const buildPlanContext = (
     openSummary,
     additionalNotes: options.additionalNotes,
     packageVersion: packageInfo.version,
+    toolAssessment,
   });
 
   return {
@@ -961,6 +1269,7 @@ const buildPlanContext = (
     projectLabel,
     levelLabel,
     generatedAt,
+    toolAssessment,
   };
 };
 
@@ -985,6 +1294,7 @@ export const renderPlanDocument = async (
     projectLabel,
     levelLabel,
     generatedAt,
+    toolAssessment,
   } = buildPlanContext(
     definition,
     templateId,
@@ -1005,6 +1315,7 @@ export const renderPlanDocument = async (
     openObjectives,
     openSummary,
     additionalNotes: options.additionalNotes,
+    toolAssessment,
   });
 
   return {
@@ -1046,6 +1357,7 @@ export const renderPlanPdf = async (
       projectLabel: context.projectLabel,
       levelLabel: context.levelLabel,
       generatedAt: context.generatedAt,
+      toolAssessment: context.toolAssessment,
     },
     options.snapshot.stats,
     options.manifestId,

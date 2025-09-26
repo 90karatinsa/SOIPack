@@ -59,3 +59,21 @@ SOIPack CLI ve sunucusu, kanıt manifestlerini SHA-256 karması üzerinden JWS (
 `soipack pack` ve sunucu paketleme kuyruğu imza üretiminden hemen sonra doğrulama yapar. Doğrulama başarısız olursa işlem
 sonlandırılır ve zip arşivi oluşturulmaz. `soipack verify` komutu JWS içindeki sertifikayı veya komut satırından verilen sertifikayı
 kullanarak imzayı doğrular; süre sonu veya imza uyuşmazlığı durumlarında `verificationFailed` koduyla sonlanır.
+
+### PKCS#7 / CMS Eş-İmzaları
+
+Uyumluluk ekipleri bazı senaryolarda JWS yanında PKCS#7 (CMS) yapılarının da sağlanmasını talep eder. `@soipack/packager`
+kitaplığı Ed25519 imzasının yanına isteğe bağlı olarak bir CMS yükü ekleyebilir:
+
+1. CMS için ayrı bir X.509 sertifika ve özel anahtar demeti (`cms.bundlePem`) belirtilir. Demet birden fazla sertifika içeriyorsa
+   tamamı imza paketine gömülür.
+2. Manifest kanonik JSON dizgesi CMS yapısının içeriği olarak imzalanır ve SHA-256 özet alanı doğrulama sırasında manifest özetiyle
+   karşılaştırılır.
+3. Ortaya çıkan CMS imzası `manifest.sig` çıktısına gömülü değildir; imza demetinde `cmsSignature` alanı altında hem PEM hem de DER
+   (base64) olarak erişilebilir.
+4. Doğrulama aşamasında `verifyManifestSignatureWithSecuritySigner` çağrısına CMS imzası verilirse CMS yükü okunur, imza ve digest
+   tutarlılığı kontrol edilir ve beklenen sertifika belirtildiyse karşılaştırma yapılır. Eksik CMS imzası `CMS_SIGNATURE_MISSING`,
+   yanlış sertifika `CMS_CERTIFICATE_MISMATCH` gibi deterministik hata kodları üretir.
+
+CMS çıktısı, uyum paketi dizinine `manifest.cms` adıyla kopyalanarak harici araçların kullanımı için saklanmalıdır (bkz. CLI
+rehberi).

@@ -56,6 +56,7 @@ export interface ComplianceMatrixOptions extends BaseReportOptions {
 export interface TraceMatrixOptions extends BaseReportOptions {
   coverage?: RequirementCoverageStatus[];
   suggestions?: TraceSuggestion[];
+  designs?: TraceDesignLink[];
 }
 
 export interface GapReportOptions extends BaseReportOptions {
@@ -236,6 +237,42 @@ interface TraceMatrixRow {
     statusClass: string;
     coverageLabel?: string;
   };
+}
+
+export interface TraceDesignLink {
+  requirementId: string;
+  designId: string;
+  designName?: string;
+  status?: string;
+  codeRefs?: string[];
+}
+
+export interface TraceMatrixCsvRow {
+  requirementId: string;
+  requirementTitle: string;
+  requirementStatus: string;
+  requirementCoverageStatus: string;
+  requirementCoverage: string;
+  designId: string;
+  designName: string;
+  designStatus: string;
+  codePath: string;
+  codeCoverage: string;
+  testId: string;
+  testName: string;
+  testStatus: string;
+}
+
+export interface TraceMatrixCsvExport {
+  headers: string[];
+  rows: TraceMatrixCsvRow[];
+  records: string[][];
+  csv: string;
+}
+
+export interface TraceMatrixRenderResult {
+  html: string;
+  csv: TraceMatrixCsvExport;
 }
 
 interface TraceSuggestionEntryView {
@@ -470,6 +507,59 @@ const suggestionConfidenceLabels: Record<TraceSuggestion['confidence'], { label:
 const suggestionTypeLabels: Record<TraceSuggestion['type'], string> = {
   test: 'Test',
   code: 'Kod',
+};
+
+const traceCsvHeaders = [
+  'Requirement ID',
+  'Requirement Title',
+  'Requirement Status',
+  'Requirement Coverage Status',
+  'Requirement Coverage',
+  'Design ID',
+  'Design Name',
+  'Design Status',
+  'Code Path',
+  'Code Coverage',
+  'Test ID',
+  'Test Name',
+  'Test Status',
+];
+
+const escapeCsvValue = (value: string): string => {
+  const normalized = value ?? '';
+  if (normalized.length === 0) {
+    return '';
+  }
+  const needsQuotes = /[",\n]/.test(normalized);
+  const escaped = normalized.replace(/"/g, '""');
+  return needsQuotes ? `"${escaped}"` : escaped;
+};
+
+const normalizeDesignLinks = (designs: TraceDesignLink[] | undefined): Map<string, TraceDesignLink[]> => {
+  const lookup = new Map<string, TraceDesignLink[]>();
+
+  (designs ?? []).forEach((design) => {
+    if (!lookup.has(design.requirementId)) {
+      lookup.set(design.requirementId, []);
+    }
+    const normalized: TraceDesignLink = {
+      requirementId: design.requirementId,
+      designId: design.designId,
+      designName: design.designName ?? design.designId,
+      status: design.status ?? 'Tanımsız',
+      codeRefs:
+        design.codeRefs
+          ?.map((ref) => ref.trim())
+          .filter((ref) => ref.length > 0) ?? undefined,
+    };
+    lookup.get(design.requirementId)!.push(normalized);
+  });
+
+  lookup.forEach((entries) => {
+    entries.sort((a, b) => a.designId.localeCompare(b.designId));
+  });
+
+  return lookup;
 };
 
 const gapLabels: Record<GapCategoryKey, string> = {
@@ -813,6 +903,89 @@ const determineCoverageStatus = (
     return 'covered';
   }
   return 'partial';
+};
+
+const createTraceMatrixCsv = (
+  rows: TraceMatrixRow[],
+  options: TraceMatrixOptions,
+): TraceMatrixCsvExport => {
+  const designLookup = normalizeDesignLinks(options.designs);
+  const csvRows: TraceMatrixCsvRow[] = [];
+
+  rows.forEach((row) => {
+    const requirementDesigns = designLookup.get(row.requirementId) ?? [];
+    const requirementStatus = row.requirementStatus ?? '';
+    const coverageStatusLabel = row.coverage?.statusLabel ?? coverageStatusLabels.missing.label;
+    const coverageLabel = row.coverage?.coverageLabel ?? '';
+    const codePaths = row.codePaths.length > 0 ? row.codePaths : [{ path: '', coverageLabel: '' }];
+    const tests = row.tests.length > 0
+      ? row.tests
+      : [{ id: '', name: '', statusLabel: '', statusClass: '' }];
+
+    const designs = requirementDesigns.length > 0
+      ? requirementDesigns
+      : [
+          {
+            requirementId: row.requirementId,
+            designId: '',
+            designName: '',
+            status: '',
+          },
+        ];
+
+    designs.forEach((design) => {
+      const designCodeRefs = design.codeRefs;
+      const matchedCodes = designCodeRefs && designCodeRefs.length > 0
+        ? codePaths.filter((code) => designCodeRefs.includes(code.path))
+        : codePaths;
+      const codes = matchedCodes.length > 0 ? matchedCodes : [{ path: '', coverageLabel: '' }];
+
+      codes.forEach((code) => {
+        tests.forEach((test) => {
+          csvRows.push({
+            requirementId: row.requirementId,
+            requirementTitle: row.requirementTitle,
+            requirementStatus,
+            requirementCoverageStatus: coverageStatusLabel,
+            requirementCoverage: coverageLabel,
+            designId: design.designId ?? '',
+            designName: design.designName ?? design.designId ?? '',
+            designStatus: design.designId ? design.status ?? 'Tanımsız' : '',
+            codePath: code.path ?? '',
+            codeCoverage: code.coverageLabel ?? '',
+            testId: test.id ?? '',
+            testName: test.name ?? '',
+            testStatus: test.statusLabel ?? '',
+          });
+        });
+      });
+    });
+  });
+
+  const records = csvRows.map((row) => [
+    row.requirementId,
+    row.requirementTitle,
+    row.requirementStatus,
+    row.requirementCoverageStatus,
+    row.requirementCoverage,
+    row.designId,
+    row.designName,
+    row.designStatus,
+    row.codePath,
+    row.codeCoverage,
+    row.testId,
+    row.testName,
+    row.testStatus,
+  ]);
+
+  const csvLines = [traceCsvHeaders, ...records].map((line) => line.map(escapeCsvValue).join(','));
+
+  return {
+    headers: [...traceCsvHeaders],
+    rows: csvRows,
+    records,
+    csv: csvLines.join('\n'),
+  };
 };
 
 const baseStyles = `
@@ -2372,7 +2545,7 @@ export const renderComplianceCoverageReport = (
 export const renderTraceMatrix = (
   trace: RequirementTrace[],
   options: TraceMatrixOptions = {},
-): string => {
+): TraceMatrixRenderResult => {
   const coverageLookup = new Map(
     (options.coverage ?? []).map((entry) => [entry.requirement.id, entry]),
   );
@@ -2501,7 +2674,7 @@ export const renderTraceMatrix = (
     });
   }
 
-  return renderLayout({
+  const html = renderLayout({
     title: options.title ?? 'SOIPack İzlenebilirlik Matrisi',
     manifestId: options.manifestId ?? 'N/A',
     generatedAt: options.generatedAt ?? new Date().toISOString(),
@@ -2513,6 +2686,10 @@ export const renderTraceMatrix = (
     subtitle: 'Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü',
     git: options.git,
   });
+
+  const csv = createTraceMatrixCsv(rows, options);
+
+  return { html, csv };
 };
 
 export const renderGaps = (

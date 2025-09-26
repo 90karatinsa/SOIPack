@@ -1,0 +1,52 @@
+@@overview
+{{paragraph "Bu DO-330 araç değerlendirmesi" projectLabel "için" levelNarrative "düzeyinde kullanılan doğrulama araçlarının
+niteliklendirme argümanlarını özetler."}}
+{{#if toolAssessment}}
+{{paragraph "Envanter" toolAssessment.tools.length "aracı kapsar ve aşağıdaki sınıflara dağılıyor:"}}
+<ul>
+  {{#each toolAssessment.classBreakdown}}
+    <li>{{toolClass}} sınıfı – {{count}} adet</li>
+  {{/each}}
+</ul>
+{{/if}}
+
+@@section qualificationStrategy
+{{paragraph "Proje, DO-330 kılavuzunun ilgili bölümlerine göre araç nitelendirmesini gerçekleştirir."}}
+{{paragraph "Uygulanan strateji, araç fonksiyonlarının yazılım geliştirme ve doğrulama adımları üzerindeki etkisini
+belirleyip bağımsız kanıt talep edilen alanları açıklar."}}
+
+@@section toolInventory
+{{paragraph "Aşağıdaki ortam ve kullanım notları, araçların hangi veri akışlarında çalıştırıldığını ve nasıl
+yeniden doğrulandığını açıklar:"}}
+{{#if toolAssessment.environmentNotes}}
+<ul>
+  {{#each toolAssessment.environmentNotes}}
+    <li>{{this}}</li>
+  {{/each}}
+</ul>
+{{else}}
+{{paragraph "Araç çalıştırma ortamı ekip tarafından belirlenecek ve konfigürasyon yönetimi kayıtlarında dokümante edilecektir."}}
+{{/if}}
+
+@@section validationEvidence
+{{#if toolAssessment.arguments}}
+{{paragraph "DO-330 doğrulama argümanları aşağıda listelenmiştir:"}}
+<ul>
+  {{#each toolAssessment.arguments}}
+    <li>{{this}}</li>
+  {{/each}}
+</ul>
+{{else}}
+{{paragraph "Araç doğrulama argümanları ek dokümanlarda izlenecek şekilde hazırlanacaktır."}}
+{{/if}}
+
+@@section operationalControls
+{{paragraph "Operasyonel kontroller; araç sürüm güncellemeleri, veri dışa aktarımları ve bağımsız incelemelerin
+kapsamını tanımlar."}}
+{{paragraph "Her kontrol adımı, yapılandırma yönetimi kayıtlarına ve kalite güvencesi planlarına
+bağlı olarak izlenir."}}
+
+@@section signatures
+{{paragraph "Aşağıdaki imza tabloları, DO-330 değerlendirmesinin onaylanmasından sorumlu rollerin
+ispat noktalarını özetler."}}
+{{paragraph "İmzalar, bu belgenin üretildiği" generatedAt "zaman damgasına göre derlenmiştir."}}

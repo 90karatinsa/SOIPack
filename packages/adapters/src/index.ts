@@ -18,6 +18,8 @@ export { fromVectorCAST } from './vectorcast';
 export { importQaLogs } from './qaLogs';
 export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions } from './polarion';
+export { fetchJamaArtifacts } from './jama';
+export type { JamaClientOptions, JamaImportBundle, JamaTraceLink } from './jama';
 export { fetchJenkinsArtifacts } from './jenkins';
 export type { JenkinsClientOptions } from './jenkins';
 export { fetchJiraChangeRequests } from './jiraCloud';

@@ -79,6 +79,13 @@ export class LedgerSignatureError extends LedgerVerificationError {
   }
 }
 
+export class LedgerProofError extends LedgerVerificationError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LedgerProofError';
+  }
+}
+
 const canonicalizeEvidence = (evidence: LedgerEvidenceLink[]): LedgerEvidenceLink[] => {
   return [...evidence]
     .map((item) => ({
@@ -97,19 +104,55 @@ const canonicalizeEvidence = (evidence: LedgerEvidenceLink[]): LedgerEvidenceLin
     });
 };
 
-const computeLeafHashes = (entry: LedgerEntryInput & { evidence: LedgerEvidenceLink[] }): string[] => {
-  const leaves: string[] = [
-    hashParts(['snapshot', entry.snapshotId]),
-    hashParts(['manifest', entry.manifestDigest]),
-    hashParts(['timestamp', entry.timestamp]),
+type LedgerLeafType = 'snapshot' | 'manifest' | 'timestamp' | 'evidence';
+
+interface LedgerLeafDescriptor {
+  type: LedgerLeafType;
+  label: string;
+  hash: string;
+  evidence?: LedgerEvidenceLink;
+}
+
+export type LedgerProofTarget =
+  | { type: 'snapshot' }
+  | { type: 'manifest' }
+  | { type: 'timestamp' }
+  | { type: 'evidence'; snapshotId: string; path?: string; hash: string };
+
+export interface LedgerMerkleProofNode {
+  position: 'left' | 'right';
+  hash: string;
+}
+
+export interface LedgerMerkleProof {
+  leaf: { type: LedgerLeafType; label: string; hash: string };
+  path: LedgerMerkleProofNode[];
+  merkleRoot: string;
+}
+
+const computeLeafDescriptors = (
+  entry: LedgerEntryInput & { evidence: LedgerEvidenceLink[] },
+): LedgerLeafDescriptor[] => {
+  const leaves: LedgerLeafDescriptor[] = [
+    { type: 'snapshot', label: `snapshot:${entry.snapshotId}`, hash: hashParts(['snapshot', entry.snapshotId]) },
+    { type: 'manifest', label: `manifest:${entry.manifestDigest}`, hash: hashParts(['manifest', entry.manifestDigest]) },
+    { type: 'timestamp', label: `timestamp:${entry.timestamp}`, hash: hashParts(['timestamp', entry.timestamp]) },
   ];
 
   entry.evidence.forEach((link) => {
-    leaves.push(hashParts(['evidence', link.snapshotId, link.path ?? '', link.hash]));
+    leaves.push({
+      type: 'evidence',
+      label: `evidence:${link.snapshotId}:${link.path ?? ''}`,
+      hash: hashParts(['evidence', link.snapshotId, link.path ?? '', link.hash]),
+      evidence: link,
+    });
   });
 
   return leaves;
 };
+
+const computeLeafHashes = (entry: LedgerEntryInput & { evidence: LedgerEvidenceLink[] }): string[] =>
+  computeLeafDescriptors(entry).map((leaf) => leaf.hash);
 
 const computeMerkleRoot = (leaves: string[]): string => {
   if (leaves.length === 0) {
@@ -128,6 +171,55 @@ const computeMerkleRoot = (leaves: string[]): string => {
   }
 
   return level[0];
+};
+
+const buildMerklePath = (leaves: string[], leafIndex: number): LedgerMerkleProofNode[] => {
+  if (leafIndex < 0 || leafIndex >= leaves.length) {
+    throw new LedgerProofError('Merkle proof leaf index is out of range.');
+  }
+
+  const path: LedgerMerkleProofNode[] = [];
+  let index = leafIndex;
+  let level = [...leaves];
+
+  while (level.length > 1) {
+    const isRightNode = index % 2 === 1;
+    const pairIndex = isRightNode ? index - 1 : index + 1;
+    const siblingHash = pairIndex < level.length ? level[pairIndex] : level[index];
+    path.push({ position: isRightNode ? 'left' : 'right', hash: siblingHash });
+
+    const next: string[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = level[i + 1] ?? left;
+      next.push(hashParts([left, right]));
+    }
+    index = Math.floor(index / 2);
+    level = next;
+  }
+
+  return path;
+};
+
+const findLeafIndex = (descriptors: LedgerLeafDescriptor[], target: LedgerProofTarget): number => {
+  switch (target.type) {
+    case 'snapshot':
+      return descriptors.findIndex((leaf) => leaf.type === 'snapshot');
+    case 'manifest':
+      return descriptors.findIndex((leaf) => leaf.type === 'manifest');
+    case 'timestamp':
+      return descriptors.findIndex((leaf) => leaf.type === 'timestamp');
+    case 'evidence':
+      return descriptors.findIndex(
+        (leaf) =>
+          leaf.type === 'evidence' &&
+          leaf.evidence?.snapshotId === target.snapshotId &&
+          leaf.evidence?.hash === target.hash &&
+          (leaf.evidence?.path ?? '') === (target.path ?? ''),
+      );
+    default:
+      return -1;
+  }
 };
 
 export const createLedger = (): Ledger => ({ entries: [], root: GENESIS_ROOT });
@@ -259,5 +351,129 @@ export const verifyLedger = (ledger: Ledger): LedgerVerificationResult => {
       ...entry,
       evidence: canonicalizeEvidence(entry.evidence ?? []),
     })),
+  };
+};
+
+export const generateLedgerProof = (
+  entry: LedgerEntry,
+  target: LedgerProofTarget,
+): LedgerMerkleProof => {
+  const evidence = canonicalizeEvidence(entry.evidence ?? []);
+  const descriptors = computeLeafDescriptors({
+    snapshotId: entry.snapshotId,
+    manifestDigest: entry.manifestDigest,
+    timestamp: entry.timestamp,
+    evidence,
+  });
+
+  const leafIndex = findLeafIndex(descriptors, target);
+  if (leafIndex === -1) {
+    throw new LedgerProofError('Requested leaf is not present in the ledger entry.');
+  }
+
+  const leaf = descriptors[leafIndex];
+  const hashes = descriptors.map((descriptor) => descriptor.hash);
+
+  return {
+    leaf: { type: leaf.type, label: leaf.label, hash: leaf.hash },
+    path: buildMerklePath(hashes, leafIndex),
+    merkleRoot: entry.merkleRoot,
+  };
+};
+
+export const verifyLedgerProof = (
+  proof: LedgerMerkleProof,
+  options: { expectedMerkleRoot?: string } = {},
+): string => {
+  if (!proof || typeof proof !== 'object') {
+    throw new LedgerProofError('Merkle proof payload is invalid.');
+  }
+
+  if (!proof.leaf || typeof proof.leaf.hash !== 'string') {
+    throw new LedgerProofError('Merkle proof leaf is missing.');
+  }
+
+  if (!Array.isArray(proof.path)) {
+    throw new LedgerProofError('Merkle proof path must be an array.');
+  }
+
+  let computed = proof.leaf.hash;
+  proof.path.forEach((node) => {
+    if (!node || (node.position !== 'left' && node.position !== 'right') || typeof node.hash !== 'string') {
+      throw new LedgerProofError('Merkle proof path node is invalid.');
+    }
+    computed =
+      node.position === 'left'
+        ? hashParts([node.hash, computed])
+        : hashParts([computed, node.hash]);
+  });
+
+  if (computed !== proof.merkleRoot) {
+    throw new LedgerProofError('Merkle proof does not reconstruct the supplied root.');
+  }
+
+  if (options.expectedMerkleRoot && proof.merkleRoot !== options.expectedMerkleRoot) {
+    throw new LedgerProofError('Merkle root does not match the expected value.');
+  }
+
+  return computed;
+};
+
+export const serializeLedgerProof = (proof: LedgerMerkleProof): string =>
+  JSON.stringify(
+    {
+      leaf: proof.leaf,
+      path: proof.path.map((node) => ({ position: node.position, hash: node.hash })),
+      merkleRoot: proof.merkleRoot,
+    },
+    null,
+    2,
+  );
+
+export const deserializeLedgerProof = (payload: string): LedgerMerkleProof => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (error) {
+    throw new LedgerProofError(`Failed to parse proof JSON: ${(error as Error).message}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new LedgerProofError('Proof payload must be a JSON object.');
+  }
+
+  const record = parsed as {
+    leaf?: { type?: LedgerLeafType; label?: string; hash?: string };
+    path?: Array<{ position?: string; hash?: string }>;
+    merkleRoot?: string;
+  };
+
+  if (!record.leaf || typeof record.leaf.hash !== 'string' || typeof record.leaf.type !== 'string') {
+    throw new LedgerProofError('Proof leaf is missing required fields.');
+  }
+
+  if (!Array.isArray(record.path)) {
+    throw new LedgerProofError('Proof path must be an array.');
+  }
+
+  const path: LedgerMerkleProofNode[] = record.path.map((node) => {
+    if (!node || (node.position !== 'left' && node.position !== 'right') || typeof node.hash !== 'string') {
+      throw new LedgerProofError('Proof path entry is invalid.');
+    }
+    return { position: node.position, hash: node.hash };
+  });
+
+  if (typeof record.merkleRoot !== 'string' || record.merkleRoot.length === 0) {
+    throw new LedgerProofError('Proof merkleRoot is invalid.');
+  }
+
+  return {
+    leaf: {
+      type: record.leaf.type,
+      label: record.leaf.label ?? '',
+      hash: record.leaf.hash,
+    },
+    path,
+    merkleRoot: record.merkleRoot,
   };
 };

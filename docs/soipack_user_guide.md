@@ -29,6 +29,7 @@ SOIPack, gereksinim-test izlenebilirliği, uyumluluk raporlaması ve imzalı da�
 - `dist/reports/trace_matrix.html` – gereksinim → test → kod zincirini takip eden izlenebilirlik matrisi.【F:docs/demo_script.md†L23-L24】
 - `release/soi-pack-*.zip` – raporlar, manifest ve imzaları içeren paket arşivi.【F:docs/demo_script.md†L26-L31】
 - `release/manifest.json` ve `release/manifest.sig` – paket bütünlüğünü denetlemek için kullanılan imzalı manifest çifti.【F:docs/demo_script.md†L29-L31】
+- `release/manifest.cms` – CMS/PKCS#7 imzası; zincirli sertifika paketiyle birlikte harici araçlara sağlanır.
 
 ### Pipeline'ı manuel çalıştırma
 Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi kullanırken özelleştirilebilir:
@@ -114,8 +115,16 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
    Her anahtar plan kimliğini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder. Planlar içinde `overview` başlığı ve `sections` altındaki bölüm kimlikleri (`introduction`, `softwareLifecycle`, `testingStrategy` vb.) HTML içeriği kabul eder; `additionalNotes` alanı ek not bloğu oluşturur.
 5. **Dağıtım paketini oluşturun**
    ```bash
-   node packages/cli/dist/index.js --license data/licenses/demo-license.key pack -i dist -o release --name soipack-demo.zip
+   node packages/cli/dist/index.js --license data/licenses/demo-license.key pack \
+     -i dist \
+     -o release \
+     --name soipack-demo.zip \
+     --cms-bundle data/certs/cms-test.pem
    ```
+
+   `--cms-bundle` yerine `--cms-cert` + `--cms-key` (ve gerekiyorsa `--cms-chain`) parametreleri kullanılarak CMS imzası için
+   ayrı sertifika ve anahtar dosyaları belirtilebilir. Komut tamamlandığında `release/manifest.cms` dosyası oluşturulur ve CLI,
+   dosyanın SHA-256 karmasını `PackResult.cmsSignatureSha256` alanında raporlar.
 
 6. **Manifest imzasını ve paket içeriğini doğrulayın**
    ```bash
@@ -125,7 +134,10 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --package release/soipack-demo.zip \
      --public-key data/certs/demo-signing.pub.pem
    ```
-   Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini de doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır.
+  Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini de doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır.
+
+  CMS imza doğrulaması için `@soipack/packager` kütüphanesindeki `verifyManifestSignatureDetailed` fonksiyonuna `cms.signaturePem`
+  ve `cms.certificatePem` alanları verilerek `release/manifest.cms` dosyası kontrol edilebilir.
 
 ### Paket artefaktlarını indirme
 
@@ -207,6 +219,8 @@ Varsayılan olarak UI, aynı origin üzerindeki `/v1` uç noktalarına istek yap
 UI derlemesi Vite'in `import.meta.env` nesnesini doğrudan kullanır ve dinamik `eval`/`new Function` çağrılarına ihtiyaç duymaz; bu sayede uygulama `Content-Security-Policy: script-src 'self'` gibi sıkı politika başlıklarıyla dağıtıldığında tarayıcılar tarafından engellenmez.
 
 Token kutusunun hemen yanında yeni “Lisans Anahtarı” bileşeni bulunur. JSON tabanlı lisans dosyanızı yüklediğinizde veya panodan yapıştırdığınızda içerik istemci tarafında doğrulanır, `JSON.stringify` ile normalize edilir ve otomatik olarak base64’e çevrilerek tüm API çağrılarında `X-SOIPACK-License` başlığına eklenir. Lisans alanı boş bırakılırsa UI pipeline’ı başlatmadan önce uyarı gösterir ve sunucuya istek göndermez; bu sayede lisanssız isteklerin msw tabanlı testlerde bile `LICENSE_REQUIRED` hatasıyla reddedildiği doğrulanır.
+
+“Risk kokpiti” sekmesi, sunucunun SSE kanalı üzerinden yayınladığı `riskProfile`, `ledgerEntry` ve yeni `manifestProof` olaylarını dinleyerek canlı sonuçları gösterir. Merkle kanıt gezgini kartı, gelen manifest kimliğini, Merkle kökünü ve dosya başına kanıt/ doğrulama durumlarını listeler; kanıtı bulunan dosyalar seçildiğinde `simulateComplianceRisk` çıktılarının da beslendiği risk paneliyle birlikte kanıt yolundaki her düğümün yön/hash bilgisi görselleştirilir. Seçili kanıt istekle alınırken hata oluşursa kart hata mesajını ve “Yeniden dene” butonunu gösterir; yeni olaylar geldiğinde durum rozeti, kanıt doğrulaması ve özet metaveriler otomatik güncellenir.【F:packages/ui/src/pages/RiskCockpitPage.tsx†L1-L600】【F:packages/engine/src/risk.ts†L1-L270】
 
 Arayüzdeki temel görünüm aşağıda özetlenmiştir:
 

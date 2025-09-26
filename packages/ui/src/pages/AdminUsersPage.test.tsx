@@ -105,7 +105,7 @@ describe('AdminUsersPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('temporary-secret')).toBeInTheDocument();
+      expect(screen.getByText(/temporary-secret/)).toBeInTheDocument();
       expect(screen.getByText('bob@example.com')).toBeInTheDocument();
     });
 
@@ -115,6 +115,7 @@ describe('AdminUsersPage', () => {
     const updatedDisplayName = screen.getByLabelText('Görünen ad');
     fireEvent.change(updatedDisplayName, { target: { value: 'Alice Updated' } });
     const updatedRoles = screen.getByLabelText('Roller');
+    await user.deselectOptions(updatedRoles, ['admin']);
     await user.selectOptions(updatedRoles, ['operator']);
 
     mockUpdateUser.mockResolvedValueOnce({
@@ -145,7 +146,8 @@ describe('AdminUsersPage', () => {
       secret: 'rotated-secret',
     });
 
-    await user.click(screen.getByRole('button', { name: 'Sır Sıfırla' }));
+    const resetButtons = screen.getAllByRole('button', { name: 'Sır Sıfırla' });
+    await user.click(resetButtons[0]);
 
     await waitFor(() => {
       expect(mockUpdateUser).toHaveBeenCalledWith(
@@ -154,10 +156,11 @@ describe('AdminUsersPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('rotated-secret')).toBeInTheDocument();
+      expect(screen.getByText(/rotated-secret/)).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole('button', { name: 'Sil' }));
+    const deleteButtons = screen.getAllByRole('button', { name: 'Sil' });
+    await user.click(deleteButtons[0]);
     await waitFor(() => {
       expect(mockDeleteUser).toHaveBeenCalledWith(
         expect.objectContaining({ userId: 'user-1' }),

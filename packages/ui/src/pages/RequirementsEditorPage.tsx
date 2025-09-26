@@ -138,7 +138,10 @@ export default function RequirementsEditorPage({
       return;
     }
 
-    if (initialThread && document) {
+    if (document) {
+      if (!initialThread) {
+        return;
+      }
       const expectedHash = toLowerHash(initialThread.document.revision?.hash);
       if (document.revision.hash === expectedHash) {
         return;
@@ -175,7 +178,15 @@ export default function RequirementsEditorPage({
     return () => {
       controller.abort();
     };
-  }, [trimmedToken, trimmedLicense, workspaceId, documentId, initialThread, document, hydrateThread]);
+  }, [
+    trimmedToken,
+    trimmedLicense,
+    workspaceId,
+    documentId,
+    initialThread,
+    document,
+    hydrateThread,
+  ]);
 
   const handleRequirementChange = (
     index: number,

@@ -40,6 +40,14 @@ const sqapSections = [
   { id: 'records', title: '5. Records & Archiving' },
 ];
 
+const do330ToolAssessmentSections = [
+  { id: 'qualificationStrategy', title: '1. DO-330 Qualification Strategy' },
+  { id: 'toolInventory', title: '2. Tool Inventory & Usage Context' },
+  { id: 'validationEvidence', title: '3. Validation Evidence & Argumentation' },
+  { id: 'operationalControls', title: '4. Operational Controls & Monitoring' },
+  { id: 'signatures', title: '5. Approval Signatures' },
+];
+
 export const planTemplateDefinitions: Record<PlanTemplateId, PlanTemplateDefinition> = {
   psac: {
     id: 'psac',
@@ -70,5 +78,12 @@ export const planTemplateDefinitions: Record<PlanTemplateId, PlanTemplateDefinit
     title: 'Software Quality Assurance Plan (SQAP)',
     purpose: 'Outlines the quality assurance policies, audits, and records used to ensure process compliance.',
     sections: sqapSections,
+  },
+  'do330-ta': {
+    id: 'do330-ta',
+    title: 'DO-330 Tool Assessment Report',
+    purpose:
+      'Summarizes tool qualification classes, validation arguments, and approval signatures required by RTCA DO-330.',
+    sections: do330ToolAssessmentSections,
   },
 };

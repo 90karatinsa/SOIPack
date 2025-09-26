@@ -110,11 +110,9 @@ describe('RequirementsEditorPage', () => {
 
     renderPage();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('requirements-grid')).toBeInTheDocument();
-    });
+    await screen.findByTestId('requirements-grid');
 
-    expect(screen.getByLabelText('Requirement ID 1')).toHaveValue('REQ-1');
+    expect(await screen.findByLabelText('Requirement ID 1')).toHaveValue('REQ-1');
     expect(screen.getByLabelText('Title 1')).toHaveValue('Autopilot shall disengage on manual override.');
     expect(screen.getByText(/verification evidence/i)).toBeInTheDocument();
     expect(screen.getByText(/Requested by alice/i)).toBeInTheDocument();
@@ -150,11 +148,9 @@ describe('RequirementsEditorPage', () => {
 
     renderPage();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('requirements-grid')).toBeInTheDocument();
-    });
+    await screen.findByTestId('requirements-grid');
 
-    const titleInput = screen.getByLabelText('Title 1');
+    const titleInput = await screen.findByLabelText('Title 1');
     fireEvent.change(titleInput, { target: { value: 'Updated title' } });
 
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
@@ -209,11 +205,10 @@ describe('RequirementsEditorPage', () => {
 
     renderPage();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('requirements-grid')).toBeInTheDocument();
-    });
+    await screen.findByTestId('requirements-grid');
 
-    fireEvent.change(screen.getByLabelText('Add comment'), { target: { value: 'Looks great!' } });
+    const commentField = await screen.findByLabelText('Add comment');
+    fireEvent.change(commentField, { target: { value: 'Looks great!' } });
     fireEvent.click(screen.getByRole('button', { name: /post comment/i }));
 
     await waitFor(() => {

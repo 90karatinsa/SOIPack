@@ -96,3 +96,43 @@ X-SOIPACK-License: ZXhhbXBsZS1saWNlbnNl
 - `400 INVALID_REQUEST` – Geçersiz sayfalama parametreleri.
 - `403 INSUFFICIENT_SCOPE` – Kullanıcı gerekli rol veya scope'a sahip değil.
 - `404 WORKSPACE_DOCUMENT_NOT_FOUND` – Belge mevcut değil ya da kiracıyla eşleşmiyor.
+
+## GET /v1/manifests/{manifestId}/proofs
+
+Belirli bir paket manifestindeki tüm dosyalar için üretilen Merkle kanıtlarını listeler. Yanıt, manifestin Merkle özetini (`merkle.root`) ve her dosya için `proof` (kanıtın serileştirilmiş JSON dizgesi) ile `verified` bayrağını döndürür. İstek yalnızca `reader`, `maintainer` veya `admin` rolleri tarafından yapılabilir.
+
+### Yanıt Gövdesi
+```json
+{
+  "manifestId": "abcd1234ef56",
+  "jobId": "2f8d6c3b4a1e5d79",
+  "merkle": {
+    "algorithm": "ledger-merkle-v1",
+    "root": "9d4a...",
+    "manifestDigest": "73f1...",
+    "snapshotId": "manifest:73f1..."
+  },
+  "files": [
+    {
+      "path": "reports/summary.txt",
+      "sha256": "2b6d...",
+      "verified": true,
+      "proof": {
+        "algorithm": "ledger-merkle-v1",
+        "merkleRoot": "9d4a...",
+        "proof": "{\"leaf\":{...}}"
+      }
+    }
+  ]
+}
+```
+
+## GET /v1/manifests/{manifestId}/proofs/{filePath}
+
+Tek bir manifest dosyasına ait kanıtı döner. `filePath` parametresi URL içinde kodlanmış olmalıdır (ör. `reports%2Fsummary.txt`). Sunucu, kanıtı doğrular ve `verified: true` olarak işaretler; doğrulama başarısız olursa `500 PROOF_INVALID` hatası döner.
+
+### Hata Kodları
+- `400 INVALID_REQUEST` – `manifestId` veya `filePath` parametresi eksik/geçersiz.
+- `403 INSUFFICIENT_SCOPE` – Kullanıcı gerekli role sahip değil.
+- `404 MANIFEST_FILE_NOT_FOUND` – Dosya manifestte bulunamadı.
+- `500 PROOF_INVALID` – Kanıt doğrulaması sırasında hata oluştu.

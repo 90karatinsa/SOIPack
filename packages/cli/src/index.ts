@@ -2284,6 +2284,7 @@ export interface ReportResult {
   complianceHtml: string;
   complianceJson: string;
   traceHtml: string;
+  traceCsv: string;
   gapsHtml: string;
   plans: Record<PlanTemplateId, GeneratedPlanOutput>;
   warnings: string[];
@@ -2630,7 +2631,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
   });
-  const traceHtml = renderTraceMatrix(traces, {
+  const traceReport = renderTraceMatrix(traces, {
     generatedAt: analysis.metadata.generatedAt,
     title: analysis.metadata.project?.name
       ? `${analysis.metadata.project.name} İzlenebilirlik Matrisi`
@@ -2659,6 +2660,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   const complianceHtmlPath = path.join(outputDir, 'compliance.html');
   const complianceJsonPath = path.join(outputDir, 'compliance.json');
   const traceHtmlPath = path.join(outputDir, 'trace.html');
+  const traceCsvPath = path.join(outputDir, 'trace.csv');
   const gapsHtmlPath = path.join(outputDir, 'gaps.html');
 
   await fsPromises.copyFile(snapshotPath, path.join(outputDir, 'snapshot.json'));
@@ -2666,7 +2668,8 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
 
   await fsPromises.writeFile(complianceHtmlPath, compliance.html, 'utf8');
   await writeJsonFile(complianceJsonPath, compliance.json);
-  await fsPromises.writeFile(traceHtmlPath, traceHtml, 'utf8');
+  await fsPromises.writeFile(traceHtmlPath, traceReport.html, 'utf8');
+  await fsPromises.writeFile(traceCsvPath, traceReport.csv.csv, 'utf8');
   await fsPromises.writeFile(gapsHtmlPath, gapsHtml, 'utf8');
 
   const plansDir = path.join(outputDir, 'plans');
@@ -2727,6 +2730,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     complianceHtml: complianceHtmlPath,
     complianceJson: complianceJsonPath,
     traceHtml: traceHtmlPath,
+    traceCsv: traceCsvPath,
     gapsHtml: gapsHtmlPath,
     plans,
     warnings: planWarnings,
@@ -2739,12 +2743,20 @@ export interface PackLedgerOptions {
   signerKeyId?: string;
 }
 
+export interface PackCmsOptions {
+  bundlePem?: string;
+  certificatePem?: string;
+  privateKeyPem?: string;
+  chainPem?: string;
+}
+
 export interface PackOptions {
   input: string;
   output: string;
   signingKey: string;
   packageName?: string;
   ledger?: PackLedgerOptions;
+  cms?: PackCmsOptions;
 }
 
 export interface PackResult {
@@ -2755,6 +2767,8 @@ export interface PackResult {
   ledgerPath?: string;
   ledger?: Ledger;
   ledgerEntry?: LedgerEntry;
+  cmsSignaturePath?: string;
+  cmsSignatureSha256?: string;
 }
 
 const createArchive = async (
@@ -2762,6 +2776,7 @@ const createArchive = async (
   outputPath: string,
   manifestContent: string,
   signature?: string,
+  cmsSignature?: string,
 ): Promise<void> => {
   await ensureDirectory(path.dirname(outputPath));
   const zip = new ZipFile();
@@ -2785,6 +2800,11 @@ const createArchive = async (
     const normalizedSignature = signature.endsWith('\n') ? signature : `${signature}\n`;
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
     zip.addBuffer(Buffer.from(normalizedSignature, 'utf8'), 'manifest.sig', options);
+  }
+  if (cmsSignature) {
+    const normalizedCms = cmsSignature.endsWith('\n') ? cmsSignature : `${cmsSignature}\n`;
+    const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
+    zip.addBuffer(Buffer.from(normalizedCms, 'utf8'), 'manifest.cms', options);
   }
   zip.end();
 
@@ -2944,6 +2964,14 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     ledger: ledgerEntry
       ? { root: ledgerEntry.ledgerRoot, previousRoot: ledgerEntry.previousRoot }
       : undefined,
+    cms: options.cms
+      ? {
+          bundlePem: options.cms.bundlePem,
+          certificatePem: options.cms.certificatePem,
+          privateKeyPem: options.cms.privateKeyPem,
+          chainPem: options.cms.chainPem,
+        }
+      : undefined,
   });
   const signature = signatureBundle.signature;
   const verification = verifyManifestSignatureDetailed(
@@ -2969,6 +2997,20 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const signaturePath = path.join(outputDir, 'manifest.sig');
   await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
+  let cmsSignaturePath: string | undefined;
+  let cmsSignatureSha256: string | undefined;
+  const cmsSignaturePem = signatureBundle.cmsSignature?.pem;
+  const normalizedCmsSignature = cmsSignaturePem
+    ? cmsSignaturePem.endsWith('\n')
+      ? cmsSignaturePem
+      : `${cmsSignaturePem}\n`
+    : undefined;
+  if (normalizedCmsSignature) {
+    cmsSignaturePath = path.join(outputDir, 'manifest.cms');
+    await fsPromises.writeFile(cmsSignaturePath, normalizedCmsSignature, 'utf8');
+    cmsSignatureSha256 = createHash('sha256').update(normalizedCmsSignature).digest('hex');
+  }
+
   if (ledgerPath && updatedLedger) {
     await ensureDirectory(path.dirname(ledgerPath));
     await writeJsonFile(ledgerPath, updatedLedger);
@@ -2979,7 +3021,13 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
       ? normalizePackageName(options.packageName)
       : `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
-  await createArchive(files, archivePath, manifestSerialized, `${signature}\n`);
+  await createArchive(
+    files,
+    archivePath,
+    manifestSerialized,
+    `${signature}\n`,
+    normalizedCmsSignature,
+  );
 
   return {
     manifestPath,
@@ -2989,6 +3037,8 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     ledgerPath,
     ledger: updatedLedger,
     ledgerEntry,
+    cmsSignaturePath,
+    cmsSignatureSha256,
   };
 };
 
@@ -3172,6 +3222,7 @@ export interface PackagePipelineOptions extends IngestPipelineOptions {
   signingKey: string;
   packageName?: string;
   ledger?: PackLedgerOptions;
+  cms?: PackCmsOptions;
 }
 
 export interface PackagePipelineResult extends IngestPipelineResult {
@@ -3182,6 +3233,8 @@ export interface PackagePipelineResult extends IngestPipelineResult {
   ledgerPath?: string;
   ledger?: Ledger;
   ledgerEntry?: LedgerEntry;
+  cmsSignaturePath?: string;
+  cmsSignatureSha256?: string;
 }
 
 export const runIngestAndPackage = async (
@@ -3195,6 +3248,7 @@ export const runIngestAndPackage = async (
     packageName: packageName ?? 'soi-pack.zip',
     signingKey,
     ledger: options.ledger,
+    cms: options.cms,
   });
 
   return {
@@ -3206,6 +3260,8 @@ export const runIngestAndPackage = async (
     ledgerPath: packResult.ledgerPath,
     ledger: packResult.ledger,
     ledgerEntry: packResult.ledgerEntry,
+    cmsSignaturePath: packResult.cmsSignaturePath,
+    cmsSignatureSha256: packResult.cmsSignatureSha256,
   };
 };
 
@@ -4282,6 +4338,22 @@ if (require.main === module) {
             type: 'string',
             demandOption: true,
           })
+          .option('cms-bundle', {
+            describe: 'PKCS#7/CMS imzası için sertifika ve özel anahtar PEM demeti.',
+            type: 'string',
+          })
+          .option('cms-cert', {
+            describe: 'CMS imzası için X.509 sertifikası.',
+            type: 'string',
+          })
+          .option('cms-key', {
+            describe: 'CMS imzası için özel anahtar PEM dosyası.',
+            type: 'string',
+          })
+          .option('cms-chain', {
+            describe: 'CMS imzasına eklenecek isteğe bağlı sertifika zinciri PEM dosyası.',
+            type: 'string',
+          })
           .option('ledger', {
             describe: 'Güncellenecek ledger.json dosya yolu.',
             type: 'string',
@@ -4344,12 +4416,51 @@ if (require.main === module) {
             };
           }
 
+          const cmsBundleOption = Array.isArray(argv.cmsBundle)
+            ? (argv.cmsBundle[0] as string | undefined)
+            : (argv.cmsBundle as string | undefined);
+          const cmsCertOption = Array.isArray(argv.cmsCert)
+            ? (argv.cmsCert[0] as string | undefined)
+            : (argv.cmsCert as string | undefined);
+          const cmsKeyOption = Array.isArray(argv.cmsKey)
+            ? (argv.cmsKey[0] as string | undefined)
+            : (argv.cmsKey as string | undefined);
+          const cmsChainOption = Array.isArray(argv.cmsChain)
+            ? (argv.cmsChain[0] as string | undefined)
+            : (argv.cmsChain as string | undefined);
+
+          let cmsOptions: PackCmsOptions | undefined;
+          if (cmsBundleOption) {
+            const cmsBundlePath = path.resolve(cmsBundleOption);
+            context.cmsBundlePath = cmsBundlePath;
+            const bundlePem = await fsPromises.readFile(cmsBundlePath, 'utf8');
+            cmsOptions = { bundlePem };
+          } else if (cmsCertOption || cmsKeyOption || cmsChainOption) {
+            if (!cmsCertOption || !cmsKeyOption) {
+              throw new Error('CMS imzası için hem sertifika hem de özel anahtar dosyaları gereklidir.');
+            }
+            const cmsCertPath = path.resolve(cmsCertOption);
+            const cmsKeyPath = path.resolve(cmsKeyOption);
+            context.cmsCertificatePath = cmsCertPath;
+            context.cmsKeyPath = cmsKeyPath;
+            const certificatePem = await fsPromises.readFile(cmsCertPath, 'utf8');
+            const privateKeyPem = await fsPromises.readFile(cmsKeyPath, 'utf8');
+            let chainPem: string | undefined;
+            if (cmsChainOption) {
+              const cmsChainPath = path.resolve(cmsChainOption);
+              context.cmsChainPath = cmsChainPath;
+              chainPem = await fsPromises.readFile(cmsChainPath, 'utf8');
+            }
+            cmsOptions = { certificatePem, privateKeyPem, chainPem };
+          }
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
             packageName: argv.name,
             signingKey,
             ledger: ledgerOptions,
+            cms: cmsOptions,
           });
 
           logger.info(
@@ -4405,6 +4516,22 @@ if (require.main === module) {
             describe: 'Ed25519 özel anahtar PEM dosyası.',
             type: 'string',
             demandOption: true,
+          })
+          .option('cms-bundle', {
+            describe: 'PKCS#7/CMS imzası için sertifika ve özel anahtar PEM demeti.',
+            type: 'string',
+          })
+          .option('cms-cert', {
+            describe: 'CMS imzası için X.509 sertifikası.',
+            type: 'string',
+          })
+          .option('cms-key', {
+            describe: 'CMS imzası için özel anahtar PEM dosyası.',
+            type: 'string',
+          })
+          .option('cms-chain', {
+            describe: 'CMS imzasına eklenecek isteğe bağlı sertifika zinciri PEM dosyası.',
+            type: 'string',
           })
           .option('package-name', {
             describe: 'Çıktı paketi dosya adı.',
@@ -4491,6 +4618,44 @@ if (require.main === module) {
             };
           }
 
+          const cmsBundleOption = Array.isArray(argv.cmsBundle)
+            ? (argv.cmsBundle[0] as string | undefined)
+            : (argv.cmsBundle as string | undefined);
+          const cmsCertOption = Array.isArray(argv.cmsCert)
+            ? (argv.cmsCert[0] as string | undefined)
+            : (argv.cmsCert as string | undefined);
+          const cmsKeyOption = Array.isArray(argv.cmsKey)
+            ? (argv.cmsKey[0] as string | undefined)
+            : (argv.cmsKey as string | undefined);
+          const cmsChainOption = Array.isArray(argv.cmsChain)
+            ? (argv.cmsChain[0] as string | undefined)
+            : (argv.cmsChain as string | undefined);
+
+          let cmsOptions: PackCmsOptions | undefined;
+          if (cmsBundleOption) {
+            const cmsBundlePath = path.resolve(cmsBundleOption);
+            context.cmsBundlePath = cmsBundlePath;
+            const bundlePem = await fsPromises.readFile(cmsBundlePath, 'utf8');
+            cmsOptions = { bundlePem };
+          } else if (cmsCertOption || cmsKeyOption || cmsChainOption) {
+            if (!cmsCertOption || !cmsKeyOption) {
+              throw new Error('CMS imzası için hem sertifika hem de özel anahtar dosyaları gereklidir.');
+            }
+            const cmsCertPath = path.resolve(cmsCertOption);
+            const cmsKeyPath = path.resolve(cmsKeyOption);
+            context.cmsCertificatePath = cmsCertPath;
+            context.cmsKeyPath = cmsKeyPath;
+            const certificatePem = await fsPromises.readFile(cmsCertPath, 'utf8');
+            const privateKeyPem = await fsPromises.readFile(cmsKeyPath, 'utf8');
+            let chainPem: string | undefined;
+            if (cmsChainOption) {
+              const cmsChainPath = path.resolve(cmsChainOption);
+              context.cmsChainPath = cmsChainPath;
+              chainPem = await fsPromises.readFile(cmsChainPath, 'utf8');
+            }
+            cmsOptions = { certificatePem, privateKeyPem, chainPem };
+          }
+
           const result = await runIngestAndPackage({
             inputDir,
             outputDir,
@@ -4501,6 +4666,7 @@ if (require.main === module) {
             signingKey,
             packageName,
             ledger: ledgerOptions,
+            cms: cmsOptions,
           });
 
           logger.info(

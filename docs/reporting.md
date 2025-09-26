@@ -18,6 +18,10 @@ SOIPack raporlama paketi; uyum matrisi, izlenebilirlik ve kapsam çıktıları i
 
 Rapor başlığında versiyon, manifest kimliği ve otomatik olarak `YYYY-MM-DD HH:MM UTC` formatında yazılmış rapor tarihi yer alır. Özet bölümünde hem uyum hem de kapsam metrikleri (ör. “Satır Kapsamı 68.8%”) tek satırda gösterilir.
 
+## İzlenebilirlik matrisi CSV çıktısı
+
+`renderTraceMatrix` fonksiyonu artık HTML düzeninin yanı sıra gereksinim→tasarım→kod→test zincirlerini düzleştiren bir CSV yardımcıyı (`trace.csv`) döner. CSV başlıkları gereksinim kimliği, kapsam durumları, eşlenen tasarım kimlikleri, kod yolları ve test durumlarını içerir. Kod yolları ve testler çoklayıcı olduğunda satırlar çapraz çarpanla çoğaltılarak her bağlantı açıkça temsil edilir. CLI çıktısı varsayılan olarak bu dosyayı `reports/trace.csv` olarak yazar; denetçiler veya otomasyonlar bu dosyayı Excel/BI araçlarına aktararak izlenebilirlik denetimlerini hızlandırabilir.
+
 ## Risk hikayesi ve signoff anlatımı
 
 Risk bölümü, `@soipack/engine` tarafından sağlanan risk bloğunu görselleştirir. Breakdown kartları her faktörün ağırlığını ve toplam skora katkısını gösterirken, kapsam eğilim grafiği geçmiş snapshot verilerinden eğimi tahmin ederek ekiplerin trendleri tartışmasına yardımcı olur. Eksik sinyal listesi, risk hesabında varsayılan kabul edilen metrikleri vurgular.

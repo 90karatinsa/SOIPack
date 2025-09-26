@@ -89,32 +89,56 @@ const describeEvent = (event: ComplianceEvent): TimelineEntry => {
     };
   }
 
-  const queued = event.counts.queued ?? 0;
-  const running = event.counts.running ?? 0;
-  const completed = event.counts.completed ?? 0;
-  const failed = event.counts.failed ?? 0;
-  const activeJobs = event.jobs
-    .slice(0, 3)
-    .map((job) => `${job.kind}#${shortHash(job.id, 6)} → ${job.status}`)
-    .join(', ');
-  const parts = [
-    `Bekleyen: ${queued}`,
-    `Çalışan: ${running}`,
-    `Tamamlanan: ${completed}`,
-    `Hatalı: ${failed}`,
+  if (event.type === 'queueState') {
+    const queued = event.counts.queued ?? 0;
+    const running = event.counts.running ?? 0;
+    const completed = event.counts.completed ?? 0;
+    const failed = event.counts.failed ?? 0;
+    const activeJobs = event.jobs
+      .slice(0, 3)
+      .map((job) => `${job.kind}#${shortHash(job.id, 6)} → ${job.status}`)
+      .join(', ');
+    const parts = [
+      `Bekleyen: ${queued}`,
+      `Çalışan: ${running}`,
+      `Tamamlanan: ${completed}`,
+      `Hatalı: ${failed}`,
+    ];
+    if (activeJobs) {
+      parts.push(`Aktif: ${activeJobs}`);
+    }
+
+    return {
+      id: baseId,
+      type: event.type,
+      title: 'Kuyruk durumu güncellendi',
+      description: parts.join(' • '),
+      timestamp,
+      tenantId: event.tenantId,
+      typeLabel: 'İş Kuyruğu',
+    };
+  }
+
+  const verifiedCount = event.files.filter((file) => file.verified).length;
+  const proofCount = event.files.filter((file) => file.hasProof).length;
+  const total = event.files.length;
+  const descriptionParts = [
+    `Manifest ${event.manifestId}`,
+    `Kanıtlı dosya: ${proofCount}/${total}`,
+    `Doğrulanan: ${verifiedCount}`,
   ];
-  if (activeJobs) {
-    parts.push(`Aktif: ${activeJobs}`);
+  if (event.merkle?.root) {
+    descriptionParts.push(`Merkle ${shortHash(event.merkle.root)}`);
   }
 
   return {
     id: baseId,
     type: event.type,
-    title: 'Kuyruk durumu güncellendi',
-    description: parts.join(' • '),
+    title: 'Merkle kanıtı yayınlandı',
+    description: descriptionParts.join(' • '),
     timestamp,
     tenantId: event.tenantId,
-    typeLabel: 'İş Kuyruğu',
+    typeLabel: 'Merkle Kanıtı',
   };
 };
 

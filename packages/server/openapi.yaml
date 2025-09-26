@@ -206,6 +206,18 @@ components:
         manifestId:
           type: string
           description: Paketlenmiş manifestin ilk 12 karakterlik SHA-256 özeti.
+        manifestDigest:
+          type: string
+          description: Manifestin SHA-256 karması.
+        ledgerRoot:
+          type: string
+          nullable: true
+        previousLedgerRoot:
+          type: string
+          nullable: true
+        cmsSignature:
+          $ref: '#/components/schemas/CmsSignatureMetadata'
+          nullable: true
         outputs:
           type: object
           required:
@@ -219,6 +231,9 @@ components:
               type: string
             archive:
               type: string
+            cmsSignature:
+              $ref: '#/components/schemas/CmsSignatureMetadata'
+              nullable: true
     ReviewTarget:
       type: object
       required:
@@ -661,6 +676,140 @@ components:
         manifest:
           type: object
           additionalProperties: true
+        cmsSignature:
+          $ref: '#/components/schemas/CmsSignatureMetadata'
+          nullable: true
+    CmsSignatureMetadata:
+      type: object
+      required:
+        - path
+        - sha256
+        - der
+        - digestAlgorithm
+        - verified
+        - digestVerified
+      properties:
+        path:
+          type: string
+          description: İmza dosyasının depolama üzerindeki göreli yolu.
+        sha256:
+          type: string
+          description: PKCS#7 dosyasının SHA-256 karması.
+        der:
+          type: string
+          description: Başlıkları kaldırılmış, Base64 kodlu DER CMS yükü.
+        digestAlgorithm:
+          type: string
+        verified:
+          type: boolean
+        digestVerified:
+          type: boolean
+        signerSerialNumber:
+          type: string
+          nullable: true
+        signerIssuer:
+          type: string
+          nullable: true
+        signerSubject:
+          type: string
+          nullable: true
+        signatureAlgorithm:
+          type: string
+          nullable: true
+    ManifestMerkleSummary:
+      type: object
+      required:
+        - algorithm
+        - root
+        - manifestDigest
+        - snapshotId
+      properties:
+        algorithm:
+          type: string
+          enum: ['ledger-merkle-v1']
+        root:
+          type: string
+          description: Manifest dosya Merkle kökü (SHA-256 hex).
+        manifestDigest:
+          type: string
+          description: Manifest imza karması (SHA-256 hex).
+        snapshotId:
+          type: string
+    ManifestFileProof:
+      type: object
+      required:
+        - algorithm
+        - merkleRoot
+        - proof
+      properties:
+        algorithm:
+          type: string
+          enum: ['ledger-merkle-v1']
+        merkleRoot:
+          type: string
+          description: İlgili Merkle kökü.
+        proof:
+          type: string
+          description: "`serializeLedgerProof` çıktısı."
+    ManifestProofListResponse:
+      type: object
+      required:
+        - manifestId
+        - jobId
+        - files
+      properties:
+        manifestId:
+          type: string
+        jobId:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        merkle:
+          $ref: '#/components/schemas/ManifestMerkleSummary'
+          nullable: true
+        files:
+          type: array
+          items:
+            type: object
+            required:
+              - path
+              - sha256
+              - verified
+            properties:
+              path:
+                type: string
+              sha256:
+                type: string
+              proof:
+                $ref: '#/components/schemas/ManifestFileProof'
+                nullable: true
+              verified:
+                type: boolean
+    ManifestProofResponse:
+      type: object
+      required:
+        - manifestId
+        - jobId
+        - path
+        - sha256
+        - proof
+        - verified
+      properties:
+        manifestId:
+          type: string
+        jobId:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        path:
+          type: string
+        sha256:
+          type: string
+        merkle:
+          $ref: '#/components/schemas/ManifestMerkleSummary'
+          nullable: true
+        proof:
+          $ref: '#/components/schemas/ManifestFileProof'
+        verified:
+          type: boolean
     AdminRole:
       type: object
       required:
@@ -2147,6 +2296,109 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/manifests/{manifestId}/proofs:
+    get:
+      operationId: listManifestProofs
+      summary: Manifest dosyalarına ait Merkle kanıtlarını listeler.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: manifestId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Manifest dosya kanıtları listesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestProofListResponse'
+        '400':
+          description: Geçersiz istek parametresi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Manifest bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Kanıt doğrulaması başarısız oldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/manifests/{manifestId}/proofs/{filePath}:
+    get:
+      operationId: getManifestProof
+      summary: Tek bir manifest dosyasının Merkle kanıtını döner.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: manifestId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: filePath
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dosyanın Merkle kanıtı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestProofResponse'
+        '400':
+          description: Geçersiz istek parametresi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Kullanıcının yeterli rolü yok.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Manifest ya da dosya bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Kanıt doğrulaması başarısız oldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/packages/{id}:
     get:
       operationId: downloadPackage
@@ -2253,6 +2505,44 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Manifest bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/packages/{id}/manifest.cms:
+    get:
+      operationId: downloadPackageManifestCms
+      summary: Paket manifestinin PKCS#7 imza dosyasını indirir.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{16}$'
+      responses:
+        '200':
+          description: PKCS#7 imza dosyası.
+          headers:
+            Content-Disposition:
+              description: İndirilen dosya adı.
+              schema:
+                type: string
+          content:
+            application/pkcs7-signature:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Manifest imzası bulunamadı.
           content:
             application/json:
               schema:

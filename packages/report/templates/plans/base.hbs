@@ -228,6 +228,108 @@
         </tbody>
       </table>
     </section>
+    {{#if toolAssessment}}
+      <section>
+        <h2>Tool Assessment Summary</h2>
+        <p>{{toolAssessment.summary}}</p>
+        {{#if toolAssessment.classBreakdown.length}}
+          <table>
+            <thead>
+              <tr>
+                <th>Tool Class</th>
+                <th>Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{#each toolAssessment.classBreakdown}}
+                <tr>
+                  <td>{{toolClass}}</td>
+                  <td>{{count}}</td>
+                </tr>
+              {{/each}}
+            </tbody>
+          </table>
+        {{/if}}
+        {{#if toolAssessment.arguments.length}}
+          <h3>Qualification Arguments</h3>
+          <ul>
+            {{#each toolAssessment.arguments}}
+              <li>{{this}}</li>
+            {{/each}}
+          </ul>
+        {{/if}}
+        {{#if toolAssessment.environmentNotes.length}}
+          <h3>Execution Environment</h3>
+          <ul>
+            {{#each toolAssessment.environmentNotes}}
+              <li>{{this}}</li>
+            {{/each}}
+          </ul>
+        {{/if}}
+        {{#if toolAssessment.tools.length}}
+          <h3>Tool Inventory</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool ID</th>
+                <th>Name &amp; Version</th>
+                <th>Class</th>
+                <th>Usage</th>
+                <th>Qualification Summary</th>
+                <th>Evidence</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{#each toolAssessment.tools}}
+                <tr>
+                  <td>{{id}}</td>
+                  <td>{{name}}{{#if version}} v{{version}}{{/if}}</td>
+                  <td>{{toolClass}}</td>
+                  <td>{{usage}}</td>
+                  <td>{{#if qualificationSummary}}{{qualificationSummary}}{{else}}—{{/if}}</td>
+                  <td>
+                    {{#if evidence.length}}
+                      <ul>
+                        {{#each evidence}}
+                          <li>{{this}}</li>
+                        {{/each}}
+                      </ul>
+                    {{else}}
+                      —
+                    {{/if}}
+                  </td>
+                  <td>{{status}}</td>
+                </tr>
+              {{/each}}
+            </tbody>
+          </table>
+        {{/if}}
+        {{#if toolAssessment.signatures.length}}
+          <h3>Tool Assessment Signatures</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>Name</th>
+                <th>Organization</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{#each toolAssessment.signatures}}
+                <tr>
+                  <td>{{role}}</td>
+                  <td>{{#if name}}{{name}}{{else}}—{{/if}}</td>
+                  <td>{{#if organization}}{{organization}}{{else}}—{{/if}}</td>
+                  <td>{{#if date}}{{date}}{{else}}—{{/if}}</td>
+                </tr>
+              {{/each}}
+            </tbody>
+          </table>
+        {{/if}}
+      </section>
+    {{/if}}
     {{#if openObjectives.length}}
       <section>
         <h2>Open Compliance Items</h2>

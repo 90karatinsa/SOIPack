@@ -3,12 +3,24 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs
 import { tmpdir } from 'os';
 import path from 'path';
 
-import { Manifest } from '@soipack/core';
+import {
+  Manifest,
+  ManifestFileEntry,
+  ManifestMerkleSummary,
+  appendEntry,
+  createLedger,
+  deserializeLedgerProof,
+  generateLedgerProof,
+  serializeLedgerProof,
+  verifyLedgerProof,
+} from '@soipack/core';
+import yauzl from 'yauzl';
 
 import {
   ManifestBuildResult,
   buildManifest,
   createSoiDataPack,
+  computeManifestDigestHex,
   signManifestBundle,
   verifyManifestSignature,
   verifyManifestSignatureDetailed,
@@ -24,6 +36,82 @@ const computeSha256 = (filePath: string): string => {
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
+const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
+
+const computeExpectedMerkleArtifacts = (
+  manifest: LedgerAwareManifest,
+): { merkle: ManifestMerkleSummary; files: ManifestFileEntry[] } => {
+  const digest = computeManifestDigestHex(manifest);
+  const ledger = appendEntry(createLedger(), {
+    snapshotId: `manifest:${digest}`,
+    manifestDigest: digest,
+    timestamp: manifest.createdAt,
+    evidence: manifest.files.map((file) => ({
+      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      path: file.path,
+      hash: file.sha256,
+    })),
+  });
+  const entry = ledger.entries[ledger.entries.length - 1];
+
+  const merkle: ManifestMerkleSummary = {
+    algorithm: 'ledger-merkle-v1',
+    root: entry.merkleRoot,
+    manifestDigest: digest,
+    snapshotId: entry.snapshotId,
+  };
+
+  const filesWithProofs = manifest.files.map((file) => {
+    const proof = generateLedgerProof(entry, {
+      type: 'evidence',
+      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      path: file.path,
+      hash: file.sha256,
+    });
+    return {
+      ...file,
+      proof: {
+        algorithm: 'ledger-merkle-v1' as const,
+        merkleRoot: entry.merkleRoot,
+        proof: serializeLedgerProof(proof),
+      },
+    };
+  });
+
+  return { merkle, files: filesWithProofs };
+};
+
+const readZipEntry = async (zipPath: string, entryName: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    yauzl.open(zipPath, { lazyEntries: true }, (error, zipfile) => {
+      if (error || !zipfile) {
+        reject(error ?? new Error('Unable to open zip file.'));
+        return;
+      }
+      zipfile.readEntry();
+      zipfile.on('entry', (entry) => {
+        if (entry.fileName !== entryName) {
+          zipfile.readEntry();
+          return;
+        }
+        zipfile.openReadStream(entry, (streamError, stream) => {
+          if (streamError || !stream) {
+            reject(streamError ?? new Error('Unable to open zip entry.'));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+          stream.on('end', () => {
+            resolve(Buffer.concat(chunks).toString('utf8'));
+            zipfile.close();
+          });
+          stream.on('error', reject);
+        });
+      });
+      zipfile.on('end', () => reject(new Error(`Entry ${entryName} not found.`)));
+      zipfile.on('error', reject);
+    });
+  });
 
 const loadDevCredentials = (): { bundlePem: string; certificatePem: string; publicKeyPem: string } => {
   const bundlePem = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
@@ -59,7 +147,7 @@ describe('packager', () => {
       ledger,
     });
 
-    expectedManifest = {
+    const baseManifest: LedgerAwareManifest = {
       createdAt: timestamp.toISOString(),
       toolVersion,
       files: [
@@ -80,6 +168,14 @@ describe('packager', () => {
         root: ledger.root,
         previousRoot: ledger.previousRoot,
       },
+    };
+
+    const { merkle, files } = computeExpectedMerkleArtifacts(baseManifest);
+
+    expectedManifest = {
+      ...baseManifest,
+      files,
+      merkle,
     };
   });
 
@@ -138,8 +234,25 @@ describe('packager', () => {
       expect(result.manifest).toEqual(expectedManifest);
       expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
       expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
+
+      const manifestContent = await readZipEntry(result.outputPath, 'manifest.json');
+      const archivedManifest = JSON.parse(manifestContent) as LedgerAwareManifest;
+      expect(archivedManifest).toEqual(expectedManifest);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }
+  });
+
+  it('exposes verifiable Merkle proofs for each file', () => {
+    const merkleRoot = manifestResult.manifest.merkle?.root;
+    expect(typeof merkleRoot).toBe('string');
+
+    manifestResult.manifest.files.forEach((file) => {
+      expect(file.proof?.algorithm).toBe('ledger-merkle-v1');
+      expect(file.proof?.merkleRoot).toBe(merkleRoot);
+      expect(typeof file.proof?.proof).toBe('string');
+      const proof = deserializeLedgerProof(file.proof!.proof);
+      expect(verifyLedgerProof(proof, { expectedMerkleRoot: merkleRoot! })).toBe(merkleRoot);
+    });
   });
 });

@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useReducer } from 'react';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
 
 import { useRbac } from '../providers/RbacProvider';
+import {
+  getManifestProof,
+  type ManifestMerkleProofPayload,
+} from '../services/api';
 import {
   createComplianceEventStream,
   type ComplianceDeltaSummary,
   type ComplianceEvent,
   type ComplianceLedgerEvent,
   type ComplianceRiskEvent,
+  type ComplianceManifestProofEvent,
   type EventStreamStatus,
+  type ManifestMerkleSummary,
   type StatusContext,
   type ToolQualificationAlertSummary,
 } from '../services/events';
@@ -85,6 +91,25 @@ interface ToolAlertState {
   updatedAt?: string;
 }
 
+interface ProofExplorerFileState {
+  path: string;
+  sha256: string;
+  hasProof: boolean;
+  verified: boolean;
+  proof?: ManifestMerkleProofPayload | null;
+  loading?: boolean;
+  error?: string;
+}
+
+interface ProofExplorerState {
+  manifestId: string;
+  jobId?: string;
+  merkle: ManifestMerkleSummary | null;
+  files: ProofExplorerFileState[];
+  selectedPath: string | null;
+  lastUpdated?: string;
+}
+
 interface RiskCockpitState {
   status: RiskCockpitStatus;
   heatmap: HeatmapCell[];
@@ -94,13 +119,24 @@ interface RiskCockpitState {
   lastError?: string;
   delta?: DeltaPanelState;
   toolAlerts?: ToolAlertState;
+  proofExplorer?: ProofExplorerState;
 }
 
 type RiskCockpitAction =
   | { type: 'reset' }
   | { type: 'status'; status: EventStreamStatus; context?: StatusContext }
   | { type: 'event'; event: ComplianceEvent }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'select-proof'; path: string | null }
+  | { type: 'proof-loading'; manifestId: string; path: string }
+  | {
+      type: 'proof-loaded';
+      manifestId: string;
+      path: string;
+      proof: ManifestMerkleProofPayload;
+      merkle?: ManifestMerkleSummary | null;
+    }
+  | { type: 'proof-error'; manifestId: string; path: string; message: string };
 
 const MAX_LEDGER_DIFFS = 8;
 
@@ -108,6 +144,7 @@ const initialState: RiskCockpitState = {
   status: 'idle',
   heatmap: [],
   ledgerDiffs: [],
+  proofExplorer: undefined,
 };
 
 const toFixed = (value: number, digits: number): number =>
@@ -304,10 +341,120 @@ const reducer = (state: RiskCockpitState, action: RiskCockpitAction): RiskCockpi
           ledgerDiffs: [diff, ...existing].slice(0, MAX_LEDGER_DIFFS),
         };
       }
+      if (action.event.type === 'manifestProof') {
+        const manifestEvent: ComplianceManifestProofEvent = action.event;
+        const previous = state.proofExplorer;
+        const previousByPath = new Map(
+          (previous?.files ?? []).map((file) => [file.path, file] as const),
+        );
+        const files: ProofExplorerFileState[] = manifestEvent.files.map((file) => {
+          const existing = previousByPath.get(file.path);
+          const base: ProofExplorerFileState = {
+            path: file.path,
+            sha256: file.sha256,
+            hasProof: file.hasProof,
+            verified: file.verified,
+            proof: file.hasProof ? existing?.proof ?? null : null,
+            loading: file.hasProof && existing?.loading && !existing?.proof ? existing.loading : false,
+            error: file.hasProof ? existing?.error : undefined,
+          };
+          return base;
+        });
+        const previousSelection = previous?.selectedPath ?? null;
+        const selectedPath =
+          previousSelection && files.some((file) => file.path === previousSelection && file.hasProof)
+            ? previousSelection
+            : files.find((file) => file.hasProof)?.path ?? null;
+        return {
+          ...state,
+          proofExplorer: {
+            manifestId: manifestEvent.manifestId,
+            jobId: manifestEvent.jobId,
+            merkle: manifestEvent.merkle ?? null,
+            files,
+            selectedPath,
+            lastUpdated: manifestEvent.emittedAt,
+          },
+        };
+      }
       return state;
     }
     case 'error':
       return { ...state, status: 'error', lastError: action.message, reconnectDelayMs: undefined };
+    case 'select-proof': {
+      if (!state.proofExplorer) {
+        return state;
+      }
+      if (!action.path) {
+        return {
+          ...state,
+          proofExplorer: { ...state.proofExplorer, selectedPath: null },
+        };
+      }
+      const exists = state.proofExplorer.files.some((file) => file.path === action.path);
+      if (!exists) {
+        return state;
+      }
+      return {
+        ...state,
+        proofExplorer: {
+          ...state.proofExplorer,
+          selectedPath: action.path,
+          files: state.proofExplorer.files.map((file) =>
+            file.path === action.path ? { ...file, error: undefined } : file,
+          ),
+        },
+      };
+    }
+    case 'proof-loading': {
+      if (!state.proofExplorer || state.proofExplorer.manifestId !== action.manifestId) {
+        return state;
+      }
+      return {
+        ...state,
+        proofExplorer: {
+          ...state.proofExplorer,
+          files: state.proofExplorer.files.map((file) =>
+            file.path === action.path
+              ? { ...file, loading: true, error: undefined }
+              : file,
+          ),
+        },
+      };
+    }
+    case 'proof-loaded': {
+      if (!state.proofExplorer || state.proofExplorer.manifestId !== action.manifestId) {
+        return state;
+      }
+      return {
+        ...state,
+        proofExplorer: {
+          ...state.proofExplorer,
+          merkle: action.merkle ?? state.proofExplorer.merkle,
+          files: state.proofExplorer.files.map((file) =>
+            file.path === action.path
+              ? { ...file, proof: action.proof, loading: false, error: undefined }
+              : file,
+          ),
+        },
+      };
+    }
+    case 'proof-error': {
+      if (!state.proofExplorer || state.proofExplorer.manifestId !== action.manifestId) {
+        return state;
+      }
+      return {
+        ...state,
+        proofExplorer: {
+          ...state.proofExplorer,
+          files: state.proofExplorer.files.map((file) =>
+            file.path === action.path
+              ? { ...file, loading: false, error: action.message }
+              : file,
+          ),
+        },
+      };
+    }
     default:
       return state;
   }
@@ -350,6 +497,55 @@ const shortHash = (value: string | null, length = 8): string => {
   return `${value.slice(0, length)}…${value.slice(-length)}`;
 };
 
+interface ParsedMerkleProof {
+  leafType: string;
+  leafLabel: string;
+  leafHash: string;
+  path: Array<{ position: 'left' | 'right'; hash: string }>;
+  merkleRoot: string;
+}
+
+const parseMerkleProof = (payload?: ManifestMerkleProofPayload | null): ParsedMerkleProof | null => {
+  if (!payload) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(payload.proof) as {
+      leaf?: { type?: string; label?: string; hash?: string };
+      path?: Array<{ position?: string; hash?: string }>;
+      merkleRoot?: string;
+    };
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    const leafType = typeof parsed.leaf?.type === 'string' ? parsed.leaf.type : 'unknown';
+    const leafLabel = typeof parsed.leaf?.label === 'string' ? parsed.leaf.label : '';
+    const leafHash = typeof parsed.leaf?.hash === 'string' ? parsed.leaf.hash : '';
+    if (!Array.isArray(parsed.path)) {
+      return null;
+    }
+    const path = parsed.path
+      .filter((node): node is { position: 'left' | 'right'; hash: string } =>
+        Boolean(
+          node &&
+            (node.position === 'left' || node.position === 'right') &&
+            typeof node.hash === 'string',
+        ),
+      )
+      .map((node) => ({ position: node.position, hash: node.hash }));
+    const merkleRoot = typeof parsed.merkleRoot === 'string' ? parsed.merkleRoot : payload.merkleRoot;
+    return {
+      leafType,
+      leafLabel,
+      leafHash,
+      path,
+      merkleRoot,
+    };
+  } catch {
+    return null;
+  }
+};
+
 export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPageProps) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const { roles } = useRbac();
@@ -387,6 +583,87 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     ? Math.max(...deltaPanel.sparklineValues, 1)
     : 1;
   const toolAlerts = state.toolAlerts;
+  const proofExplorer = state.proofExplorer;
+  const selectedProofEntry = useMemo(() => {
+    if (!proofExplorer || !proofExplorer.selectedPath) {
+      return null;
+    }
+    return proofExplorer.files.find((file) => file.path === proofExplorer.selectedPath) ?? null;
+  }, [proofExplorer]);
+  const parsedProof = useMemo(() => parseMerkleProof(selectedProofEntry?.proof), [selectedProofEntry?.proof]);
+  const proofRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
+
+  useEffect(() => {
+    if (!isAuthorized) {
+      return;
+    }
+    if (!proofExplorer || !selectedProofEntry || !selectedProofEntry.hasProof) {
+      return;
+    }
+    if (selectedProofEntry.proof || selectedProofEntry.loading || selectedProofEntry.error) {
+      return;
+    }
+    const requestKey = `${proofExplorer.manifestId}:${selectedProofEntry.path}`;
+    if (proofRequestRef.current && proofRequestRef.current.key !== requestKey) {
+      proofRequestRef.current.controller.abort();
+      proofRequestRef.current = null;
+    }
+    const controller = new AbortController();
+    proofRequestRef.current = { key: requestKey, controller };
+    dispatch({ type: 'proof-loading', manifestId: proofExplorer.manifestId, path: selectedProofEntry.path });
+    void getManifestProof({
+      token,
+      license,
+      manifestId: proofExplorer.manifestId,
+      filePath: selectedProofEntry.path,
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (proofRequestRef.current?.key === requestKey) {
+          proofRequestRef.current = null;
+        }
+        dispatch({
+          type: 'proof-loaded',
+          manifestId: proofExplorer.manifestId,
+          path: selectedProofEntry.path,
+          proof: response.proof,
+          merkle: response.merkle ?? null,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (proofRequestRef.current?.key === requestKey) {
+          proofRequestRef.current = null;
+        }
+        dispatch({
+          type: 'proof-error',
+          manifestId: proofExplorer.manifestId,
+          path: selectedProofEntry.path,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [
+    proofExplorer,
+    selectedProofEntry,
+    isAuthorized,
+    token,
+    license,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (proofRequestRef.current) {
+        proofRequestRef.current.controller.abort();
+        proofRequestRef.current = null;
+      }
+    },
+    [],
+  );
 
   return (
     <section className="space-y-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-slate-950/30">
@@ -597,51 +874,240 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
           </section>
 
           <section className="space-y-3">
-            <header className="flex items-baseline justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-white">Ledger kök farkları</h3>
-                <p className="text-xs text-slate-400">
-                  Her kayıt için bir önceki ve yeni ledger kökü arasındaki fark konumunu görüntüler.
-                </p>
-              </div>
-            </header>
-
             {!canViewLedger ? (
               <p className="text-sm text-slate-400">Ledger verilerine erişim yetkiniz yok.</p>
-            ) : state.ledgerDiffs.length > 0 ? (
-              <ul className="space-y-3">
-                {state.ledgerDiffs.map((diff) => (
-                  <li
-                    key={diff.id}
-                    className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"
-                  >
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-white">Snapshot {diff.snapshotId}</p>
-                        <p className="text-xs text-slate-400">Merkle: {shortHash(diff.merkleRoot)}</p>
-                        <p className="text-xs text-slate-400">Zaman damgası: {diff.timestamp}</p>
-                      </div>
-                      <div className="text-right text-xs text-slate-300">
-                        <p>
-                          <span className="font-semibold uppercase tracking-wide text-slate-500">Fark pozisyonu:</span>{' '}
-                          {diff.diffIndex ?? '—'}
+            ) : (
+              <>
+                <div
+                  data-testid="proof-explorer-card"
+                  className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"
+                >
+                  <header className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Merkle kanıt gezgini</h3>
+                      <p className="text-xs text-slate-400">
+                        Manifest dosyalarının Merkle ağaç yolunu ve doğrulama sonuçlarını inceleyin.
+                      </p>
+                    </div>
+                    {proofExplorer?.lastUpdated && (
+                      <p className="text-xs text-slate-400">Güncelleme: {proofExplorer.lastUpdated}</p>
+                    )}
+                  </header>
+                  {proofExplorer ? (
+                    <div className="mt-3 space-y-4">
+                      <dl className="grid gap-3 text-xs text-slate-300 sm:grid-cols-2">
+                        <div>
+                          <dt className="font-semibold uppercase tracking-wide text-slate-500">Manifest</dt>
+                          <dd data-testid="proof-manifest-id" className="text-white">
+                            {proofExplorer.manifestId}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="font-semibold uppercase tracking-wide text-slate-500">Ledger iş ID</dt>
+                          <dd>{proofExplorer.jobId ?? '—'}</dd>
+                        </div>
+                        <div>
+                          <dt className="font-semibold uppercase tracking-wide text-slate-500">Merkle kökü</dt>
+                          <dd>{shortHash(proofExplorer.merkle?.root ?? null)}</dd>
+                        </div>
+                        <div>
+                          <dt className="font-semibold uppercase tracking-wide text-slate-500">Snapshot</dt>
+                          <dd>{proofExplorer.merkle?.snapshotId ?? '—'}</dd>
+                        </div>
+                      </dl>
+                      {proofExplorer.files.length > 0 ? (
+                        <ul className="space-y-2" data-testid="proof-file-list">
+                          {proofExplorer.files.map((file) => {
+                            const isSelected = proofExplorer.selectedPath === file.path;
+                            const statusLabel = !file.hasProof
+                              ? 'Kanıt yok'
+                              : file.verified
+                              ? 'Doğrulandı'
+                              : 'Beklemede';
+                            return (
+                              <li
+                                key={file.path}
+                                className={`rounded-xl border border-slate-800/60 bg-slate-900/50 p-3 text-xs transition ${
+                                  isSelected ? 'border-brand/60 shadow shadow-brand/30' : ''
+                                }`}
+                              >
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                  <div>
+                                    <button
+                                      type="button"
+                                      onClick={() => file.hasProof && dispatch({ type: 'select-proof', path: file.path })}
+                                      disabled={!file.hasProof}
+                                      aria-pressed={isSelected}
+                                      className={`text-left text-sm font-semibold transition ${
+                                        file.hasProof
+                                          ? 'text-white hover:text-brand focus:outline-none focus:ring-2 focus:ring-brand/60'
+                                          : 'text-slate-500'
+                                      }`}
+                                    >
+                                      {file.path}
+                                    </button>
+                                    <p className="text-[11px] text-slate-400">SHA-256: {shortHash(file.sha256)}</p>
+                                  </div>
+                                  <div className="text-right">
+                                    <span
+                                      data-testid={`proof-status-${file.path}`}
+                                      className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold ${
+                                        !file.hasProof
+                                          ? 'bg-slate-700/40 text-slate-300'
+                                          : file.verified
+                                          ? 'bg-emerald-500/20 text-emerald-200'
+                                          : 'bg-amber-500/20 text-amber-200'
+                                      }`}
+                                    >
+                                      {statusLabel}
+                                    </span>
+                                  </div>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-slate-300">
+                          Manifest dosyaları yükleniyor. Kanıt olayları geldiğinde liste otomatik güncellenecek.
                         </p>
+                      )}
+                      <div className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-3 text-xs text-slate-200">
+                        {selectedProofEntry ? (
+                          <div className="space-y-2" data-testid="proof-details">
+                            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <p className="text-sm font-semibold text-white">{selectedProofEntry.path}</p>
+                                <p className="text-[11px] text-slate-400">
+                                  Durum:{' '}
+                                  {selectedProofEntry.loading
+                                    ? 'Kanıt yükleniyor…'
+                                    : selectedProofEntry.error
+                                    ? `Hata: ${selectedProofEntry.error}`
+                                    : selectedProofEntry.verified
+                                    ? 'Merkle doğrulaması başarılı'
+                                    : 'Doğrulama bekleniyor'}
+                                </p>
+                              </div>
+                              {selectedProofEntry.error && (
+                                <button
+                                  type="button"
+                                  onClick={() => dispatch({ type: 'select-proof', path: selectedProofEntry.path })}
+                                  className="rounded-full border border-rose-500/40 px-2 py-1 text-[11px] font-semibold text-rose-200 hover:border-rose-400"
+                                >
+                                  Yeniden dene
+                                </button>
+                              )}
+                            </div>
+                            {parsedProof ? (
+                              <div className="space-y-2">
+                                <dl className="grid gap-2 sm:grid-cols-2">
+                                  <div>
+                                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Yaprak etiketi</dt>
+                                    <dd data-testid="proof-leaf-label">{parsedProof.leafLabel || '—'}</dd>
+                                  </div>
+                                  <div>
+                                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Yaprak tipi</dt>
+                                    <dd>{parsedProof.leafType}</dd>
+                                  </div>
+                                  <div>
+                                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Yaprak hash</dt>
+                                    <dd data-testid="proof-leaf-hash">{shortHash(parsedProof.leafHash)}</dd>
+                                  </div>
+                                  <div>
+                                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Kök hash</dt>
+                                    <dd>{shortHash(parsedProof.merkleRoot)}</dd>
+                                  </div>
+                                </dl>
+                                <div>
+                                  <h5 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                    Kanıt yolu
+                                  </h5>
+                                  {parsedProof.path.length > 0 ? (
+                                    <ul className="mt-1 space-y-1" data-testid="proof-path">
+                                      {parsedProof.path.map((node, index) => (
+                                        <li
+                                          key={`${node.position}-${node.hash}-${index}`}
+                                          data-testid="proof-path-node"
+                                          className="flex items-center justify-between rounded-lg border border-slate-800/50 bg-slate-900/60 px-2 py-1"
+                                        >
+                                          <span className="font-semibold text-slate-200">{node.position.toUpperCase()}</span>
+                                          <span className="font-mono text-[11px] text-slate-400">{shortHash(node.hash)}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  ) : (
+                                    <p className="mt-1 text-[11px] text-slate-400">Yol düğümü bulunamadı.</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : !selectedProofEntry.loading && !selectedProofEntry.error ? (
+                              <p className="text-[11px] text-slate-400">
+                                Kanıt çözümü bekleniyor. Kanıt dosyası doğrulandığında yol bilgisi burada gösterilecek.
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">
+                            Kanıtları incelemek için listeden bir dosya seçin.
+                          </p>
+                        )}
                       </div>
                     </div>
-                    <p className="mt-3 text-xs text-slate-300">Önceki kök: {shortHash(diff.previousRoot)}</p>
-                    <p className="text-xs text-slate-300">Yeni kök: {shortHash(diff.ledgerRoot)}</p>
-                    {diff.diffIndex !== null && (
-                      <p className="mt-2 text-xs text-slate-200">
-                        Önceki: {diff.previousTail ?? '—'} → Yeni: {diff.currentTail ?? '—'}
+                  ) : (
+                    <p className="mt-3 text-xs text-slate-300">
+                      Henüz Merkle kanıtı alınmadı. Paketleme tamamlandığında kanıtlar burada gösterilecek.
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30">
+                  <header className="flex items-baseline justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Ledger kök farkları</h3>
+                      <p className="text-xs text-slate-400">
+                        Her kayıt için bir önceki ve yeni ledger kökü arasındaki fark konumunu görüntüler.
                       </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-slate-300">
-                Henüz ledger kaydı alınmadı. Yeni manifestler eklendiğinde farklar burada listelenecek.
-              </p>
+                    </div>
+                  </header>
+
+                  {state.ledgerDiffs.length > 0 ? (
+                    <ul className="mt-3 space-y-3">
+                      {state.ledgerDiffs.map((diff) => (
+                        <li
+                          key={diff.id}
+                          className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-white">Snapshot {diff.snapshotId}</p>
+                              <p className="text-xs text-slate-400">Merkle: {shortHash(diff.merkleRoot)}</p>
+                              <p className="text-xs text-slate-400">Zaman damgası: {diff.timestamp}</p>
+                            </div>
+                            <div className="text-right text-xs text-slate-300">
+                              <p>
+                                <span className="font-semibold uppercase tracking-wide text-slate-500">Fark pozisyonu:</span>{' '}
+                                {diff.diffIndex ?? '—'}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="mt-3 text-xs text-slate-300">Önceki kök: {shortHash(diff.previousRoot)}</p>
+                          <p className="text-xs text-slate-300">Yeni kök: {shortHash(diff.ledgerRoot)}</p>
+                          {diff.diffIndex !== null && (
+                            <p className="mt-2 text-xs text-slate-200">
+                              Önceki: {diff.previousTail ?? '—'} → Yeni: {diff.currentTail ?? '—'}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-300">
+                      Henüz ledger kaydı alınmadı. Yeni manifestler eklendiğinde farklar burada listelenecek.
+                    </p>
+                  )}
+                </div>
+              </>
             )}
           </section>
         </div>
