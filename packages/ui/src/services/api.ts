@@ -420,10 +420,30 @@ interface ImportOptions {
   projectVersion?: string;
   level?: string;
   signal?: AbortSignal;
+  independentSources?: string[];
+  independentArtifacts?: string[];
 }
 
 const inferImportField = (file: File): string | undefined => {
   const name = file.name.toLowerCase();
+  if (name.includes('polyspace')) {
+    return 'polyspace';
+  }
+  if (name.includes('vectorcast')) {
+    return 'vectorcast';
+  }
+  if (name.includes('ldra')) {
+    return 'ldra';
+  }
+  if ((name.endsWith('.log') || name.endsWith('.txt') || name.endsWith('.csv')) && name.includes('qa')) {
+    return 'qaLogs';
+  }
+  if ((name.endsWith('.csv') || name.endsWith('.xlsx')) && name.includes('defect')) {
+    return 'jiraDefects';
+  }
+  if ((name.endsWith('.csv') || name.endsWith('.xlsx')) && name.includes('design')) {
+    return 'designCsv';
+  }
   if (name.endsWith('.reqif')) {
     return 'reqif';
   }
@@ -459,6 +479,8 @@ export const importArtifacts = async ({
   projectVersion,
   level = 'C',
   signal,
+  independentSources,
+  independentArtifacts,
 }: ImportOptions): Promise<ApiJob<ImportJobResult>> => {
   const formData = new FormData();
   let appended = 0;
@@ -479,6 +501,14 @@ export const importArtifacts = async ({
   }
   if (level) {
     formData.append('level', level);
+  }
+
+  if (independentSources && independentSources.length > 0) {
+    formData.append('independentSources', JSON.stringify(independentSources));
+  }
+
+  if (independentArtifacts && independentArtifacts.length > 0) {
+    formData.append('independentArtifacts', JSON.stringify(independentArtifacts));
   }
 
   const response = await fetch(joinUrl('/v1/import'), {

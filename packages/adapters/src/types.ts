@@ -159,7 +159,7 @@ export interface Finding {
 }
 
 export interface CoverageSummary {
-  tool: 'vectorcast' | 'ldra';
+  tool: 'vectorcast' | 'ldra' | 'simulink';
   files: Array<{
     path: string;
     stmt: { covered: number; total: number };

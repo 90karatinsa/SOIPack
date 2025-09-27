@@ -20,7 +20,48 @@ interface UploadAndRunProps {
   }>;
   error: string | null;
   lastCompletedAt: string | null;
+  independentSources: string[];
+  independentArtifacts: string[];
+  onIndependentSourcesChange: (values: string[]) => void;
+  onIndependentArtifactsChange: (values: string[]) => void;
 }
+
+const INDEPENDENT_SOURCE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'jiraCsv', label: 'Jira CSV (gereksinim / defect)' },
+  { value: 'reqif', label: 'ReqIF gereksinimleri' },
+  { value: 'junit', label: 'JUnit test sonuçları' },
+  { value: 'lcov', label: 'LCOV kapsam raporları' },
+  { value: 'cobertura', label: 'Cobertura kapsam raporları' },
+  { value: 'git', label: 'Git arşivleri' },
+  { value: 'polyspace', label: 'Polyspace statik analizi' },
+  { value: 'ldra', label: 'LDRA raporları' },
+  { value: 'vectorcast', label: 'VectorCAST sonuçları' },
+  { value: 'staticAnalysis', label: 'Diğer statik analiz çıktıları' },
+  { value: 'doorsClassic', label: 'DOORS Classic gereksinimleri' },
+  { value: 'doorsNext', label: 'DOORS Next gereksinimleri' },
+  { value: 'polarion', label: 'Polarion kayıtları' },
+  { value: 'jenkins', label: 'Jenkins pipeline sonuçları' },
+  { value: 'other', label: 'Diğer kaynaklar' },
+];
+
+const INDEPENDENT_ARTIFACT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'plan', label: 'Plan dokümanları' },
+  { value: 'standard', label: 'Standart / politika kayıtları' },
+  { value: 'review', label: 'Gözden geçirme kayıtları' },
+  { value: 'analysis', label: 'Analiz artefaktları' },
+  { value: 'test', label: 'Test kanıtları' },
+  { value: 'coverage_stmt', label: 'Statement coverage' },
+  { value: 'coverage_dec', label: 'Decision coverage' },
+  { value: 'coverage_mcdc', label: 'MC/DC coverage' },
+  { value: 'trace', label: 'İzlenebilirlik kayıtları' },
+  { value: 'cm_record', label: 'Yapılandırma yönetimi kayıtları' },
+  { value: 'qa_record', label: 'QA denetim kayıtları' },
+  { value: 'problem_report', label: 'Problem raporları' },
+  { value: 'conformity', label: 'Uygunluk bildirimi' },
+];
+
+const toggleSelection = (values: string[], value: string): string[] =>
+  values.includes(value) ? values.filter((entry) => entry !== value) : [...values, value];
 
 const severityStyles: Record<PipelineLogEntry['severity'], string> = {
   info: 'border-slate-700 bg-slate-800/40 text-slate-200',
@@ -67,7 +108,11 @@ export function UploadAndRun({
   canRun,
   jobStates,
   error,
-  lastCompletedAt
+  lastCompletedAt,
+  independentSources,
+  independentArtifacts,
+  onIndependentSourcesChange,
+  onIndependentArtifactsChange,
 }: UploadAndRunProps) {
   const totalSize = useMemo(() => {
     if (!files.length) return '0 B';
@@ -131,7 +176,8 @@ export function UploadAndRun({
                   {isEnabled ? 'Dosyaları sürükleyip bırakın ya da seçin' : 'Token girişi gerekli'}
                 </p>
                 <p className="text-xs text-slate-400">
-                  Desteklenen formatlar: ReqIF, CSV, JUnit, LCOV/Cobertura, JSON, ZIP
+                  Desteklenen formatlar: ReqIF, CSV (gereksinim/tasarım/defect), JUnit, LCOV/Cobertura,
+                  JSON, ZIP (Git/Polyspace/LDRA/VectorCAST), LOG (QA kayıtları)
                 </p>
               </div>
               <div className="text-xs text-slate-500">
@@ -146,6 +192,76 @@ export function UploadAndRun({
               {error}
             </div>
           )}
+          <div className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Bağımsızlık tercihleri
+            </h3>
+            <p className="mt-2 text-xs text-slate-400">
+              DO-178C bağımsızlık gereksinimlerini karşılamak için kaynak ve artefaktları işaretleyin. Seçimler
+              import isteğinde JSON alanları olarak gönderilir ve CLI tarafından `--independent-source`
+              / `--independent-artifact` bayraklarına dönüştürülür.
+            </p>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <fieldset className="space-y-3">
+                <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Bağımsız kaynaklar
+                </legend>
+                <div className="grid gap-2">
+                  {INDEPENDENT_SOURCE_OPTIONS.map((option) => {
+                    const checked = independentSources.includes(option.value);
+                    return (
+                      <label
+                        key={option.value}
+                        className="inline-flex items-start gap-2 text-xs text-slate-300"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                          checked={checked}
+                          disabled={!isEnabled}
+                          onChange={() =>
+                            onIndependentSourcesChange(
+                              toggleSelection(independentSources, option.value),
+                            )
+                          }
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+              <fieldset className="space-y-3">
+                <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Bağımsız artefaktlar
+                </legend>
+                <div className="grid gap-2">
+                  {INDEPENDENT_ARTIFACT_OPTIONS.map((option) => {
+                    const checked = independentArtifacts.includes(option.value);
+                    return (
+                      <label
+                        key={option.value}
+                        className="inline-flex items-start gap-2 text-xs text-slate-300"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                          checked={checked}
+                          disabled={!isEnabled}
+                          onChange={() =>
+                            onIndependentArtifactsChange(
+                              toggleSelection(independentArtifacts, option.value),
+                            )
+                          }
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            </div>
+          </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Pipeline aşamaları</h3>

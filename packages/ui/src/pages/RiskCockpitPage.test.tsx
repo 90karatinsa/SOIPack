@@ -1,7 +1,7 @@
-import { render, screen, waitFor, within, act } from '@testing-library/react';
+import { render, screen, waitFor, within, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import RiskCockpitPage from './RiskCockpitPage';
+import RiskCockpitPage, { runRiskSandboxSimulation } from './RiskCockpitPage';
 import {
   createComplianceEventStream,
   type ComplianceEvent,
@@ -222,6 +222,82 @@ describe('RiskCockpitPage', () => {
     expect(screen.getByText('guarded')).toBeInTheDocument();
     expect(screen.getByText('%23')).toBeInTheDocument();
     expect(screen.getByText(/90% güven aralığı: %12 – %34/)).toBeInTheDocument();
+  });
+
+  it('runs the what-if sandbox simulation when sliders are adjusted', async () => {
+    const sandboxForecasts = [
+      {
+        stage: 'SOI-Alpha',
+        probability: 35,
+        classification: 'guarded' as const,
+        horizonDays: 30,
+        credibleInterval: { lower: 18, upper: 52, confidence: 90 },
+        sparkline: [],
+        updatedAt: '2024-04-10T00:00:00Z',
+      },
+      {
+        stage: 'SOI-Beta',
+        probability: 60,
+        classification: 'elevated' as const,
+        horizonDays: 30,
+        credibleInterval: { lower: 40, upper: 75, confidence: 85 },
+        sparkline: [],
+        updatedAt: '2024-04-10T00:00:00Z',
+      },
+    ];
+
+    mockFetchStageRiskForecast.mockResolvedValueOnce({
+      generatedAt: '2024-04-10T00:00:00Z',
+      forecasts: sandboxForecasts,
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(mockFetchStageRiskForecast).toHaveBeenCalledTimes(1));
+
+    const coverageSlider = await screen.findByLabelText(/Projeksiyon kapsam artışı/i);
+    const failureSlider = screen.getByLabelText(/Test başarısızlığı şiddeti/i);
+
+    fireEvent.change(coverageSlider, { target: { value: '28' } });
+    fireEvent.change(failureSlider, { target: { value: '22' } });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Simülasyonu çalıştır/i }));
+
+    const expected = runRiskSandboxSimulation(sandboxForecasts, {
+      coverageLift: 28,
+      failureRate: 22,
+      iterations: 500,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('sandbox-average-risk')).toHaveTextContent(
+        `%${expected.averageRisk.toFixed(1)}`,
+      ),
+    );
+
+    expect(screen.getByTestId('sandbox-regression-probability')).toHaveTextContent(
+      `%${expected.regressionProbability.toFixed(1)}`,
+    );
+    expect(screen.getByTestId('sandbox-expected-failures')).toHaveTextContent(
+      expected.expectedFailures.toFixed(2),
+    );
+
+    const distributionBars = screen.getAllByTestId('sandbox-distribution-bar');
+    expect(distributionBars).toHaveLength(expected.distribution.length);
+    expect(distributionBars[0]).toHaveAttribute(
+      'data-failures',
+      `${expected.distribution[0].failures}`,
+    );
+
+    const classificationList = screen.getByTestId('sandbox-classifications');
+    const classificationItems = within(classificationList).getAllByRole('listitem');
+    expect(classificationItems).toHaveLength(expected.classifications.length);
+    expected.classifications.forEach((entry, index) => {
+      expect(classificationItems[index]).toHaveTextContent(
+        new RegExp(`${entry.classification}.*%${(entry.share * 100).toFixed(1)}`),
+      );
+    });
   });
 
   it('shows an error when stage risk forecast retrieval fails', async () => {

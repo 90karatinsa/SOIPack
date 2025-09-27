@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { type ChangeEvent, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import { useRbac } from '../providers/RbacProvider';
 import {
@@ -119,6 +119,31 @@ interface StageRiskPanelState {
   error?: string;
 }
 
+interface RiskSandboxParams {
+  coverageLift: number;
+  failureRate: number;
+  iterations: number;
+}
+
+interface RiskSandboxDistributionBucket {
+  failures: number;
+  probability: number;
+}
+
+interface RiskSandboxClassificationShare {
+  classification: 'nominal' | 'guarded' | 'elevated' | 'critical';
+  share: number;
+}
+
+interface RiskSandboxResult {
+  iterations: number;
+  averageRisk: number;
+  regressionProbability: number;
+  expectedFailures: number;
+  distribution: RiskSandboxDistributionBucket[];
+  classifications: RiskSandboxClassificationShare[];
+}
+
 interface RiskCockpitState {
   status: RiskCockpitStatus;
   heatmap: HeatmapCell[];
@@ -176,6 +201,43 @@ const stageClassificationBadgeClasses: Record<string, string> = {
   guarded: 'bg-amber-500/20 text-amber-200',
   elevated: 'bg-orange-500/20 text-orange-200',
   critical: 'bg-rose-500/20 text-rose-200',
+};
+
+const createRandomGenerator = (seed: number): (() => number) => {
+  let state = seed >>> 0;
+  if (state === 0) {
+    state = 0x811c9dc5;
+  }
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+};
+
+const clamp01 = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  if (value >= 1) {
+    return 1;
+  }
+  return value;
+};
+
+const classifyRiskScore = (score: number): 'nominal' | 'guarded' | 'elevated' | 'critical' => {
+  if (score >= 0.75) {
+    return 'critical';
+  }
+  if (score >= 0.5) {
+    return 'elevated';
+  }
+  if (score >= 0.25) {
+    return 'guarded';
+  }
+  return 'nominal';
 };
 
 const calculateHeatmap = (event: ComplianceRiskEvent): { cells: HeatmapCell[]; summary: RiskSummary } => {
@@ -284,6 +346,77 @@ const buildToolAlerts = (summary?: ToolQualificationAlertSummary): ToolAlertStat
     pendingTools: summary.pendingTools,
     alerts,
     updatedAt: formatTimestamp(summary.updatedAt),
+  };
+};
+
+export const runRiskSandboxSimulation = (
+  forecasts: StageRiskForecastEntry[],
+  params: RiskSandboxParams,
+): RiskSandboxResult => {
+  const iterations = Math.max(1, Math.floor(params.iterations));
+  const stages = forecasts.length;
+  const coverageFactor = clamp01(1 - params.coverageLift / 100);
+  const failureFactor = 1 + params.failureRate / 100;
+  const seedBase =
+    Math.round(params.coverageLift * 977 + params.failureRate * 761 + stages * 389 + iterations) >>> 0;
+  const random = createRandomGenerator(seedBase);
+  const distributionCounts = Array.from({ length: stages + 1 }, () => 0);
+  const classificationCounts: Record<'nominal' | 'guarded' | 'elevated' | 'critical', number> = {
+    nominal: 0,
+    guarded: 0,
+    elevated: 0,
+    critical: 0,
+  };
+
+  let accumulatedRisk = 0;
+  let accumulatedFailures = 0;
+  let regressionIterations = 0;
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    let triggered = 0;
+    forecasts.forEach((forecast) => {
+      const baseProbability = clamp01((forecast.probability ?? 0) / 100);
+      const adjusted = clamp01(baseProbability * failureFactor * coverageFactor);
+      if (random() < adjusted) {
+        triggered += 1;
+      }
+    });
+    const riskScore = stages > 0 ? triggered / stages : 0;
+    accumulatedRisk += riskScore;
+    accumulatedFailures += triggered;
+    distributionCounts[triggered] += 1;
+    classificationCounts[classifyRiskScore(riskScore)] += 1;
+    if (triggered > 0) {
+      regressionIterations += 1;
+    }
+  }
+
+  const distribution: RiskSandboxDistributionBucket[] = distributionCounts.map((count, failures) => ({
+    failures,
+    probability: count / iterations,
+  }));
+
+  const classifications: RiskSandboxClassificationShare[] = (
+    Object.entries(classificationCounts) as Array<
+      ['nominal' | 'guarded' | 'elevated' | 'critical', number]
+    >
+  )
+    .map(([classification, count]) => ({
+      classification,
+      share: count / iterations,
+    }))
+    .sort((a, b) => {
+      const order: Record<string, number> = { nominal: 0, guarded: 1, elevated: 2, critical: 3 };
+      return order[a.classification] - order[b.classification];
+    });
+
+  return {
+    iterations,
+    averageRisk: (accumulatedRisk / iterations) * 100,
+    regressionProbability: (regressionIterations / iterations) * 100,
+    expectedFailures: stages > 0 ? accumulatedFailures / iterations : 0,
+    distribution,
+    classifications,
   };
 };
 
@@ -569,6 +702,14 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     status: 'idle',
     forecasts: [],
   });
+  const [sandboxParams, setSandboxParams] = useState<RiskSandboxParams>({
+    coverageLift: 12,
+    failureRate: 8,
+    iterations: 500,
+  });
+  const [sandboxResult, setSandboxResult] = useState<RiskSandboxResult | null>(null);
+  const [sandboxLastRun, setSandboxLastRun] = useState<string | null>(null);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
 
   const hasRoles = roles.size > 0;
   const canViewRisk = !hasRoles || roles.has('risk:read') || roles.has('admin');
@@ -655,6 +796,26 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
   }, [proofExplorer]);
   const parsedProof = useMemo(() => parseMerkleProof(selectedProofEntry?.proof), [selectedProofEntry?.proof]);
   const proofRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
+  const sandboxLastRunLabel = useMemo(() => formatTimestamp(sandboxLastRun ?? undefined), [sandboxLastRun]);
+
+  const handleSandboxRun = () => {
+    if (!stageRisk.forecasts.length) {
+      setSandboxError('Simülasyonu çalıştırmak için risk tahmini gereklidir.');
+      setSandboxResult(null);
+      setSandboxLastRun(null);
+      return;
+    }
+    const result = runRiskSandboxSimulation(stageRisk.forecasts, sandboxParams);
+    setSandboxResult(result);
+    setSandboxLastRun(new Date().toISOString());
+    setSandboxError(null);
+  };
+
+  const handleSandboxParamChange = (field: keyof RiskSandboxParams) =>
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const value = Number(event.target.value);
+      setSandboxParams((prev) => ({ ...prev, [field]: Number.isFinite(value) ? value : prev[field] }));
+    };
 
   useEffect(() => {
     if (!isAuthorized) {
@@ -900,6 +1061,137 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                       })}
                     </ul>
                   )}
+                </div>
+                <div
+                  data-testid="risk-sandbox-card"
+                  className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"
+                >
+                  <header className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                    <div>
+                      <h4 className="text-sm font-semibold text-white">What-if Risk Sandbox</h4>
+                      <p className="text-xs text-slate-400">
+                        Kapsam ve test başarısızlığı varsayımlarını değiştirerek olası regresyon dağılımlarını
+                        istemci tarafında simüle edin.
+                      </p>
+                    </div>
+                    {sandboxLastRunLabel && (
+                      <p className="text-xs text-slate-400">Son çalıştırma: {sandboxLastRunLabel}</p>
+                    )}
+                  </header>
+                  <div className="mt-3 space-y-4">
+                    <div>
+                      <label
+                        htmlFor="sandbox-coverage"
+                        className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400"
+                      >
+                        Projeksiyon kapsam artışı
+                        <span className="text-slate-200">+%{sandboxParams.coverageLift}</span>
+                      </label>
+                      <input
+                        id="sandbox-coverage"
+                        type="range"
+                        min={0}
+                        max={50}
+                        step={1}
+                        value={sandboxParams.coverageLift}
+                        onChange={handleSandboxParamChange('coverageLift')}
+                        className="mt-2 w-full"
+                      />
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        Daha yüksek kapsam artışı değerleri regresyon olasılığının azalacağını varsayar.
+                      </p>
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="sandbox-failure"
+                        className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400"
+                      >
+                        Test başarısızlığı şiddeti
+                        <span className="text-slate-200">+%{sandboxParams.failureRate}</span>
+                      </label>
+                      <input
+                        id="sandbox-failure"
+                        type="range"
+                        min={0}
+                        max={40}
+                        step={1}
+                        value={sandboxParams.failureRate}
+                        onChange={handleSandboxParamChange('failureRate')}
+                        className="mt-2 w-full"
+                      />
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        Daha yüksek şiddet varsayımı beklenen başarısızlık frekansını artırır.
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <button
+                        type="button"
+                        onClick={handleSandboxRun}
+                        className="inline-flex items-center justify-center rounded-full bg-brand px-4 py-2 text-sm font-semibold text-slate-950 shadow shadow-brand/40 transition hover:bg-brand/90"
+                      >
+                        Simülasyonu çalıştır
+                      </button>
+                      <p className="text-[11px] text-slate-400">İterasyon: {sandboxParams.iterations.toLocaleString('tr-TR')}</p>
+                    </div>
+                    {sandboxError && (
+                      <p className="text-xs text-rose-300">{sandboxError}</p>
+                    )}
+                    {sandboxResult && (
+                      <div className="space-y-4" data-testid="risk-sandbox-results">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
+                            <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Özet</h5>
+                            <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                              <li data-testid="sandbox-average-risk">
+                                Tahmini ortalama risk: %{sandboxResult.averageRisk.toFixed(1)}
+                              </li>
+                              <li data-testid="sandbox-regression-probability">
+                                Regresyon olasılığı: %{sandboxResult.regressionProbability.toFixed(1)}
+                              </li>
+                              <li data-testid="sandbox-expected-failures">
+                                Beklenen başarısız aşama: {sandboxResult.expectedFailures.toFixed(2)} /{' '}
+                                {Math.max(1, stageRisk.forecasts.length)}
+                              </li>
+                            </ul>
+                          </div>
+                          <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
+                            <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Sınıf payları</h5>
+                            <ul className="mt-2 space-y-1 text-xs text-slate-300" data-testid="sandbox-classifications">
+                              {sandboxResult.classifications.map((entry) => (
+                                <li key={entry.classification} className="flex items-center justify-between">
+                                  <span className="capitalize">{entry.classification}</span>
+                                  <span>%{(entry.share * 100).toFixed(1)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                        <div>
+                          <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Regresyon dağılımı</h5>
+                          <ul className="mt-2 space-y-2" data-testid="sandbox-distribution">
+                            {sandboxResult.distribution.map((bucket) => (
+                              <li key={`distribution-${bucket.failures}`} className="text-xs text-slate-300">
+                                <div className="flex items-center justify-between">
+                                  <span>{bucket.failures} regresyon</span>
+                                  <span>%{(bucket.probability * 100).toFixed(1)}</span>
+                                </div>
+                                <div className="mt-1 h-2 rounded-full bg-slate-800/80">
+                                  <div
+                                    data-testid="sandbox-distribution-bar"
+                                    data-failures={bucket.failures}
+                                    className="h-2 rounded-full bg-brand/60"
+                                    style={{
+                                      width: `${Math.min(100, Math.max(0, bucket.probability * 100)).toFixed(1)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {canViewDelta && deltaPanel && (
                   <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30">

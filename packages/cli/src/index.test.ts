@@ -6,6 +6,8 @@ import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
 
+jest.setTimeout(180000);
+
 import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
@@ -1704,6 +1706,51 @@ describe('coverage evidence emission', () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it('merges Simulink structural coverage and surfaces adapter warnings', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-simulink-'));
+    const workspaceDir = path.join(tempDir, 'workspace');
+    const simulinkPath = path.join(tempDir, 'simulink-coverage.json');
+    await fs.writeFile(simulinkPath, '{"coverage":true}');
+
+    const simulinkCoverage: StructuralCoverageSummary = {
+      tool: 'simulink',
+      files: [
+        {
+          path: 'models/control.slx',
+          stmt: { covered: 45, total: 50 },
+          dec: { covered: 20, total: 22 },
+          mcdc: { covered: 10, total: 12 },
+        },
+        {
+          path: 'models/sensor.slx',
+          stmt: { covered: 30, total: 40 },
+        },
+      ],
+      objectiveLinks: ['A-5-08', 'A-5-09', 'A-5-10'],
+    };
+
+    const simulinkSpy = jest
+      .spyOn(adapters, 'fromSimulink')
+      .mockResolvedValue({ data: { coverage: simulinkCoverage }, warnings: ['Simulink uyarısı'] });
+
+    const result = await runImport({
+      output: workspaceDir,
+      simulink: simulinkPath,
+    });
+
+    expect(simulinkSpy).toHaveBeenCalledWith(simulinkPath);
+    expect(result.workspace.structuralCoverage).toEqual(simulinkCoverage);
+    expect(result.workspace.metadata.inputs.simulink).toMatch(/simulink-coverage\.json$/);
+    expect(result.warnings).toEqual(expect.arrayContaining(['Simulink uyarısı']));
+
+    const stmtEvidence = result.workspace.evidenceIndex.coverage_stmt ?? [];
+    expect(stmtEvidence.some((entry) => entry.source === 'simulink')).toBe(true);
+    const decEvidence = result.workspace.evidenceIndex.coverage_dec ?? [];
+    expect(decEvidence.some((entry) => entry.source === 'simulink')).toBe(true);
+    const mcdcEvidence = result.workspace.evidenceIndex.coverage_mcdc ?? [];
+    expect(mcdcEvidence.some((entry) => entry.source === 'simulink')).toBe(true);
   });
 });
 

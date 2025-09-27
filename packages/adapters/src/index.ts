@@ -17,6 +17,7 @@ export type { GitImportOptions } from './git';
 export { fromPolyspace } from './polyspace';
 export { fromLDRA } from './ldra';
 export { fromVectorCAST } from './vectorcast';
+export { fromSimulink } from './simulink';
 export { importQaLogs } from './qaLogs';
 export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions } from './polarion';

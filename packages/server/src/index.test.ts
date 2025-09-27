@@ -3143,6 +3143,236 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('passes design, defect, and tool artifacts through to import jobs', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    let capturedOptions: cli.ImportOptions | undefined;
+    runImportSpy.mockImplementation(async (options) => {
+      capturedOptions = options;
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        findings: [],
+        builds: [],
+        designs: [],
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+          version: buildSnapshotVersion(),
+        },
+      };
+      return {
+        warnings: [],
+        workspace,
+        workspacePath: path.join(options.output, 'workspace.json'),
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const projectVersion = `artifacts-${Date.now()}`;
+
+    try {
+      const response = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('jiraDefects', Buffer.from('defect-a'), {
+          filename: 'defects-1.csv',
+          contentType: 'text/csv',
+        })
+        .attach('jiraDefects', Buffer.from('defect-b'), {
+          filename: 'defects-2.csv',
+          contentType: 'text/csv',
+        })
+        .attach('designCsv', Buffer.from('id,title\n1,Design\n'), {
+          filename: 'designs.csv',
+          contentType: 'text/csv',
+        })
+        .attach('polyspace', Buffer.from('polyspace-data'), {
+          filename: 'polyspace.zip',
+          contentType: 'application/zip',
+        })
+        .attach('ldra', Buffer.from('ldra-data'), {
+          filename: 'ldra.zip',
+          contentType: 'application/zip',
+        })
+        .attach('vectorcast', Buffer.from('vectorcast-data'), {
+          filename: 'vectorcast.zip',
+          contentType: 'application/zip',
+        })
+        .attach('qaLogs', Buffer.from('qa-log-1'), {
+          filename: 'qa-1.log',
+          contentType: 'text/plain',
+        })
+        .attach('qaLogs', Buffer.from('qa-log-2'), {
+          filename: 'qa-2.log',
+          contentType: 'text/plain',
+        })
+        .field('projectName', 'Artifact Demo')
+        .field('projectVersion', projectVersion)
+        .field('independentSources', JSON.stringify(['source-a', 'source-b']))
+        .field('independentArtifacts', JSON.stringify(['artifact-a']))
+        .expect(202);
+
+      expect(response.body.id).toMatch(/^[a-f0-9]{16}$/);
+
+      const jobId = response.body.id as string;
+      const job = await waitForJobCompletion(app, token, jobId);
+      expect(job.status).toBe('completed');
+
+      expect(runImportSpy).toHaveBeenCalledTimes(1);
+      expect(capturedOptions).toBeDefined();
+
+      const expectedUploadBase = path.join(storageDir, 'uploads', tenantId, jobId);
+      expect(capturedOptions?.designCsv).toBe(
+        path.join(expectedUploadBase, 'designCsv', 'designs.csv'),
+      );
+      expect(capturedOptions?.jiraDefects).toEqual([
+        path.join(expectedUploadBase, 'jiraDefects', 'defects-1.csv'),
+        path.join(expectedUploadBase, 'jiraDefects', 'defects-2.csv'),
+      ]);
+      expect(capturedOptions?.polyspace).toBe(
+        path.join(expectedUploadBase, 'polyspace', 'polyspace.zip'),
+      );
+      expect(capturedOptions?.ldra).toBe(path.join(expectedUploadBase, 'ldra', 'ldra.zip'));
+      expect(capturedOptions?.vectorcast).toBe(
+        path.join(expectedUploadBase, 'vectorcast', 'vectorcast.zip'),
+      );
+      expect(capturedOptions?.qaLogs).toEqual([
+        path.join(expectedUploadBase, 'qaLogs', 'qa-1.log'),
+        path.join(expectedUploadBase, 'qaLogs', 'qa-2.log'),
+      ]);
+      expect(capturedOptions?.independentSources).toEqual(['source-a', 'source-b']);
+      expect(capturedOptions?.independentArtifacts).toEqual(['artifact-a']);
+
+      const metadataPath = path.join(storageDir, 'workspaces', tenantId, jobId, 'job.json');
+      const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+      const metadata = JSON.parse(metadataContent) as {
+        params: {
+          files?: Record<string, string[]>;
+          independentSources?: string[] | null;
+          independentArtifacts?: string[] | null;
+        };
+      };
+
+      expect(metadata.params.files?.designCsv).toEqual(['designs.csv']);
+      expect(metadata.params.files?.jiraDefects).toEqual(['defects-1.csv', 'defects-2.csv']);
+      expect(metadata.params.files?.polyspace).toEqual(['polyspace.zip']);
+      expect(metadata.params.files?.ldra).toEqual(['ldra.zip']);
+      expect(metadata.params.files?.vectorcast).toEqual(['vectorcast.zip']);
+      expect(metadata.params.files?.qaLogs).toEqual(['qa-1.log', 'qa-2.log']);
+      expect(metadata.params.independentSources).toEqual(['source-a', 'source-b']);
+      expect(metadata.params.independentArtifacts).toEqual(['artifact-a']);
+    } finally {
+      runImportSpy.mockRestore();
+    }
+  });
+
+  it('rejects invalid independence declarations for import jobs', async () => {
+    const invalidSources = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .field('independentSources', '{"not":"array"}')
+      .expect(400);
+
+    expect(invalidSources.body.error.code).toBe('INVALID_REQUEST');
+
+    const invalidArtifacts = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .field('independentArtifacts', JSON.stringify(['', 'artifact']))
+      .expect(400);
+
+    expect(invalidArtifacts.body.error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('passes plan configuration uploads and overrides to report jobs', async () => {
+    const runReportSpy = jest.spyOn(cli, 'runReport');
+    let capturedOptions: cli.ReportOptions | undefined;
+    type ReportResult = Awaited<ReturnType<typeof cli.runReport>>;
+    runReportSpy.mockImplementation(async (options) => {
+      capturedOptions = options;
+      const result: ReportResult = {
+        complianceHtml: path.join(options.output, 'compliance.html'),
+        complianceJson: path.join(options.output, 'compliance.json'),
+        traceHtml: path.join(options.output, 'trace.html'),
+        gapsHtml: path.join(options.output, 'gaps.html'),
+        traceCsv: path.join(options.output, 'traces.csv'),
+        plans: {} as ReportResult['plans'],
+        warnings: [] as ReportResult['warnings'],
+      };
+      return result;
+    });
+
+    const planConfigBuffer = Buffer.from(JSON.stringify({ plan: 'demo' }), 'utf8');
+    const overrides = { include: ['goal-1'], exclude: ['goal-2'] };
+
+    try {
+      const importResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Plan Config Project')
+        .field('projectVersion', '1.0.0')
+        .expect(202);
+
+      const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+
+      const analyzeResponse = await request(app)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId: importJob.id })
+        .expect(202);
+
+      const analyzeJob = await waitForJobCompletion(app, token, analyzeResponse.body.id);
+
+      const reportResponse = await request(app)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .field('analysisId', analyzeJob.id)
+        .field('planOverrides', JSON.stringify(overrides))
+        .attach('planConfig', planConfigBuffer, {
+          filename: 'plan.json',
+          contentType: 'application/json',
+        })
+        .expect(202);
+
+      const reportJob = await waitForJobCompletion(app, token, reportResponse.body.id);
+
+      expect(runReportSpy).toHaveBeenCalledTimes(1);
+      expect(capturedOptions).toBeDefined();
+
+      const expectedUploadBase = path.join(storageDir, 'uploads', tenantId, reportJob.id);
+      expect(capturedOptions?.planConfig).toBe(
+        path.join(expectedUploadBase, 'planConfig', 'plan.json'),
+      );
+      expect(capturedOptions?.planOverrides).toEqual(overrides);
+
+      const metadataPath = path.join(storageDir, 'reports', tenantId, reportJob.id, 'job.json');
+      const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+      const metadata = JSON.parse(metadataContent) as {
+        params: { planConfig?: string | null; planOverrides?: Record<string, unknown> | null };
+      };
+
+      expect(metadata.params.planConfig).toBe('plan.json');
+      expect(metadata.params.planOverrides).toEqual(overrides);
+    } finally {
+      runReportSpy.mockRestore();
+    }
+  });
+
   it('rejects new jobs once the tenant queue limit is reached', async () => {
     const limitedRegistry = new Registry();
     const runImportSpy = jest.spyOn(cli, 'runImport');
