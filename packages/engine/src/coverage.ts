@@ -32,10 +32,16 @@ export interface JsonMcdcEntry {
   total: number;
 }
 
+export interface JsonFunctionEntry {
+  line: number;
+  hit: number;
+}
+
 export interface JsonCoverageFile {
   path: string;
   statements: JsonStatementEntry[];
   branches?: JsonBranchEntry[];
+  functions?: JsonFunctionEntry[];
   mcdc?: JsonMcdcEntry[];
 }
 
@@ -51,6 +57,7 @@ export interface CoverageAggregationResult {
 interface IntermediateTotals {
   statements: { covered: number; total: number };
   branches: { covered: number; total: number };
+  functions: { covered: number; total: number };
   mcdc: { covered: number; total: number };
 }
 
@@ -82,6 +89,7 @@ const mergeTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => 
   const totals: IntermediateTotals = {
     statements: { covered: 0, total: 0 },
     branches: { covered: 0, total: 0 },
+    functions: { covered: 0, total: 0 },
     mcdc: { covered: 0, total: 0 },
   };
 
@@ -92,6 +100,11 @@ const mergeTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => 
     if (file.branches) {
       totals.branches.covered += file.branches.covered;
       totals.branches.total += file.branches.total;
+    }
+
+    if (file.functions) {
+      totals.functions.covered += file.functions.covered;
+      totals.functions.total += file.functions.total;
     }
 
     if (file.mcdc) {
@@ -108,6 +121,10 @@ const mergeTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => 
     result.branches = toMetric(totals.branches);
   }
 
+  if (totals.functions.total > 0) {
+    result.functions = toMetric(totals.functions);
+  }
+
   if (totals.mcdc.total > 0) {
     result.mcdc = toMetric(totals.mcdc);
   }
@@ -119,6 +136,7 @@ const buildFileSummary = (
   path: string,
   statements: { covered: number; total: number },
   branches?: { covered: number; total: number },
+  functions?: { covered: number; total: number },
   mcdc?: { covered: number; total: number },
 ): FileCoverageSummary => {
   const summary: FileCoverageSummary = {
@@ -128,6 +146,10 @@ const buildFileSummary = (
 
   if (branches) {
     summary.branches = toMetric(branches);
+  }
+
+  if (functions) {
+    summary.functions = toMetric(functions);
   }
 
   if (mcdc) {
@@ -155,6 +177,9 @@ const computeJsonFileCoverage = (
     { covered: 0, total: 0 },
   );
 
+  const functions = (file.functions ?? []).filter((entry) => !shouldIgnoreLine(entry.line, ignoreRanges));
+  const functionCovered = functions.filter((entry) => entry.hit > 0).length;
+
   const mcdcEntries = (file.mcdc ?? []).filter((entry) => !shouldIgnoreLine(entry.line, ignoreRanges));
   const mcdcTotals = mcdcEntries.reduce(
     (acc, entry) => {
@@ -169,13 +194,19 @@ const computeJsonFileCoverage = (
     warnings.add(`MC/DC kapsam verisi eksik: ${file.path}`);
   }
 
+  if ((file.functions?.length ?? 0) === 0 || functions.length === 0) {
+    warnings.add(`Fonksiyon kapsam verisi eksik: ${file.path}`);
+  }
+
   const branchSummary = branchTotals.total > 0 ? branchTotals : undefined;
+  const functionSummary = functions.length > 0 ? { covered: functionCovered, total: functions.length } : undefined;
   const mcdcSummary = mcdcTotals.total > 0 ? mcdcTotals : undefined;
 
   return buildFileSummary(
     file.path,
     { covered: statementCovered, total: statements.length },
     branchSummary,
+    functionSummary,
     mcdcSummary,
   );
 };
@@ -195,6 +226,10 @@ export const aggregateJsonCoverage = (
     files,
     totals: mergeTotals(files),
   };
+
+  if (!summary.totals.functions) {
+    warnings.add('Fonksiyon kapsam verisi raporda bulunamadı.');
+  }
 
   if (!summary.totals.mcdc) {
     warnings.add('MC/DC kapsam verisi raporda bulunamadı.');
@@ -259,6 +294,28 @@ export const aggregateCoberturaCoverage = (
       const statementTotal = filtered.length;
       const statementCovered = filtered.filter((line) => line.hits > 0).length;
 
+      const methods = toArray(cls.methods?.method).map((method) => ({
+        lines: toArray(method.lines?.line).map((line) => ({
+          number: Number(line.number),
+          hits: Number(line.hits ?? 0),
+        })),
+      }));
+
+      const functionTotals = methods.reduce(
+        (acc, method) => {
+          const methodLines = method.lines.filter((line) => !shouldIgnoreLine(line.number, ignoreRanges));
+          if (methodLines.length === 0) {
+            return acc;
+          }
+          acc.total += 1;
+          if (methodLines.some((line) => line.hits > 0)) {
+            acc.covered += 1;
+          }
+          return acc;
+        },
+        { covered: 0, total: 0 },
+      );
+
       const branchTotals = filtered
         .map((line) => (line.branch ? parseConditionCoverage(line.condition) : undefined))
         .filter((value): value is { covered: number; total: number } => value !== undefined)
@@ -275,6 +332,10 @@ export const aggregateCoberturaCoverage = (
         warnings.add(`Karar kapsamı verisi bulunamadı: ${filename}`);
       }
 
+      if (functionTotals.total === 0) {
+        warnings.add(`Fonksiyon kapsam verisi eksik: ${filename}`);
+      }
+
       warnings.add(`MC/DC kapsam verisi eksik: ${filename}`);
 
       files.push(
@@ -282,6 +343,7 @@ export const aggregateCoberturaCoverage = (
           filename,
           { covered: statementCovered, total: statementTotal },
           branchTotals.total > 0 ? branchTotals : undefined,
+          functionTotals.total > 0 ? functionTotals : undefined,
           undefined,
         ),
       );
@@ -292,6 +354,10 @@ export const aggregateCoberturaCoverage = (
     files,
     totals: mergeTotals(files),
   };
+
+  if (!summary.totals.functions) {
+    warnings.add('Fonksiyon kapsam verisi raporda bulunamadı.');
+  }
 
   if (!summary.totals.mcdc) {
     warnings.add('MC/DC kapsam verisi raporda bulunamadı.');

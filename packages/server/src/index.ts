@@ -162,6 +162,46 @@ export const __clearChangeRequestCacheForTesting = (): void => {
   changeRequestCache.clear();
 };
 
+type CoverageSummaryPayload = Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>;
+
+interface ComplianceSummaryResponsePayload {
+  computedAt: string;
+  latest: {
+    id: string;
+    createdAt: string;
+    project?: string;
+    level?: string;
+    generatedAt?: string;
+    summary: {
+      total: number;
+      covered: number;
+      partial: number;
+      missing: number;
+    };
+    coverage: CoverageSummaryPayload;
+    gaps: {
+      missingIds: string[];
+      partialIds: string[];
+      openObjectiveCount: number;
+    };
+  } | null;
+}
+
+interface ComplianceSummaryCacheEntry {
+  recordId?: string;
+  recordCreatedAt?: string;
+  payload: ComplianceSummaryResponsePayload;
+  expiresAt: number;
+}
+
+const COMPLIANCE_SUMMARY_CACHE_TTL_MS = 60_000;
+
+const complianceSummaryCacheRegistry = new Set<Map<string, ComplianceSummaryCacheEntry>>();
+
+export const __clearComplianceSummaryCacheForTesting = (): void => {
+  complianceSummaryCacheRegistry.forEach((cache) => cache.clear());
+};
+
 interface AuthContext {
   token: string;
   tenantId: string;
@@ -2970,13 +3010,6 @@ export const createServer = (config: ServerConfig): Express => {
     summary: ComplianceSummary;
   }
 
-  interface CoverageSummaryPayload {
-    statements?: number;
-    branches?: number;
-    functions?: number;
-    lines?: number;
-  }
-
   interface ComplianceRecord {
     id: string;
     tenantId: string;
@@ -2990,6 +3023,8 @@ export const createServer = (config: ServerConfig): Express => {
   const evidenceStore = new Map<string, Map<string, EvidenceRecord>>();
   const evidenceHashIndex = new Map<string, Map<string, string>>();
   const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
+  const complianceSummaryCache = new Map<string, ComplianceSummaryCacheEntry>();
+  complianceSummaryCacheRegistry.add(complianceSummaryCache);
   const tenantSnapshotVersions = new Map<string, SnapshotVersion>();
   const tenantDataRoot = path.join(directories.base, 'tenants');
   const TENANT_EVIDENCE_FILE = 'evidence.json';
@@ -3159,6 +3194,7 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const persistTenantCompliance = (tenantId: string): void => {
+    complianceSummaryCache.delete(tenantId);
     const store = complianceStore.get(tenantId);
     if (!store) {
       return;
@@ -3299,6 +3335,68 @@ export const createServer = (config: ServerConfig): Express => {
       complianceStore.set(tenantId, store);
     }
     return store;
+  };
+
+  const getLatestComplianceRecord = (tenantId: string): ComplianceRecord | undefined => {
+    const store = complianceStore.get(tenantId);
+    if (!store || store.size === 0) {
+      return undefined;
+    }
+    let latest: ComplianceRecord | undefined;
+    store.forEach((record) => {
+      if (!latest || latest.createdAt < record.createdAt) {
+        latest = record;
+      }
+    });
+    return latest;
+  };
+
+  const buildComplianceSummaryPayload = (
+    record: ComplianceRecord | undefined,
+    computedAtIso: string,
+  ): ComplianceSummaryResponsePayload => {
+    if (!record) {
+      return { computedAt: computedAtIso, latest: null };
+    }
+
+    const missingIds: string[] = [];
+    const partialIds: string[] = [];
+
+    record.matrix.requirements.forEach((requirement) => {
+      if (requirement.status === 'missing') {
+        missingIds.push(requirement.id);
+        return;
+      }
+      if (requirement.status === 'partial') {
+        partialIds.push(requirement.id);
+      }
+    });
+
+    const coverage: CoverageSummaryPayload = {};
+    (['statements', 'branches', 'functions', 'lines'] as Array<keyof CoverageSummaryPayload>).forEach((key) => {
+      const value = record.coverage[key];
+      if (value !== undefined) {
+        coverage[key] = value;
+      }
+    });
+
+    return {
+      computedAt: computedAtIso,
+      latest: {
+        id: record.id,
+        createdAt: record.createdAt,
+        project: record.matrix.project,
+        level: record.matrix.level,
+        generatedAt: record.matrix.generatedAt,
+        summary: record.matrix.summary,
+        coverage,
+        gaps: {
+          missingIds,
+          partialIds,
+          openObjectiveCount: missingIds.length + partialIds.length,
+        },
+      },
+    };
   };
 
   const serializeEvidenceRecord = (
@@ -5409,6 +5507,40 @@ export const createServer = (config: ServerConfig): Express => {
       tenantSnapshotVersions.set(tenantId, frozen);
       persistTenantSnapshotVersion(tenantId, frozen);
       res.json({ version: frozen });
+    }),
+  );
+
+  app.get(
+    '/v1/compliance/summary',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+
+      const now = Date.now();
+      const ttlSeconds = Math.floor(COMPLIANCE_SUMMARY_CACHE_TTL_MS / 1000);
+      const latest = getLatestComplianceRecord(tenantId);
+      const cached = complianceSummaryCache.get(tenantId);
+
+      if (
+        cached &&
+        cached.expiresAt > now &&
+        ((latest && cached.recordId === latest.id && cached.recordCreatedAt === latest.createdAt) ||
+          (!latest && cached.recordId === undefined))
+      ) {
+        res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(cached.payload);
+        return;
+      }
+
+      const payload = buildComplianceSummaryPayload(latest, new Date(now).toISOString());
+      complianceSummaryCache.set(tenantId, {
+        recordId: latest?.id,
+        recordCreatedAt: latest?.createdAt,
+        payload,
+        expiresAt: now + COMPLIANCE_SUMMARY_CACHE_TTL_MS,
+      });
+
+      res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(payload);
     }),
   );
 

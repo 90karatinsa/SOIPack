@@ -39,6 +39,7 @@ import {
   createServer,
   getServerLifecycle,
   __clearChangeRequestCacheForTesting,
+  __clearComplianceSummaryCacheForTesting,
   type ServerConfig,
 } from './index';
 import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
@@ -1604,6 +1605,10 @@ describe('@soipack/server REST API', () => {
       .sign(privateKey);
   };
 
+  afterEach(() => {
+    __clearComplianceSummaryCacheForTesting();
+  });
+
   beforeAll(async () => {
     storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-server-test-'));
     signingKeyPath = path.join(storageDir, 'signing-key.pem');
@@ -1969,6 +1974,72 @@ describe('@soipack/server REST API', () => {
       .expect(400);
 
     expect(response.body.error.code).toBe('HASH_MISMATCH');
+  });
+
+  it('serves a cached compliance summary for the latest record', async () => {
+    const token = await createAccessToken();
+
+    const emptySummary = await request(app)
+      .get('/v1/compliance/summary')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(emptySummary.body.latest).toBeNull();
+    expect(typeof emptySummary.body.computedAt).toBe('string');
+
+    const matrix = {
+      project: 'Summary Demo',
+      level: 'B',
+      generatedAt: '2024-10-01T08:00:00Z',
+      requirements: [
+        { id: 'REQ-100', status: 'covered' as const, evidenceIds: [] },
+        { id: 'REQ-200', status: 'partial' as const, evidenceIds: [] },
+        { id: 'REQ-300', status: 'missing' as const, evidenceIds: [] },
+      ],
+      summary: { total: 3, covered: 1, partial: 1, missing: 1 },
+    };
+
+    const coverage = { statements: 82.5, functions: 61.25 };
+    const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, { release: '2024.10' });
+    const complianceHash = createHash('sha256').update(JSON.stringify(canonicalPayload)).digest('hex');
+
+    const complianceResponse = await request(app)
+      .post('/compliance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        sha256: complianceHash,
+        matrix,
+        coverage,
+        metadata: { release: '2024.10' },
+      })
+      .expect(201);
+
+    const summaryResponse = await request(app)
+      .get('/v1/compliance/summary')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(summaryResponse.headers['cache-control']).toBe('private, max-age=60');
+    expect(summaryResponse.body.latest).toMatchObject({
+      id: complianceResponse.body.id,
+      project: 'Summary Demo',
+      level: 'B',
+      summary: matrix.summary,
+      coverage: expect.objectContaining({ statements: 82.5, functions: 61.25 }),
+      gaps: {
+        missingIds: ['REQ-300'],
+        partialIds: ['REQ-200'],
+        openObjectiveCount: 2,
+      },
+    });
+
+    const cachedResponse = await request(app)
+      .get('/v1/compliance/summary')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(cachedResponse.body.computedAt).toBe(summaryResponse.body.computedAt);
+    expect(cachedResponse.body.latest).toEqual(summaryResponse.body.latest);
   });
 
   it('rejects evidence uploads after configuration freeze', async () => {

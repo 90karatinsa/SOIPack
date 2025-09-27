@@ -15,14 +15,55 @@ const HEADER_CANDIDATES = {
 
 type HeaderKey = keyof typeof HEADER_CANDIDATES;
 
+export type QaLogStatus = 'approved' | 'pending' | 'rejected';
+
 export interface QaLogEntry {
   objectiveId: string;
   artifact?: string;
   reviewer?: string;
-  status: string;
+  status: QaLogStatus;
   completedAt?: string;
   notes?: string;
 }
+
+const stripDiacritics = (value: string): string => value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+
+const normalizeStatusToken = (value: string): string =>
+  stripDiacritics(value)
+    .replace(/[_-]/g, ' ')
+    .replace(/[.,;:]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const STATUS_ALIASES: Record<QaLogStatus, string[]> = {
+  approved: ['approved', 'approve', 'approved.', 'accepted', 'pass', 'passed', 'compliant', 'onaylandi', 'onaylanmis'],
+  pending: [
+    'pending',
+    'in review',
+    'under review',
+    'awaiting',
+    'open',
+    'beklemede',
+    'bekliyor',
+    'gozden gecirme',
+    'taslak',
+  ],
+  rejected: ['rejected', 'reject', 'declined', 'failed', 'fail', 'red', 'reddedildi', 'uygunsuz', 'olumsuz'],
+};
+
+const normalizeStatus = (value: string): QaLogStatus | undefined => {
+  const token = normalizeStatusToken(value);
+  if (!token) {
+    return undefined;
+  }
+  for (const [status, aliases] of Object.entries(STATUS_ALIASES) as Array<[QaLogStatus, string[]]>) {
+    if (aliases.includes(token)) {
+      return status;
+    }
+  }
+  return undefined;
+};
 
 const normalizeHeader = (value: string): string => value.trim().toLowerCase();
 
@@ -89,11 +130,21 @@ export const importQaLogs = async (filePath: string): Promise<ParseResult<QaLogE
       return;
     }
 
+    let canonicalStatus: QaLogStatus = 'pending';
     if (!status) {
       warnings.push(`Row ${rowIndex + 2} is missing a status.`);
+    } else {
+      const normalizedStatus = normalizeStatus(status);
+      if (normalizedStatus) {
+        canonicalStatus = normalizedStatus;
+      } else {
+        warnings.push(
+          `Row ${rowIndex + 2} has unknown status "${status}"; defaulting to "pending". Accepted values: approved/pending/rejected.`,
+        );
+      }
     }
 
-    const entry: QaLogEntry = { objectiveId, status };
+    const entry: QaLogEntry = { objectiveId, status: canonicalStatus };
 
     const artifact = coerceValue(
       headerIndexes.artifact !== undefined ? normalizedRow[headerIndexes.artifact] : undefined,

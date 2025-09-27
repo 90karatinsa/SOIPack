@@ -104,7 +104,8 @@ Dosya: `packages/adapters/src/qaLogs.ts`
 
 - `importQaLogs(path)` fonksiyonu QA denetim imza CSV'lerini satır bazlı olarak işler.
 - Gerekli sütunlar: `Objective` (veya `Objective ID`) ve `Status`. Opsiyonel sütunlar `Artifact`, `Reviewer`, `Completed At`, `Notes` olarak eşleştirilir.
-- Her satır `qa_record` kanıt özeti üretir; boş satırlar atlanır, eksik sütunlar uyarı olarak döndürülür.
+- Durum değerleri `approved`/`pending`/`rejected` biçiminde normalize edilir; `APPROVED`, `Beklemede`, `Reddedildi`, `in-review` gibi farklı yazımlar aynı kanonik değere eşlenir. Bilinmeyen ifadeler `pending` olarak varsayılır ve uyarı mesajı üretilir.
+- Her satır `qa_record` kanıt özeti üretir; boş satırlar atlanır, eksik sütunlar veya tanınmayan durumlar uyarı olarak döndürülür.
 - CLI `--qa` bayrağıyla verilen dosyaları okuyup QA kayıtlarını A-7 hedeflerine otomatik olarak bağlar.
 
 ## Statik analiz bulguları

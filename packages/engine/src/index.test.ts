@@ -1,3 +1,5 @@
+jest.mock('fast-xml-parser');
+
 import { createHash } from 'crypto';
 
 import { CoverageReport, TestResult, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
@@ -487,6 +489,11 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.stats.designs).toEqual({ total: 2 });
   });
 
+  it('includes an empty independence summary when all evidence is independent', () => {
+    expect(snapshot.independenceSummary.objectives).toHaveLength(0);
+    expect(snapshot.independenceSummary.totals).toEqual({ covered: 0, partial: 0, missing: 0 });
+  });
+
   it('omits risk blocks by default for backward compatibility', () => {
     expect(snapshot.risk).toBeUndefined();
   });
@@ -595,6 +602,44 @@ describe('Compliance snapshot generation', () => {
     expect(frozenSnapshot.version.isFrozen).toBe(true);
     expect(frozenSnapshot.version.fingerprint).toBe(snapshot.version.fingerprint);
     expect(frozenSnapshot.version.id.startsWith('20240401T000000Z-')).toBe(true);
+  });
+
+  it('summarizes objectives that lack independent evidence', () => {
+    const deficientEvidence = evidenceIndexFixture();
+    if (deficientEvidence.plan) {
+      deficientEvidence.plan = deficientEvidence.plan.map(({ independent: _ignored, ...rest }) => ({
+        ...rest,
+      })) as Evidence[];
+    }
+    if (deficientEvidence.test) {
+      deficientEvidence.test = deficientEvidence.test.map(({ independent: _ignored, ...rest }) => ({
+        ...rest,
+      })) as Evidence[];
+    }
+
+    const deficientSnapshot = generateComplianceSnapshot({
+      ...bundleFixture(),
+      evidenceIndex: deficientEvidence,
+    });
+
+    expect(deficientSnapshot.independenceSummary.objectives).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          objectiveId: 'A-3-01',
+          independence: 'recommended',
+          status: 'partial',
+          missingArtifacts: expect.arrayContaining(['plan']),
+        }),
+        expect.objectContaining({
+          objectiveId: 'A-5-06',
+          independence: 'required',
+          status: 'missing',
+          missingArtifacts: expect.arrayContaining(['test']),
+        }),
+      ]),
+    );
+    expect(deficientSnapshot.independenceSummary.totals.partial).toBeGreaterThanOrEqual(1);
+    expect(deficientSnapshot.independenceSummary.totals.missing).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -19,11 +19,17 @@ describe('importQaLogs', () => {
         notes: 'Checklist complete',
       }),
     );
+    expect(result.data[1]).toEqual(
+      expect.objectContaining({
+        objectiveId: 'A-7-02',
+        status: 'pending',
+      }),
+    );
     expect(result.data[2]).toEqual(
       expect.objectContaining({
         objectiveId: 'A-7-03',
         reviewer: 'QA Auditor',
-        status: 'approved',
+        status: 'rejected',
         completedAt: '2024-02-12',
         notes: 'Follow-up required',
       }),
@@ -39,6 +45,22 @@ describe('importQaLogs', () => {
       expect.arrayContaining([
         'CSV file is missing an Objective column.',
         'Row 2 is missing an objective id and was skipped.',
+      ]),
+    );
+  });
+
+  it('defaults unknown status values to pending with a warning', async () => {
+    const fixture = path.join(__dirname, '__fixtures__', 'qa-logs', 'unknown-status.csv');
+    const result = await importQaLogs(fixture);
+
+    expect(result.data).toEqual([
+      expect.objectContaining({ objectiveId: 'A-7-10', status: 'pending' }),
+      expect.objectContaining({ objectiveId: 'A-7-11', status: 'pending' }),
+    ]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        'Row 2 has unknown status "Aguardando"; defaulting to "pending". Accepted values: approved/pending/rejected.',
+        'Row 3 has unknown status "APPROVADO"; defaulting to "pending". Accepted values: approved/pending/rejected.',
       ]),
     );
   });

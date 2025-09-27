@@ -10,6 +10,7 @@ Analiz şu kontrolleri uygular:
 - **Çelişkili eşleşmeler:** Bağlantılar tek yönlü veya tutarsız olduğunda (örneğin kod bir testi referans eder ancak test aynı kodu doğrulamaz) çatışma kaydı oluşturulur.
 - **Yetim varlıklar:** Hiçbir gereksinimle ilişkilendirilmeyen tasarım ve kod bileşenleri ile herhangi bir kodu doğrulamayan testler işaretlenir.
 - **Geçersiz referanslar:** Modelde bulunmayan kimliklere yapılan atıflar yüksek öncelikli çakışma olarak belirtilir.
+- **Belirsiz dil sezgileri:** Hem İngilizce hem Türkçe metinlerde "TBD", "as appropriate", "olmalı", "gerektiğinde" veya "yeterli" gibi yer tutucu/yorum açık ifadeler algılandığında kalite uyarıları üretilir.
 
 ## Önceliklendirme
 

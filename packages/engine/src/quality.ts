@@ -38,7 +38,21 @@ const ambiguousLanguagePatterns: Array<{
   { id: 'as-necessary', regex: /\bas (?:necessary|required)\b/i, phraseFromMatch: true },
   { id: 'be-able-to', regex: /\bbe able to\b/i, phrase: '"be able to"' },
   { id: 'etc', regex: /\betc\./i, phrase: '"etc."' },
-  { id: 'subjective-adjective', regex: /\b(adequate|sufficient|minimal|flexible)\b/i, phraseFromMatch: true },
+  {
+    id: 'should-olmali',
+    regex: /(?<![A-Za-zÇĞİÖŞÜçğıöşü])olmal[ıi](?![A-Za-zÇĞİÖŞÜçğıöşü])/iu,
+    phraseFromMatch: true,
+  },
+  {
+    id: 'as-needed-gerektiginde',
+    regex: /(?<![A-Za-zÇĞİÖŞÜçğıöşü])gerekti(?:ğ|g)inde(?![A-Za-zÇĞİÖŞÜçğıöşü])/iu,
+    phraseFromMatch: true,
+  },
+  {
+    id: 'subjective-adjective',
+    regex: /(?<![A-Za-zÇĞİÖŞÜçğıöşü])(adequate|sufficient|minimal|flexible|yeterli)(?![A-Za-zÇĞİÖŞÜçğıöşü])/iu,
+    phraseFromMatch: true,
+  },
 ];
 
 const passiveVoicePattern = /\b(?:shall|will|must|should)\s+be\s+\w+(?:ed|en)\b/i;
@@ -141,8 +155,10 @@ const evaluateRequirementClarity = (requirement: Requirement): QualityFinding[] 
 
   const findings: QualityFinding[] = [];
 
+  const normalizedText = text.toLocaleLowerCase('tr-TR');
+
   ambiguousLanguagePatterns.forEach((pattern) => {
-    const match = text.match(pattern.regex);
+    const match = text.match(pattern.regex) ?? normalizedText.match(pattern.regex);
     if (!match) {
       return;
     }
