@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, type RefinementCtx, type ZodType, ZodIssueCode } from 'zod';
 
 export type RequirementStatus = 'draft' | 'approved' | 'implemented' | 'verified';
 
@@ -12,7 +12,7 @@ export interface Requirement {
 
 export const requirementStatuses = ['draft', 'approved', 'implemented', 'verified'] as const;
 
-export const requirementSchema: z.ZodType<Requirement> = z.object({
+export const requirementSchema: ZodType<Requirement> = z.object({
   id: z.string().min(1, 'Requirement identifier is required.'),
   title: z.string().min(1, 'Requirement title is required.'),
   description: z.string().optional(),
@@ -35,13 +35,13 @@ const createReferenceArraySchema = (label: string) =>
   z
     .array(z.string())
     .default([])
-    .transform((values: string[], ctx) => {
+    .transform((values: string[], ctx: RefinementCtx) => {
       const trimmed = values.map((value) => value.trim());
       const seen = new Set<string>();
       trimmed.forEach((value, index) => {
         if (!value) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: ZodIssueCode.custom,
             message: `${label} reference cannot be blank.`,
             path: [index],
           });
@@ -49,7 +49,7 @@ const createReferenceArraySchema = (label: string) =>
         }
         if (seen.has(value)) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: ZodIssueCode.custom,
             message: `${label} reference ${value} is duplicated.`,
             path: [index],
           });
@@ -59,6 +59,16 @@ const createReferenceArraySchema = (label: string) =>
       });
       return trimmed;
     });
+
+export interface DesignRecord {
+  id: string;
+  title: string;
+  description?: string;
+  status: DesignStatus;
+  tags: string[];
+  requirementRefs: string[];
+  codeRefs: string[];
+}
 
 export const designRecordSchema = z.object({
   id: z.string().min(1, 'Design identifier is required.'),
@@ -72,8 +82,6 @@ export const designRecordSchema = z.object({
   requirementRefs: createReferenceArraySchema('Requirement'),
   codeRefs: createReferenceArraySchema('Code'),
 });
-
-export type DesignRecord = z.infer<typeof designRecordSchema>;
 
 export const createDesignRecord = (
   id: string,
@@ -90,7 +98,7 @@ export const createDesignRecord = (
     tags: options.tags ?? [],
     requirementRefs: options.requirementRefs ?? [],
     codeRefs: options.codeRefs ?? [],
-  });
+  }) as DesignRecord;
 
 export interface TestCase {
   id: string;
@@ -124,6 +132,7 @@ export const evidenceSources = [
   'lcov',
   'cobertura',
   'git',
+  'doorsClassic',
   'polarion',
   'jenkins',
   'polyspace',
@@ -145,7 +154,7 @@ export interface Evidence {
   independent?: boolean;
 }
 
-export const evidenceSchema: z.ZodType<Evidence> = z.object({
+export const evidenceSchema: ZodType<Evidence> = z.object({
   source: z.enum(evidenceSources),
   path: z.string().min(1, 'Evidence path must be provided.'),
   summary: z.string().min(1, 'Evidence summary must be provided.'),
@@ -169,7 +178,7 @@ export interface TraceLink {
   type: TraceLinkType;
 }
 
-export const traceLinkSchema: z.ZodType<TraceLink> = z.object({
+export const traceLinkSchema: ZodType<TraceLink> = z.object({
   from: z.string().min(1, 'Trace link source identifier is required.'),
   to: z.string().min(1, 'Trace link target identifier is required.'),
   type: z.enum(traceLinkTypes),

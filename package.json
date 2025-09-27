@@ -30,6 +30,7 @@
     "benchmark": "npx --yes tsx scripts/benchmark.ts"
   },
   "devDependencies": {
+    "@noble/post-quantum": "^0.5.2",
     "@redocly/cli": "^1.16.0",
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.12",

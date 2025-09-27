@@ -1,4 +1,9 @@
-import type { CoverageStatus, RequirementViewModel } from '../types/pipeline';
+import type {
+  CoverageStatus,
+  RequirementViewModel,
+  StageIdentifier,
+  StageObjectiveView,
+} from '../types/pipeline';
 
 import { StatusBadge } from './StatusBadge';
 
@@ -15,6 +20,9 @@ interface ComplianceMatrixProps {
   isEnabled: boolean;
   generatedAt?: string;
   version?: string;
+  stages: StageObjectiveView[];
+  activeStageId: StageIdentifier;
+  onStageChange: (stage: StageIdentifier) => void;
 }
 
 const filterLabels: Record<CoverageStatus, string> = {
@@ -29,6 +37,13 @@ const statusAccent: Record<CoverageStatus, string> = {
   missing: 'bg-rose-500/10 text-rose-200 ring-rose-500/40'
 };
 
+const stageButtonBase =
+  'flex min-w-[160px] flex-col rounded-xl border px-4 py-3 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-900';
+const stageButtonActive =
+  'border-blue-500/60 bg-blue-500/10 text-blue-100 shadow-[0_10px_30px_rgba(59,130,246,0.25)] focus:ring-blue-400';
+const stageButtonInactive =
+  'border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900 focus:ring-blue-400/60';
+
 export function ComplianceMatrix({
   rows,
   activeStatuses,
@@ -36,9 +51,14 @@ export function ComplianceMatrix({
   summary,
   isEnabled,
   generatedAt,
-  version
+  version,
+  stages,
+  activeStageId,
+  onStageChange,
 }: ComplianceMatrixProps) {
   const filteredRows = rows.filter((row) => activeStatuses.includes(row.coverageStatus));
+  const activeStage = stages.find((stage) => stage.id === activeStageId) ?? stages[0];
+  const stageObjectives = activeStage?.objectives ?? [];
 
   return (
     <div className="space-y-6">
@@ -106,6 +126,143 @@ export function ComplianceMatrix({
             <p className="mt-1 text-2xl font-semibold text-rose-200">{summary.missing}</p>
           </div>
         </div>
+
+        {stages.length > 0 && (
+          <div className="border-t border-slate-800 px-6 py-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-1">
+                <h3 className="text-base font-semibold text-white">SOI Aşamaları</h3>
+                <p className="text-sm text-slate-400">
+                  Hedef uyumluluğunu aşama bazında inceleyin. Seçilen aşama rapor çıktılarıyla eşleşir.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {stages.map((stage) => {
+                  const isActiveStage = stage.id === activeStage?.id;
+                  return (
+                    <button
+                      key={stage.id}
+                      type="button"
+                      onClick={() => onStageChange(stage.id)}
+                      className={`${stageButtonBase} ${
+                        isActiveStage ? stageButtonActive : stageButtonInactive
+                      } ${isEnabled ? '' : 'cursor-not-allowed opacity-50'}`}
+                      disabled={!isEnabled}
+                    >
+                      <span className="text-sm font-semibold">{stage.label}</span>
+                      <span className="text-xs text-slate-400">
+                        {stage.summary.covered}/{stage.summary.total} hedef tamamlandı
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {activeStage && (
+              <div className="mt-5 flex flex-col gap-2 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-sm font-semibold text-white">{activeStage.label}</span>
+                <div className="flex flex-wrap gap-3">
+                  <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+                    Toplam {activeStage.summary.total}
+                  </span>
+                  <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
+                    {activeStage.summary.covered} karşılandı
+                  </span>
+                  <span className="rounded-full bg-amber-500/10 px-3 py-1 text-xs text-amber-200">
+                    {activeStage.summary.partial} kısmi
+                  </span>
+                  <span className="rounded-full bg-rose-500/10 px-3 py-1 text-xs text-rose-200">
+                    {activeStage.summary.missing} eksik
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+              {stageObjectives.length > 0 ? (
+                <table className="min-w-full divide-y divide-slate-800 text-left text-sm text-slate-200">
+                  <thead className="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-5 py-3 font-medium">Hedef</th>
+                      <th className="px-5 py-3 font-medium">Durum</th>
+                      <th className="px-5 py-3 font-medium">Sağlanan Kanıtlar</th>
+                      <th className="px-5 py-3 font-medium">Eksik Kanıtlar</th>
+                      <th className="px-5 py-3 font-medium">Referanslar</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {stageObjectives.map((objective) => (
+                      <tr key={objective.id} className="bg-slate-900/40 transition hover:bg-slate-900/60">
+                        <td className="px-5 py-4">
+                          <div className="font-semibold text-white">{objective.id}</div>
+                          {(objective.table || objective.name) && (
+                            <div className="text-xs text-slate-400">
+                              {objective.table}
+                              {objective.table && objective.name ? ' • ' : ''}
+                              {objective.name}
+                            </div>
+                          )}
+                          {objective.description && (
+                            <div className="mt-2 text-xs text-slate-400">{objective.description}</div>
+                          )}
+                        </td>
+                        <td className="px-5 py-4">
+                          <StatusBadge status={objective.status} />
+                        </td>
+                        <td className="px-5 py-4">
+                          {objective.satisfiedArtifacts.length ? (
+                            <div className="flex flex-wrap gap-2">
+                              {objective.satisfiedArtifacts.map((artifact) => (
+                                <span
+                                  key={artifact}
+                                  className="rounded-full bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200"
+                                >
+                                  {artifact}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-500">Kanıt bulunmuyor</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-4">
+                          {objective.missingArtifacts.length ? (
+                            <div className="flex flex-wrap gap-2">
+                              {objective.missingArtifacts.map((artifact) => (
+                                <span
+                                  key={artifact}
+                                  className="rounded-full bg-rose-500/10 px-2 py-1 text-xs text-rose-200"
+                                >
+                                  {artifact}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-500">Eksik kanıt yok</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-4">
+                          {objective.evidenceRefs.length ? (
+                            <ul className="space-y-1 text-xs text-slate-400">
+                              {objective.evidenceRefs.map((reference) => (
+                                <li key={reference}>{reference}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <span className="text-xs text-slate-500">Referans yok</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="px-6 py-6 text-sm text-slate-400">Bu aşamada hedef verisi bulunmuyor.</div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="overflow-hidden">
           <table className="min-w-full divide-y divide-slate-800 text-left text-sm text-slate-200">

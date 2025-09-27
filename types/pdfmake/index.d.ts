@@ -1,17 +1,10 @@
-/// <reference types="node" />
-
-import type { TDocumentDefinitions } from 'pdfmake/interfaces';
-
-export type PdfStream = {
-  on(event: 'data', listener: (chunk: Buffer) => void): PdfStream;
-  on(event: 'end', listener: () => void): PdfStream;
-  on(event: 'error', listener: (error: Error) => void): PdfStream;
-  end(): void;
-};
-
-declare class PdfPrinter {
-  constructor(fonts?: Record<string, unknown>);
-  createPdfKitDocument(docDefinition: TDocumentDefinitions, options?: Record<string, unknown>): PdfStream;
+declare module 'pdfmake' {
+  export default class PdfPrinter {
+    constructor(fonts?: unknown);
+    createPdfKitDocument(definition: unknown, options?: unknown): {
+      end(): void;
+      pipe(destination: unknown): void;
+      on(event: string, listener: (...args: any[]) => void): void;
+    };
+  }
 }
-
-export default PdfPrinter;

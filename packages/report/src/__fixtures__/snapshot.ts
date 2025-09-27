@@ -150,6 +150,7 @@ const objectivesFixture = (): Objective[] => [
   {
     id: 'A-3-04',
     table: 'A-3',
+    stage: 'SOI-1',
     name: 'Doğrulama Stratejisi',
     desc: 'Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.',
     artifacts: ['plan', 'review'],
@@ -159,6 +160,7 @@ const objectivesFixture = (): Objective[] => [
   {
     id: 'A-4-01',
     table: 'A-4',
+    stage: 'SOI-2',
     name: 'Üst Düzey Gereksinimler',
     desc: 'HLR doğru, tutarlı, izlenebilir ve test edilebilir.',
     artifacts: ['analysis', 'trace', 'review'],
@@ -168,6 +170,7 @@ const objectivesFixture = (): Objective[] => [
   {
     id: 'A-5-06',
     table: 'A-5',
+    stage: 'SOI-3',
     name: 'Test Stratejisi Uygulandı',
     desc: 'Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.',
     artifacts: ['test', 'trace', 'analysis'],
@@ -177,6 +180,7 @@ const objectivesFixture = (): Objective[] => [
   {
     id: 'A-5-08',
     table: 'A-5',
+    stage: 'SOI-3',
     name: 'Yapısal Kapsam—Statement',
     desc: 'Kod satır kapsamı ölçüldü ve açıklandı.',
     artifacts: ['coverage_stmt', 'analysis'],
@@ -186,6 +190,7 @@ const objectivesFixture = (): Objective[] => [
   {
     id: 'A-6-02',
     table: 'A-6',
+    stage: 'SOI-3',
     name: 'Değişiklik Kontrolü',
     desc: 'Değişiklikler onaylı, izlenebilir ve kayıtlı.',
     artifacts: ['cm_record', 'problem_report'],

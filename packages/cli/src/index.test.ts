@@ -343,6 +343,7 @@ describe('@soipack/cli pipeline', () => {
     expect(detailed.valid).toBe(true);
   });
 
+
   it('generates plan documents from configuration JSON', async () => {
     const configDir = path.join(tempRoot, 'plan-generator');
     await fs.mkdir(configDir, { recursive: true });

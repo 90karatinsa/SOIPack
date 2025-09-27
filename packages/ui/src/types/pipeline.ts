@@ -109,6 +109,9 @@ export interface ComplianceStatisticsPayload {
   codePaths: {
     total: number;
   };
+  designs?: {
+    total: number;
+  };
 }
 
 export interface ComplianceMatrixPayload {
@@ -116,7 +119,8 @@ export interface ComplianceMatrixPayload {
   generatedAt: string;
   version: string;
   stats: ComplianceStatisticsPayload;
-  objectives: unknown[];
+  objectives: ComplianceObjectivePayload[];
+  stages: ComplianceStagePayload[];
   requirementCoverage: ComplianceRequirementCoverage[];
 }
 
@@ -137,7 +141,32 @@ export interface CodePathEntry {
   };
 }
 
-import type { DesignRecord } from '@soipack/core';
+import type { DesignRecord, SoiStage } from '@soipack/core';
+
+export type StageIdentifier = 'all' | SoiStage;
+
+export interface ComplianceObjectivePayload {
+  id: string;
+  status: CoverageStatus;
+  table?: string;
+  name?: string;
+  desc?: string;
+  satisfiedArtifacts: string[];
+  missingArtifacts: string[];
+  evidenceRefs: string[];
+}
+
+export interface ComplianceStagePayload {
+  id: StageIdentifier;
+  label: string;
+  summary: {
+    total: number;
+    covered: number;
+    partial: number;
+    missing: number;
+  };
+  objectiveIds: string[];
+}
 
 export interface RequirementTracePayload {
   requirement: {
@@ -174,6 +203,29 @@ export interface RequirementViewModel {
   }>;
 }
 
+export interface ComplianceObjectiveView {
+  id: string;
+  name?: string;
+  table?: string;
+  description?: string;
+  status: CoverageStatus;
+  satisfiedArtifacts: string[];
+  missingArtifacts: string[];
+  evidenceRefs: string[];
+}
+
+export interface StageObjectiveView {
+  id: StageIdentifier;
+  label: string;
+  summary: {
+    total: number;
+    covered: number;
+    partial: number;
+    missing: number;
+  };
+  objectives: ComplianceObjectiveView[];
+}
+
 export interface ReportDataset {
   reportId: string;
   generatedAt: string;
@@ -185,6 +237,7 @@ export interface ReportDataset {
     partial: number;
     missing: number;
   };
+  objectivesByStage: StageObjectiveView[];
 }
 
 export interface ReportAssetMap {

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useReducer, useRef } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import { useRbac } from '../providers/RbacProvider';
 import {
+  fetchStageRiskForecast,
   getManifestProof,
   type ManifestMerkleProofPayload,
+  type StageRiskForecastEntry,
 } from '../services/api';
 import {
   createComplianceEventStream,
@@ -110,6 +112,13 @@ interface ProofExplorerState {
   lastUpdated?: string;
 }
 
+interface StageRiskPanelState {
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  forecasts: StageRiskForecastEntry[];
+  updatedAt?: string;
+  error?: string;
+}
+
 interface RiskCockpitState {
   status: RiskCockpitStatus;
   heatmap: HeatmapCell[];
@@ -160,6 +169,13 @@ const regressionBadgeClasses: Record<'missing' | 'partial' | 'covered', string> 
   missing: 'bg-rose-500/20 text-rose-200',
   partial: 'bg-amber-500/20 text-amber-200',
   covered: 'bg-emerald-500/20 text-emerald-200',
+};
+
+const stageClassificationBadgeClasses: Record<string, string> = {
+  nominal: 'bg-emerald-500/20 text-emerald-200',
+  guarded: 'bg-amber-500/20 text-amber-200',
+  elevated: 'bg-orange-500/20 text-orange-200',
+  critical: 'bg-rose-500/20 text-rose-200',
 };
 
 const calculateHeatmap = (event: ComplianceRiskEvent): { cells: HeatmapCell[]; summary: RiskSummary } => {
@@ -549,6 +565,10 @@ const parseMerkleProof = (payload?: ManifestMerkleProofPayload | null): ParsedMe
 export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPageProps) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const { roles } = useRbac();
+  const [stageRiskState, setStageRiskState] = useState<StageRiskPanelState>({
+    status: 'idle',
+    forecasts: [],
+  });
 
   const hasRoles = roles.size > 0;
   const canViewRisk = !hasRoles || roles.has('risk:read') || roles.has('admin');
@@ -577,11 +597,54 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     };
   }, [token, license, isAuthorized]);
 
+  useEffect(() => {
+    if (!isAuthorized || !canViewRisk) {
+      setStageRiskState({ status: 'idle', forecasts: [] });
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    setStageRiskState((prev) => ({
+      status: 'loading',
+      forecasts: prev.status === 'ready' ? prev.forecasts : [],
+      updatedAt: prev.status === 'ready' ? prev.updatedAt : undefined,
+    }));
+
+    fetchStageRiskForecast({ token, license, signal: controller.signal })
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setStageRiskState({
+          status: 'ready',
+          forecasts: response.forecasts,
+          updatedAt: response.generatedAt,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setStageRiskState({
+          status: 'error',
+          forecasts: [],
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [token, license, isAuthorized, canViewRisk]);
+
   const statusMessage = useMemo(() => getStatusMessage(state, isAuthorized), [state, isAuthorized]);
   const deltaPanel = state.delta;
   const sparklineMax = deltaPanel && deltaPanel.sparklineValues.length > 0
     ? Math.max(...deltaPanel.sparklineValues, 1)
     : 1;
+  const stageRisk = stageRiskState;
   const toolAlerts = state.toolAlerts;
   const proofExplorer = state.proofExplorer;
   const selectedProofEntry = useMemo(() => {
@@ -753,6 +816,91 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                     Henüz risk profili alınmadı. Akıştan ilk skor geldiğinde ısı haritası güncellenecektir.
                   </p>
                 )}
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30">
+                  <header className="flex items-baseline justify-between">
+                    <div>
+                      <h4 className="text-sm font-semibold text-white">SOI aşama risk tahmini</h4>
+                      <p className="text-xs text-slate-400">
+                        Monte Carlo çıktıları ve regresyon trendleri 30 günlük ufukta harmanlanır.
+                      </p>
+                    </div>
+                    {stageRisk.updatedAt && (
+                      <p className="text-xs text-slate-400">Güncelleme: {stageRisk.updatedAt}</p>
+                    )}
+                  </header>
+                  {stageRisk.status === 'loading' ? (
+                    <p className="mt-3 text-xs text-slate-400">Veriler yükleniyor…</p>
+                  ) : stageRisk.status === 'error' ? (
+                    <p className="mt-3 text-xs text-rose-300">
+                      Tahmin alınamadı: {stageRisk.error ?? 'Bilinmeyen hata'}
+                    </p>
+                  ) : stageRisk.forecasts.length === 0 ? (
+                    <p className="mt-3 text-xs text-slate-400">Henüz tahmin bulunmuyor.</p>
+                  ) : (
+                    <ul className="mt-3 space-y-3 text-xs text-slate-300">
+                      {stageRisk.forecasts.map((forecast) => {
+                        const sparklineMaxLocal =
+                          forecast.sparkline.length > 0
+                            ? Math.max(
+                                ...forecast.sparkline.map((point) => Math.max(point.regressionRatio, 0)),
+                                0.01,
+                              )
+                            : 1;
+                        const ariaLabel = `Regresyon oranı: ${forecast.sparkline
+                          .map((point) => `%${Math.round(Math.max(0, point.regressionRatio) * 100)}`)
+                          .join(', ')}`;
+                        const badgeClass =
+                          stageClassificationBadgeClasses[forecast.classification] ??
+                          'bg-slate-700/40 text-slate-300';
+                        return (
+                          <li
+                            key={forecast.stage}
+                            className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3"
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <p className="text-sm font-semibold text-white">{forecast.stage}</p>
+                                <p className="text-[11px] text-slate-400">
+                                  {forecast.horizonDays} günlük regresyon olasılığı
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <span
+                                  className={`inline-flex items-center justify-end rounded-full px-2 py-1 text-[11px] font-semibold ${badgeClass}`}
+                                >
+                                  {forecast.classification}
+                                </span>
+                                <p className="mt-1 text-lg font-semibold text-white">%{forecast.probability}</p>
+                              </div>
+                            </div>
+                            <p className="mt-2 text-[11px] text-slate-400">
+                              {forecast.credibleInterval.confidence}% güven aralığı: %{forecast.credibleInterval.lower}{' '}
+                              – %{forecast.credibleInterval.upper}
+                            </p>
+                            {forecast.sparkline.length > 0 && (
+                              <div className="mt-3 flex h-12 items-end gap-1" role="img" aria-label={ariaLabel}>
+                                {forecast.sparkline.map((point, index) => {
+                                  const normalized = Math.max(point.regressionRatio, 0) / sparklineMaxLocal;
+                                  const height = Math.max(6, Math.round(normalized * 48));
+                                  return (
+                                    <span
+                                      key={`${forecast.stage}-spark-${index}`}
+                                      className="w-2 rounded-full bg-amber-400/60"
+                                      style={{ height: `${height}px` }}
+                                      title={`${new Date(point.timestamp).toISOString().slice(0, 10)} – %${Math.round(
+                                        Math.max(0, point.regressionRatio) * 100,
+                                      )}`}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
                 {canViewDelta && deltaPanel && (
                   <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30">
                     <header className="flex items-baseline justify-between">

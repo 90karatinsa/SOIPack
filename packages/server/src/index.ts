@@ -34,12 +34,14 @@ import {
   ManifestFileEntry,
   ManifestMerkleSummary,
   SnapshotVersion,
+  SoiStage,
   createSnapshotIdentifier,
   createSnapshotVersion,
   deriveFingerprint,
   deserializeLedgerProof,
   freezeSnapshotVersion,
   resolveLocale,
+  soiStages,
   translate,
   verifyLedgerProof,
 } from '@soipack/core';
@@ -1085,6 +1087,144 @@ const assertDirectoryExists = async (
   }
 };
 
+const SOI_STAGE_SET = new Set<string>(soiStages);
+
+const isSoiStage = (value: string): value is SoiStage => SOI_STAGE_SET.has(value);
+
+const parseSoiStage = (value: unknown): SoiStage | undefined => {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new HttpError(
+      400,
+      'INVALID_REQUEST',
+      `Geçersiz SOI aşaması. Geçerli değerler: ${soiStages.join(', ')}.`,
+    );
+  }
+  const normalized = value.trim().toUpperCase();
+  if (isSoiStage(normalized)) {
+    return normalized;
+  }
+  throw new HttpError(400, 'INVALID_REQUEST', `Geçersiz SOI aşaması. Geçerli değerler: ${soiStages.join(', ')}.`);
+};
+
+const buildStageScopedDirectory = (
+  baseDir: string,
+  tenantId: string,
+  jobId: string,
+  stage?: SoiStage | null,
+): string => (stage ? path.join(baseDir, tenantId, stage, jobId) : path.join(baseDir, tenantId, jobId));
+
+const findStageAwareJobDirectory = async (
+  storage: StorageProvider,
+  baseDir: string,
+  tenantId: string,
+  jobId: string,
+  stage?: SoiStage | null,
+): Promise<string | undefined> => {
+  const tryDirectory = async (candidateStage?: SoiStage | null): Promise<string | undefined> => {
+    const directory = buildStageScopedDirectory(baseDir, tenantId, jobId, candidateStage ?? undefined);
+    const metadataPath = path.join(directory, METADATA_FILE);
+    return (await storage.fileExists(metadataPath)) ? directory : undefined;
+  };
+
+  if (stage) {
+    return tryDirectory(stage);
+  }
+
+  const direct = await tryDirectory();
+  if (direct) {
+    return direct;
+  }
+
+  const tenantDir = path.join(baseDir, tenantId);
+  if (!(await storage.fileExists(tenantDir))) {
+    return undefined;
+  }
+
+  let entries: string[] = [];
+  try {
+    entries = await storage.listSubdirectories(tenantDir);
+  } catch {
+    return undefined;
+  }
+
+  for (const entry of entries) {
+    if (!isSoiStage(entry)) {
+      continue;
+    }
+    const resolved = await tryDirectory(entry);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return undefined;
+};
+
+const removeStageAwareJobDirectories = async (
+  storage: StorageProvider,
+  baseDir: string,
+  tenantId: string,
+  jobId: string,
+  stage?: SoiStage | null,
+): Promise<void> => {
+  const targets = new Set<string>();
+  targets.add(buildStageScopedDirectory(baseDir, tenantId, jobId));
+  if (stage) {
+    targets.add(buildStageScopedDirectory(baseDir, tenantId, jobId, stage));
+  } else {
+    soiStages.forEach((candidate) => {
+      targets.add(buildStageScopedDirectory(baseDir, tenantId, jobId, candidate));
+    });
+  }
+
+  await Promise.all([...targets].map((target) => storage.removeDirectory(target)));
+};
+
+const listStageAwareJobEntries = async (
+  storage: StorageProvider,
+  baseDir: string,
+  tenantId: string,
+): Promise<Array<{ id: string; directory: string; stage?: SoiStage | null }>> => {
+  const tenantDir = path.join(baseDir, tenantId);
+  const results: Array<{ id: string; directory: string; stage?: SoiStage | null }> = [];
+  if (!(await storage.fileExists(tenantDir))) {
+    return results;
+  }
+
+  let entries: string[] = [];
+  try {
+    entries = await storage.listSubdirectories(tenantDir);
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    if (isSoiStage(entry)) {
+      const stageDir = path.join(tenantDir, entry);
+      let jobIds: string[] = [];
+      try {
+        jobIds = await storage.listSubdirectories(stageDir);
+      } catch {
+        continue;
+      }
+      jobIds.forEach((jobId) => {
+        results.push({
+          id: jobId,
+          directory: path.join(stageDir, jobId),
+          stage: entry,
+        });
+      });
+    } else {
+      results.push({ id: entry, directory: path.join(tenantDir, entry), stage: null });
+    }
+  }
+
+  return results;
+};
+
 const convertFileMap = (fileMap: FileMap): UploadedFileMap => {
   const result: UploadedFileMap = {};
   Object.entries(fileMap).forEach(([field, files]) => {
@@ -1669,6 +1809,7 @@ interface ReportJobPayload {
   reportOptions: ReportOptions;
   analysisId: string;
   manifestId?: string | null;
+  soiStage?: SoiStage | null;
   license: JobLicenseMetadata;
 }
 
@@ -1678,8 +1819,13 @@ interface PackJobPayload {
   packageName?: string;
   signingKeyPath: string;
   reportId: string;
+  soiStage?: SoiStage | null;
   license: JobLicenseMetadata;
 }
+
+type StageAwareReportOptions = ReportOptions & { soiStage?: SoiStage };
+
+type StageAwarePackOptions = PackOptions & { soiStage?: SoiStage };
 
 type JobPayloadMap = {
   import: ImportJobPayload;
@@ -1807,19 +1953,18 @@ const locateJobMetadata = async (
   ];
 
   for (const location of locations) {
-    const tenantDir = path.join(location.dir, tenantId);
-    const candidateDir = path.join(tenantDir, jobId);
-    const metadataPath = path.join(candidateDir, METADATA_FILE);
-    if (await storage.fileExists(metadataPath)) {
-      const metadata = await readJobMetadata<JobMetadata>(storage, candidateDir);
-      if (metadata.tenantId !== tenantId) {
-        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen iş bu kiracıya ait değil.');
-      }
-      if (onMetadata) {
-        onMetadata(metadata);
-      }
-      return adoptJobFromMetadata(storage, queue, metadata);
+    const candidateDir = await findStageAwareJobDirectory(storage, location.dir, tenantId, jobId);
+    if (!candidateDir) {
+      continue;
     }
+    const metadata = await readJobMetadata<JobMetadata>(storage, candidateDir);
+    if (metadata.tenantId !== tenantId) {
+      throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen iş bu kiracıya ait değil.');
+    }
+    if (onMetadata) {
+      onMetadata(metadata);
+    }
+    return adoptJobFromMetadata(storage, queue, metadata);
   }
 
   return undefined;
@@ -1843,10 +1988,10 @@ const removeJobArtifacts = async (
       await storage.removeDirectory(path.join(directories.analyses, tenantId, jobId));
       return;
     case 'report':
-      await storage.removeDirectory(path.join(directories.reports, tenantId, jobId));
+      await removeStageAwareJobDirectories(storage, directories.reports, tenantId, jobId);
       return;
     case 'pack':
-      await storage.removeDirectory(path.join(directories.packages, tenantId, jobId));
+      await removeStageAwareJobDirectories(storage, directories.packages, tenantId, jobId);
       return;
     default:
       throw new HttpError(500, 'UNKNOWN_JOB_KIND', `Bilinmeyen iş türü: ${kind}`);
@@ -1859,15 +2004,9 @@ const findPackMetadataByManifestId = async (
   tenantId: string,
   manifestId: string,
 ): Promise<PackJobMetadata | undefined> => {
-  const tenantPackagesDir = path.join(directories.packages, tenantId);
-  if (!(await storage.fileExists(tenantPackagesDir))) {
-    return undefined;
-  }
-
-  const jobIds = await storage.listSubdirectories(tenantPackagesDir);
-  for (const jobId of jobIds) {
-    const jobDir = path.join(tenantPackagesDir, jobId);
-    const metadataPath = path.join(jobDir, METADATA_FILE);
+  const entries = await listStageAwareJobEntries(storage, directories.packages, tenantId);
+  for (const entry of entries) {
+    const metadataPath = path.join(entry.directory, METADATA_FILE);
     if (!(await storage.fileExists(metadataPath))) {
       continue;
     }
@@ -1945,12 +2084,12 @@ const resolvePackageMetadata = async (
 
   assertJobId(packageId);
 
-  const packageDir = path.join(directories.packages, tenantId, packageId);
-  const metadataPath = path.join(packageDir, METADATA_FILE);
-  if (!(await storage.fileExists(metadataPath))) {
+  const packageDir = await findStageAwareJobDirectory(storage, directories.packages, tenantId, packageId);
+  if (!packageDir) {
     throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'İstenen paket bulunamadı.');
   }
 
+  const metadataPath = path.join(packageDir, METADATA_FILE);
   const metadata = await storage.readJson<PackJobMetadata>(metadataPath);
   if (metadata.tenantId !== tenantId) {
     throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen paket bu kiracıya ait değil.');
@@ -2012,7 +2151,8 @@ const runRetentionSweep = async (
   const descriptors: Array<{
     target: RetentionTarget;
     baseDirectory: string;
-    cleanup: (tenant: string, id: string) => Promise<void>;
+    cleanup: (tenant: string, id: string, stage?: SoiStage | null) => Promise<void>;
+    stageAware?: boolean;
   }> = [
     {
       target: 'uploads',
@@ -2032,16 +2172,18 @@ const runRetentionSweep = async (
     {
       target: 'reports',
       baseDirectory: storage.directories.reports,
-      cleanup: async (tenant: string, id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.reports, tenant, id));
+      cleanup: async (tenant: string, id: string, stage?: SoiStage | null) => {
+        await removeStageAwareJobDirectories(storage, storage.directories.reports, tenant, id, stage ?? undefined);
       },
+      stageAware: true,
     },
     {
       target: 'packages',
       baseDirectory: storage.directories.packages,
-      cleanup: async (tenant: string, id: string) => {
-        await storage.removeDirectory(path.join(storage.directories.packages, tenant, id));
+      cleanup: async (tenant: string, id: string, stage?: SoiStage | null) => {
+        await removeStageAwareJobDirectories(storage, storage.directories.packages, tenant, id, stage ?? undefined);
       },
+      stageAware: true,
     },
   ];
 
@@ -2061,21 +2203,26 @@ const runRetentionSweep = async (
     }
 
     const tenantDirectory = path.join(descriptor.baseDirectory, tenantId);
-    const hasTenantDirectory = await storage.fileExists(tenantDirectory);
-    const ids = hasTenantDirectory ? await storage.listSubdirectories(tenantDirectory) : [];
+    let entries: Array<{ id: string; directory: string; stage?: SoiStage | null }> = [];
+    if (descriptor.stageAware) {
+      entries = await listStageAwareJobEntries(storage, descriptor.baseDirectory, tenantId);
+    } else {
+      const hasTenantDirectory = await storage.fileExists(tenantDirectory);
+      const ids = hasTenantDirectory ? await storage.listSubdirectories(tenantDirectory) : [];
+      entries = ids.map((id) => ({ id, directory: path.join(tenantDirectory, id), stage: null }));
+    }
     let removed = 0;
     let retained = 0;
     let skipped = 0;
 
-    for (const id of ids) {
-      const job = queue.get(tenantId, id);
+    for (const entry of entries) {
+      const job = queue.get(tenantId, entry.id);
       if (job && (job.status === 'queued' || job.status === 'running')) {
         skipped += 1;
         continue;
       }
 
-      const jobDir = path.join(tenantDirectory, id);
-      const metadataPath = path.join(jobDir, METADATA_FILE);
+      const metadataPath = path.join(entry.directory, METADATA_FILE);
       if (!(await storage.fileExists(metadataPath))) {
         skipped += 1;
         continue;
@@ -2102,8 +2249,8 @@ const runRetentionSweep = async (
       }
 
       try {
-        await descriptor.cleanup(tenantId, id);
-        jobLicenses.delete(createScopedJobKey(tenantId, id));
+        await descriptor.cleanup(tenantId, entry.id, entry.stage);
+        jobLicenses.delete(createScopedJobKey(tenantId, entry.id));
         removed += 1;
       } catch {
         skipped += 1;
@@ -3362,6 +3509,7 @@ export const createServer = (config: ServerConfig): Express => {
           params: {
             analysisId: payload.analysisId,
             manifestId: payload.manifestId ?? null,
+            soiStage: payload.soiStage ?? null,
           },
           license: payload.license,
           outputs: {
@@ -3393,7 +3541,7 @@ export const createServer = (config: ServerConfig): Express => {
         await storage.ensureDirectory(tenantLedgerDir);
         const tenantLedgerPath = path.join(tenantLedgerDir, 'ledger.json');
         const packageLedgerPath = path.join(payload.packageDir, 'ledger.json');
-        const packOptions: PackOptions = {
+        const packOptions: StageAwarePackOptions = {
           input: payload.reportDir,
           output: payload.packageDir,
           packageName: payload.packageName,
@@ -3409,6 +3557,7 @@ export const createServer = (config: ServerConfig): Express => {
                 },
               }
             : {}),
+          ...(payload.soiStage ? { soiStage: payload.soiStage } : {}),
         };
         const result = await runPack(packOptions);
 
@@ -3483,6 +3632,7 @@ export const createServer = (config: ServerConfig): Express => {
           params: {
             reportId: payload.reportId,
             packageName: payload.packageName ?? null,
+            soiStage: payload.soiStage ?? null,
           },
           license: payload.license,
           outputs: {
@@ -6555,7 +6705,12 @@ export const createServer = (config: ServerConfig): Express => {
       const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
-      const body = req.body as { analysisId?: string; manifestId?: string; reviewId?: string };
+      const body = req.body as {
+        analysisId?: string;
+        manifestId?: string;
+        reviewId?: string;
+        soiStage?: string;
+      };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
       }
@@ -6567,13 +6722,18 @@ export const createServer = (config: ServerConfig): Express => {
       const analysisDir = path.join(directories.analyses, tenantId, body.analysisId);
       await assertDirectoryExists(storage, analysisDir, 'Analiz çıktısı');
 
-      const hashEntries: HashEntry[] = [{ key: 'analysisId', value: body.analysisId }];
+      const soiStage = parseSoiStage(body.soiStage);
+
+      const hashEntries: HashEntry[] = [
+        { key: 'analysisId', value: body.analysisId },
+        { key: 'soiStage', value: soiStage ?? '' },
+      ];
       if (body.manifestId) {
         hashEntries.push({ key: 'manifestId', value: body.manifestId });
       }
       const hash = computeHash(hashEntries);
       const reportId = createJobId(hash);
-      const reportDir = path.join(directories.reports, tenantId, reportId);
+      const reportDir = buildStageScopedDirectory(directories.reports, tenantId, reportId, soiStage);
       const metadataPath = path.join(reportDir, METADATA_FILE);
 
       await ensureJobsRestored();
@@ -6613,10 +6773,11 @@ export const createServer = (config: ServerConfig): Express => {
         return;
       }
 
-      const reportOptions: ReportOptions = {
+      const reportOptions: StageAwareReportOptions = {
         input: analysisDir,
         output: reportDir,
         manifestId: body.manifestId,
+        ...(soiStage ? { soiStage } : {}),
       };
 
       const job = await enqueueObservedJob<ReportJobResult, ReportJobPayload>({
@@ -6631,6 +6792,7 @@ export const createServer = (config: ServerConfig): Express => {
           reportOptions,
           analysisId: body.analysisId,
           manifestId: body.manifestId ?? null,
+          soiStage: soiStage ?? null,
           license: toLicenseMetadata(license),
         },
       });
@@ -6654,7 +6816,12 @@ export const createServer = (config: ServerConfig): Express => {
       const { tenantId, subject } = getAuthContext(req);
       const license = await requireLicenseToken(req);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
-      const body = req.body as { reportId?: string; packageName?: string; reviewId?: string };
+      const body = req.body as {
+        reportId?: string;
+        packageName?: string;
+        reviewId?: string;
+        soiStage?: string;
+      };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
       }
@@ -6676,16 +6843,51 @@ export const createServer = (config: ServerConfig): Express => {
         }
       }
 
-      const reportDir = path.join(directories.reports, tenantId, body.reportId);
-      await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
+      const requestedStage = parseSoiStage(body.soiStage);
+      const resolvedReportDir = await findStageAwareJobDirectory(
+        storage,
+        directories.reports,
+        tenantId,
+        body.reportId,
+        requestedStage,
+      );
+      if (!resolvedReportDir) {
+        throw new HttpError(404, 'NOT_FOUND', 'Rapor çıktısı bulunamadı.');
+      }
+
+      const reportMetadata = await readJobMetadata<ReportJobMetadata>(storage, resolvedReportDir).catch(() =>
+        undefined,
+      );
+      const derivedStage = (() => {
+        const tenantBase = path.join(directories.reports, tenantId);
+        const relative = path.relative(tenantBase, resolvedReportDir);
+        const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+        if (segments.length === 2) {
+          const [stageCandidate] = segments;
+          if (stageCandidate && isSoiStage(stageCandidate)) {
+            return stageCandidate;
+          }
+        }
+        return null;
+      })();
+      const metadataStage = (() => {
+        if (!reportMetadata) {
+          return derivedStage;
+        }
+        const stageValue = reportMetadata.params?.soiStage;
+        return typeof stageValue === 'string' && isSoiStage(stageValue) ? stageValue : derivedStage;
+      })();
+      const effectiveStage = requestedStage ?? metadataStage ?? null;
 
       const hashEntries: HashEntry[] = [
         { key: 'reportId', value: body.reportId },
         { key: 'packageName', value: packageName ?? '' },
+        { key: 'soiStage', value: effectiveStage ?? '' },
       ];
       const hash = computeHash(hashEntries);
       const packId = createJobId(hash);
-      const packageDir = path.join(directories.packages, tenantId, packId);
+      const reportDir = resolvedReportDir;
+      const packageDir = buildStageScopedDirectory(directories.packages, tenantId, packId, effectiveStage);
       const metadataPath = path.join(packageDir, METADATA_FILE);
 
       await ensureJobsRestored();
@@ -6733,6 +6935,7 @@ export const createServer = (config: ServerConfig): Express => {
           packageName,
           signingKeyPath,
           reportId: body.reportId,
+          soiStage: effectiveStage,
           license: toLicenseMetadata(license),
         },
       });
@@ -6759,14 +6962,12 @@ export const createServer = (config: ServerConfig): Express => {
         throw new HttpError(400, 'INVALID_REQUEST', 'Rapor kimliği ve dosya yolu belirtilmelidir.');
       }
 
-      const reportDir = path.join(directories.reports, tenantId, id);
-      await assertDirectoryExists(storage, reportDir, 'Rapor çıktısı');
-
-      const metadataPath = path.join(reportDir, METADATA_FILE);
-      if (!(await storage.fileExists(metadataPath))) {
+      const reportDir = await findStageAwareJobDirectory(storage, directories.reports, tenantId, id);
+      if (!reportDir) {
         throw new HttpError(404, 'NOT_FOUND', 'İstenen rapor bulunamadı.');
       }
 
+      const metadataPath = path.join(reportDir, METADATA_FILE);
       const metadata = await storage.readJson<ReportJobMetadata>(metadataPath);
       if (metadata.tenantId !== tenantId) {
         throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen rapor bu kiracıya ait değil.');

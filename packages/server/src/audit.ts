@@ -197,7 +197,7 @@ export class AuditLogStore {
 
     const { rows } = await this.pool.query(query, params);
     const hasMore = rows.length > limit;
-    const items = rows.slice(0, limit).map((row) => this.fromRow(row as AuditLogRow));
+    const items = rows.slice(0, limit).map((row: unknown) => this.fromRow(row as AuditLogRow));
 
     return {
       items,

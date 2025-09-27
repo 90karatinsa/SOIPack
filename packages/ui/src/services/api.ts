@@ -7,6 +7,7 @@ import {
   type ReportJobResult,
   type RequirementTracePayload,
   type PackJobResult,
+  type StageIdentifier,
 } from '../types/pipeline';
 
 export interface AuditLogEntry {
@@ -179,6 +180,30 @@ export interface ManifestProofResponse {
   verified: boolean;
 }
 
+export interface StageRiskSparklinePointPayload {
+  timestamp: string;
+  regressionRatio: number;
+}
+
+export interface StageRiskForecastEntry {
+  stage: StageIdentifier;
+  probability: number;
+  classification: 'nominal' | 'guarded' | 'elevated' | 'critical' | string;
+  horizonDays: number;
+  credibleInterval: {
+    lower: number;
+    upper: number;
+    confidence: number;
+  };
+  sparkline: StageRiskSparklinePointPayload[];
+  updatedAt?: string;
+}
+
+export interface StageRiskForecastResponse {
+  generatedAt?: string;
+  forecasts: StageRiskForecastEntry[];
+}
+
 type ImportMetaEnv = Record<string, string>;
 
 const IMPORT_META_ENV_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
@@ -340,6 +365,46 @@ const ensureOk = async (response: Response): Promise<void> => {
   if (!response.ok) {
     throw await parseErrorPayload(response);
   }
+};
+
+const sanitizeStageRiskForecastEntry = (
+  entry: StageRiskForecastEntry,
+): StageRiskForecastEntry => {
+  const stage = entry.stage ?? 'unknown';
+  const probability = Number.isFinite(entry.probability)
+    ? Math.max(0, Math.min(100, entry.probability))
+    : 0;
+  const classification = entry.classification ?? 'nominal';
+  const horizonDays = Number.isFinite(entry.horizonDays)
+    ? Math.max(1, Math.round(entry.horizonDays))
+    : 30;
+  const interval = entry.credibleInterval ?? { lower: 0, upper: 0, confidence: 0 };
+  const lower = Number.isFinite(interval.lower) ? Math.max(0, interval.lower) : 0;
+  const upper = Number.isFinite(interval.upper) ? Math.min(100, Math.max(interval.upper, lower)) : lower;
+  const confidence = Number.isFinite(interval.confidence)
+    ? Math.max(0, Math.min(100, interval.confidence))
+    : 0;
+  const sparkline = Array.isArray(entry.sparkline)
+    ? entry.sparkline
+        .map((point) => {
+          if (!point || typeof point.timestamp !== 'string') {
+            return null;
+          }
+          const ratio = Number.isFinite(point.regressionRatio) ? point.regressionRatio : 0;
+          return { timestamp: point.timestamp, regressionRatio: ratio };
+        })
+        .filter((point): point is StageRiskSparklinePointPayload => point !== null)
+    : [];
+
+  return {
+    stage,
+    probability,
+    classification,
+    horizonDays,
+    credibleInterval: { lower, upper, confidence },
+    sparkline,
+    updatedAt: entry.updatedAt,
+  };
 };
 
 const readJson = async <T>(response: Response): Promise<T> => {
@@ -730,6 +795,37 @@ export const getManifestProof = async ({
   });
 
   return readJson<ManifestProofResponse>(response);
+};
+
+interface FetchStageRiskForecastOptions extends AuthCredentials {
+  signal?: AbortSignal;
+}
+
+export const fetchStageRiskForecast = async ({
+  token,
+  license,
+  signal,
+}: FetchStageRiskForecastOptions): Promise<StageRiskForecastResponse> => {
+  const response = await fetch(joinUrl('/v1/risk/stage-forecast'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw await parseErrorPayload(response);
+  }
+
+  const payload = (await response.json()) as Partial<StageRiskForecastResponse>;
+  const generatedAt = typeof payload.generatedAt === 'string' ? payload.generatedAt : undefined;
+  const forecasts = Array.isArray(payload.forecasts)
+    ? payload.forecasts
+        .map((entry) => sanitizeStageRiskForecastEntry(entry as StageRiskForecastEntry))
+        .filter((entry) => typeof entry.stage === 'string')
+        .sort((a, b) => String(a.stage).localeCompare(String(b.stage)))
+    : [];
+
+  return { generatedAt, forecasts };
 };
 
 interface ListAuditLogsOptions extends AuthCredentials {

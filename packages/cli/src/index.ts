@@ -14,6 +14,7 @@ import {
   importJiraCsv,
   importJUnitXml,
   importLcov,
+  importDoorsClassicCsv,
   importQaLogs,
   fetchDoorsNextArtifacts,
   fetchJenkinsArtifacts,
@@ -22,6 +23,7 @@ import {
   fromLDRA,
   fromPolyspace,
   fromVectorCAST,
+  aggregateImportBundle,
   type BuildInfo,
   type CoverageReport,
   type CoverageSummary as StructuralCoverageSummary,
@@ -48,6 +50,8 @@ import {
   evidenceSources,
   Manifest,
   Objective,
+  SoiStage,
+  soiStages,
   ObjectiveArtifactType,
   objectiveArtifactTypes,
   Requirement,
@@ -141,6 +145,9 @@ interface ImportPaths {
   traceLinksCsv?: string;
   traceLinksJson?: string;
   designCsv?: string;
+  doorsClassicReqs?: string[];
+  doorsClassicTraces?: string[];
+  doorsClassicTests?: string[];
   doorsNext?: string;
   polyspace?: string;
   ldra?: string;
@@ -423,6 +430,11 @@ interface ExternalSourceMetadata {
     requirements: number;
     tests: number;
     builds: number;
+  };
+  doorsClassic?: {
+    modules: number;
+    requirements: number;
+    traces: number;
   };
   doorsNext?: {
     baseUrl: string;
@@ -1675,6 +1687,13 @@ const toRequirementFromDoorsNext = (entry: RemoteRequirementRecord): Requirement
     tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
   });
 
+const toRequirementFromDoorsClassic = (entry: RemoteRequirementRecord): Requirement =>
+  createRequirement(entry.id, entry.title || entry.id, {
+    description: entry.description,
+    status: requirementStatusFromDoorsNext(entry.status),
+    tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
+  });
+
 const toDesignFromDoorsNext = (entry: RemoteDesignRecord): DesignRecord =>
   createDesignRecord(entry.id, entry.title || entry.id, {
     description: entry.description ?? entry.url,
@@ -1828,6 +1847,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       ? normalizeRelativePath(options.traceLinksJson)
       : undefined,
     designCsv: options.designCsv ? normalizeRelativePath(options.designCsv) : undefined,
+    doorsClassicReqs: options.doorsClassicReqs?.map((filePath) => normalizeRelativePath(filePath)),
+    doorsClassicTraces: options.doorsClassicTraces?.map((filePath) => normalizeRelativePath(filePath)),
+    doorsClassicTests: options.doorsClassicTests?.map((filePath) => normalizeRelativePath(filePath)),
     doorsNext: options.doorsNext
       ? `${options.doorsNext.baseUrl}#${options.doorsNext.projectArea}`
       : undefined,
@@ -2076,6 +2098,41 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if (result.designs.length > 0) {
       designs.push(result.designs);
     }
+  }
+
+  const doorsClassicSources = [
+    ...(options.doorsClassicReqs ?? []),
+    ...(options.doorsClassicTraces ?? []),
+    ...(options.doorsClassicTests ?? []),
+  ];
+
+  if (doorsClassicSources.length > 0) {
+    const factory = aggregateImportBundle(
+      doorsClassicSources.map((filePath) => () => importDoorsClassicCsv(filePath)),
+    );
+    const result = await factory();
+    warnings.push(...result.warnings);
+
+    const remoteRequirements = result.data.requirements ?? [];
+    if (remoteRequirements.length > 0) {
+      requirements.push(remoteRequirements.map(toRequirementFromDoorsClassic));
+    }
+
+    if (result.data.traces.length > 0) {
+      manualTraceLinks.push(
+        ...result.data.traces.map((link) => ({ from: link.fromId, to: link.toId, type: link.type })),
+      );
+    }
+
+    for (const filePath of doorsClassicSources) {
+      await appendEvidence('trace', 'doorsClassic', filePath, 'DOORS Classic CSV dışa aktarımı');
+    }
+
+    sourceMetadata.doorsClassic = {
+      modules: doorsClassicSources.length,
+      requirements: remoteRequirements.length,
+      traces: result.data.traces.length,
+    };
   }
 
   if (options.doorsNext) {
@@ -2381,6 +2438,7 @@ export interface AnalyzeOptions {
   level?: CertificationLevel;
   projectName?: string;
   projectVersion?: string;
+  stage?: SoiStage;
 }
 
 export interface AnalyzeResult {
@@ -2398,6 +2456,7 @@ interface AnalysisMetadata {
   level: CertificationLevel;
   generatedAt: string;
   version: SnapshotVersion;
+  stage?: SoiStage;
 }
 
 const loadObjectives = async (filePath: string): Promise<Objective[]> => {
@@ -2408,6 +2467,45 @@ const loadObjectives = async (filePath: string): Promise<Objective[]> => {
 
 const filterObjectives = (objectives: Objective[], level: CertificationLevel): Objective[] => {
   return objectives.filter((objective) => objective.levels[level]);
+};
+
+const filterObjectivesByStage = (objectives: Objective[], stage?: SoiStage): Objective[] => {
+  if (!stage) {
+    return objectives;
+  }
+  return objectives.filter((objective) => objective.stage === stage);
+};
+
+const SOI_STAGE_SET = new Set<SoiStage>(soiStages);
+
+const normalizeStageOption = (value: unknown): SoiStage | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+
+  if (typeof candidate !== 'string') {
+    throw new Error(
+      `Geçersiz SOI aşaması değeri. Geçerli değerler: ${soiStages.join(', ')}.`,
+    );
+  }
+
+  const normalized = candidate.trim().toUpperCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (!SOI_STAGE_SET.has(normalized as SoiStage)) {
+    throw new Error(
+      `Geçersiz SOI aşaması değeri. Geçerli değerler: ${soiStages.join(', ')}.`,
+    );
+  }
+
+  return normalized as SoiStage;
 };
 
 const sortObjectives = (objectives: Objective[]): Objective[] => {
@@ -2597,7 +2695,10 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
   const objectivesPath = path.resolve(objectivesPathRaw);
   const objectives = await loadObjectives(objectivesPath);
-  const filteredObjectives = filterObjectives(objectives, level);
+  const filteredObjectives = filterObjectivesByStage(
+    filterObjectives(objectives, level),
+    options.stage,
+  );
 
   const bundle = buildImportBundle(workspace, filteredObjectives, level);
   const snapshot = generateComplianceSnapshot(bundle);
@@ -2625,6 +2726,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     level,
     generatedAt: analysisGeneratedAt,
     version: snapshot.version,
+    stage: options.stage,
   };
 
   await writeJsonFile(snapshotPath, snapshot);
@@ -2658,6 +2760,7 @@ export interface ReportOptions {
   manifestId?: string;
   planConfig?: string;
   planOverrides?: PlanSectionOverrides;
+  stage?: SoiStage;
 }
 
 export interface GeneratedPlanOutput {
@@ -3145,6 +3248,7 @@ export interface PackOptions {
   packageName?: string;
   ledger?: PackLedgerOptions;
   cms?: PackCmsOptions;
+  stage?: SoiStage;
 }
 
 export interface PackResult {
@@ -3455,6 +3559,7 @@ export interface IngestPipelineOptions {
   level?: CertificationLevel;
   projectName?: string;
   projectVersion?: string;
+  stage?: SoiStage;
 }
 
 export interface IngestPipelineResult {
@@ -3566,11 +3671,13 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     objectives: options.objectives,
     projectName: options.projectName,
     projectVersion: options.projectVersion,
+    stage: options.stage,
   });
 
   const reportResult = await runReport({
     input: analysisDir,
     output: reportsDir,
+    stage: options.stage,
   });
 
   const complianceRaw = await fsPromises.readFile(reportResult.complianceJson, 'utf8');
@@ -3638,6 +3745,7 @@ export const runIngestAndPackage = async (
     signingKey,
     ledger: options.ledger,
     cms: options.cms,
+    stage: options.stage,
   });
 
   return {
@@ -4075,6 +4183,23 @@ const logCliError = (
   );
 };
 
+const PIPELINE_LICENSE_FEATURES = {
+  import: 'import',
+  analyze: 'analyze',
+  report: 'report',
+  pack: 'pack',
+  stage: 'soiStages',
+} as const;
+
+const requireLicenseFeature = (license: LicensePayload, feature: string): void => {
+  const features = Array.isArray(license.features) ? license.features : [];
+  if (!features.includes(feature)) {
+    throw new LicenseError(
+      `Lisans bu işlem için gerekli özelliği içermiyor (${feature}).`,
+    );
+  }
+};
+
 if (require.main === module) {
   const cli = yargs(hideBin(process.argv))
     .scriptName('soipack')
@@ -4331,6 +4456,18 @@ if (require.main === module) {
             describe: 'Tasarım kayıtları CSV dosyası.',
             type: 'string',
           })
+          .option('doors-classic-reqs', {
+            describe: 'DOORS Classic gereksinim modülü CSV dışa aktarımları.',
+            type: 'array',
+          })
+          .option('doors-classic-traces', {
+            describe: 'DOORS Classic izlenebilirlik modülü CSV dışa aktarımları.',
+            type: 'array',
+          })
+          .option('doors-classic-tests', {
+            describe: 'DOORS Classic test modülü CSV dışa aktarımları.',
+            type: 'array',
+          })
           .option('independent-source', {
             describe:
               'Belirtilen kanıt kaynaklarını bağımsız incelemeden geçmiş kabul eder (ör. junit, vectorcast).',
@@ -4378,6 +4515,18 @@ if (require.main === module) {
             (argv as Record<string, unknown>).jiraDefects,
             '--jira-defects',
           );
+          const doorsClassicReqs = parseStringArrayOption(
+            (argv as Record<string, unknown>).doorsClassicReqs,
+            '--doors-classic-reqs',
+          );
+          const doorsClassicTraces = parseStringArrayOption(
+            (argv as Record<string, unknown>).doorsClassicTraces,
+            '--doors-classic-traces',
+          );
+          const doorsClassicTests = parseStringArrayOption(
+            (argv as Record<string, unknown>).doorsClassicTests,
+            '--doors-classic-tests',
+          );
 
           const result = await runImport({
             output: argv.output,
@@ -4391,6 +4540,9 @@ if (require.main === module) {
             traceLinksCsv: argv.traceLinksCsv as string | undefined,
             traceLinksJson: argv.traceLinksJson as string | undefined,
             designCsv: argv.designCsv as string | undefined,
+            doorsClassicReqs,
+            doorsClassicTraces,
+            doorsClassicTests,
             polyspace: importArguments.adapters.polyspace,
             ldra: importArguments.adapters.ldra,
             vectorcast: importArguments.adapters.vectorcast,
@@ -4456,20 +4608,30 @@ if (require.main === module) {
           .option('project-version', {
             describe: 'Proje sürümü.',
             type: 'string',
+          })
+          .option('stage', {
+            describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
+        const stage = normalizeStageOption(argv.stage);
         const context = {
           command: 'analyze',
           licensePath,
           input: argv.input,
           output: argv.output,
+          stage,
         };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
+          requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.analyze);
+          if (stage) {
+            requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
+          }
 
           const result = await runAnalyze({
             input: argv.input,
@@ -4478,6 +4640,7 @@ if (require.main === module) {
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
+            stage,
           });
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
@@ -4612,25 +4775,36 @@ if (require.main === module) {
           .option('plan-config', {
             describe: 'Plan şablonlarına ait özelleştirmeleri tanımlayan JSON dosyası.',
             type: 'string',
+          })
+          .option('stage', {
+            describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
+        const stage = normalizeStageOption(argv.stage);
         const context = {
           command: 'report',
           licensePath,
           input: argv.input,
           output: argv.output,
+          stage,
         };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
+          requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
+          if (stage) {
+            requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
+          }
 
           const result = await runReport({
             input: argv.input,
             output: argv.output,
             planConfig: argv['plan-config'] as string | undefined,
+            stage,
           });
 
           if (result.warnings.length > 0) {
@@ -4795,10 +4969,15 @@ if (require.main === module) {
           .option('ledger-key-id', {
             describe: 'Ledger girdisi imzası için anahtar kimliği.',
             type: 'string',
+          })
+          .option('stage', {
+            describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
         const licensePath = getLicensePath(argv);
+        const stage = normalizeStageOption(argv.stage);
         const context: Record<string, unknown> = {
           command: 'pack',
           licensePath,
@@ -4806,11 +4985,16 @@ if (require.main === module) {
           output: argv.output,
           name: argv.name,
           signingKeyPath: argv.signingKey,
+          stage,
         };
 
         try {
           const license = await verifyLicenseFile(licensePath);
           logLicenseValidated(logger, license, context);
+          requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
+          if (stage) {
+            requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
+          }
 
           const signingKeyOption = Array.isArray(argv.signingKey)
             ? argv.signingKey[0]
@@ -4891,6 +5075,7 @@ if (require.main === module) {
             signingKey,
             ledger: ledgerOptions,
             cms: cmsOptions,
+            stage,
           });
 
           logger.info(
@@ -4979,6 +5164,10 @@ if (require.main === module) {
           .option('ledger-key-id', {
             describe: 'Ledger girdisi imzası için anahtar kimliği.',
             type: 'string',
+          })
+          .option('stage', {
+            describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -5001,6 +5190,12 @@ if (require.main === module) {
             : undefined;
           if (normalizedLevel && !certificationLevels.includes(normalizedLevel)) {
             throw new Error(`Geçersiz seviye değeri: ${levelOption}`);
+          }
+
+          const stage = normalizeStageOption(argv.stage);
+          context.stage = stage;
+          if (stage) {
+            requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
           }
 
           const inputDir = Array.isArray(argv.input)
@@ -5097,6 +5292,7 @@ if (require.main === module) {
             packageName,
             ledger: ledgerOptions,
             cms: cmsOptions,
+            stage,
           });
 
           logger.info(

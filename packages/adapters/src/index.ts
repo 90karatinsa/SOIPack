@@ -1,5 +1,7 @@
 import { Requirement } from '@soipack/core';
 
+import type { ParseResult, RemoteRequirementRecord, RemoteTraceLink } from './types';
+
 export * from './types';
 export { importJiraCsv } from './jiraCsv';
 export type { JiraCsvOptions } from './jiraCsv';
@@ -35,6 +37,51 @@ export type {
   DoorsNextArtifactBundle,
   DoorsNextRelationship,
 } from './doorsNext';
+export { importDoorsClassicCsv } from './doorsClassic';
+export type { DoorsClassicImportBundle } from './doorsClassic';
+
+export interface RemoteImportBundle {
+  requirements: RemoteRequirementRecord[];
+  traces: RemoteTraceLink[];
+}
+
+export type RemoteImportFactory = () => Promise<ParseResult<RemoteImportBundle>>;
+
+const normalizeRequirementId = (value: string): string => value.trim();
+
+const normalizeRequirementKey = (value: string): string => normalizeRequirementId(value).toLowerCase();
+
+export const aggregateImportBundle = (factories: RemoteImportFactory[]): RemoteImportFactory => {
+  return async () => {
+    const aggregated: RemoteImportBundle = { requirements: [], traces: [] };
+    const warnings: string[] = [];
+    const seen = new Set<string>();
+
+    for (const factory of factories) {
+      const { data, warnings: importerWarnings } = await factory();
+      warnings.push(...importerWarnings);
+
+      data.requirements.forEach((requirement) => {
+        const normalizedId = normalizeRequirementId(requirement.id);
+        if (!normalizedId) {
+          return;
+        }
+        const key = normalizeRequirementKey(normalizedId);
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        aggregated.requirements.push({ ...requirement, id: normalizedId });
+      });
+
+      if (data.traces.length > 0) {
+        aggregated.traces.push(...data.traces);
+      }
+    }
+
+    return { data: aggregated, warnings };
+  };
+};
 
 export interface AdapterMetadata {
   name: string;

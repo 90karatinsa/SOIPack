@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, ZodIssueCode, type ZodType } from 'zod';
 
 import rawCatalog from '../../../data/objectives/do178c_objectives.min.json';
 
@@ -36,9 +36,13 @@ export interface LevelApplicability {
 export const objectiveIndependenceLevels = ['none', 'recommended', 'required'] as const;
 export type ObjectiveIndependenceLevel = (typeof objectiveIndependenceLevels)[number];
 
+export const soiStages = ['SOI-1', 'SOI-2', 'SOI-3', 'SOI-4'] as const;
+export type SoiStage = (typeof soiStages)[number];
+
 export interface Objective {
   id: string;
   table: ObjectiveTable;
+  stage: SoiStage;
   name: string;
   desc: string;
   artifacts: ObjectiveArtifactType[];
@@ -46,7 +50,7 @@ export interface Objective {
   independence: ObjectiveIndependenceLevel;
 }
 
-export const levelApplicabilitySchema: z.ZodType<LevelApplicability> = z
+export const levelApplicabilitySchema = z
   .object({
     A: z.boolean(),
     B: z.boolean(),
@@ -54,42 +58,44 @@ export const levelApplicabilitySchema: z.ZodType<LevelApplicability> = z
     D: z.boolean(),
     E: z.boolean(),
   })
-  .refine((value) => certificationLevels.some((level) => value[level]), {
+  .refine((value) => certificationLevels.some((level) => (value as LevelApplicability)[level]), {
     message: 'At least one certification level must apply to an objective.',
-  });
+  }) as unknown as ZodType<LevelApplicability>;
 
-export const objectiveSchema: z.ZodType<Objective> = z.object({
+export const objectiveSchema = z.object({
   id: z
     .string()
     .regex(/^A-[3-7]-\d{2}$/u, 'Objective id must follow the pattern A-<Table>-<Number>.'),
   table: z.enum(objectiveTables),
+  stage: z.enum(soiStages),
   name: z.string().min(3, 'Objective name should provide a concise title.'),
   desc: z.string().min(10, 'Objective description should provide a concise summary.'),
   artifacts: z
     .array(z.enum(objectiveArtifactTypes))
     .min(1, 'At least one artifact type is expected for each objective.')
     .superRefine((items, ctx) => {
-      if (new Set(items).size !== items.length) {
+      const typedItems = items as ObjectiveArtifactType[];
+      if (new Set(typedItems).size !== typedItems.length) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: ZodIssueCode.custom,
           message: 'Artifact types must be unique per objective.',
         });
       }
     }),
   levels: levelApplicabilitySchema,
   independence: z.enum(objectiveIndependenceLevels),
-});
+}) as unknown as ZodType<Objective>;
 
 export const objectiveListSchema = z.array(objectiveSchema);
 
 export type ObjectiveCatalogEntry = Objective;
 
-const parsedCatalog = objectiveListSchema.parse(rawCatalog);
+const parsedCatalog = objectiveListSchema.parse(rawCatalog) as ObjectiveCatalogEntry[];
 
 export const objectiveCatalog: ObjectiveCatalogEntry[] = parsedCatalog;
 
 export const objectiveCatalogById = new Map<string, ObjectiveCatalogEntry>(
-  parsedCatalog.map((objective) => [objective.id, objective]),
+  parsedCatalog.map((objective) => [objective.id, objective as ObjectiveCatalogEntry]),
 );
 
 export const getObjectivesByTable = (table: ObjectiveTable): ObjectiveCatalogEntry[] =>
