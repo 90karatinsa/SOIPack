@@ -1263,3 +1263,4 @@ export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } f
 export type { TraceSuggestion, TraceSuggestionConfidence, TraceSuggestionType } from './traceSuggestions';
 
 export * from './complianceMatrix';
+export * from './impact';

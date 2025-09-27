@@ -1417,6 +1417,44 @@ paths:
                   type: string
                   format: binary
                   description: Uyumluluk hedefleri JSON dosyası.
+                designCsv:
+                  type: string
+                  format: binary
+                  description: Tasarım gereksinim izleme CSV dışa aktarımı.
+                jiraDefects:
+                  type: array
+                  description: Jira hata CSV dışa aktarımları; birden fazla dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
+                polyspace:
+                  type: string
+                  format: binary
+                  description: Polyspace analiz çıktısı (örn. ZIP arşivi).
+                ldra:
+                  type: string
+                  format: binary
+                  description: LDRA rapor paketi veya arşivi.
+                vectorcast:
+                  type: string
+                  format: binary
+                  description: VectorCAST sonuç arşivi.
+                qaLogs:
+                  type: array
+                  description: Kalite güvence günlükleri; alan birden fazla dosyayı kabul eder.
+                  items:
+                    type: string
+                    format: binary
+                independentSources:
+                  type: array
+                  description: Bağımsız kaynak kanıtları için kimlikler listesi.
+                  items:
+                    type: string
+                independentArtifacts:
+                  type: array
+                  description: Bağımsız artefakt kanıtları için kimlikler listesi.
+                  items:
+                    type: string
                 projectName:
                   type: string
                 projectVersion:
@@ -1928,6 +1966,33 @@ paths:
                 reviewId:
                   type: string
                   description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
+                planOverrides:
+                  type: object
+                  additionalProperties: true
+                  description: Rapor üretimi sırasında uygulanacak plan ayarları.
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - analysisId
+              properties:
+                license:
+                  type: string
+                  format: binary
+                  description: Lisans anahtarı dosyası (isteğe bağlı; başlıkla gönderilebilir).
+                analysisId:
+                  type: string
+                manifestId:
+                  type: string
+                reviewId:
+                  type: string
+                planConfig:
+                  type: string
+                  format: binary
+                  description: Test planı yapılandırması dosyası.
+                planOverrides:
+                  type: string
+                  description: JSON olarak kodlanmış plan ayarları.
       responses:
         '200':
           description: Rapor üretildi.

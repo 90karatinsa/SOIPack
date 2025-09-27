@@ -78,6 +78,117 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '429':
           $ref: '#/components/responses/RateLimitedError'
+  /v1/import:
+    post:
+      summary: Import işini kuyruğa al
+      description: >-
+        Gereksinim, test, kapsam, tasarım ve statik analiz artefaktlarını çok
+        parçalı form verisi olarak göndererek import → analyze → report pipeline'ını
+        tetikler. Aynı dosya kombinasyonu tekrar gönderildiğinde iş önbellekten
+        geri döndürülebilir.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                license:
+                  type: string
+                  format: binary
+                  description: Lisans anahtarı dosyası (başlıkla gönderilmezse).
+                jira:
+                  type: string
+                  format: binary
+                  description: Jira gereksinim CSV dışa aktarımı.
+                jiraDefects:
+                  type: array
+                  description: Jira defect CSV dışa aktarımları; alan çoklu dosya kabul eder.
+                  items:
+                    type: string
+                    format: binary
+                reqif:
+                  type: string
+                  format: binary
+                  description: ReqIF gereksinim paketi.
+                junit:
+                  type: string
+                  format: binary
+                  description: JUnit XML test sonuçları.
+                lcov:
+                  type: string
+                  format: binary
+                  description: LCOV kapsam raporu veya `.info` çıktısı.
+                cobertura:
+                  type: string
+                  format: binary
+                  description: Cobertura XML kapsam raporu.
+                designCsv:
+                  type: string
+                  format: binary
+                  description: Tasarım izlenebilirlik CSV dışa aktarımı.
+                polyspace:
+                  type: string
+                  format: binary
+                  description: Polyspace statik analiz arşivi.
+                ldra:
+                  type: string
+                  format: binary
+                  description: LDRA rapor arşivi.
+                vectorcast:
+                  type: string
+                  format: binary
+                  description: VectorCAST kapsam/test arşivi.
+                qaLogs:
+                  type: array
+                  description: QA denetim günlükleri; birden fazla dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
+                git:
+                  type: string
+                  format: binary
+                  description: Kaynak kodu veya yapı artefaktları için ZIP/TAR arşivi.
+                objectives:
+                  type: string
+                  format: binary
+                  description: Uyumluluk hedefleri JSON dosyası.
+                projectName:
+                  type: string
+                projectVersion:
+                  type: string
+                level:
+                  type: string
+                  description: Sertifikasyon seviyesi (A-E).
+                independentSources:
+                  type: array
+                  description: Bağımsız kaynak kimlikleri (JSON string olarak gönderilir).
+                  items:
+                    type: string
+                independentArtifacts:
+                  type: array
+                  description: Bağımsız artefakt kimlikleri (JSON string olarak gönderilir).
+                  items:
+                    type: string
+      responses:
+        '202':
+          description: Import işi kuyruğa alındı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResource'
+        '400':
+          description: Gönderilen form verisi doğrulamayı geçemedi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitedError'
   /evidence/{id}:
     get:
       summary: Kanıt ayrıntılarını getir
@@ -385,3 +496,28 @@ components:
           additionalProperties: true
         sha256:
           type: string
+    JobResource:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        hash:
+          type: string
+        reused:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - status
+        - hash
+        - reused
+        - createdAt
+        - updatedAt

@@ -11,6 +11,7 @@ import {
   deleteAdminRole,
   getAdminApiKey,
   getWorkspaceDocumentThread,
+  importArtifacts,
   listAdminApiKeys,
   listAdminRoles,
   listAdminUsers,
@@ -391,6 +392,63 @@ describe('API integrations', () => {
     const jobsCall = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(jobsCall[0]).toContain('/v1/jobs?status=queued&status=running&kind=analyze&limit=50');
     expect(jobsCall[1]).toMatchObject({ method: 'GET' });
+  });
+
+  it('builds import form data for extended artifacts and independence', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({ body: { id: 'job-1', status: 'queued', reused: false } }),
+    );
+
+    const files = [
+      new File(['design'], 'system-design.csv', { type: 'text/csv' }),
+      new File(['defects'], 'critical-defects.xlsx', {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+      new File(['polyspace'], 'polyspace-results.zip', { type: 'application/zip' }),
+      new File(['ldra'], 'ldra-run.tgz', { type: 'application/gzip' }),
+      new File(['vector'], 'vectorcast-report.tar', { type: 'application/x-tar' }),
+      new File(['qa'], 'qa-acceptance.log', { type: 'text/plain' }),
+      new File(['qa'], 'qa-observations.txt', { type: 'text/plain' }),
+      new File(['json'], 'objectives.json', { type: 'application/json' }),
+      new File(['coverage'], 'coverage.info', { type: 'text/plain' }),
+      new File(['jira'], 'requirements.csv', { type: 'text/csv' }),
+    ];
+
+    await importArtifacts({
+      token: 'token',
+      license: 'license',
+      files,
+      projectName: 'Extended Import',
+      projectVersion: '1.0.0',
+      independentSources: ['junit', 'lcov'],
+      independentArtifacts: ['analysis', 'test'],
+    });
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(options.method).toBe('POST');
+    expect(options.body).toBeInstanceOf(FormData);
+
+    const formData = options.body as FormData;
+    const entries: Array<[string, FormDataEntryValue]> = [];
+    formData.forEach((value, key) => {
+      entries.push([key, value]);
+    });
+    const entryKeys = entries.map(([key]) => key);
+    expect(entryKeys).toEqual(
+      expect.arrayContaining(['designCsv', 'polyspace', 'ldra', 'vectorcast', 'qaLogs', 'jiraDefects']),
+    );
+
+    const defectEntries = formData.getAll('jiraDefects');
+    expect(defectEntries).toHaveLength(1);
+    expect(defectEntries[0]).toBeTruthy();
+
+
+    const qaEntries = formData.getAll('qaLogs');
+    expect(qaEntries).toHaveLength(2);
+    expect(qaEntries.every((entry) => Boolean(entry))).toBe(true);
+
+    expect(formData.get('independentSources')).toBe(JSON.stringify(['junit', 'lcov']));
+    expect(formData.get('independentArtifacts')).toBe(JSON.stringify(['analysis', 'test']));
   });
 
   it('manages admin resources with authentication', async () => {

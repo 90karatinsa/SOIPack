@@ -993,6 +993,112 @@ const getFieldValue = (value: unknown): string | undefined => {
   return String(value);
 };
 
+const parseStringArrayField = (value: unknown, field: string): string[] | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  let raw: unknown = value;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) {
+      return [];
+    }
+    if (raw.length === 1) {
+      raw = raw[0];
+    }
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      return [];
+    }
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı geçerli JSON içermelidir.`);
+    }
+  }
+
+  if (!Array.isArray(raw)) {
+    throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı için dizi bekleniyor.`);
+  }
+
+  const normalized: string[] = [];
+  raw.forEach((entry, index) => {
+    if (typeof entry !== 'string') {
+      throw new HttpError(
+        400,
+        'INVALID_REQUEST',
+        `${field}[${index}] değeri metin olmalıdır.`,
+      );
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      throw new HttpError(400, 'INVALID_REQUEST', `${field}[${index}] boş olamaz.`);
+    }
+    normalized.push(trimmed);
+  });
+
+  return normalized;
+};
+
+const parseJsonObjectField = (
+  value: unknown,
+  field: string,
+): Record<string, unknown> | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  let raw: unknown = value;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) {
+      return {};
+    }
+    if (raw.length === 1) {
+      raw = raw[0];
+    }
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      return {};
+    }
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı geçerli JSON içermelidir.`);
+    }
+  }
+
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı için nesne bekleniyor.`);
+  }
+
+  return raw as Record<string, unknown>;
+};
+
+const toStableJson = (value: unknown): string => {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) {
+      return input.map((item) => normalize(item));
+    }
+    if (input && typeof input === 'object') {
+      return Object.keys(input as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = normalize((input as Record<string, unknown>)[key]);
+          return acc;
+        }, {});
+    }
+    return input;
+  };
+
+  return JSON.stringify(normalize(value));
+};
+
 const computeHash = (entries: HashEntry[]): string => {
   const sorted = [...entries].sort((a, b) => a.key.localeCompare(b.key));
   const hash = createHash('sha256');
@@ -1323,6 +1429,60 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
   traceLinksJson: {
     maxSizeBytes: maxUploadSize,
     allowedMimeTypes: ['application/json', 'text/*', 'application/octet-stream'],
+  },
+  designCsv: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['text/csv', 'text/plain', 'application/octet-stream'],
+  },
+  jiraDefects: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: ['text/csv', 'text/plain', 'application/octet-stream'],
+  },
+  polyspace: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+    ],
+  },
+  ldra: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/xml',
+      'text/xml',
+      'text/*',
+      'application/octet-stream',
+    ],
+  },
+  vectorcast: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+    ],
+  },
+  qaLogs: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'text/*',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+    ],
+  },
+  planConfig: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/json',
+      'text/*',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+    ],
   },
 });
 
@@ -1792,6 +1952,8 @@ interface ImportJobPayload {
   level?: CertificationLevel | null;
   projectName?: string | null;
   projectVersion?: string | null;
+  independentSources?: string[] | null;
+  independentArtifacts?: string[] | null;
   license: JobLicenseMetadata;
 }
 
@@ -1810,6 +1972,8 @@ interface ReportJobPayload {
   analysisId: string;
   manifestId?: string | null;
   soiStage?: SoiStage | null;
+  planConfigPath?: string | null;
+  planOverrides?: Record<string, unknown> | null;
   license: JobLicenseMetadata;
 }
 
@@ -3403,6 +3567,8 @@ export const createServer = (config: ServerConfig): Express => {
       const payload = requireJobPayload<'import'>(context);
       await storage.ensureDirectory(payload.workspaceDir);
       try {
+        const qaLogUploads = payload.uploads.qaLogs ?? [];
+        const jiraDefectUploads = payload.uploads.jiraDefects ?? [];
         const importOptions: ImportOptions = {
           output: payload.workspaceDir,
           jira: payload.uploads.jira?.[0],
@@ -3413,10 +3579,28 @@ export const createServer = (config: ServerConfig): Express => {
           git: payload.uploads.git?.[0],
           traceLinksCsv: payload.uploads.traceLinksCsv?.[0],
           traceLinksJson: payload.uploads.traceLinksJson?.[0],
+          designCsv: payload.uploads.designCsv?.[0],
+          jiraDefects: jiraDefectUploads.length > 0 ? [...jiraDefectUploads] : undefined,
+          polyspace: payload.uploads.polyspace?.[0],
+          ldra: payload.uploads.ldra?.[0],
+          vectorcast: payload.uploads.vectorcast?.[0],
+          qaLogs: qaLogUploads.length > 0 ? [...qaLogUploads] : undefined,
           objectives: payload.uploads.objectives?.[0],
           level: payload.level ?? undefined,
           projectName: payload.projectName ?? undefined,
           projectVersion: payload.projectVersion ?? undefined,
+          independentSources:
+            payload.independentSources && payload.independentSources.length > 0
+              ? [...payload.independentSources]
+              : payload.independentSources === null
+                ? undefined
+                : payload.independentSources,
+          independentArtifacts:
+            payload.independentArtifacts && payload.independentArtifacts.length > 0
+              ? [...payload.independentArtifacts]
+              : payload.independentArtifacts === null
+                ? undefined
+                : payload.independentArtifacts,
         };
 
         const result = await runImport(importOptions);
@@ -3431,6 +3615,8 @@ export const createServer = (config: ServerConfig): Express => {
             level: payload.level ?? null,
             projectName: payload.projectName ?? null,
             projectVersion: payload.projectVersion ?? null,
+            independentSources: payload.independentSources ?? null,
+            independentArtifacts: payload.independentArtifacts ?? null,
             files: Object.fromEntries(
               Object.entries(payload.uploads).map(([key, values]) => [
                 key,
@@ -3510,6 +3696,8 @@ export const createServer = (config: ServerConfig): Express => {
             analysisId: payload.analysisId,
             manifestId: payload.manifestId ?? null,
             soiStage: payload.soiStage ?? null,
+            planConfig: payload.planConfigPath ? path.basename(payload.planConfigPath) : null,
+            planOverrides: payload.planOverrides ?? null,
           },
           license: payload.license,
           outputs: {
@@ -3526,9 +3714,16 @@ export const createServer = (config: ServerConfig): Express => {
 
         await writeJobMetadata(storage, payload.reportDir, metadata);
 
+        await storage
+          .removeDirectory(path.join(directories.uploads, context.tenantId, context.id))
+          .catch(() => undefined);
+
         return toReportResult(storage, metadata);
       } catch (error) {
         await storage.removeDirectory(payload.reportDir);
+        await storage
+          .removeDirectory(path.join(directories.uploads, context.tenantId, context.id))
+          .catch(() => undefined);
         throw createPipelineError(error, 'Rapor oluşturma işlemi başarısız oldu.');
       }
     },
@@ -6412,6 +6607,17 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'objectives', maxCount: 1 },
     { name: 'traceLinksCsv', maxCount: 1 },
     { name: 'traceLinksJson', maxCount: 1 },
+    { name: 'designCsv', maxCount: 1 },
+    { name: 'jiraDefects', maxCount: 25 },
+    { name: 'polyspace', maxCount: 1 },
+    { name: 'ldra', maxCount: 1 },
+    { name: 'vectorcast', maxCount: 1 },
+    { name: 'qaLogs', maxCount: 25 },
+  ]);
+
+  const reportFields = upload.fields([
+    { name: LICENSE_FILE_FIELD, maxCount: 1 },
+    { name: 'planConfig', maxCount: 1 },
   ]);
 
   app.post(
@@ -6457,6 +6663,15 @@ export const createServer = (config: ServerConfig): Express => {
           }
         });
 
+        const independentSources = parseStringArrayField(
+          body.independentSources,
+          'independentSources',
+        );
+        const independentArtifacts = parseStringArrayField(
+          body.independentArtifacts,
+          'independentArtifacts',
+        );
+
         const hashEntries: HashEntry[] = [];
         Object.entries(stringFields).forEach(([key, value]) => {
           hashEntries.push({ key: `field:${key}`, value });
@@ -6466,6 +6681,19 @@ export const createServer = (config: ServerConfig): Express => {
             const fileHash = await hashFileAtPath(file.path);
             hashEntries.push({ key: `file:${field}:${index}`, value: fileHash });
           }
+        }
+
+        if (independentSources) {
+          hashEntries.push({
+            key: 'field:independentSources',
+            value: JSON.stringify(independentSources),
+          });
+        }
+        if (independentArtifacts) {
+          hashEntries.push({
+            key: 'field:independentArtifacts',
+            value: JSON.stringify(independentArtifacts),
+          });
         }
 
         const hash = computeHash(hashEntries);
@@ -6539,6 +6767,8 @@ export const createServer = (config: ServerConfig): Express => {
               level: level ?? null,
               projectName: stringFields.projectName ?? null,
               projectVersion: stringFields.projectVersion ?? null,
+              independentSources: independentSources ?? null,
+              independentArtifacts: independentArtifacts ?? null,
               license: toLicenseMetadata(license),
             },
           });
@@ -6701,15 +6931,40 @@ export const createServer = (config: ServerConfig): Express => {
   app.post(
     '/v1/report',
     requireAuth,
+    reportFields,
     createAsyncHandler(async (req, res) => {
       const { tenantId, subject } = getAuthContext(req);
-      const license = await requireLicenseToken(req);
+      const fileMap = (req.files as FileMap) ?? {};
+      let cleaned = false;
+      const ensureCleanup = async () => {
+        if (!cleaned) {
+          cleaned = true;
+          await cleanupUploadedFiles(fileMap);
+        }
+      };
+
+      let reportId: string | undefined;
+      let planConfigPath: string | undefined;
+
+      try {
+        Object.entries(fileMap).forEach(([field, files]) => {
+          const policy = uploadPolicies[field] ?? {
+            maxSizeBytes: maxUploadSize,
+            allowedMimeTypes: ['*'],
+          };
+          files.forEach((file) => ensureFileWithinPolicy(field, file, policy));
+        });
+
+        await scanUploadedFiles(scanner, fileMap);
+
+        const license = await requireLicenseToken(req, fileMap);
       requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
       const body = req.body as {
         analysisId?: string;
         manifestId?: string;
         reviewId?: string;
         soiStage?: string;
+        planOverrides?: unknown;
       };
       if (!body.analysisId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'analysisId alanı zorunludur.');
@@ -6724,6 +6979,9 @@ export const createServer = (config: ServerConfig): Express => {
 
       const soiStage = parseSoiStage(body.soiStage);
 
+        const planOverrides = parseJsonObjectField(body.planOverrides, 'planOverrides');
+        const planConfigUploads = fileMap.planConfig ?? [];
+
       const hashEntries: HashEntry[] = [
         { key: 'analysisId', value: body.analysisId },
         { key: 'soiStage', value: soiStage ?? '' },
@@ -6731,10 +6989,13 @@ export const createServer = (config: ServerConfig): Express => {
       if (body.manifestId) {
         hashEntries.push({ key: 'manifestId', value: body.manifestId });
       }
-      const hash = computeHash(hashEntries);
-      const reportId = createJobId(hash);
-      const reportDir = buildStageScopedDirectory(directories.reports, tenantId, reportId, soiStage);
-      const metadataPath = path.join(reportDir, METADATA_FILE);
+        if (planOverrides) {
+          hashEntries.push({ key: 'planOverrides', value: toStableJson(planOverrides) });
+        }
+        const hash = computeHash(hashEntries);
+        reportId = createJobId(hash);
+        const reportDir = buildStageScopedDirectory(directories.reports, tenantId, reportId, soiStage);
+        const metadataPath = path.join(reportDir, METADATA_FILE);
 
       await ensureJobsRestored();
       const existingJob = await jobStore.findJob<ReportJobResult>(tenantId, reportId);
@@ -6747,6 +7008,7 @@ export const createServer = (config: ServerConfig): Express => {
           target: toJobTarget(existingJob.id),
           payload: toLicenseAuditPayload(license),
         });
+        await ensureCleanup();
         sendJobResponse(res, existingJob, tenantId, {
           reused: existingJob.status === 'completed',
         });
@@ -6769,6 +7031,7 @@ export const createServer = (config: ServerConfig): Express => {
           queue,
           metadata,
         ) as JobDetails<ReportJobResult>;
+        await ensureCleanup();
         sendJobResponse(res, adopted, tenantId, { reused: true });
         return;
       }
@@ -6779,6 +7042,27 @@ export const createServer = (config: ServerConfig): Express => {
         manifestId: body.manifestId,
         ...(soiStage ? { soiStage } : {}),
       };
+
+        if (planConfigUploads.length > 0) {
+          const planConfigMap: FileMap = { planConfig: planConfigUploads };
+          try {
+            const persisted = await storage.persistUploads(
+              path.join(tenantId, reportId),
+              convertFileMap(planConfigMap),
+            );
+            planConfigPath = persisted.planConfig?.[0];
+          } catch (error) {
+            await ensureCleanup();
+            throw error;
+          }
+        }
+
+        if (planConfigPath) {
+          reportOptions.planConfig = planConfigPath;
+        }
+        if (planOverrides) {
+          reportOptions.planOverrides = planOverrides;
+        }
 
       const job = await enqueueObservedJob<ReportJobResult, ReportJobPayload>({
         tenantId,
@@ -6793,6 +7077,8 @@ export const createServer = (config: ServerConfig): Express => {
           analysisId: body.analysisId,
           manifestId: body.manifestId ?? null,
           soiStage: soiStage ?? null,
+          planConfigPath: planConfigPath ?? null,
+          planOverrides: planOverrides ?? null,
           license: toLicenseMetadata(license),
         },
       });
@@ -6805,7 +7091,17 @@ export const createServer = (config: ServerConfig): Express => {
         target: toJobTarget(reportId),
         payload: toLicenseAuditPayload(license),
       });
-      sendJobResponse(res, job, tenantId);
+        await ensureCleanup();
+        sendJobResponse(res, job, tenantId);
+      } catch (error) {
+        await ensureCleanup();
+        if (reportId && planConfigPath) {
+          await storage
+            .removeDirectory(path.join(directories.uploads, tenantId, reportId))
+            .catch(() => undefined);
+        }
+        throw error;
+      }
     }),
   );
 

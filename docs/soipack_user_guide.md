@@ -51,32 +51,40 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --junit examples/minimal/results.xml \
      --lcov examples/minimal/lcov.info \
      --cobertura examples/minimal/coverage.xml \
-     --git . \
-     --project-name "SOIPack Demo Avionics" \
-     --project-version "1.0.0" \
-     --level C \
-     --objectives data/objectives/do178c_objectives.min.json \
-     -o .soipack/work
-   ```
-   Polarion gereksinim/test kayıtlarını veya Jenkins build verisini otomatik
-   almak için sırasıyla `--polarion-url --polarion-project` ve `--jenkins-url
-   --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
-   CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
-   `polarion`/`jenkins` olarak işler.
-   Bağımsız inceleme gereksinimleri için `--independent-source junit` veya
-   `--independent-artifact analysis=reports/safety-analysis.pdf` gibi bayrakları
-   ekleyerek belirli kanıt kayıtlarını bağımsız olarak işaretleyebilirsiniz;
-   aksi halde DO-178C’de bağımsızlık zorunlu olan hedefler analiz sırasında
-   otomatik olarak boşluk olarak listelenir.
-   CLI, yerel dosya sisteminden okunan her artefakt için kanıt kaydına
-   SHA-256 `hash` değeri ekler; bu alan `workspace.json` içinde tutulur ve
-   sonradan yeniden içe aktarımda tutarlılık kontrolü sağlar. `--import`
-   bayrağı, DO-178C artefakt anahtarları (`plan`, `standard`, `qa_record` vb.)
-   üzerinden manuel dosyaları kanıt indeksine eklerken `--qa` denetim imza
-   CSV'lerini satır bazlı QA kayıtlarına dönüştürür. Yeni `--jira-defects`
-   bayrağı ise Jira CSV dosyalarındaki `Issue Type` sütununu kullanarak
-   `problem_report` kanıtı oluşturur, açık/kapanmış kayıt sayılarını çalışma
-   alanı metaverisine yazar.
+   --git . \
+    --project-name "SOIPack Demo Avionics" \
+    --project-version "1.0.0" \
+    --level C \
+    --objectives data/objectives/do178c_objectives.min.json \
+    -o .soipack/work
+  ```
+  Polarion gereksinim/test kayıtlarını veya Jenkins build verisini otomatik
+  almak için sırasıyla `--polarion-url --polarion-project` ve `--jenkins-url
+  --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
+  CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
+  `polarion`/`jenkins` olarak işler.
+  Tasarım doğrulama CSV dışa aktarımlarını `--design-csv` ile,
+  Polyspace/LDRA/VectorCAST statik analiz arşivlerini sırasıyla `--polyspace`,
+  `--ldra`, `--vectorcast` bayraklarıyla ve kalite denetim günlüklerini birden
+  fazla `--qa` parametresi vererek ekleyebilirsiniz. Bu alanlar web arayüzünde
+  ilgili dosya türleri seçildiğinde otomatik olarak sınıflandırılır.
+  Bağımsız inceleme gereksinimleri için `--independent-source junit` veya
+  `--independent-artifact analysis=reports/safety-analysis.pdf` gibi bayrakları
+  ekleyerek belirli kanıt kayıtlarını bağımsız olarak işaretleyebilirsiniz;
+  UI'daki "Bağımsızlık tercihleri" paneli aynı değerleri JSON olarak form verisine
+  yazar ve API aracılığıyla CLI'nin bağımsızlık bayraklarına dönüştürür.
+  aksi halde DO-178C’de bağımsızlık zorunlu olan hedefler analiz sırasında
+  otomatik olarak boşluk olarak listelenir.
+  CLI, yerel dosya sisteminden okunan her artefakt için kanıt kaydına
+  SHA-256 `hash` değeri ekler; bu alan `workspace.json` içinde tutulur ve
+  sonradan yeniden içe aktarımda tutarlılık kontrolü sağlar. `--import`
+  bayrağı, DO-178C artefakt anahtarları (`plan`, `standard`, `qa_record` vb.)
+  üzerinden manuel dosyaları kanıt indeksine eklerken `--qa` denetim imza
+  CSV'lerini satır bazlı QA kayıtlarına dönüştürür. Yeni `--jira-defects`
+  ve `--design-csv` bayrakları ise Jira CSV dosyalarındaki `Issue Type`
+  sütununu ve tasarım tablolarındaki ilişki sütunlarını kullanarak ilgili
+  `problem_report` ve `trace` kanıtlarını oluşturur, açık/kapanmış kayıt
+  sayılarını çalışma alanı metaverisine yazar.
 3. **Uyum analizini hesaplayın**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key analyze \

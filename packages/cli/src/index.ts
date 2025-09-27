@@ -23,6 +23,7 @@ import {
   fromLDRA,
   fromPolyspace,
   fromVectorCAST,
+  fromSimulink,
   aggregateImportBundle,
   type BuildInfo,
   type CoverageReport,
@@ -152,6 +153,7 @@ interface ImportPaths {
   polyspace?: string;
   ldra?: string;
   vectorcast?: string;
+  simulink?: string;
   polarion?: string;
   jenkins?: string;
   manualArtifacts?: Partial<Record<ObjectiveArtifactType, string[]>>;
@@ -375,7 +377,7 @@ const buildEvidenceIndependenceConfig = (
   return { sources, artifactTypes, artifacts };
 };
 
-const staticAnalysisTools = ['polyspace', 'ldra', 'vectorcast'] as const;
+const staticAnalysisTools = ['polyspace', 'ldra', 'vectorcast', 'simulink'] as const;
 type StaticAnalysisTool = (typeof staticAnalysisTools)[number];
 
 type ManualArtifactImports = Partial<Record<ObjectiveArtifactType, string[]>>;
@@ -1856,6 +1858,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     polyspace: options.polyspace ? normalizeRelativePath(options.polyspace) : undefined,
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
     vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
+    simulink: options.simulink ? normalizeRelativePath(options.simulink) : undefined,
     polarion: options.polarion ? `${options.polarion.baseUrl}#${options.polarion.projectId}` : undefined,
     jenkins: options.jenkins
       ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
@@ -2071,6 +2074,36 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     if ((result.data.findings?.length ?? 0) > 0) {
       await appendEvidence('test', 'vectorcast', options.vectorcast, 'VectorCAST test değerlendirmeleri');
       await appendEvidence('analysis', 'vectorcast', options.vectorcast, 'VectorCAST sonuç analizi');
+    }
+  }
+
+  if (options.simulink) {
+    const result = await fromSimulink(options.simulink);
+    warnings.push(...result.warnings);
+    if (result.data.coverage) {
+      structuralCoverage = mergeStructuralCoverage(structuralCoverage, result.data.coverage);
+      await appendEvidence(
+        'coverage_stmt',
+        'simulink',
+        options.simulink,
+        'Simulink model kapsam raporu',
+      );
+      if (structuralCoverageHasMetric(result.data.coverage, 'dec')) {
+        await appendEvidence(
+          'coverage_dec',
+          'simulink',
+          options.simulink,
+          'Simulink karar/koşul kapsamı',
+        );
+      }
+      if (structuralCoverageHasMetric(result.data.coverage, 'mcdc')) {
+        await appendEvidence(
+          'coverage_mcdc',
+          'simulink',
+          options.simulink,
+          'Simulink MC/DC kapsamı',
+        );
+      }
     }
   }
 
@@ -4035,6 +4068,9 @@ export const runPipeline = async (
     vectorcast: config.inputs?.vectorcast
       ? path.resolve(baseDir, config.inputs.vectorcast)
       : undefined,
+    simulink: config.inputs?.simulink
+      ? path.resolve(baseDir, config.inputs.simulink)
+      : undefined,
     designCsv: config.inputs?.designCsv
       ? path.resolve(baseDir, config.inputs.designCsv)
       : undefined,
@@ -4331,6 +4367,10 @@ if (require.main === module) {
             describe: 'Cobertura kapsam raporu.',
             type: 'string',
           })
+          .option('simulink', {
+            describe: 'Simulink model kapsam raporu JSON çıktısı.',
+            type: 'string',
+          })
           .option('git', {
             describe: 'Git deposu kök dizini.',
             type: 'string',
@@ -4437,7 +4477,7 @@ if (require.main === module) {
           })
           .option('import', {
             describe:
-              'Plan, standart, QA kaydı gibi artefaktlar ve araç çıktıları (plan=, standard=, qa_record=, polyspace=, ...).',
+              'Plan, standart, QA kaydı gibi artefaktlar ve araç çıktıları (plan=, standard=, qa_record=, polyspace=, simulink=, ...).',
             type: 'array',
           })
           .option('qa', {
@@ -4536,6 +4576,8 @@ if (require.main === module) {
             junit: argv.junit,
             lcov: argv.lcov,
             cobertura: argv.cobertura,
+            simulink:
+              (argv.simulink as string | undefined) ?? importArguments.adapters.simulink,
             git: argv.git,
             traceLinksCsv: argv.traceLinksCsv as string | undefined,
             traceLinksJson: argv.traceLinksJson as string | undefined,

@@ -71,8 +71,14 @@ export interface PipelineState {
   lastCompletedAt: string | null;
 }
 
+export interface PipelineRunOptions {
+  files: File[];
+  independentSources?: string[];
+  independentArtifacts?: string[];
+}
+
 export interface UsePipelineResult {
-  runPipeline: (files: File[]) => Promise<void>;
+  runPipeline: (options: PipelineRunOptions) => Promise<void>;
   downloadArtifacts: () => Promise<void>;
   reset: () => void;
   state: PipelineState;
@@ -195,7 +201,11 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
   );
 
   const runPipeline = useCallback(
-    async (files: File[]) => {
+    async ({
+      files,
+      independentSources = [],
+      independentArtifacts = [],
+    }: PipelineRunOptions) => {
       const trimmedToken = token.trim();
       const trimmedLicense = license.trim();
       if (!trimmedToken) {
@@ -232,6 +242,8 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
           files,
           projectVersion: projectVersionForNow(),
           signal: controller.signal,
+          independentSources,
+          independentArtifacts,
         });
         updateJob('import', importInitial, importInitial.reused);
 

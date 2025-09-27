@@ -37,6 +37,8 @@ export default function App() {
   const [license, setLicense] = useState('');
   const [activeView, setActiveView] = useState<View>('upload');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [independentSources, setIndependentSources] = useState<string[]>([]);
+  const [independentArtifacts, setIndependentArtifacts] = useState<string[]>([]);
   const [activeStatuses, setActiveStatuses] = useState<CoverageStatus[]>([
     'covered',
     'partial',
@@ -141,7 +143,11 @@ export default function App() {
 
   const handleRun = () => {
     if (!canRunPipeline || isRunning) return;
-    void runPipeline(selectedFiles);
+    void runPipeline({
+      files: selectedFiles,
+      independentSources,
+      independentArtifacts,
+    });
   };
 
   const handleToggleStatus = (status: CoverageStatus) => {
@@ -186,12 +192,16 @@ export default function App() {
     setToken('');
     setLicense('');
     setSelectedFiles([]);
+    setIndependentSources([]);
+    setIndependentArtifacts([]);
     reset();
   };
 
   const handleLicenseClear = () => {
     setLicense('');
     setSelectedFiles([]);
+    setIndependentSources([]);
+    setIndependentArtifacts([]);
     reset();
   };
 
@@ -257,6 +267,10 @@ export default function App() {
               jobStates={jobStates}
               error={error}
               lastCompletedAt={lastCompletedAt}
+              independentSources={independentSources}
+              independentArtifacts={independentArtifacts}
+              onIndependentSourcesChange={setIndependentSources}
+              onIndependentArtifactsChange={setIndependentArtifacts}
             />
           )}
 

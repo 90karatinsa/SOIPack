@@ -138,6 +138,7 @@ export const evidenceSources = [
   'polyspace',
   'ldra',
   'vectorcast',
+  'simulink',
   'doorsNext',
   'staticAnalysis',
   'other',

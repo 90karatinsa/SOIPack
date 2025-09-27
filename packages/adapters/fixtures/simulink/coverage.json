@@ -1,0 +1,36 @@
+{
+  "model": "ThrottleControl",
+  "artifacts": [
+    {
+      "path": "models/throttle_controller.slx",
+      "metrics": {
+        "execution": { "covered": 80, "total": 100 },
+        "decision": { "covered": 40, "total": 50 },
+        "condition": { "covered": 35, "total": 50 },
+        "mcdc": { "covered": 20, "total": 40 }
+      }
+    },
+    {
+      "path": "models/sensor_interface.slx",
+      "metrics": {
+        "execution": { "covered": "12", "total": "16" },
+        "condition": { "covered": 6, "total": 10 }
+      }
+    },
+    {
+      "metrics": {
+        "execution": { "covered": 5, "total": 10 },
+        "condition": { "covered": 3, "total": 4 }
+      }
+    },
+    {
+      "path": "models/invalid_metrics.slx",
+      "metrics": {
+        "execution": { "covered": 3, "total": "NaN" }
+      }
+    }
+  ],
+  "warnings": [
+    "ThrottleControl modeli, hariç tutulan bloklar içeriyor"
+  ]
+}
