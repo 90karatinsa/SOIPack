@@ -58,7 +58,9 @@ type ManifestLedgerMetadata = {
   } | null;
 };
 
-type LedgerAwareManifest = Manifest & ManifestLedgerMetadata;
+type ManifestStageMetadata = { stage?: string | null };
+
+type LedgerAwareManifest = Manifest & ManifestLedgerMetadata & ManifestStageMetadata;
 
 export interface ManifestDigest {
   algorithm: 'SHA-256';
@@ -837,7 +839,7 @@ const safeRequire = (moduleName: string): any => {
   }
 };
 
-const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata): Manifest => {
+const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata & ManifestStageMetadata): Manifest => {
   const canonical: LedgerAwareManifest = {
     files: [...manifest.files]
       .map((file) => ({ path: file.path, sha256: file.sha256 }))
@@ -845,6 +847,10 @@ const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata): Mani
     createdAt: manifest.createdAt,
     toolVersion: manifest.toolVersion,
   };
+
+  if (manifest.stage !== undefined) {
+    canonical.stage = manifest.stage ?? null;
+  }
 
   if (manifest.ledger !== undefined) {
     canonical.ledger = manifest.ledger

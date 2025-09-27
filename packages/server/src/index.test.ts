@@ -3159,6 +3159,7 @@ describe('@soipack/server REST API', () => {
         evidenceIndex: {},
         findings: [],
         builds: [],
+        designs: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],
@@ -3242,6 +3243,7 @@ describe('@soipack/server REST API', () => {
         evidenceIndex: {},
         findings: [],
         builds: [],
+        designs: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],
@@ -3410,6 +3412,7 @@ describe('@soipack/server REST API', () => {
         evidenceIndex: {},
         findings: [],
         builds: [],
+        designs: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],
@@ -4110,6 +4113,65 @@ describe('@soipack/server REST API', () => {
       .expect(404);
   });
 
+  it('stageRouting routes stage-scoped report and pack outputs into dedicated directories', async () => {
+    const importResponse = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .attach('junit', minimalExample('results.xml'))
+      .attach('lcov', minimalExample('lcov.info'))
+      .field('projectName', 'Stage Routing Project')
+      .field('projectVersion', '2.0.0')
+      .expect(202);
+
+    const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+
+    const analyzeResponse = await request(app)
+      .post('/v1/analyze')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ importId: importJob.id })
+      .expect(202);
+    const analyzeJob = await waitForJobCompletion(app, token, analyzeResponse.body.id);
+
+    const soiStage = 'SOI-3';
+
+    const reportResponse = await request(app)
+      .post('/v1/report')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ analysisId: analyzeJob.id, soiStage })
+      .expect(202);
+    const reportJob = await waitForJobCompletion(app, token, reportResponse.body.id);
+
+    const expectedReportDir = `reports/${tenantId}/${soiStage}/${reportResponse.body.id}`;
+    expect(reportJob.result.outputs.directory).toBe(expectedReportDir);
+    expect(reportJob.result.outputs.complianceHtml.startsWith(`${expectedReportDir}/`)).toBe(true);
+
+    const reportMetadata = JSON.parse(
+      await fsPromises.readFile(path.resolve(storageDir, expectedReportDir, 'job.json'), 'utf8'),
+    ) as { params?: { soiStage?: string | null } };
+    expect(reportMetadata.params?.soiStage).toBe(soiStage);
+
+    const packResponse = await request(app)
+      .post('/v1/pack')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .send({ reportId: reportResponse.body.id, soiStage })
+      .expect(202);
+    const packJob = await waitForJobCompletion(app, token, packResponse.body.id);
+
+    const expectedPackDir = `packages/${tenantId}/${soiStage}/${packResponse.body.id}`;
+    expect(packJob.result.outputs.directory).toBe(expectedPackDir);
+    expect(packJob.result.outputs.archive.startsWith(`${expectedPackDir}/`)).toBe(true);
+
+    const packMetadata = JSON.parse(
+      await fsPromises.readFile(path.resolve(storageDir, expectedPackDir, 'job.json'), 'utf8'),
+    ) as { params?: { soiStage?: string | null } };
+    expect(packMetadata.params?.soiStage).toBe(soiStage);
+  });
+
   it('fails pack jobs when CMS signature verification fails', async () => {
     const tamperedContent = '-----BEGIN PKCS7-----\nINVALID-CMS\n-----END PKCS7-----\n';
     const originalRunPack = cli.runPack;
@@ -4579,6 +4641,7 @@ describe('@soipack/server REST API', () => {
         evidenceIndex: {},
         findings: [],
         builds: [],
+        designs: [],
         metadata: {
           generatedAt: new Date().toISOString(),
           warnings: [],

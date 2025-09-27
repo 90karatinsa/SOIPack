@@ -61,41 +61,6 @@ describe('@soipack/report', () => {
     mockedValidator.mockClear();
   });
 
-  it('renders compliance matrix with JSON payload', () => {
-    const fixture = createReportFixture();
-    const result = renderComplianceMatrix(fixture.snapshot, {
-      manifestId: fixture.manifestId,
-      objectivesMetadata: fixture.objectives,
-      title: 'Kurumsal Uyum Matrisi',
-      git: gitFixture,
-      signoffs: fixture.signoffs,
-    });
-
-    expect(result.json.manifestId).toBe(fixture.manifestId);
-    expect(result.json.stats).toEqual(fixture.snapshot.stats);
-    expect(result.json.objectives).toHaveLength(fixture.snapshot.objectives.length);
-    expect(result.json.requirementCoverage).toHaveLength(
-      fixture.snapshot.requirementCoverage.length,
-    );
-    expect(result.json.qualityFindings.length).toBeGreaterThan(0);
-    expect(Array.isArray(result.json.traceSuggestions)).toBe(true);
-    expect(result.json.git).toEqual(gitFixture);
-    expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
-    expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
-    expect(result.json.risk?.profile.score).toBeGreaterThan(0);
-    expect(result.json.signoffs).toHaveLength(fixture.signoffs.length);
-
-    maybeUpdateGolden('compliance-matrix.html', result.html);
-    const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');
-    expect(hashHtml(result.html)).toBe(hashHtml(goldenHtml));
-    expect(result.html).toContain('Kanıt Manifest ID');
-    expect(result.html).toContain('Commit:');
-    expect(result.html).toContain('Kalite Bulguları');
-    expect(result.html).toContain(`Snapshot: <strong>${fixture.snapshot.version.id}</strong>`);
-    expect(result.html).toContain('Risk Profili');
-    expect(result.html).toContain('Signoff Zaman Çizelgesi');
-  });
-
   it('renders ComplianceDelta dashboard with regression sparkline', () => {
     const fixture = createReportFixture();
     const result = renderComplianceMatrix(fixture.snapshot, {

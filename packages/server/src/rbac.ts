@@ -216,7 +216,7 @@ export class RbacStore {
         ORDER BY created_at ASC`,
       [tenantId],
     );
-    return rows.map((row) => this.mapUser(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapUser(row as Record<string, unknown>));
   }
 
   public async updateUserSecret(tenantId: string, userId: string, secret: string): Promise<void> {
@@ -267,7 +267,7 @@ export class RbacStore {
         ORDER BY created_at ASC`,
       [tenantId],
     );
-    return rows.map((row) => this.mapRole(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapRole(row as Record<string, unknown>));
   }
 
   public async assignRole(tenantId: string, userId: string, roleId: string): Promise<void> {
@@ -288,7 +288,7 @@ export class RbacStore {
         ORDER BY r.created_at ASC`,
       [tenantId, userId],
     );
-    return rows.map((row) => this.mapRole(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapRole(row as Record<string, unknown>));
   }
 
   public async revokeRole(tenantId: string, userId: string, roleId: string): Promise<void> {
@@ -325,7 +325,7 @@ export class RbacStore {
         ORDER BY created_at ASC`,
       [tenantId],
     );
-    return rows.map((row) => this.mapApiKey(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapApiKey(row as Record<string, unknown>));
   }
 
   public async verifyApiKeySecret(tenantId: string, keyId: string, secret: string): Promise<boolean> {
@@ -366,7 +366,7 @@ export class RbacStore {
         ORDER BY created_at ASC`,
       [tenantId],
     );
-    return rows.map((row) => this.mapGroup(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapGroup(row as Record<string, unknown>));
   }
 
   public async addUserToGroup(tenantId: string, groupId: string, userId: string): Promise<void> {
@@ -386,7 +386,7 @@ export class RbacStore {
         ORDER BY assigned_at ASC`,
       [tenantId, groupId],
     );
-    return rows.map((row) => this.mapGroupMember(row as Record<string, unknown>));
+    return rows.map((row: unknown) => this.mapGroupMember(row as Record<string, unknown>));
   }
 
   public async removeUserFromGroup(tenantId: string, groupId: string, userId: string): Promise<void> {

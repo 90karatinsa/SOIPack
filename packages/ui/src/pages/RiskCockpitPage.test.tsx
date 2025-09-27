@@ -6,7 +6,7 @@ import {
   createComplianceEventStream,
   type ComplianceEvent,
 } from '../services/events';
-import { getManifestProof } from '../services/api';
+import { fetchStageRiskForecast, getManifestProof } from '../services/api';
 
 jest.mock('../services/events', () => {
   const actual = jest.requireActual('../services/events');
@@ -21,6 +21,7 @@ jest.mock('../services/api', () => {
   return {
     ...actual,
     getManifestProof: jest.fn(),
+    fetchStageRiskForecast: jest.fn(),
   };
 });
 
@@ -29,6 +30,8 @@ describe('RiskCockpitPage', () => {
     typeof createComplianceEventStream
   >;
   const mockGetManifestProof = getManifestProof as jest.MockedFunction<typeof getManifestProof>;
+  const mockFetchStageRiskForecast =
+    fetchStageRiskForecast as jest.MockedFunction<typeof fetchStageRiskForecast>;
 
   let handlers: { onEvent?: (event: ComplianceEvent) => void } = {};
 
@@ -45,6 +48,7 @@ describe('RiskCockpitPage', () => {
         getState: jest.fn(() => ({ connected: true, retries: 0 })),
       };
     });
+    mockFetchStageRiskForecast.mockResolvedValue({ generatedAt: '2024-03-01T00:00:00Z', forecasts: [] });
   });
 
   it('renders proof explorer details when manifest proof events arrive', async () => {
@@ -189,5 +193,44 @@ describe('RiskCockpitPage', () => {
     const retryButton = screen.getByRole('button', { name: 'Yeniden dene' });
     await user.click(retryButton);
     await waitFor(() => expect(mockGetManifestProof).toHaveBeenCalledTimes(3));
+  });
+
+  it('renders stage risk forecast probabilities and intervals', async () => {
+    mockFetchStageRiskForecast.mockResolvedValueOnce({
+      generatedAt: '2024-03-15T10:00:00Z',
+      forecasts: [
+        {
+          stage: 'SOI-1',
+          probability: 23,
+          classification: 'guarded',
+          horizonDays: 30,
+          credibleInterval: { lower: 12, upper: 34, confidence: 90 },
+          sparkline: [
+            { timestamp: '2024-02-01T00:00:00Z', regressionRatio: 0.12 },
+            { timestamp: '2024-02-08T00:00:00Z', regressionRatio: 0.08 },
+          ],
+          updatedAt: '2024-03-15T09:30:00Z',
+        },
+      ],
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(mockFetchStageRiskForecast).toHaveBeenCalledTimes(1));
+
+    expect(await screen.findByText('SOI-1')).toBeInTheDocument();
+    expect(screen.getByText('guarded')).toBeInTheDocument();
+    expect(screen.getByText('%23')).toBeInTheDocument();
+    expect(screen.getByText(/90% güven aralığı: %12 – %34/)).toBeInTheDocument();
+  });
+
+  it('shows an error when stage risk forecast retrieval fails', async () => {
+    mockFetchStageRiskForecast.mockRejectedValueOnce(new Error('Sunucu hatası'));
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Tahmin alınamadı: Sunucu hatası/)).toBeInTheDocument(),
+    );
   });
 });

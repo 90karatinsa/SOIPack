@@ -7,6 +7,7 @@ import {
   Manifest,
   ManifestMerkleProof,
   ManifestMerkleSummary,
+  SoiStage,
   appendEntry,
   createLedger,
   generateLedgerProof,
@@ -47,20 +48,34 @@ export interface ManifestMerkleMetadata {
   merkle?: ManifestMerkleSummary;
 }
 
-export type LedgerAwareManifest = Manifest & ManifestLedgerMetadata & ManifestMerkleMetadata;
+export interface ManifestStageMetadata {
+  stage?: SoiStage | null;
+}
+
+export type LedgerAwareManifest = Manifest &
+  ManifestLedgerMetadata &
+  ManifestMerkleMetadata &
+  ManifestStageMetadata;
 
 const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
+
+const buildManifestSnapshotId = (digest: string, stage?: SoiStage | null): string =>
+  stage ? `manifest:${stage}:${digest}` : `manifest:${digest}`;
+
+const buildManifestEvidenceSnapshotId = (stage?: SoiStage | null): string =>
+  stage ? `${MANIFEST_PROOF_SNAPSHOT_ID}:${stage}` : MANIFEST_PROOF_SNAPSHOT_ID;
 
 const computeManifestProofs = (
   manifest: Manifest,
 ): { summary: ManifestMerkleSummary; proofs: Map<string, ManifestMerkleProof> } => {
   const digest = computeManifestDigestHex(manifest);
+  const stage = (manifest as LedgerAwareManifest).stage ?? null;
   const ledger = appendEntry(createLedger(), {
-    snapshotId: `manifest:${digest}`,
+    snapshotId: buildManifestSnapshotId(digest, stage),
     manifestDigest: digest,
     timestamp: manifest.createdAt,
     evidence: manifest.files.map((file) => ({
-      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      snapshotId: buildManifestEvidenceSnapshotId(stage),
       path: file.path,
       hash: file.sha256,
     })),
@@ -113,6 +128,10 @@ const canonicalizeManifest = (manifest: LedgerAwareManifest): LedgerAwareManifes
     createdAt: manifest.createdAt,
     toolVersion: manifest.toolVersion,
   };
+
+  if (manifest.stage !== undefined) {
+    canonical.stage = manifest.stage ?? null;
+  }
 
   if (ledgerMetadata !== undefined) {
     canonical.ledger = ledgerMetadata;
@@ -174,7 +193,7 @@ const collectDirectoryEntries = async (
   });
 };
 
-const deriveEvidencePrefixes = (evidenceDirs: string[]): string[] => {
+const deriveEvidencePrefixes = (evidenceDirs: string[], stage?: SoiStage | null): string[] => {
   const counts = new Map<string, number>();
 
   evidenceDirs.forEach((dir) => {
@@ -186,7 +205,8 @@ const deriveEvidencePrefixes = (evidenceDirs: string[]): string[] => {
     const base = path.basename(path.resolve(dir));
     const occurrences = counts.get(base) ?? 1;
     const suffix = occurrences > 1 ? `-${index + 1}` : '';
-    return joinPosix('evidence', `${base}${suffix}`);
+    const evidenceRoot = stage ? joinPosix('evidence', stage) : 'evidence';
+    return joinPosix(evidenceRoot, `${base}${suffix}`);
   });
 };
 
@@ -201,6 +221,7 @@ export interface ManifestBuildOptions {
   toolVersion: string;
   now?: Date;
   ledger?: ManifestLedgerOptions | null;
+  stage?: SoiStage | null;
 }
 
 export interface ManifestBuildResult {
@@ -214,10 +235,12 @@ export const buildManifest = async ({
   toolVersion,
   now,
   ledger,
+  stage,
 }: ManifestBuildOptions): Promise<ManifestBuildResult> => {
   const timestamp = now ?? new Date();
-  const reportEntries = await collectDirectoryEntries(reportDir, 'reports');
-  const evidencePrefixes = deriveEvidencePrefixes(evidenceDirs);
+  const reportPrefix = stage ? joinPosix('reports', stage) : 'reports';
+  const reportEntries = await collectDirectoryEntries(reportDir, reportPrefix);
+  const evidencePrefixes = deriveEvidencePrefixes(evidenceDirs, stage);
 
   const evidenceEntries: Array<{ absolutePath: string; manifestPath: string }> = [];
 
@@ -241,6 +264,7 @@ export const buildManifest = async ({
     files: files.map((file) => ({ path: file.manifestPath, sha256: file.sha256 })),
     createdAt: timestamp.toISOString(),
     toolVersion,
+    stage: stage ?? null,
     ledger: ledger
       ? {
           root: ledger.root,
@@ -321,6 +345,7 @@ export interface PackageCreationOptions {
   now?: Date;
   packageName?: string;
   ledger?: ManifestLedgerOptions | null;
+  stage?: SoiStage | null;
 }
 
 export interface PackageCreationResult {
@@ -338,6 +363,7 @@ export const createSoiDataPack = async ({
   now,
   packageName,
   ledger,
+  stage,
 }: PackageCreationOptions): Promise<PackageCreationResult> => {
   const timestamp = now ?? new Date();
   const resolvedReportDir = path.resolve(reportDir);
@@ -352,6 +378,7 @@ export const createSoiDataPack = async ({
     toolVersion,
     now: timestamp,
     ledger,
+    stage,
   });
 
   const credentialsPem = await readFile(path.resolve(credentialsPath), 'utf8');

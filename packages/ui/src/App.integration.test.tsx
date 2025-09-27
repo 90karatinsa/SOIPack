@@ -81,13 +81,70 @@ const compliancePayload: ComplianceMatrixPayload = {
   generatedAt: '2024-04-01T10:00:00Z',
   version: '1.0.0',
   stats: {
-    objectives: { total: 2, covered: 1, partial: 1, missing: 0 },
+    objectives: { total: 3, covered: 1, partial: 2, missing: 0 },
     requirements: { total: 2 },
     tests: { total: 3, passed: 1, failed: 1, skipped: 1 },
     codePaths: { total: 2 },
     designs: { total: 0 }
   },
-  objectives: [],
+  objectives: [
+    {
+      id: 'A-3-01',
+      status: 'covered',
+      table: 'A-3',
+      name: 'Plan Seti Tanımlı',
+      desc: 'Plan seti tamamlandı ve yayınlandı.',
+      satisfiedArtifacts: ['plan'],
+      missingArtifacts: [],
+      evidenceRefs: ['plans/plan.md']
+    },
+    {
+      id: 'A-4-01',
+      status: 'partial',
+      table: 'A-4',
+      name: 'Üst Düzey Gereksinimler',
+      desc: 'HLR gözden geçirilmek üzere bekliyor.',
+      satisfiedArtifacts: ['analysis'],
+      missingArtifacts: ['trace'],
+      evidenceRefs: ['analysis/hlr.md']
+    },
+    {
+      id: 'A-5-06',
+      status: 'partial',
+      table: 'A-5',
+      name: 'Test Stratejisi Uygulandı',
+      desc: 'Testler koşuldu ancak rapor eksik.',
+      satisfiedArtifacts: ['test'],
+      missingArtifacts: ['analysis'],
+      evidenceRefs: ['tests/results.xml']
+    }
+  ],
+  stages: [
+    {
+      id: 'all',
+      label: 'Tüm Stajlar',
+      summary: { total: 3, covered: 1, partial: 2, missing: 0 },
+      objectiveIds: ['A-3-01', 'A-4-01', 'A-5-06']
+    },
+    {
+      id: 'SOI-1',
+      label: 'SOI-1 Planlama',
+      summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      objectiveIds: ['A-3-01']
+    },
+    {
+      id: 'SOI-2',
+      label: 'SOI-2 Geliştirme',
+      summary: { total: 1, covered: 0, partial: 1, missing: 0 },
+      objectiveIds: ['A-4-01']
+    },
+    {
+      id: 'SOI-3',
+      label: 'SOI-3 Doğrulama',
+      summary: { total: 1, covered: 0, partial: 1, missing: 0 },
+      objectiveIds: ['A-5-06']
+    }
+  ],
   requirementCoverage: [
     {
       requirementId: 'REQ-1',
@@ -549,6 +606,24 @@ describe('App integration', () => {
     expect(screen.getByText('Kullanıcı girişi doğrulama')).toBeInTheDocument();
     expect(screen.getByText('REQ-2')).toBeInTheDocument();
 
+    const getStageRows = () => within(screen.getAllByRole('table')[0]).getAllByRole('row');
+    expect(getStageRows()).toHaveLength(4);
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /SOI-2 Geliştirme/ }));
+    });
+    expect(getStageRows()).toHaveLength(2);
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /SOI-3 Doğrulama/ }));
+    });
+    expect(getStageRows()).toHaveLength(2);
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /SOI-2 Geliştirme/ }));
+    });
+    expect(getStageRows()).toHaveLength(2);
+
     const traceTab = screen.getByRole('button', { name: 'İzlenebilirlik' });
     await act(async () => {
       await user.click(traceTab);
@@ -557,6 +632,11 @@ describe('App integration', () => {
 
     const testsList = screen.getAllByText(/TC-/);
     expect(testsList.some((node) => node.textContent?.includes('TC-LOGIN-1'))).toBe(true);
+
+    await act(async () => {
+      await user.click(complianceTab);
+    });
+    expect(getStageRows()).toHaveLength(2);
 
     await act(async () => {
       await user.click(downloadButton);

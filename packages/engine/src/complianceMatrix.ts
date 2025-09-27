@@ -4,6 +4,7 @@ import {
   Objective,
   ObjectiveArtifactType,
   ObjectiveTable,
+  SoiStage,
   objectiveCatalog,
   objectiveTables,
 } from '@soipack/core';
@@ -46,10 +47,12 @@ export interface BuildComplianceMatrixOptions {
   level: CertificationLevel;
   evidenceIndex: EvidenceIndex;
   objectives?: Objective[];
+  stage?: SoiStage;
 }
 
 export interface ComplianceMatrix {
   level: CertificationLevel;
+  stage?: SoiStage;
   tables: ComplianceMatrixTable[];
   summary: ComplianceMatrixSummary;
   warnings: string[];
@@ -91,8 +94,10 @@ export const buildComplianceMatrix = ({
   level,
   evidenceIndex,
   objectives,
+  stage,
 }: BuildComplianceMatrixOptions): ComplianceMatrix => {
   const catalog = sortCatalog(objectives ?? objectiveCatalog);
+  const filteredCatalog = stage ? catalog.filter((objective) => objective.stage === stage) : catalog;
   const tables = new Map<ObjectiveTable, ComplianceObjectiveResult[]>();
   const summary: ComplianceMatrixSummary = {
     satisfied: 0,
@@ -102,7 +107,7 @@ export const buildComplianceMatrix = ({
   };
   const globalWarnings = new Set<string>();
 
-  catalog.forEach((objective) => {
+  filteredCatalog.forEach((objective) => {
     const bundles: ObjectiveEvidenceBundle[] = objective.artifacts.map((artifact) => ({
       type: artifact,
       items: [...(evidenceIndex[artifact] ?? [])],
@@ -159,6 +164,7 @@ export const buildComplianceMatrix = ({
 
   return {
     level,
+    stage,
     tables: orderedTables,
     summary,
     warnings: Array.from(globalWarnings),

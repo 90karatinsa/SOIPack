@@ -1,0 +1,4 @@
+"Absolute Number","Object Identifier","Object Heading","Object Text","Object Status","Object Type","Outgoing Links"
+"1","REQ-100","Top Level Requirement","Provides overall guidance.","Approved","System Requirement",""
+"1.1","REQ-110","Subsystem Requirement","Covers subsystem detail.","In Work","System Requirement","TC-900 (verifies); DES-200 (implements)"
+"1.1.1","REQ-111","Derived Requirement","Ensures subsystem compliance.","Draft","Derived Requirement","REQ-200 (satisfies)"

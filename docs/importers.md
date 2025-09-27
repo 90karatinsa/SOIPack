@@ -75,6 +75,29 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
   birleştirilir, DO-178C `trace`/`test` kanıt indeksine `source=doorsNext`
   olarak kaydedilir ve ilişki bağlantıları izlenebilirlik matrislerine eklenir.
 
+## DOORS Classic CSV dışa aktarımları
+
+- `importDoorsClassicCsv(path)` fonksiyonu DXL CSV dışa aktarımlarını satır
+  bazlı okuyarak `RemoteRequirementRecord` ve izlenebilirlik bağlantıları
+  (parent-child ve `verifies`/`implements` ilişkileri) üretir. Latin-1 kodlu
+  dosyalar otomatik olarak algılanır.
+- CLI `import` komutu birden fazla modülü `aggregateImportBundle` ile
+  birleştirir; `--doors-classic-reqs`, `--doors-classic-traces` ve
+  `--doors-classic-tests` bayrakları aynı anda kullanılabilir. Gereksinim
+  kimlikleri kaynaklar arasında yinelendiğinde ilk örnek korunur.
+- Her dosya DO-178C `trace` kanıt indeksine `source=doorsClassic` olarak
+  kaydedilir ve çalışma alanı metaverisinde modül sayısı ile toplam gereksinim
+  bağlantıları raporlanır.
+- Örnek kullanım:
+
+  ```bash
+  npx soipack import \
+    --output workdir \
+    --doors-classic-reqs exports/system-module.csv \
+    --doors-classic-traces exports/trace-module.csv \
+    --doors-classic-tests exports/test-module.csv
+  ```
+
 ## QA denetim kayıtları
 
 Dosya: `packages/adapters/src/qaLogs.ts`

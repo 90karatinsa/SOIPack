@@ -1,5 +1,13 @@
 import type { BuildInfo, CoverageMetric, CoverageReport } from '@soipack/adapters';
-import { Objective, ObjectiveArtifactType, Requirement, SnapshotVersion, TestCase } from '@soipack/core';
+import {
+  Objective,
+  ObjectiveArtifactType,
+  Requirement,
+  SnapshotVersion,
+  SoiStage,
+  TestCase,
+  soiStages,
+} from '@soipack/core';
 import {
   ComplianceSnapshot,
   ComplianceStatistics,
@@ -71,10 +79,33 @@ interface ComplianceMatrixRow {
   table?: string;
   name?: string;
   desc?: string;
+  stage?: SoiStage;
   satisfiedArtifacts: string[];
   missingArtifacts: string[];
   evidenceRefs: string[];
 }
+
+interface StageComplianceSummary {
+  total: number;
+  covered: number;
+  partial: number;
+  missing: number;
+}
+
+interface StageComplianceTab {
+  id: string;
+  label: string;
+  objectives: ComplianceMatrixRow[];
+  summary: StageComplianceSummary;
+  stage?: SoiStage;
+}
+
+const stageLabels: Record<SoiStage, string> = {
+  'SOI-1': 'SOI-1 Planlama',
+  'SOI-2': 'SOI-2 Geliştirme',
+  'SOI-3': 'SOI-3 Doğrulama',
+  'SOI-4': 'SOI-4 Sertifikasyon',
+};
 
 interface RequirementCoverageRow {
   requirementId: string;
@@ -212,6 +243,7 @@ interface ComplianceMatrixView {
   requirementCoverage: RequirementCoverageRow[];
   qualityFindings: QualityFindingRow[];
   summaryMetrics: LayoutSummaryMetric[];
+  stageTabs: StageComplianceTab[];
   risk?: RiskView;
   signoffs?: SignoffTimelineView;
   toolQualification?: ToolQualificationLinkView;
@@ -389,6 +421,12 @@ export interface ComplianceMatrixJson {
   snapshotId: string;
   snapshotVersion: SnapshotVersion;
   stats: ComplianceStatistics;
+  stages: Array<{
+    id: string;
+    label: string;
+    summary: StageComplianceSummary;
+    objectiveIds: string[];
+  }>;
   objectives: Array<{
     id: string;
     status: ComplianceSnapshot['objectives'][number]['status'];
@@ -1197,6 +1235,87 @@ const baseStyles = `
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 
+  .stage-tabs {
+    margin-bottom: 24px;
+  }
+
+  .stage-tabs input[type='radio'] {
+    display: none;
+  }
+
+  .stage-tabs-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .stage-tab-label {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.05);
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s ease-in-out;
+  }
+
+  .stage-tab-label:hover {
+    border-color: rgba(15, 23, 42, 0.12);
+  }
+
+  .stage-tab-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .stage-tab-summary {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .stage-panels {
+    position: relative;
+  }
+
+  .stage-panel {
+    display: none;
+    animation: fadeIn 0.25s ease-in-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .stage-tabs input:nth-of-type(1):checked ~ .stage-panels .stage-panel:nth-of-type(1),
+  .stage-tabs input:nth-of-type(2):checked ~ .stage-panels .stage-panel:nth-of-type(2),
+  .stage-tabs input:nth-of-type(3):checked ~ .stage-panels .stage-panel:nth-of-type(3),
+  .stage-tabs input:nth-of-type(4):checked ~ .stage-panels .stage-panel:nth-of-type(4),
+  .stage-tabs input:nth-of-type(5):checked ~ .stage-panels .stage-panel:nth-of-type(5),
+  .stage-tabs input:nth-of-type(6):checked ~ .stage-panels .stage-panel:nth-of-type(6) {
+    display: block;
+  }
+
+  .stage-tabs input:nth-of-type(1):checked ~ .stage-tabs-nav label:nth-of-type(1),
+  .stage-tabs input:nth-of-type(2):checked ~ .stage-tabs-nav label:nth-of-type(2),
+  .stage-tabs input:nth-of-type(3):checked ~ .stage-tabs-nav label:nth-of-type(3),
+  .stage-tabs input:nth-of-type(4):checked ~ .stage-tabs-nav label:nth-of-type(4),
+  .stage-tabs input:nth-of-type(5):checked ~ .stage-tabs-nav label:nth-of-type(5),
+  .stage-tabs input:nth-of-type(6):checked ~ .stage-tabs-nav label:nth-of-type(6) {
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.35);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.18);
+  }
+
   .gap-card {
     border: 1px solid #e2e8f0;
     border-radius: 12px;
@@ -1567,66 +1686,94 @@ const complianceTemplate = nunjucks.compile(
     <p class="section-lead">
       Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
     </p>
-    <table>
-      <thead>
-        <tr>
-          <th>Hedef</th>
-          <th>Durum</th>
-          <th>Sağlanan Kanıtlar</th>
-          <th>Eksik Kanıtlar</th>
-          <th>Kanıt Referansları</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in objectives %}
-          <tr>
-            <td>
-              <div class="cell-title">{{ row.id }}</div>
-              {% if row.table or row.name %}
-                <div class="cell-subtitle">
-                  {% if row.table %}{{ row.table }}{% endif %}
-                  {% if row.table and row.name %} • {% endif %}
-                  {% if row.name %}{{ row.name }}{% endif %}
-                </div>
-              {% endif %}
-              {% if row.desc %}
-                <div class="cell-description">{{ row.desc }}</div>
-              {% endif %}
-            </td>
-            <td><span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span></td>
-            <td>
-              {% if row.satisfiedArtifacts.length %}
-                {% for artifact in row.satisfiedArtifacts %}
-                  <span class="badge badge-soft">{{ artifact }}</span>
-                {% endfor %}
-              {% else %}
-                <span class="muted">Kanıt bulunmuyor</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.missingArtifacts.length %}
-                {% for artifact in row.missingArtifacts %}
-                  <span class="badge badge-critical">{{ artifact }}</span>
-                {% endfor %}
-              {% else %}
-                <span class="muted">Eksik kanıt yok</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.evidenceRefs.length %}
-                <ul class="list">
-                  {% for reference in row.evidenceRefs %}
-                    <li class="muted">{{ reference }}</li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <span class="muted">Referans bulunmuyor</span>
-              {% endif %}
-            </td>
-          </tr>
+    <div class="stage-tabs">
+      {% for tab in stageTabs %}
+        <input
+          type="radio"
+          id="stage-tab-{{ loop.index0 }}"
+          name="stage-tabs"
+          {% if loop.first %}checked{% endif %}
+        />
+      {% endfor %}
+      <div class="stage-tabs-nav">
+        {% for tab in stageTabs %}
+          <label class="stage-tab-label" for="stage-tab-{{ loop.index0 }}">
+            <span class="stage-tab-title">{{ tab.label }}</span>
+            <span class="stage-tab-summary">{{ tab.summary.covered }}/{{ tab.summary.total }} hedef tamamlandı</span>
+          </label>
         {% endfor %}
-      </tbody>
-    </table>
+      </div>
+      <div class="stage-panels">
+        {% for tab in stageTabs %}
+          <div class="stage-panel">
+            {% if tab.objectives.length %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum</th>
+                    <th>Sağlanan Kanıtlar</th>
+                    <th>Eksik Kanıtlar</th>
+                    <th>Kanıt Referansları</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in tab.objectives %}
+                    <tr>
+                      <td>
+                        <div class="cell-title">{{ row.id }}</div>
+                        {% if row.table or row.name %}
+                          <div class="cell-subtitle">
+                            {% if row.table %}{{ row.table }}{% endif %}
+                            {% if row.table and row.name %} • {% endif %}
+                            {% if row.name %}{{ row.name }}{% endif %}
+                          </div>
+                        {% endif %}
+                        {% if row.desc %}
+                          <div class="cell-description">{{ row.desc }}</div>
+                        {% endif %}
+                      </td>
+                      <td><span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span></td>
+                      <td>
+                        {% if row.satisfiedArtifacts.length %}
+                          {% for artifact in row.satisfiedArtifacts %}
+                            <span class="badge badge-soft">{{ artifact }}</span>
+                          {% endfor %}
+                        {% else %}
+                          <span class="muted">Kanıt bulunmuyor</span>
+                        {% endif %}
+                      </td>
+                      <td>
+                        {% if row.missingArtifacts.length %}
+                          {% for artifact in row.missingArtifacts %}
+                            <span class="badge badge-critical">{{ artifact }}</span>
+                          {% endfor %}
+                        {% else %}
+                          <span class="muted">Eksik kanıt yok</span>
+                        {% endif %}
+                      </td>
+                      <td>
+                        {% if row.evidenceRefs.length %}
+                          <ul class="list">
+                            {% for reference in row.evidenceRefs %}
+                              <li class="muted">{{ reference }}</li>
+                            {% endfor %}
+                          </ul>
+                        {% else %}
+                          <span class="muted">Referans bulunmuyor</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p class="muted">Bu aşamada hedef bulunmuyor.</p>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </div>
   </section>
   {% if qualityFindings.length %}
     <section class="section">
@@ -2243,6 +2390,22 @@ const buildSummaryMetrics = (
   return metrics;
 };
 
+const summarizeStageObjectives = (rows: ComplianceMatrixRow[]): StageComplianceSummary =>
+  rows.reduce(
+    (acc, row) => {
+      acc.total += 1;
+      if (row.status === 'covered') {
+        acc.covered += 1;
+      } else if (row.status === 'partial') {
+        acc.partial += 1;
+      } else {
+        acc.missing += 1;
+      }
+      return acc;
+    },
+    { total: 0, covered: 0, partial: 0, missing: 0 },
+  );
+
 const buildComplianceMatrixView = (
   snapshot: ComplianceSnapshot,
   options: ComplianceMatrixOptions,
@@ -2264,10 +2427,34 @@ const buildComplianceMatrixView = (
       table: metadata?.table,
       name: metadata?.name,
       desc: metadata?.desc,
+      stage: metadata?.stage,
       satisfiedArtifacts: objective.satisfiedArtifacts.map(formatArtifact),
       missingArtifacts: objective.missingArtifacts.map(formatArtifact),
       evidenceRefs: objective.evidenceRefs,
     };
+  });
+
+  const stageTabs: StageComplianceTab[] = [
+    {
+      id: 'all',
+      label: 'Tüm Stajlar',
+      objectives,
+      summary: summarizeStageObjectives(objectives),
+    },
+  ];
+
+  soiStages.forEach((stage) => {
+    const stageObjectives = objectives.filter((row) => row.stage === stage);
+    if (stageObjectives.length === 0) {
+      return;
+    }
+    stageTabs.push({
+      id: stage.toLowerCase(),
+      label: stageLabels[stage],
+      objectives: stageObjectives,
+      summary: summarizeStageObjectives(stageObjectives),
+      stage,
+    });
   });
 
   const requirementCoverage: RequirementCoverageRow[] = snapshot.requirementCoverage.map((entry) => {
@@ -2314,6 +2501,7 @@ const buildComplianceMatrixView = (
       snapshot.qualityFindings,
       snapshot.risk,
     ),
+    stageTabs,
     risk: buildRiskView(snapshot.risk),
     signoffs: buildSignoffTimelineView(options.signoffs),
     toolQualification,
@@ -2358,6 +2546,12 @@ const buildComplianceMatrixJson = (
   version: options.version ?? packageInfo.version,
   snapshotId: options.snapshotId ?? snapshot.version.id,
   snapshotVersion: options.snapshotVersion ?? snapshot.version,
+  stages: view.stageTabs.map((tab) => ({
+    id: tab.stage ?? tab.id,
+    label: tab.label,
+    summary: tab.summary,
+    objectiveIds: tab.objectives.map((objective) => objective.id),
+  })),
   stats: {
     objectives: { ...snapshot.stats.objectives },
     requirements: { ...snapshot.stats.requirements },
@@ -2441,6 +2635,7 @@ export const renderComplianceMatrix = (
   sections.push(
     complianceTemplate.render({
       objectives: view.objectives,
+      stageTabs: view.stageTabs,
       requirementCoverage: view.requirementCoverage,
       qualityFindings: view.qualityFindings,
     }),
@@ -2487,6 +2682,7 @@ export const renderComplianceCoverageReport = (
   sections.push(
     complianceTemplate.render({
       objectives: view.objectives,
+      stageTabs: view.stageTabs,
       requirementCoverage: view.requirementCoverage,
       qualityFindings: view.qualityFindings,
     }),

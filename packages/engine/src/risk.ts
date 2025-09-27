@@ -1,3 +1,5 @@
+import type { SoiStage } from '@soipack/core';
+
 export type RiskFactor = 'coverage' | 'testing' | 'analysis' | 'audit';
 
 export type StaticAnalysisSeverity = 'info' | 'warn' | 'error';
@@ -96,6 +98,46 @@ export interface ComplianceRiskSimulationResult {
     failureRate: number;
   };
   seed: number;
+}
+
+export interface StageComplianceTrendPoint {
+  stage: SoiStage;
+  timestamp: string;
+  regressions: number;
+  total: number;
+}
+
+export interface StageRiskForecastOptions {
+  stage: SoiStage;
+  trend: StageComplianceTrendPoint[];
+  monteCarloProbabilities?: number[];
+  horizonDays?: number;
+  prior?: { alpha: number; beta: number };
+  confidenceLevel?: number;
+}
+
+export interface StageRiskSparklinePoint {
+  timestamp: string;
+  regressionRatio: number;
+}
+
+export interface StageRiskForecast {
+  stage: SoiStage;
+  probability: number;
+  classification: 'nominal' | 'guarded' | 'elevated' | 'critical';
+  horizonDays: number;
+  credibleInterval: {
+    lower: number;
+    upper: number;
+    confidence: number;
+  };
+  posterior: {
+    alpha: number;
+    beta: number;
+    sampleSize: number;
+  };
+  sparkline: StageRiskSparklinePoint[];
+  updatedAt?: string;
 }
 
 const FACTOR_WEIGHTS: Record<RiskFactor, number> = {
@@ -538,5 +580,160 @@ export const simulateComplianceRisk = (
       failureRate: round(failureBaseline * 100),
     },
     seed,
+  };
+};
+
+const CONFIDENCE_Z_SCORES: Array<{ confidence: number; z: number }> = [
+  { confidence: 0.8, z: 1.2816 },
+  { confidence: 0.85, z: 1.4395 },
+  { confidence: 0.9, z: 1.6449 },
+  { confidence: 0.95, z: 1.96 },
+  { confidence: 0.98, z: 2.3263 },
+  { confidence: 0.99, z: 2.5758 },
+];
+
+const resolveZScore = (confidence: number): number => {
+  const normalized = clamp(confidence, 0.5, 0.999);
+  let closest = CONFIDENCE_Z_SCORES[0];
+  for (const entry of CONFIDENCE_Z_SCORES) {
+    if (Math.abs(entry.confidence - normalized) < Math.abs(closest.confidence - normalized)) {
+      closest = entry;
+    }
+  }
+  return closest.z;
+};
+
+const classifyStageProbability = (probability: number): StageRiskForecast['classification'] => {
+  if (probability >= 60) {
+    return 'critical';
+  }
+  if (probability >= 35) {
+    return 'elevated';
+  }
+  if (probability >= 12) {
+    return 'guarded';
+  }
+  return 'nominal';
+};
+
+const normalizeProbabilitySample = (value: number): number | null => {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = value > 1 ? value / 100 : value;
+  if (!Number.isFinite(normalized)) {
+    return null;
+  }
+  return clamp(normalized, 0, 1);
+};
+
+export const computeStageRiskForecast = ({
+  stage,
+  trend,
+  monteCarloProbabilities,
+  horizonDays = 30,
+  prior = { alpha: 1, beta: 9 },
+  confidenceLevel = 0.9,
+}: StageRiskForecastOptions): StageRiskForecast => {
+  const sanitizedTrend = trend
+    .filter((point) => point.stage === stage)
+    .map((point) => {
+      const time = Date.parse(point.timestamp);
+      if (!Number.isFinite(time)) {
+        return null;
+      }
+      const regressions = Math.max(0, Math.round(point.regressions));
+      const total = Math.max(regressions, Math.round(point.total));
+      if (total <= 0) {
+        return null;
+      }
+      return { time, regressions, total };
+    })
+    .filter((point): point is { time: number; regressions: number; total: number } => point !== null)
+    .sort((a, b) => a.time - b.time);
+
+  const lookbackWindow = 90 * MS_PER_DAY;
+  const latestTime = sanitizedTrend[sanitizedTrend.length - 1]?.time ?? null;
+  const trimmedTrend =
+    latestTime === null
+      ? sanitizedTrend
+      : sanitizedTrend.filter((point) => latestTime - point.time <= lookbackWindow);
+
+  let alpha = Math.max(0.0001, prior.alpha);
+  let beta = Math.max(0.0001, prior.beta);
+  let sampleSize = 0;
+
+  trimmedTrend.forEach((point) => {
+    alpha += point.regressions;
+    beta += point.total - point.regressions;
+    sampleSize += point.total;
+  });
+
+  const posteriorMean = alpha / (alpha + beta);
+  const posteriorVariance = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1));
+  const zScore = resolveZScore(confidenceLevel);
+  const posteriorStd = Math.sqrt(Math.max(posteriorVariance, 0));
+  let intervalLower = clamp(posteriorMean - zScore * posteriorStd, 0, 1);
+  let intervalUpper = clamp(posteriorMean + zScore * posteriorStd, 0, 1);
+
+  const normalizedMonteCarlo = (monteCarloProbabilities ?? [])
+    .map((value) => normalizeProbabilitySample(value))
+    .filter((value): value is number => value !== null);
+
+  const simulationMean =
+    normalizedMonteCarlo.length > 0
+      ? normalizedMonteCarlo.reduce((sum, value) => sum + value, 0) / normalizedMonteCarlo.length
+      : null;
+
+  if (normalizedMonteCarlo.length > 0) {
+    const sortedSamples = [...normalizedMonteCarlo].sort((a, b) => a - b);
+    const lowerIndex = Math.max(
+      0,
+      Math.floor(((1 - confidenceLevel) / 2) * (sortedSamples.length - 1)),
+    );
+    const upperIndex = Math.min(
+      sortedSamples.length - 1,
+      Math.ceil(((1 + confidenceLevel) / 2) * (sortedSamples.length - 1)),
+    );
+    intervalLower = Math.min(intervalLower, sortedSamples[lowerIndex]);
+    intervalUpper = Math.max(intervalUpper, sortedSamples[upperIndex]);
+  }
+
+  const trendWeight = sampleSize > 0 ? 0.6 : 0;
+  const simulationWeight = normalizedMonteCarlo.length > 0 ? 0.4 : 0;
+  const weightTotal = trendWeight + simulationWeight;
+  const blendedMean =
+    weightTotal > 0
+      ? (posteriorMean * trendWeight + (simulationMean ?? posteriorMean) * simulationWeight) /
+        weightTotal
+      : posteriorMean;
+
+  const probabilityPercent = Math.round(blendedMean * 100);
+  const classification = classifyStageProbability(probabilityPercent);
+
+  const sparkline: StageRiskSparklinePoint[] = trimmedTrend.map((point) => ({
+    timestamp: new Date(point.time).toISOString(),
+    regressionRatio: round(point.regressions / Math.max(1, point.total), 3),
+  }));
+
+  const updatedAt = latestTime ? new Date(latestTime).toISOString() : undefined;
+
+  return {
+    stage,
+    probability: probabilityPercent,
+    classification,
+    horizonDays,
+    credibleInterval: {
+      lower: round(intervalLower * 100),
+      upper: round(intervalUpper * 100),
+      confidence: round(confidenceLevel * 100),
+    },
+    posterior: {
+      alpha: round(alpha, 3),
+      beta: round(beta, 3),
+      sampleSize,
+    },
+    sparkline,
+    updatedAt,
   };
 };

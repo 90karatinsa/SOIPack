@@ -15,7 +15,21 @@ import { RiskCockpitPage } from './pages/RiskCockpitPage';
 import RequirementsEditorPage, { type RequirementRecord } from './pages/RequirementsEditorPage';
 import { RoleGate, useRbac } from './providers/RbacProvider';
 import { ApiError, getWorkspaceDocumentThread, type WorkspaceDocumentThread } from './services/api';
-import type { CoverageStatus } from './types/pipeline';
+import type { CoverageStatus, StageIdentifier } from './types/pipeline';
+
+const STAGE_STORAGE_KEY = 'soipack:ui:activeStage';
+const VALID_STAGE_IDS: StageIdentifier[] = ['all', 'SOI-1', 'SOI-2', 'SOI-3', 'SOI-4'];
+
+const readStoredStage = (): StageIdentifier => {
+  if (typeof window === 'undefined') {
+    return 'all';
+  }
+  const stored = window.localStorage.getItem(STAGE_STORAGE_KEY);
+  if (stored && (VALID_STAGE_IDS as string[]).includes(stored)) {
+    return stored as StageIdentifier;
+  }
+  return 'all';
+};
 
 export default function App() {
   const { roles } = useRbac();
@@ -28,6 +42,7 @@ export default function App() {
     'partial',
     'missing'
   ]);
+  const [activeStage, setActiveStage] = useState<StageIdentifier>(readStoredStage);
 
   const trimmedToken = token.trim();
   const trimmedLicense = license.trim();
@@ -59,6 +74,21 @@ export default function App() {
       setActiveView(navigationViews[0] ?? 'upload');
     }
   }, [navigationViews, activeView]);
+
+  useEffect(() => {
+    const stageOptions = reportData?.objectivesByStage ?? [];
+    if (stageOptions.length === 0) {
+      return;
+    }
+    const availableIds = stageOptions.map((stage) => stage.id);
+    if (!availableIds.includes(activeStage)) {
+      const fallbackStage = (availableIds.includes('all') ? 'all' : availableIds[0]) as StageIdentifier;
+      setActiveStage(fallbackStage);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(STAGE_STORAGE_KEY, fallbackStage);
+      }
+    }
+  }, [reportData, activeStage]);
 
   const [requirementsThread, setRequirementsThread] = useState<WorkspaceDocumentThread<RequirementRecord[]> | null>(null);
   const [requirementsError, setRequirementsError] = useState<string | null>(null);
@@ -122,6 +152,13 @@ export default function App() {
     );
   };
 
+  const handleStageChange = (stage: StageIdentifier) => {
+    setActiveStage(stage);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(STAGE_STORAGE_KEY, stage);
+    }
+  };
+
   const jobStates = useMemo(
     () =>
       (['import', 'analyze', 'report', 'pack'] as const)
@@ -143,6 +180,7 @@ export default function App() {
 
   const complianceRows = reportData?.requirements ?? [];
   const complianceSummary = reportData?.summary ?? { total: 0, covered: 0, partial: 0, missing: 0 };
+  const stageOptions = reportData?.objectivesByStage ?? [];
 
   const handleTokenClear = () => {
     setToken('');
@@ -231,6 +269,9 @@ export default function App() {
               isEnabled={Boolean(reportData)}
               generatedAt={reportData?.generatedAt}
               version={reportData?.version}
+              stages={stageOptions}
+              activeStageId={activeStage}
+              onStageChange={handleStageChange}
             />
           )}
 

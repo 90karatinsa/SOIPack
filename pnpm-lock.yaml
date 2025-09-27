@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@noble/post-quantum':
+        specifier: ^0.5.2
+        version: 0.5.2
       '@redocly/cli':
         specifier: ^1.16.0
         version: 1.34.5(ajv@8.17.1)
@@ -128,6 +131,9 @@ importers:
       yazl:
         specifier: ^2.5.1
         version: 2.5.1
+      zod:
+        specifier: ^3.22.4
+        version: 3.25.76
     devDependencies:
       '@types/yargs':
         specifier: ^17.0.29
@@ -215,6 +221,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@noble/post-quantum':
+        specifier: ^0.5.2
+        version: 0.5.2
       '@soipack/cli':
         specifier: workspace:*
         version: link:../cli

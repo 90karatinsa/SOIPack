@@ -36,18 +36,25 @@ const computeSha256 = (filePath: string): string => {
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
-const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
+const DEFAULT_MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
+
+const buildManifestSnapshotId = (digest: string, stage?: string | null): string =>
+  stage ? `manifest:${stage}:${digest}` : `manifest:${digest}`;
+
+const buildEvidenceSnapshotId = (stage?: string | null): string =>
+  stage ? `${DEFAULT_MANIFEST_PROOF_SNAPSHOT_ID}:${stage}` : DEFAULT_MANIFEST_PROOF_SNAPSHOT_ID;
 
 const computeExpectedMerkleArtifacts = (
   manifest: LedgerAwareManifest,
 ): { merkle: ManifestMerkleSummary; files: ManifestFileEntry[] } => {
   const digest = computeManifestDigestHex(manifest);
+  const stage = manifest.stage ?? null;
   const ledger = appendEntry(createLedger(), {
-    snapshotId: `manifest:${digest}`,
+    snapshotId: buildManifestSnapshotId(digest, stage),
     manifestDigest: digest,
     timestamp: manifest.createdAt,
     evidence: manifest.files.map((file) => ({
-      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      snapshotId: buildEvidenceSnapshotId(stage),
       path: file.path,
       hash: file.sha256,
     })),
@@ -64,7 +71,7 @@ const computeExpectedMerkleArtifacts = (
   const filesWithProofs = manifest.files.map((file) => {
     const proof = generateLedgerProof(entry, {
       type: 'evidence',
-      snapshotId: MANIFEST_PROOF_SNAPSHOT_ID,
+      snapshotId: buildEvidenceSnapshotId(stage),
       path: file.path,
       hash: file.sha256,
     });
@@ -164,6 +171,7 @@ describe('packager', () => {
           sha256: computeSha256(path.join(reportDir, 'summary.txt')),
         },
       ],
+      stage: null,
       ledger: {
         root: ledger.root,
         previousRoot: ledger.previousRoot,

@@ -1,3 +1,5 @@
+import type { TraceLinkType } from '@soipack/core';
+
 export interface ParseResult<T> {
   data: T;
   warnings: string[];
@@ -50,6 +52,12 @@ export interface RemoteRequirementRecord {
   status?: string;
   type?: string;
   url?: string;
+}
+
+export interface RemoteTraceLink {
+  fromId: string;
+  toId: string;
+  type: TraceLinkType;
 }
 
 export interface RemoteTestRecord {

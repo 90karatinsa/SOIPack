@@ -12,6 +12,7 @@ import {
   importJUnitXml,
   importLcov,
   importReqIF,
+  importDoorsClassicCsv,
   parseJUnitStream,
   parseLcovStream,
   parseReqifStream,
@@ -19,6 +20,7 @@ import {
   toRequirement,
   fetchDoorsNextArtifacts,
   doorsNextAdapterMetadata,
+  aggregateImportBundle,
 } from './index';
 
 const execFileAsync = promisify(execFile);
@@ -141,6 +143,54 @@ describe('@soipack/adapters', () => {
       status: 'draft',
       tags: [],
     });
+  });
+
+  it('exposes DOORS Classic CSV importer through the facade', () => {
+    expect(typeof importDoorsClassicCsv).toBe('function');
+  });
+
+  it('aggregates remote bundles while deduplicating requirement identifiers', async () => {
+    const factory = aggregateImportBundle([
+      async () => ({
+        data: {
+          requirements: [
+            { id: 'REQ-1', title: 'First requirement' },
+            { id: 'REQ-2', title: 'Second requirement' },
+          ],
+          traces: [{ fromId: 'REQ-1', toId: 'TC-1', type: 'verifies' }],
+        },
+        warnings: ['alpha'],
+      }),
+      async () => ({
+        data: {
+          requirements: [
+            { id: 'req-1', title: 'Duplicate first' },
+            { id: 'REQ-3', title: 'Third requirement' },
+          ],
+          traces: [{ fromId: 'REQ-3', toId: 'REQ-1', type: 'satisfies' }],
+        },
+        warnings: ['beta'],
+      }),
+    ]);
+
+    expect(typeof factory).toBe('function');
+
+    const result = await factory();
+    expect(result.warnings).toEqual(['alpha', 'beta']);
+    expect(result.data.requirements).toHaveLength(3);
+    expect(result.data.requirements).toEqual(
+      expect.arrayContaining([
+        { id: 'REQ-1', title: 'First requirement' },
+        { id: 'REQ-2', title: 'Second requirement' },
+        { id: 'REQ-3', title: 'Third requirement' },
+      ]),
+    );
+    expect(result.data.traces).toEqual(
+      expect.arrayContaining([
+        { fromId: 'REQ-1', toId: 'TC-1', type: 'verifies' },
+        { fromId: 'REQ-3', toId: 'REQ-1', type: 'satisfies' },
+      ]),
+    );
   });
 
   it('imports requirements from Jira CSV', async () => {

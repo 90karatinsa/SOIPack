@@ -18,6 +18,12 @@ SOIPack raporlama paketi; uyum matrisi, izlenebilirlik ve kapsam çıktıları i
 
 Rapor başlığında versiyon, manifest kimliği ve otomatik olarak `YYYY-MM-DD HH:MM UTC` formatında yazılmış rapor tarihi yer alır. Özet bölümünde hem uyum hem de kapsam metrikleri (ör. “Satır Kapsamı 68.8%”) tek satırda gösterilir.
 
+### SOI aşaması sekmeleri
+
+Uyum matrisi bölümü artık DO-178C Stage of Involvement (SOI) aşamalarını ayrı sekmeler olarak sunar. `@soipack/engine` tarafında `buildComplianceMatrix({ stage })` parametresi ile oluşturulan bu görünüm, JSON çıktısında `stages` dizisi olarak döner ve her kayıt seçili aşamadaki hedef kimliklerini ve özet sayılarını içerir. HTML/PDF şablonu bu diziyi kullanarak "Tüm Stajlar" sekmesi ile birlikte SOI-1…SOI-4 başlıklarını üretir; her sekmede yalnızca ilgili hedeflerin kanıt durumu listelenir.
+
+Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden planlama (SOI-1), geliştirme (SOI-2) ve doğrulama (SOI-3) hedeflerine hızla geçiş yapabilir. UI uygulaması da aynı `stages` dizisini kullanır; ComplianceMatrix bileşeni seçilen aşamayı yerel depolamada saklayarak kullanıcılar sekmeler arasında geçse dahi tercih edilen SOI görünümünü korur. Böylece SOIPack raporları hem denetim masasında hem de demo arayüzünde aşama bazlı izlenebilirliği tutarlı şekilde gösterir.
+
 ## İzlenebilirlik matrisi CSV çıktısı
 
 `renderTraceMatrix` fonksiyonu artık HTML düzeninin yanı sıra gereksinim→tasarım→kod→test zincirlerini düzleştiren bir CSV yardımcıyı (`trace.csv`) döner. CSV başlıkları gereksinim kimliği, kapsam durumları, eşlenen tasarım kimlikleri, kod yolları ve test durumlarını içerir. Kod yolları ve testler çoklayıcı olduğunda satırlar çapraz çarpanla çoğaltılarak her bağlantı açıkça temsil edilir. CLI çıktısı varsayılan olarak bu dosyayı `reports/trace.csv` olarak yazar; denetçiler veya otomasyonlar bu dosyayı Excel/BI araçlarına aktararak izlenebilirlik denetimlerini hızlandırabilir.
