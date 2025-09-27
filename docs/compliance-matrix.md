@@ -50,6 +50,27 @@ Fonksiyon her hedef için beklenen artefakt türlerini `EvidenceIndex` ile eşle
 
 Özet bölümünde her durum için sayaçlar tutulur. `warnings` listesi, eksik kanıt bulunan hedefleri kullanıcıya sunar ve aynı mesajlar tablo düzeyindeki girdilerde de saklanır.
 
+## Uyum snapshot'larında bağımsızlık özeti
+
+`generateComplianceSnapshot` çıktısı, bağımsız kanıt eksikliklerini de raporlar. Snapshot yapısındaki `independenceSummary` alanı şu bilgileri içerir:
+
+- `objectives`: Bağımsız kanıtı bulunmayan hedeflerin listesi. Her kayıt, hedefin kimliğini, bağımsızlık seviyesini (`recommended` veya `required`), mevcut durumunu (`covered`/`partial`/`missing`) ve bağımsız kanıtı eksik olan artefakt türlerini içerir.
+- `totals`: Bağımsız kanıt eksikliğinin duruma göre dağılımını (`partial` ve `missing`) sayısal olarak gösterir. Böylece bağımsızlık riskleri raporlama katmanında tek bir bloktan takip edilebilir.
+
+Bu özet, bağımsızlık gereksinimleri bulunan hedeflerde kanıt sağlansa bile bağımsız imza atlanmışsa kullanıcıyı bilgilendirir ve kapanmayan bağımsızlık açıklarını hızlıca tespit etmeye yardımcı olur.
+
+## Sunucu uyum özet API'si
+
+SOIPack Server, kiracıların son uyum kayıtlarını hızlıca tüketebilmesi için `GET /v1/compliance/summary` uç noktasını sunar. Yanıt yapısı şu alanları içerir:
+
+- `computedAt`: Özetin hesaplandığı ISO zaman damgası.
+- `latest`: En güncel uyum kaydının bilgileri ya da hiç kayıt yoksa `null`.
+  - `summary`: Hedeflerin `covered`/`partial`/`missing` dağılımı.
+  - `coverage`: Son kapsam raporundan `statements`/`branches`/`functions`/`lines` yüzdeleri.
+  - `gaps.missingIds` ve `gaps.partialIds`: Kapsaması eksik hedef kimlikleri ve `openObjectiveCount` toplam açık hedef sayısı.
+
+Sonuçlar 60 saniyelik bir önbellekten (`Cache-Control: private, max-age=60`) servis edilir; yeni bir uyum kaydı yüklendiğinde önbellek temizlenir. Böylece paneller her istek için ağır JSON dosyalarını okumadan güncel hedef durumlarını gösterebilir.
+
 ## Veri akışı
 
 1. Dış kaynaklardan gelen kanıtlar `EvidenceIndex` yapısına taşınır.

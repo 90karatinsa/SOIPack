@@ -641,6 +641,7 @@ export class ObjectiveMapper {
     Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }>
   >;
   private readonly coverageUsesObjectiveLinks: boolean;
+  private readonly independenceDeficiencies = new Map<string, Set<ObjectiveArtifactType>>();
 
   constructor(
     private readonly objectives: Objective[],
@@ -705,6 +706,7 @@ export class ObjectiveMapper {
             addMissingArtifact(artifactType, true);
           }
           if (independenceDeficient) {
+            this.registerIndependenceDeficiency(objective.id, artifactType);
             addMissingArtifact(artifactType, independenceRequired);
           }
           evidenceItems.forEach((evidence) => {
@@ -717,6 +719,7 @@ export class ObjectiveMapper {
       if (hasEvidence) {
         addSatisfied(artifactType);
         if (independenceDeficient) {
+          this.registerIndependenceDeficiency(objective.id, artifactType);
           addMissingArtifact(artifactType, independenceRequired);
         }
         evidenceItems.forEach((evidence) => {
@@ -818,6 +821,21 @@ export class ObjectiveMapper {
       byObjective,
       usesObjectiveLinks: linkedObjectives.length > 0,
     };
+  }
+
+  private registerIndependenceDeficiency(objectiveId: string, artifact: ObjectiveArtifactType): void {
+    const existing = this.independenceDeficiencies.get(objectiveId) ?? new Set<ObjectiveArtifactType>();
+    existing.add(artifact);
+    this.independenceDeficiencies.set(objectiveId, existing);
+  }
+
+  public getIndependenceDeficiencies(): Map<string, ObjectiveArtifactType[]> {
+    return new Map(
+      Array.from(this.independenceDeficiencies.entries()).map(([objectiveId, artifacts]) => [
+        objectiveId,
+        Array.from(artifacts.values()),
+      ]),
+    );
   }
 
   private evaluateCoverageArtifact(
@@ -1013,6 +1031,18 @@ export interface ComplianceSnapshotOptions {
   risk?: ComplianceSnapshotRiskOptions;
 }
 
+export interface ComplianceIndependenceEntry {
+  objectiveId: string;
+  independence: Objective['independence'];
+  status: ObjectiveCoverageStatus;
+  missingArtifacts: ObjectiveArtifactType[];
+}
+
+export interface ComplianceIndependenceSummary {
+  objectives: ComplianceIndependenceEntry[];
+  totals: Record<ObjectiveCoverageStatus, number>;
+}
+
 export interface ComplianceSnapshot {
   version: SnapshotVersion;
   generatedAt: string;
@@ -1023,6 +1053,7 @@ export interface ComplianceSnapshot {
   requirementCoverage: RequirementCoverageStatus[];
   qualityFindings: QualityFinding[];
   traceSuggestions: TraceSuggestion[];
+  independenceSummary: ComplianceIndependenceSummary;
   risk?: ComplianceSnapshotRiskBlock;
 }
 
@@ -1175,6 +1206,32 @@ export const generateComplianceSnapshot = (
   const codePathCount = traceGraph.nodes.filter((node) => node.type === 'code').length;
   const designCount = traceGraph.nodes.filter((node) => node.type === 'design').length;
 
+  const independenceIssues = mapper.getIndependenceDeficiencies();
+  const independenceObjectives = Array.from(independenceIssues.entries())
+    .map(([objectiveId, artifacts]) => {
+      const objective = bundle.objectives.find((item) => item.id === objectiveId);
+      const coverageEntry = objectiveCoverage.find((item) => item.objectiveId === objectiveId);
+      if (!objective || !coverageEntry) {
+        return undefined;
+      }
+      return {
+        objectiveId,
+        independence: objective.independence,
+        status: coverageEntry.status,
+        missingArtifacts: artifacts,
+      } satisfies ComplianceIndependenceEntry;
+    })
+    .filter((entry): entry is ComplianceIndependenceEntry => entry !== undefined);
+
+  const independenceTotals: Record<ObjectiveCoverageStatus, number> = {
+    covered: 0,
+    partial: 0,
+    missing: 0,
+  };
+  independenceObjectives.forEach((entry) => {
+    independenceTotals[entry.status] += 1;
+  });
+
   const snapshot: ComplianceSnapshot = {
     version,
     generatedAt: bundle.generatedAt ?? new Date().toISOString(),
@@ -1191,6 +1248,10 @@ export const generateComplianceSnapshot = (
     requirementCoverage,
     qualityFindings,
     traceSuggestions,
+    independenceSummary: {
+      objectives: independenceObjectives,
+      totals: independenceTotals,
+    },
   };
 
   if (options.includeRisk) {

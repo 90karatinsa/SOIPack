@@ -1,3 +1,5 @@
+jest.mock('fast-xml-parser');
+
 import { aggregateCoberturaCoverage, aggregateJsonCoverage } from './coverage';
 
 describe('CoverageAggregator', () => {
@@ -16,6 +18,10 @@ describe('CoverageAggregator', () => {
               { line: 2, covered: 1, total: 2 },
               { line: 3, covered: 2, total: 2 },
             ],
+            functions: [
+              { line: 1, hit: 1 },
+              { line: 5, hit: 0 },
+            ],
             mcdc: [
               { line: 6, covered: 2, total: 4 },
             ],
@@ -24,6 +30,9 @@ describe('CoverageAggregator', () => {
             path: 'src/services/audit.ts',
             statements: [
               { line: 10, hit: 1 },
+              { line: 11, hit: 0 },
+            ],
+            functions: [
               { line: 11, hit: 0 },
             ],
           },
@@ -41,17 +50,22 @@ describe('CoverageAggregator', () => {
 
     expect(auth.statements).toEqual({ covered: 2, total: 3, percentage: 66.7 });
     expect(auth.branches).toEqual({ covered: 3, total: 4, percentage: 75 });
+    expect(auth.functions).toEqual({ covered: 1, total: 2, percentage: 50 });
     expect(auth.mcdc).toEqual({ covered: 2, total: 4, percentage: 50 });
 
     expect(audit.statements).toEqual({ covered: 1, total: 1, percentage: 100 });
     expect(audit.branches).toBeUndefined();
+    expect(audit.functions).toBeUndefined();
     expect(audit.mcdc).toBeUndefined();
 
     expect(result.summary.totals.statements).toEqual({ covered: 3, total: 4, percentage: 75 });
+    expect(result.summary.totals.functions).toEqual({ covered: 1, total: 2, percentage: 50 });
     expect(result.summary.totals.mcdc).toEqual({ covered: 2, total: 4, percentage: 50 });
 
     expect(result.warnings).toContain('MC/DC kapsam verisi eksik: src/services/audit.ts');
+    expect(result.warnings).toContain('Fonksiyon kapsam verisi eksik: src/services/audit.ts');
     expect(result.warnings).not.toContain('MC/DC kapsam verisi raporda bulunamadı.');
+    expect(result.warnings).not.toContain('Fonksiyon kapsam verisi raporda bulunamadı.');
   });
 
   it('parses Cobertura XML and reports branch and MC/DC warnings', () => {
@@ -61,6 +75,20 @@ describe('CoverageAggregator', () => {
     <package name="core">
       <classes>
         <class name="Auth" filename="src/auth.ts">
+          <methods>
+            <method name="authenticate" signature="()V">
+              <lines>
+                <line number="1" hits="1" />
+                <line number="2" hits="0" />
+              </lines>
+            </method>
+            <method name="logout" signature="()V">
+              <lines>
+                <line number="3" hits="1" branch="true" condition-coverage="100% (2/2)" />
+                <line number="4" hits="0" />
+              </lines>
+            </method>
+          </methods>
           <lines>
             <line number="1" hits="1" />
             <line number="2" hits="0" branch="true" condition-coverage="50% (1/2)" />
@@ -90,22 +118,27 @@ describe('CoverageAggregator', () => {
 
     expect(auth.statements).toEqual({ covered: 2, total: 4, percentage: 50 });
     expect(auth.branches).toEqual({ covered: 3, total: 4, percentage: 75 });
+    expect(auth.functions).toEqual({ covered: 2, total: 2, percentage: 100 });
     expect(auth.mcdc).toBeUndefined();
 
     expect(audit.statements).toEqual({ covered: 1, total: 1, percentage: 100 });
     expect(audit.branches).toBeUndefined();
+    expect(audit.functions).toBeUndefined();
 
     expect(result.summary.totals.statements).toEqual({ covered: 3, total: 5, percentage: 60 });
     expect(result.summary.totals.branches).toEqual({ covered: 3, total: 4, percentage: 75 });
+    expect(result.summary.totals.functions).toEqual({ covered: 2, total: 2, percentage: 100 });
     expect(result.summary.totals.mcdc).toBeUndefined();
 
     expect(result.warnings).toEqual(
       expect.arrayContaining([
         'Karar kapsamı verisi bulunamadı: src/audit.ts',
+        'Fonksiyon kapsam verisi eksik: src/audit.ts',
         'MC/DC kapsam verisi eksik: src/auth.ts',
         'MC/DC kapsam verisi eksik: src/audit.ts',
         'MC/DC kapsam verisi raporda bulunamadı.',
       ]),
     );
+    expect(result.warnings).not.toContain('Fonksiyon kapsam verisi raporda bulunamadı.');
   });
 });

@@ -491,6 +491,108 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JobSummary'
+    ComplianceCoverageSnapshot:
+      type: object
+      description: Kapsam yüzdeleri. Sağlanan değerler üç ondalık hassasiyete yuvarlanır.
+      additionalProperties: false
+      properties:
+        statements:
+          type: number
+          format: double
+          minimum: 0
+        branches:
+          type: number
+          format: double
+          minimum: 0
+        functions:
+          type: number
+          format: double
+          minimum: 0
+        lines:
+          type: number
+          format: double
+          minimum: 0
+    ComplianceGapSummary:
+      type: object
+      required:
+        - missingIds
+        - partialIds
+        - openObjectiveCount
+      properties:
+        missingIds:
+          type: array
+          description: Kanıt bulunmayan hedef kimlikleri.
+          items:
+            type: string
+        partialIds:
+          type: array
+          description: Kapsaması kısmi olan hedef kimlikleri.
+          items:
+            type: string
+        openObjectiveCount:
+          type: integer
+          minimum: 0
+          description: missingIds ve partialIds toplamı.
+    ComplianceSummaryLatest:
+      type: object
+      required:
+        - id
+        - createdAt
+        - summary
+        - coverage
+        - gaps
+      properties:
+        id:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        project:
+          type: string
+          nullable: true
+        level:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        summary:
+          type: object
+          required:
+            - total
+            - covered
+            - partial
+            - missing
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            covered:
+              type: integer
+              minimum: 0
+            partial:
+              type: integer
+              minimum: 0
+            missing:
+              type: integer
+              minimum: 0
+        coverage:
+          $ref: '#/components/schemas/ComplianceCoverageSnapshot'
+        gaps:
+          $ref: '#/components/schemas/ComplianceGapSummary'
+    ComplianceSummaryResponse:
+      type: object
+      required:
+        - computedAt
+        - latest
+      properties:
+        computedAt:
+          type: string
+          format: date-time
+        latest:
+          $ref: '#/components/schemas/ComplianceSummaryLatest'
+          nullable: true
     ComplianceRiskBreakdownEntry:
       type: object
       required: [factor, contribution, weight, details]
@@ -2135,6 +2237,42 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/compliance/summary:
+    get:
+      operationId: getComplianceSummary
+      summary: Son uyum matrisinin özetini ve kapsam metriklerini döner.
+      description: |
+        En güncel uyum kaydının hedef sayıları, kapsam yüzdeleri ve açık hedef
+        listelerini döndürür. Yanıtlar 60 saniyelik bir önbellekten servis
+        edilir ve `Cache-Control: private, max-age=60` başlığı içerir.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Uyum özeti başarıyla getirildi.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Özet sonucunun önbellek süresi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceSummaryResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
           content:
             application/json:
               schema:
