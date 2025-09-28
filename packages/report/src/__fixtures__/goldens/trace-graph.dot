@@ -1,0 +1,56 @@
+digraph "Trace Graph" {
+  rankdir="LR";
+  splines="spline";
+  fontname="Inter";
+  node [fontname="Inter"];
+  edge [fontname="Inter"];
+
+  subgraph "cluster_requirements" {
+    label="Requirements";
+    color="#1d4ed8";
+    style="rounded";
+    node [shape="rect" style="filled" color="#1d4ed8" fillcolor="#dbeafe" fontname="Inter"];
+    "requirement:REQ-AUTH-1" [label="REQ-AUTH-1\\nÇok faktörlü giriş sağlamalı"];
+    "requirement:REQ-AUTH-2" [label="REQ-AUTH-2\\nBaşarısız girişler kaydedilmeli"];
+    "requirement:REQ-AUTH-3" [label="REQ-AUTH-3\\nGiriş ihlallerinde uyarı gönderilmeli"];
+  }
+
+  subgraph "cluster_code" {
+    label="Code";
+    color="#0f766e";
+    style="rounded";
+    node [shape="folder" style="filled" color="#0f766e" fillcolor="#ccfbf1" fontname="Inter"];
+    "code:src/auth/login.ts" [label="src/auth/login.ts"];
+    "code:src/security/audit.ts" [label="src/security/audit.ts"];
+  }
+
+  subgraph "cluster_tests" {
+    label="Tests";
+    color="#dc2626";
+    style="rounded";
+    node [shape="ellipse" style="filled" color="#dc2626" fillcolor="#fee2e2" fontname="Inter"];
+    "test:TC-AUDIT-1" [label="TC-AUDIT-1\\ndenetim kayıtları oluşturulmalı"];
+    "test:TC-AUDIT-2" [label="TC-AUDIT-2\\nuyarı bildirimleri gönderilmeli"];
+    "test:TC-LOGIN-1" [label="TC-LOGIN-1\\ngeçerli kullanıcı giriş yapabilmeli"];
+    "test:TC-LOGIN-2" [label="TC-LOGIN-2\\nbaşarısız girişler kilitlenmeli"];
+  }
+
+  "code:src/auth/login.ts" -> "test:TC-LOGIN-1";
+  "code:src/auth/login.ts" -> "test:TC-LOGIN-2";
+  "code:src/security/audit.ts" -> "test:TC-AUDIT-1";
+  "code:src/security/audit.ts" -> "test:TC-LOGIN-2";
+  "requirement:REQ-AUTH-1" -> "test:TC-LOGIN-1";
+  "requirement:REQ-AUTH-1" -> "test:TC-LOGIN-2";
+  "requirement:REQ-AUTH-2" -> "test:TC-AUDIT-1";
+  "requirement:REQ-AUTH-2" -> "test:TC-LOGIN-2";
+  "requirement:REQ-AUTH-3" -> "test:TC-AUDIT-2";
+  "test:TC-AUDIT-1" -> "code:src/security/audit.ts";
+  "test:TC-AUDIT-1" -> "requirement:REQ-AUTH-2";
+  "test:TC-AUDIT-2" -> "requirement:REQ-AUTH-3";
+  "test:TC-LOGIN-1" -> "code:src/auth/login.ts";
+  "test:TC-LOGIN-1" -> "requirement:REQ-AUTH-1";
+  "test:TC-LOGIN-2" -> "code:src/auth/login.ts";
+  "test:TC-LOGIN-2" -> "code:src/security/audit.ts";
+  "test:TC-LOGIN-2" -> "requirement:REQ-AUTH-1";
+  "test:TC-LOGIN-2" -> "requirement:REQ-AUTH-2";
+}

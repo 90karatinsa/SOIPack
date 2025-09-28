@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -67,6 +68,76 @@ describe('JobQueue persistence', () => {
       const persistedJob = queueAfterRestart.get<{ ok: boolean }>(tenantId, jobId);
       expect(persistedJob?.status).toBe('completed');
       expect(persistedJob?.result).toEqual({ ok: true });
+    } finally {
+      await fsPromises.rm(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps completed jobs intact when rename fails during persistence', async () => {
+    const baseDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-queue-rename-'));
+    const tenantId = 'tenant-rename';
+    const completedJobId = 'job-completed';
+    const failingJobId = 'job-rename-failure';
+    try {
+      const queue = new JobQueue(1, {
+        directory: baseDir,
+        createRunner: () => async () => ({ ok: true }),
+      });
+
+      queue.enqueue({
+        tenantId,
+        id: completedJobId,
+        kind: 'import',
+        hash: 'hash-completed',
+        payload: { value: 'initial' },
+      });
+      await queue.waitForIdle();
+
+      const jobFilePath = path.join(baseDir, tenantId, `${completedJobId}.json`);
+      const originalContent = await fsPromises.readFile(jobFilePath, 'utf8');
+
+      const renameOriginal = fs.renameSync.bind(fs);
+      const renameSpy = jest
+        .spyOn(fs, 'renameSync')
+        .mockImplementation((from, to) => {
+          const targetName = path.basename(typeof to === 'string' ? to : to.toString());
+          if (targetName === `${failingJobId}.json`) {
+            throw Object.assign(new Error('rename failed'), { code: 'EPERM' });
+          }
+          return renameOriginal(from, to);
+        });
+
+      const timestamp = new Date().toISOString();
+      try {
+        expect(() =>
+          queue.adoptCompleted({
+            tenantId,
+            id: failingJobId,
+            kind: 'pack',
+            hash: 'hash-failing',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            result: { ok: false },
+          }),
+        ).toThrow('rename failed');
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      const persistedContent = await fsPromises.readFile(jobFilePath, 'utf8');
+      expect(persistedContent).toBe(originalContent);
+
+      const tenantEntries = await fsPromises.readdir(path.join(baseDir, tenantId));
+      expect(tenantEntries).toEqual([`${completedJobId}.json`]);
+
+      const reloaded = new JobQueue(1, {
+        directory: baseDir,
+        createRunner: () => async () => undefined,
+      });
+      await reloaded.waitForIdle();
+      const job = reloaded.get<{ ok: boolean }>(tenantId, completedJobId);
+      expect(job?.status).toBe('completed');
+      expect(job?.result).toEqual({ ok: true });
     } finally {
       await fsPromises.rm(baseDir, { recursive: true, force: true });
     }

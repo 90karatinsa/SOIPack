@@ -1,6 +1,6 @@
 import type { SoiStage } from '@soipack/core';
 
-export type RiskFactor = 'coverage' | 'testing' | 'analysis' | 'audit';
+export type RiskFactor = 'coverage' | 'testing' | 'quality' | 'analysis' | 'audit';
 
 export type StaticAnalysisSeverity = 'info' | 'warn' | 'error';
 export type AuditFlagSeverity = 'low' | 'medium' | 'high' | 'critical';
@@ -27,9 +27,16 @@ export interface AuditFlagSignal {
   ageDays?: number;
 }
 
+export interface QualitySignal {
+  warn: number;
+  error: number;
+  total?: number;
+}
+
 export interface RiskInput {
   coverage?: CoverageSignal;
   tests?: TestSignal;
+  quality?: QualitySignal;
   analysis?: StaticAnalysisSignal[];
   audit?: AuditFlagSignal[];
 }
@@ -141,10 +148,11 @@ export interface StageRiskForecast {
 }
 
 const FACTOR_WEIGHTS: Record<RiskFactor, number> = {
-  coverage: 0.4,
+  coverage: 0.35,
   testing: 0.25,
-  analysis: 0.2,
-  audit: 0.15,
+  quality: 0.15,
+  analysis: 0.15,
+  audit: 0.1,
 };
 
 const STATIC_ANALYSIS_WEIGHTS: Record<StaticAnalysisSeverity, number> = {
@@ -195,7 +203,7 @@ const percentile = (sorted: number[], p: number): number => {
   return sorted[lower] * (1 - weight) + sorted[upper] * weight;
 };
 
-const factorOrder: RiskFactor[] = ['coverage', 'testing', 'analysis', 'audit'];
+const factorOrder: RiskFactor[] = ['coverage', 'testing', 'quality', 'analysis', 'audit'];
 
 export const computeRiskProfile = (input: RiskInput): RiskProfile => {
   const breakdown: RiskBreakdownEntry[] = [];
@@ -243,6 +251,28 @@ export const computeRiskProfile = (input: RiskInput): RiskProfile => {
       contribution,
       weight: FACTOR_WEIGHTS.testing * 100,
       details: `${tests.failing} failing, ${tests.quarantined ?? 0} quarantined of ${total} tests`,
+    });
+  }
+
+  const quality = input.quality;
+  if (!quality) {
+    const contribution = round(FACTOR_WEIGHTS.quality * 100 * 0.4);
+    breakdown.push({
+      factor: 'quality',
+      contribution,
+      weight: FACTOR_WEIGHTS.quality * 100,
+      details: 'Requirement quality signals unavailable',
+    });
+    missingSignals.add('quality');
+  } else {
+    const total = Math.max(quality.total ?? quality.warn + quality.error, 1);
+    const normalizedIssues = clamp((quality.error + quality.warn * 0.5) / total);
+    const contribution = round(normalizedIssues * FACTOR_WEIGHTS.quality * 100);
+    breakdown.push({
+      factor: 'quality',
+      contribution,
+      weight: FACTOR_WEIGHTS.quality * 100,
+      details: `${quality.error} error, ${quality.warn} warn findings of ${total} evaluated`,
     });
   }
 

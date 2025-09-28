@@ -1291,9 +1291,20 @@ export const generateComplianceSnapshot = (
           })
         : undefined);
 
+    const qualitySignal =
+      riskOptions.quality ??
+      (qualityFindings
+        ? {
+            warn: qualityFindings.filter((finding) => finding.severity === 'warn').length,
+            error: qualityFindings.filter((finding) => finding.severity === 'error').length,
+            total: qualityFindings.length,
+          }
+        : undefined);
+
     const riskProfile = computeRiskProfile({
       coverage: coverageSignal,
       tests: testsSignal,
+      quality: qualitySignal,
       analysis: analysisSignal,
       audit: riskOptions.audit,
     });

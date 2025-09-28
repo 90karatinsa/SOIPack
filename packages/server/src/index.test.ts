@@ -2203,6 +2203,188 @@ describe('@soipack/server REST API', () => {
     expect(detailResponse.body.sha256).toBe(complianceHash);
   });
 
+  it('preserves tenant evidence data when atomic rename fails', async () => {
+    const atomicDir = await fsPromises.mkdtemp(path.join(storageDir, 'atomic-evidence-'));
+    const atomicApp = createServer({ ...baseConfig, storageDir: atomicDir, metricsRegistry: new Registry() });
+    const atomicToken = await createAccessToken();
+    let renameSpy: jest.SpiedFunction<typeof fsPromises.rename> | undefined;
+
+    try {
+      const initialBuffer = Buffer.from('initial atomic evidence', 'utf8');
+      const initialHash = createHash('sha256').update(initialBuffer).digest('hex');
+      await request(atomicApp)
+        .post('/evidence/upload')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({
+          filename: 'initial.log',
+          content: initialBuffer.toString('base64'),
+          metadata: { sha256: initialHash, size: initialBuffer.length },
+        })
+        .expect(201);
+
+      const evidencePath = path.join(atomicDir, 'tenants', tenantId, 'evidence.json');
+      const originalContent = await fsPromises.readFile(evidencePath, 'utf8');
+
+      const renameOriginal = fsPromises.rename.bind(fsPromises);
+      let shouldFail = true;
+      renameSpy = jest.spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+        if (shouldFail && to === evidencePath) {
+          shouldFail = false;
+          throw Object.assign(new Error('rename failed'), { code: 'EPERM' });
+        }
+        return renameOriginal(from, to);
+      });
+
+      const failingBuffer = Buffer.from('failing atomic evidence', 'utf8');
+      const failingHash = createHash('sha256').update(failingBuffer).digest('hex');
+      await request(atomicApp)
+        .post('/evidence/upload')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({
+          filename: 'failing.log',
+          content: failingBuffer.toString('base64'),
+          metadata: { sha256: failingHash, size: failingBuffer.length },
+        })
+        .expect(500);
+
+      const afterFailureContent = await fsPromises.readFile(evidencePath, 'utf8');
+      expect(afterFailureContent).toBe(originalContent);
+
+      renameSpy.mockRestore();
+      renameSpy = undefined;
+
+      const successBuffer = Buffer.from('successful atomic evidence', 'utf8');
+      const successHash = createHash('sha256').update(successBuffer).digest('hex');
+      const successResponse = await request(atomicApp)
+        .post('/evidence/upload')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({
+          filename: 'success.log',
+          content: successBuffer.toString('base64'),
+          metadata: { sha256: successHash, size: successBuffer.length },
+        })
+        .expect(201);
+
+      expect(successResponse.body.sha256).toBe(successHash);
+
+      const records = JSON.parse(await fsPromises.readFile(evidencePath, 'utf8')) as Array<{ sha256: string }>;
+      expect(records).toHaveLength(2);
+      expect(records[1].sha256).toBe(successHash);
+    } finally {
+      renameSpy?.mockRestore();
+      await fsPromises.rm(atomicDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves tenant compliance data when atomic rename fails', async () => {
+    const atomicDir = await fsPromises.mkdtemp(path.join(storageDir, 'atomic-compliance-'));
+    const atomicApp = createServer({ ...baseConfig, storageDir: atomicDir, metricsRegistry: new Registry() });
+    const atomicToken = await createAccessToken();
+    let renameSpy: jest.SpiedFunction<typeof fsPromises.rename> | undefined;
+
+    try {
+      const evidenceBuffer = Buffer.from('compliance evidence', 'utf8');
+      const evidenceHash = createHash('sha256').update(evidenceBuffer).digest('hex');
+      const evidenceUpload = await request(atomicApp)
+        .post('/evidence/upload')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({
+          filename: 'compliance.log',
+          content: evidenceBuffer.toString('base64'),
+          metadata: { sha256: evidenceHash, size: evidenceBuffer.length },
+        })
+        .expect(201);
+
+      const initialMatrix = {
+        project: 'Atomic Compliance',
+        level: 'B',
+        generatedAt: '2024-10-01T12:00:00Z',
+        requirements: [
+          { id: 'REQ-A', status: 'covered' as const, evidenceIds: [evidenceUpload.body.id as string] },
+        ],
+        summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      };
+      const initialCoverage = { statements: 95.5 };
+      const initialMetadata = { reviewer: 'qa' };
+      const initialPayload = buildCanonicalCompliancePayload(initialMatrix, initialCoverage, initialMetadata);
+      const initialHash = createHash('sha256').update(JSON.stringify(initialPayload)).digest('hex');
+
+      await request(atomicApp)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({ matrix: initialMatrix, coverage: initialCoverage, metadata: initialMetadata, sha256: initialHash })
+        .expect(201);
+
+      const compliancePath = path.join(atomicDir, 'tenants', tenantId, 'compliance.json');
+      const originalContent = await fsPromises.readFile(compliancePath, 'utf8');
+
+      const renameOriginal = fsPromises.rename.bind(fsPromises);
+      let shouldFail = true;
+      renameSpy = jest.spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+        if (shouldFail && to === compliancePath) {
+          shouldFail = false;
+          throw Object.assign(new Error('rename failed'), { code: 'EACCES' });
+        }
+        return renameOriginal(from, to);
+      });
+
+      const nextMatrix = {
+        project: 'Atomic Compliance',
+        level: 'B',
+        generatedAt: '2024-10-02T12:00:00Z',
+        requirements: [
+          { id: 'REQ-B', status: 'covered' as const, evidenceIds: [evidenceUpload.body.id as string] },
+        ],
+        summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      };
+      const nextCoverage = { statements: 96.2 };
+      const nextMetadata = { reviewer: 'qa', notes: 'daily update' };
+      const nextPayload = buildCanonicalCompliancePayload(nextMatrix, nextCoverage, nextMetadata);
+      const nextHash = createHash('sha256').update(JSON.stringify(nextPayload)).digest('hex');
+
+      await request(atomicApp)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({ matrix: nextMatrix, coverage: nextCoverage, metadata: nextMetadata, sha256: nextHash })
+        .expect(500);
+
+      const afterFailureContent = await fsPromises.readFile(compliancePath, 'utf8');
+      expect(afterFailureContent).toBe(originalContent);
+
+      renameSpy.mockRestore();
+      renameSpy = undefined;
+
+      const finalMatrix = {
+        project: 'Atomic Compliance',
+        level: 'B',
+        generatedAt: '2024-10-03T12:00:00Z',
+        requirements: [
+          { id: 'REQ-C', status: 'covered' as const, evidenceIds: [evidenceUpload.body.id as string] },
+        ],
+        summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      };
+      const finalCoverage = { statements: 97.1 };
+      const finalMetadata = { reviewer: 'qa', notes: 'finalized' };
+      const finalPayload = buildCanonicalCompliancePayload(finalMatrix, finalCoverage, finalMetadata);
+      const finalHash = createHash('sha256').update(JSON.stringify(finalPayload)).digest('hex');
+
+      const successResponse = await request(atomicApp)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${atomicToken}`)
+        .send({ matrix: finalMatrix, coverage: finalCoverage, metadata: finalMetadata, sha256: finalHash })
+        .expect(201);
+
+      expect(successResponse.body.sha256).toBe(finalHash);
+
+      const records = JSON.parse(await fsPromises.readFile(compliancePath, 'utf8')) as Array<{ sha256: string }>;
+      expect(records).toHaveLength(2);
+      expect(records[1].sha256).toBe(finalHash);
+    } finally {
+      renameSpy?.mockRestore();
+      await fsPromises.rm(atomicDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects health checks without or with an invalid token', async () => {
     const healthcheckToken = 'test-health-token';
     const serverWithToken = createServer({

@@ -190,7 +190,36 @@ export class FileSystemStorage implements StorageProvider {
 
   public async writeJson(filePath: string, data: unknown): Promise<void> {
     const serialized = `${JSON.stringify(data, null, 2)}\n`;
-    await fsPromises.writeFile(filePath, serialized, 'utf8');
+    const directory = path.dirname(filePath);
+    await fsPromises.mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
+
+    const tempFilePath = path.join(
+      directory,
+      `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+    );
+
+    try {
+      const fileHandle = await fsPromises.open(tempFilePath, 'w');
+      try {
+        await fileHandle.writeFile(serialized, 'utf8');
+        await fileHandle.sync();
+      } finally {
+        await fileHandle.close();
+      }
+    } catch (error) {
+      await fsPromises.rm(tempFilePath, { force: true });
+      throw error;
+    }
+
+    try {
+      await fsPromises.rename(tempFilePath, filePath);
+    } catch (error) {
+      await fsPromises.rm(tempFilePath, { force: true });
+      throw error;
+    }
+
+    await safeChmod(filePath, FILE_MODE);
+    await normalizeOwnership(filePath);
   }
 
   public async listSubdirectories(directory: string): Promise<string[]> {
