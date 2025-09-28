@@ -11,6 +11,9 @@ module.exports = {
     '^pg$': '<rootDir>/../../test/shims/pg.ts'
   },
   transform: {
-    '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]
+    '^.+\\.(ts|tsx)$': [
+      'ts-jest',
+      { tsconfig: '<rootDir>/tsconfig.test.json', diagnostics: false },
+    ],
   }
 };

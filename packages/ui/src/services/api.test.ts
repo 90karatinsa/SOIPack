@@ -2,6 +2,7 @@ import {
   ApiError,
   approveWorkspaceSignoff,
   buildAuthHeaders,
+  buildReportAssets,
   createAdminApiKey,
   createAdminUser,
   createReview,
@@ -28,6 +29,8 @@ import {
   getManifestProof,
   fetchComplianceSummary,
 } from './api';
+
+import type { ApiJob, ReportJobResult } from '../types/pipeline';
 
 const IMPORT_META_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
 
@@ -648,5 +651,62 @@ describe('admin users', () => {
         roles: [],
       }),
     ).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe('buildReportAssets', () => {
+  const createJob = (overrides?: Partial<ReportJobResult['outputs']>): ApiJob<ReportJobResult> => ({
+    id: 'abcd1234ef567890',
+    kind: 'report',
+    status: 'completed',
+    hash: 'hash',
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:05:00.000Z',
+    result: {
+      outputs: {
+        directory: 'reports/demo-tenant/abcd1234ef567890',
+        complianceHtml: 'reports/demo-tenant/abcd1234ef567890/compliance.html',
+        complianceJson: 'reports/demo-tenant/abcd1234ef567890/compliance.json',
+        complianceCsv: 'reports/demo-tenant/abcd1234ef567890/compliance.csv',
+        traceHtml: 'reports/demo-tenant/abcd1234ef567890/trace.html',
+        gapsHtml: 'reports/demo-tenant/abcd1234ef567890/gaps.html',
+        analysis: 'reports/demo-tenant/abcd1234ef567890/analysis.json',
+        snapshot: 'reports/demo-tenant/abcd1234ef567890/snapshot.json',
+        traces: 'reports/demo-tenant/abcd1234ef567890/traces.json',
+        toolQualification: {
+          summary: {
+            generatedAt: '2024-01-01T00:00:00.000Z',
+            tools: [
+              {
+                id: 'tool-1',
+                name: 'Analyzer',
+                category: 'verification' as const,
+                outputs: ['Plan'],
+                pendingActivities: 0,
+              },
+            ],
+          },
+          tqp: 'reports/demo-tenant/abcd1234ef567890/tool-qualification/analyzer-plan.md',
+          tar: 'reports/demo-tenant/abcd1234ef567890/tool-qualification/analyzer-report.md',
+          tqpHref: 'tool-qualification/analyzer-plan.md',
+          tarHref: 'tool-qualification/analyzer-report.md',
+        },
+        ...overrides,
+      },
+    },
+  });
+
+  it('normalizes compliance CSV and tool qualification asset paths', () => {
+    const assets = buildReportAssets(createJob());
+    expect(assets.assets.complianceCsv).toBe('compliance.csv');
+    expect(assets.assets.toolQualificationPlan).toBe('tool-qualification/analyzer-plan.md');
+    expect(assets.assets.toolQualificationReport).toBe('tool-qualification/analyzer-report.md');
+  });
+
+  it('omits tool qualification assets when absent', () => {
+    const jobWithoutTq = createJob({ toolQualification: undefined });
+    const assets = buildReportAssets(jobWithoutTq);
+    expect(assets.assets.toolQualificationPlan).toBeUndefined();
+    expect(assets.assets.toolQualificationReport).toBeUndefined();
   });
 });

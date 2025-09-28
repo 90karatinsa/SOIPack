@@ -1,0 +1,39 @@
+[
+  {
+    "id": "tool-analyzer",
+    "name": "VectorCAST",
+    "version": "2023R1",
+    "vendor": "Vector Informatik",
+    "category": "verification",
+    "tql": "TQL-4",
+    "description": "Generates and merges unit-test coverage.",
+    "objectives": ["DO-178C A-7-04", "DO-178C A-7-05"],
+    "environment": ["Linux", "CI"],
+    "outputs": [
+      {
+        "name": "Coverage Report",
+        "description": "Aggregated MC/DC and decision coverage",
+        "producedArtifacts": ["coverage_mcdc", "coverage_dec"]
+      }
+    ],
+    "controls": [
+      {
+        "id": "CTRL-TQP-1",
+        "description": "Nightly regression run is reviewed",
+        "owner": "Verification Lead",
+        "frequency": "Weekly"
+      }
+    ],
+    "validation": [
+      {
+        "id": "VAL-TQP-1",
+        "description": "Compare generated coverage with hand-calculated baseline",
+        "method": "Independent rerun on golden dataset",
+        "expectedResult": "Delta below 1%",
+        "status": "in-progress"
+      }
+    ],
+    "limitations": ["Requires offline license dongle"],
+    "residualRisks": ["Operator error can invalidate coverage import"]
+  }
+]

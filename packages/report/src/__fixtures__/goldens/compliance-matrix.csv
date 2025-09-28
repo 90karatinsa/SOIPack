@@ -1,0 +1,6 @@
+Objective ID,Table,Stage,Status,Satisfied Artifacts,Missing Artifacts,Evidence References
+A-3-04,A-3,SOI-1,Eksik,Plan,Plan | Gözden Geçirme,plan:docs/verification-plan.md
+A-4-01,A-4,SOI-2,Eksik,Analiz | İzlenebilirlik,Analiz | İzlenebilirlik | Gözden Geçirme,analysis:reports/safety-analysis.pdf | trace:artifacts/trace-map.csv
+A-5-06,A-5,SOI-3,Eksik,Test | İzlenebilirlik | Analiz,Test | İzlenebilirlik | Analiz,test:reports/junit.xml | trace:artifacts/trace-map.csv | analysis:reports/safety-analysis.pdf
+A-5-08,A-5,SOI-3,Eksik,Satır Kapsamı | Analiz,Satır Kapsamı | Analiz,coverage_stmt:reports/coverage-summary.json | analysis:reports/safety-analysis.pdf
+A-6-02,A-6,SOI-3,Eksik,,Konfigürasyon Kaydı | Problem Raporu,

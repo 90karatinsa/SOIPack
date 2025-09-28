@@ -33,6 +33,12 @@ Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen a
 
 `renderTraceMatrix` fonksiyonu artık HTML düzeninin yanı sıra gereksinim→tasarım→kod→test zincirlerini düzleştiren bir CSV yardımcıyı (`trace.csv`) döner. CSV başlıkları gereksinim kimliği, kapsam durumları, eşlenen tasarım kimlikleri, kod yolları ve test durumlarını içerir. Kod yolları ve testler çoklayıcı olduğunda satırlar çapraz çarpanla çoğaltılarak her bağlantı açıkça temsil edilir. CLI çıktısı varsayılan olarak bu dosyayı `reports/trace.csv` olarak yazar; denetçiler veya otomasyonlar bu dosyayı Excel/BI araçlarına aktararak izlenebilirlik denetimlerini hızlandırabilir.
 
+## Uyum matrisi CSV çıktısı
+
+`renderComplianceMatrix` çağrıları, HTML ve JSON çıktılarının yanında tüm uyum hedeflerini içeren bir CSV özet (`compliance.csv`) döndürür. Her satır hedef kimliğini, referans tablosunu, SOI aşamasını, yerelleştirilmiş durum etiketini, sağlanan/eksik kanıt rozetlerini ve varsa kanıt referanslarını listeler. Kanıt dizileri CSV içinde `|` karakteriyle birleştirildiğinden, Excel veya BI araçlarında filtrelemek kolaydır.
+
+SOI sekmeleri için kullanılan veri yapısı CSV yardımcısında da bulunduğundan, dönen `csv.stages` alanı her bir SOI aşaması için alt CSV dizilerini üretir (`SOI-1`, `SOI-2`, `SOI-3`, `SOI-4`). CLI `run report` komutu HTML ve JSON ile birlikte bu dosyayı `reports/compliance.csv` olarak kaydeder; böylece denetçiler belirli bir aşamadaki eksik kanıtları komut satırından çalıştırılan pipeline sonrasında doğrudan inceleyebilir.
+
 ## Risk hikayesi ve signoff anlatımı
 
 Risk bölümü, `@soipack/engine` tarafından sağlanan risk bloğunu görselleştirir. Breakdown kartları her faktörün ağırlığını ve toplam skora katkısını gösterirken, kapsam eğilim grafiği geçmiş snapshot verilerinden eğimi tahmin ederek ekiplerin trendleri tartışmasına yardımcı olur. Eksik sinyal listesi, risk hesabında varsayılan kabul edilen metrikleri vurgular.

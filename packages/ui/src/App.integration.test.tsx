@@ -412,6 +412,7 @@ const server = setupServer(
         directory: 'reports/demo/job-report',
         complianceHtml: 'reports/demo/job-report/compliance.html',
         complianceJson: 'reports/demo/job-report/compliance.json',
+        complianceCsv: 'reports/demo/job-report/compliance.csv',
         traceHtml: 'reports/demo/job-report/trace.html',
         gapsHtml: 'reports/demo/job-report/gaps.html',
         analysis: 'reports/demo/job-report/analysis.json',

@@ -105,6 +105,34 @@ interface StageComplianceTab {
   stage?: SoiStage;
 }
 
+interface ComplianceMatrixCsvRow {
+  objectiveId: string;
+  table: string;
+  stage?: SoiStage;
+  stageLabel?: string;
+  status: string;
+  satisfiedArtifacts: string[];
+  missingArtifacts: string[];
+  evidenceRefs: string[];
+}
+
+interface ComplianceMatrixCsvStageExport {
+  stage: SoiStage;
+  label: string;
+  headers: string[];
+  rows: ComplianceMatrixCsvRow[];
+  records: string[][];
+  csv: string;
+}
+
+interface ComplianceMatrixCsvExport {
+  headers: string[];
+  rows: ComplianceMatrixCsvRow[];
+  records: string[][];
+  csv: string;
+  stages: Partial<Record<SoiStage, ComplianceMatrixCsvStageExport>>;
+}
+
 const stageLabels: Record<SoiStage, string> = {
   'SOI-1': 'SOI-1 Planlama',
   'SOI-2': 'SOI-2 Geliştirme',
@@ -507,6 +535,7 @@ export interface ComplianceMatrixJson {
 export interface ComplianceMatrixResult {
   html: string;
   json: ComplianceMatrixJson;
+  csv: ComplianceMatrixCsvExport;
 }
 
 export interface ComplianceCoverageReportOptions extends ComplianceMatrixOptions {
@@ -593,6 +622,16 @@ const suggestionTypeLabels: Record<TraceSuggestion['type'], string> = {
   test: 'Test',
   code: 'Kod',
 };
+
+const complianceCsvHeaders = [
+  'Objective ID',
+  'Table',
+  'Stage',
+  'Status',
+  'Satisfied Artifacts',
+  'Missing Artifacts',
+  'Evidence References',
+];
 
 const traceCsvHeaders = [
   'Requirement ID',
@@ -2743,6 +2782,69 @@ const buildComplianceMatrixView = (
   };
 };
 
+const createComplianceMatrixCsv = (
+  rows: ComplianceMatrixRow[],
+  stageTabs: StageComplianceTab[],
+): ComplianceMatrixCsvExport => {
+  const normalizeRow = (row: ComplianceMatrixRow): ComplianceMatrixCsvRow => ({
+    objectiveId: row.id,
+    table: row.table ?? '',
+    stage: row.stage,
+    stageLabel: row.stage ? stageLabels[row.stage] ?? row.stage : undefined,
+    status: row.statusLabel,
+    satisfiedArtifacts: [...row.satisfiedArtifacts],
+    missingArtifacts: [...row.missingArtifacts],
+    evidenceRefs: [...row.evidenceRefs],
+  });
+
+  const joinValues = (values: string[]): string => (values.length > 0 ? values.join(' | ') : '');
+
+  const toRecord = (row: ComplianceMatrixCsvRow): string[] => [
+    row.objectiveId,
+    row.table,
+    row.stage ?? '',
+    row.status,
+    joinValues(row.satisfiedArtifacts),
+    joinValues(row.missingArtifacts),
+    joinValues(row.evidenceRefs),
+  ];
+
+  const normalizedRows = rows.map(normalizeRow);
+  const records = normalizedRows.map(toRecord);
+  const csvLines = [complianceCsvHeaders, ...records].map((line) =>
+    line.map(escapeCsvValue).join(','),
+  );
+
+  const stageExports: Partial<Record<SoiStage, ComplianceMatrixCsvStageExport>> = {};
+
+  stageTabs.forEach((tab) => {
+    if (!tab.stage) {
+      return;
+    }
+    const stageRows = tab.objectives.map(normalizeRow);
+    const stageRecords = stageRows.map(toRecord);
+    const stageCsvLines = [complianceCsvHeaders, ...stageRecords].map((line) =>
+      line.map(escapeCsvValue).join(','),
+    );
+    stageExports[tab.stage] = {
+      stage: tab.stage,
+      label: tab.label,
+      headers: [...complianceCsvHeaders],
+      rows: stageRows,
+      records: stageRecords,
+      csv: stageCsvLines.join('\n'),
+    };
+  });
+
+  return {
+    headers: [...complianceCsvHeaders],
+    rows: normalizedRows,
+    records,
+    csv: csvLines.join('\n'),
+    stages: stageExports,
+  };
+};
+
 const buildCoverageSummaryMetrics = (coverage: CoverageReport): LayoutSummaryMetric[] => {
   const metrics: LayoutSummaryMetric[] = [
     {
@@ -2903,8 +3005,9 @@ export const renderComplianceMatrix = (
   });
 
   const json = buildComplianceMatrixJson(snapshot, options, view);
+  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs);
 
-  return { html, json };
+  return { html, json, csv };
 };
 
 export const renderComplianceCoverageReport = (
@@ -2981,10 +3084,12 @@ export const renderComplianceCoverageReport = (
     ...(changeRequestBacklog.length > 0 ? { changeRequestBacklog } : {}),
     ...(ledgerDiffs.length > 0 ? { ledgerDiffs } : {}),
   } as ComplianceCoverageReportResult['json'];
+  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs);
 
   return {
     html,
     json,
+    csv,
     coverage,
     coverageWarnings,
     changeRequestBacklog: changeRequestBacklog.length > 0 ? changeRequestBacklog : undefined,

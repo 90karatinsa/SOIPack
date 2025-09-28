@@ -73,6 +73,23 @@ await fs.promises.writeFile(`reports/${pack.tar.filename}`, pack.tar.content);
 The generated Markdown captures controls, validation activities, open items, and residual risks for
 each tool. Pending activities are counted automatically so reviewers can focus on remaining work.
 
+### Generate packs from the CLI
+
+The `soipack report` command accepts a `--tool-usage` flag that points to the metadata JSON. When
+provided, the CLI writes the rendered plan/report to `reports/tool-qualification/` and persists the
+summary inside `analysis.json` alongside the compliance metadata.【F:packages/cli/src/index.ts†L3025-L3124】【F:packages/cli/src/index.test.ts†L828-L880】
+
+```bash
+soipack report \
+  --input dist/analysis \
+  --output dist/reports \
+  --tool-usage data/tool-usage.json
+```
+
+After the command finishes you will find Markdown files for both the TQP and TAR, a
+`toolQualification` entry inside `analysis.json`, and DO-330 links injected into
+`compliance.json`/`compliance.html`.
+
 ## 3. Embed links in compliance reports
 
 Pass the pack summary to `renderComplianceMatrix` (and other report renderers) through the
