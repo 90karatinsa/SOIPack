@@ -4173,15 +4173,69 @@ export const createServer = (config: ServerConfig): Express => {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? false);
+  const contentSecurityPolicyDirectives = {
+    'default-src': ["'self'"],
+    'base-uri': ["'none'"],
+    'form-action': ["'self'"],
+    'frame-ancestors': ["'none'"],
+    'connect-src': ["'self'"],
+    'font-src': ["'self'"],
+    'img-src': ["'self'", 'data:'],
+    'manifest-src': ["'self'"],
+    'media-src': ["'self'"],
+    'object-src': ["'none'"],
+    'script-src': ["'self'"],
+    'style-src': ["'self'"],
+    'worker-src': ["'self'"],
+  } as const;
+
+  const restrictedPermissionsPolicy: Record<string, string[]> = {
+    accelerometer: [],
+    autoplay: [],
+    camera: [],
+    'display-capture': [],
+    'document-domain': [],
+    'encrypted-media': [],
+    fullscreen: [],
+    geolocation: [],
+    gyroscope: [],
+    magnetometer: [],
+    microphone: [],
+    midi: [],
+    payment: [],
+    'picture-in-picture': [],
+    'publickey-credentials-get': [],
+    'sync-xhr': [],
+    usb: [],
+    'xr-spatial-tracking': [],
+  };
+
+  const permissionsPolicyHeader = Object.entries(restrictedPermissionsPolicy)
+    .map(([feature, allowlist]) => `${feature}=(${allowlist.join(' ')})`)
+    .join(', ');
+
   app.use(
     helmet({
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: contentSecurityPolicyDirectives,
+      },
+      crossOriginEmbedderPolicy: true,
+      crossOriginOpenerPolicy: { policy: 'same-origin' },
+      crossOriginResourcePolicy: { policy: 'same-origin' },
+      referrerPolicy: { policy: 'no-referrer' },
       hsts: {
         maxAge: 31_536_000,
         includeSubDomains: true,
         preload: true,
       },
+      permittedCrossDomainPolicies: { permittedPolicies: 'none' },
     }),
   );
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', permissionsPolicyHeader);
+    next();
+  });
   app.listen = (((...args: Parameters<typeof app.listen>) => {
     void args;
     throw new Error(PLAINTEXT_LISTEN_ERROR_MESSAGE);

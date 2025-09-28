@@ -5,6 +5,33 @@ SOIPack REST API'si tenant bazlı yetkilendirme için iki katmanlı bir kimlik d
 1. **JWT Bearer belirteçleri** kiracı ve kullanıcı kimliğini taşır ve kapsam kontrolleri (`soipack.api`, `soipack.admin` gibi) mevcut davranışla aynı şekilde çalışır.
 2. **API anahtarları** gelen isteğin kurumsal portala ait olduğunu kanıtlar ve kullanıcı rolü modelini devreye alır.
 
+## HTTP Güvenlik Başlıkları
+
+Sunucu, Helmet yapılandırmasıyla gelen tüm yanıtlara aşağıdaki koruyucu başlıkları uygular:
+
+- `Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; connect-src 'self'; font-src 'self'; img-src 'self' data:; manifest-src 'self'; media-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'`
+- `Referrer-Policy: no-referrer`
+- `Permissions-Policy: accelerometer=(); autoplay=(); camera=(); display-capture=(); document-domain=(); encrypted-media=(); fullscreen=(); geolocation=(); gyroscope=(); magnetometer=(); microphone=(); midi=(); payment=(); picture-in-picture=(); publickey-credentials-get=(); sync-xhr=(); usb=(); xr-spatial-tracking=()`
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Cross-Origin-Embedder-Policy: require-corp`
+- `Cross-Origin-Resource-Policy: same-origin`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: SAMEORIGIN`
+- `X-DNS-Prefetch-Control: off`
+- `X-Permitted-Cross-Domain-Policies: none`
+
+Ek olarak Express `X-Powered-By` üst bilgisi devre dışı bırakılır ve tüm isteklere benzersiz `X-Request-Id` değerleri atanır.
+
+## SBOM Üretimi ve Dağıtımı
+
+`@soipack/packager` her paket oluşturulduğunda SPDX 2.3 formatında bir Yazılım Malzeme Listesi (SBOM) üretir. SBOM dosyası `sbom.spdx.json` adıyla paket arşivinin köküne eklenir ve içerisindeki tüm rapor ve kanıt dosyalarını SHA-256 özetleriyle listeler. Paket manifesti, SBOM'un aynı algoritmayla hesaplanan karmasını `sbom` meta verisinde saklar; böylece SBOM bütünlüğü imza doğrulamasıyla birlikte denetlenebilir.
+
+Operasyon ekipleri SBOM'u son kullanıcılara sunarken iki gereksinimi karşılamalıdır:
+
+1. SBOM dosyası paket arşivinden çıkarılmadan doğrulanmalı, manifestteki `sbom.digest` alanı ile eşleştiği teyit edilmelidir.
+2. Müşterilere sağlanan tüm kanıt paketleri SBOM dosyasını değişmeden içermeli ve SBOM'un bağımsız olarak indirildiği senaryolarda ilgili manifest imzası ile birlikte paylaşılmalıdır.
+
 ## API Anahtarı Yönetimi
 
 API anahtarları `SOIPACK_API_KEYS` ortam değişkeni üzerinden yapılandırılır. Değer CSV formatındadır ve her giriş `anahtarEtiketi=anahtarDegeri:rol1|rol2` biçimini destekler. Etiket isteğe bağlıdır ve raporlama için kullanılır; roller belirtilmediğinde `reader` rolü atanır.

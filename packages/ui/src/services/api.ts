@@ -2,6 +2,7 @@ import {
   type AnalyzeJobResult,
   type ApiJob,
   type ComplianceMatrixPayload,
+  type ComplianceStagePayload,
   type ImportJobResult,
   type ReportAssetMap,
   type ReportJobResult,
@@ -197,6 +198,35 @@ export interface StageRiskForecastEntry {
   };
   sparkline: StageRiskSparklinePointPayload[];
   updatedAt?: string;
+}
+
+export interface ComplianceCoverageSnapshot {
+  statements?: number;
+  branches?: number;
+  functions?: number;
+  lines?: number;
+}
+
+export interface ComplianceGapSummary {
+  missingIds: string[];
+  partialIds: string[];
+  openObjectiveCount: number;
+}
+
+export interface ComplianceSummaryLatest {
+  id: string;
+  createdAt: string;
+  project?: string;
+  level?: string;
+  generatedAt?: string;
+  summary: ComplianceStagePayload['summary'];
+  coverage: ComplianceCoverageSnapshot;
+  gaps: ComplianceGapSummary;
+}
+
+export interface ComplianceSummaryResponse {
+  computedAt: string;
+  latest: ComplianceSummaryLatest | null;
 }
 
 export interface StageRiskForecastResponse {
@@ -705,6 +735,26 @@ export const fetchComplianceMatrix = async ({
   });
 
   return readJson<ComplianceMatrixPayload>(response);
+};
+
+interface FetchComplianceSummaryOptions {
+  token: string;
+  license: string;
+  signal?: AbortSignal;
+}
+
+export const fetchComplianceSummary = async ({
+  token,
+  license,
+  signal,
+}: FetchComplianceSummaryOptions): Promise<ComplianceSummaryResponse> => {
+  const response = await fetch(joinUrl('/v1/compliance/summary'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<ComplianceSummaryResponse>(response);
 };
 
 export const fetchRequirementTraces = async ({

@@ -78,6 +78,10 @@
     gap: 4px;
   }
 
+  .summary-card--accent {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  }
+
   .summary-card strong {
     font-size: 18px;
     font-weight: 600;
@@ -167,6 +171,21 @@
     color: #991b1b;
   }
 
+  .independence-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .independence-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
   .status-covered {
     background: #dcfce7;
     color: #166534;
@@ -210,6 +229,87 @@
     display: grid;
     gap: 16px;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .stage-tabs {
+    margin-bottom: 24px;
+  }
+
+  .stage-tabs input[type='radio'] {
+    display: none;
+  }
+
+  .stage-tabs-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .stage-tab-label {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.05);
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s ease-in-out;
+  }
+
+  .stage-tab-label:hover {
+    border-color: rgba(15, 23, 42, 0.12);
+  }
+
+  .stage-tab-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .stage-tab-summary {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .stage-panels {
+    position: relative;
+  }
+
+  .stage-panel {
+    display: none;
+    animation: fadeIn 0.25s ease-in-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .stage-tabs input:nth-of-type(1):checked ~ .stage-panels .stage-panel:nth-of-type(1),
+  .stage-tabs input:nth-of-type(2):checked ~ .stage-panels .stage-panel:nth-of-type(2),
+  .stage-tabs input:nth-of-type(3):checked ~ .stage-panels .stage-panel:nth-of-type(3),
+  .stage-tabs input:nth-of-type(4):checked ~ .stage-panels .stage-panel:nth-of-type(4),
+  .stage-tabs input:nth-of-type(5):checked ~ .stage-panels .stage-panel:nth-of-type(5),
+  .stage-tabs input:nth-of-type(6):checked ~ .stage-panels .stage-panel:nth-of-type(6) {
+    display: block;
+  }
+
+  .stage-tabs input:nth-of-type(1):checked ~ .stage-tabs-nav label:nth-of-type(1),
+  .stage-tabs input:nth-of-type(2):checked ~ .stage-tabs-nav label:nth-of-type(2),
+  .stage-tabs input:nth-of-type(3):checked ~ .stage-tabs-nav label:nth-of-type(3),
+  .stage-tabs input:nth-of-type(4):checked ~ .stage-tabs-nav label:nth-of-type(4),
+  .stage-tabs input:nth-of-type(5):checked ~ .stage-tabs-nav label:nth-of-type(5),
+  .stage-tabs input:nth-of-type(6):checked ~ .stage-tabs-nav label:nth-of-type(6) {
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.35);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.18);
   }
 
   .gap-card {
@@ -328,7 +428,7 @@
           <p class="report-meta">Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü</p>
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>20240201T120000Z-66fea11722a1</strong>
+          Snapshot: <strong>20240201T120000Z-9c8bea0a1885</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
           <div class="git-meta">
@@ -362,9 +462,9 @@
             <span>Kapsamlı Gereksinimler</span>
             <strong>0/3</strong>
           </div>
-          <div class="summary-card">
+          <div class="summary-card summary-card--accent">
             <span>Eksik/Kısmi Kapsam</span>
-            <strong>2/1</strong>
+            <strong>0/3</strong>
           </div>
       </div>
     </header>
@@ -389,7 +489,7 @@
               <div class="cell-description">Çok faktörlü giriş sağlamalı</div>
                 <div class="muted">Durum: approved</div>
                 <div>
-                  <span class="badge status-partial">Kısmen Kaplandı</span>
+                  <span class="badge status-missing">Kapsam Yok</span>
                     <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
                 </div>
             </td>
@@ -426,7 +526,7 @@
               <div class="cell-description">Başarısız girişler kaydedilmeli</div>
                 <div class="muted">Durum: verified</div>
                 <div>
-                  <span class="badge status-partial">Kısmen Kaplandı</span>
+                  <span class="badge status-missing">Kapsam Yok</span>
                     <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
                 </div>
             </td>

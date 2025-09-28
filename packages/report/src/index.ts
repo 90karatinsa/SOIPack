@@ -238,6 +238,33 @@ interface SignoffTimelineView {
   entries: SignoffTimelineEntryView[];
 }
 
+interface IndependenceObjectiveView {
+  id: string;
+  table?: string;
+  name?: string;
+  desc?: string;
+  independenceLabel: string;
+  independenceClass: string;
+  statusLabel: string;
+  statusClass: string;
+  missingArtifacts: string[];
+}
+
+interface IndependenceBadgeView {
+  label: string;
+  className: string;
+}
+
+interface IndependenceSummaryView {
+  statusLabel: string;
+  statusClass: string;
+  totalsLabel: string;
+  badges: IndependenceBadgeView[];
+  objectives: IndependenceObjectiveView[];
+  emptyLabel: string;
+  lead: string;
+}
+
 interface ComplianceMatrixView {
   objectives: ComplianceMatrixRow[];
   requirementCoverage: RequirementCoverageRow[];
@@ -247,6 +274,7 @@ interface ComplianceMatrixView {
   risk?: RiskView;
   signoffs?: SignoffTimelineView;
   toolQualification?: ToolQualificationLinkView;
+  independence: IndependenceSummaryView;
 }
 
 interface TraceMatrixRow {
@@ -463,6 +491,7 @@ export interface ComplianceMatrixJson {
     reason: string;
     viaTestId?: string;
   }>;
+  independenceSummary: ComplianceSnapshot['independenceSummary'];
   git?: BuildInfo | null;
   risk?: ComplianceSnapshot['risk'] | null;
   complianceDelta?: RiskDeltaSummaryJson;
@@ -526,6 +555,18 @@ const coverageStatusLabels: Record<CoverageStatus, { label: string; className: s
   covered: { label: 'Tam Kaplandı', className: 'status-covered' },
   partial: { label: 'Kısmen Kaplandı', className: 'status-partial' },
   missing: { label: 'Kapsam Yok', className: 'status-missing' },
+};
+
+const independenceStatusLabels: Record<CoverageStatus, { label: string; className: string }> = {
+  covered: { label: 'Bağımsızlık Sağlandı', className: 'status-covered' },
+  partial: { label: 'Bağımsızlık Eksikleri Var', className: 'status-partial' },
+  missing: { label: 'Bağımsızlık Sağlanamadı', className: 'status-missing' },
+};
+
+const independenceLevelLabels: Record<Objective['independence'], { label: string; className: string }> = {
+  none: { label: 'Bağımsızlık gerekmiyor', className: 'badge-soft' },
+  recommended: { label: 'Önerilen Bağımsızlık', className: 'status-partial' },
+  required: { label: 'Zorunlu Bağımsızlık', className: 'status-missing' },
 };
 
 const qualitySeverityLabels: Record<
@@ -1101,6 +1142,10 @@ const baseStyles = `
     gap: 4px;
   }
 
+  .summary-card--accent {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  }
+
   .summary-card strong {
     font-size: 18px;
     font-weight: 600;
@@ -1188,6 +1233,21 @@ const baseStyles = `
   .badge-critical {
     background: #fee2e2;
     color: #991b1b;
+  }
+
+  .independence-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .independence-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
   }
 
   .status-covered {
@@ -1480,7 +1540,7 @@ const layoutTemplate = nunjucks.compile(
       </div>
       <div class="summary-grid">
         {% for metric in summaryMetrics %}
-          <div class="summary-card">
+          <div class="summary-card{% if metric.accent %} summary-card--accent{% endif %}">
             <span>{{ metric.label }}</span>
             <strong>{{ metric.value }}</strong>
           </div>
@@ -1775,6 +1835,67 @@ const complianceTemplate = nunjucks.compile(
       </div>
     </div>
   </section>
+  {% if independence %}
+    <section class="section" aria-labelledby="independence-summary">
+      <h2 id="independence-summary">Bağımsızlık Uyarıları</h2>
+      <p class="section-lead">{{ independence.lead }}</p>
+      <div class="independence-summary">
+        <span class="badge {{ independence.statusClass }}">{{ independence.statusLabel }}</span>
+        <span class="muted">{{ independence.totalsLabel }}</span>
+      </div>
+      {% if independence.badges.length %}
+        <div class="independence-badges">
+          {% for badge in independence.badges %}
+            <span class="badge {{ badge.className }}">{{ badge.label }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if independence.objectives.length %}
+        <table>
+          <thead>
+            <tr>
+              <th>Hedef</th>
+              <th>Bağımsızlık</th>
+              <th>Durum</th>
+              <th>Eksik Kanıtlar</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in independence.objectives %}
+              <tr>
+                <td>
+                  <div class="cell-title">{{ row.id }}</div>
+                  {% if row.table or row.name %}
+                    <div class="cell-subtitle">
+                      {% if row.table %}{{ row.table }}{% endif %}
+                      {% if row.table and row.name %} • {% endif %}
+                      {% if row.name %}{{ row.name }}{% endif %}
+                    </div>
+                  {% endif %}
+                  {% if row.desc %}
+                    <div class="cell-description">{{ row.desc }}</div>
+                  {% endif %}
+                </td>
+                <td><span class="badge {{ row.independenceClass }}">{{ row.independenceLabel }}</span></td>
+                <td><span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span></td>
+                <td>
+                  {% if row.missingArtifacts.length %}
+                    {% for artifact in row.missingArtifacts %}
+                      <span class="badge badge-critical">{{ artifact }}</span>
+                    {% endfor %}
+                  {% else %}
+                    <span class="muted">Eksik kanıt yok</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">{{ independence.emptyLabel }}</p>
+      {% endif %}
+    </section>
+  {% endif %}
   {% if qualityFindings.length %}
     <section class="section">
       <h2>Kalite Bulguları</h2>
@@ -2066,6 +2187,98 @@ const formatArtifact = (artifact: ObjectiveArtifactType | 'design'): string => {
   return artifactLabels[artifact] ?? artifact.toUpperCase();
 };
 
+const buildIndependenceSummaryView = (
+  summary: ComplianceSnapshot['independenceSummary'],
+  objectiveLookup?: Map<string, Objective>,
+): IndependenceSummaryView => {
+  const independenceSeverityRank: Record<Objective['independence'], number> = {
+    required: 0,
+    recommended: 1,
+    none: 2,
+  };
+  const statusRank: Record<CoverageStatus, number> = {
+    missing: 0,
+    partial: 1,
+    covered: 2,
+  };
+
+  const sortedObjectives = [...summary.objectives].sort((a, b) => {
+    const severityDiff =
+      independenceSeverityRank[a.independence] - independenceSeverityRank[b.independence];
+    if (severityDiff !== 0) {
+      return severityDiff;
+    }
+    const statusDiff = statusRank[a.status] - statusRank[b.status];
+    if (statusDiff !== 0) {
+      return statusDiff;
+    }
+    return a.objectiveId.localeCompare(b.objectiveId);
+  });
+
+  const objectives: IndependenceObjectiveView[] = sortedObjectives.map((entry) => {
+    const meta = objectiveLookup?.get(entry.objectiveId);
+    const levelMeta = independenceLevelLabels[entry.independence] ?? independenceLevelLabels.none;
+    const statusMeta = statusLabels[entry.status] ?? entry.status;
+    const statusClass =
+      entry.status === 'covered'
+        ? 'status-covered'
+        : entry.status === 'partial'
+          ? 'status-partial'
+          : 'status-missing';
+
+    return {
+      id: entry.objectiveId,
+      table: meta?.table,
+      name: meta?.name,
+      desc: meta?.desc,
+      independenceLabel: levelMeta.label,
+      independenceClass: levelMeta.className,
+      statusLabel: statusMeta,
+      statusClass,
+      missingArtifacts: entry.missingArtifacts.map((artifact) => formatArtifact(artifact)),
+    };
+  });
+
+  const totalsLabel = `Etkilenen hedef: ${summary.objectives.length} • Kısmi: ${summary.totals.partial} • Eksik: ${summary.totals.missing}`;
+  const statusKey: CoverageStatus = summary.totals.missing > 0
+    ? 'missing'
+    : summary.totals.partial > 0
+      ? 'partial'
+      : 'covered';
+  const statusMeta = independenceStatusLabels[statusKey];
+
+  const levelCounts = summary.objectives.reduce(
+    (acc, entry) => {
+      if (entry.independence === 'required') {
+        acc.required += 1;
+      } else if (entry.independence === 'recommended') {
+        acc.recommended += 1;
+      }
+      return acc;
+    },
+    { required: 0, recommended: 0 },
+  );
+
+  const badges: IndependenceBadgeView[] = [];
+  if (levelCounts.required > 0) {
+    badges.push({ label: `Zorunlu: ${levelCounts.required}`, className: 'status-missing' });
+  }
+  if (levelCounts.recommended > 0) {
+    badges.push({ label: `Önerilen: ${levelCounts.recommended}`, className: 'status-partial' });
+  }
+
+  return {
+    statusLabel: statusMeta.label,
+    statusClass: statusMeta.className,
+    totalsLabel,
+    badges,
+    objectives,
+    emptyLabel: 'Bağımsızlık gerektiren hedeflerde eksik bulunamadı.',
+    lead:
+      'Bağımsız doğrulama gerektiren hedeflerde eksik veya bağımsız olmayan kanıtları vurgular. Zorunlu eksikler sertifikasyon için kritik kabul edilir.',
+  };
+};
+
 const contributionClass = (weight: number, contribution: number): string => {
   if (weight <= 0) {
     return 'badge-soft';
@@ -2326,6 +2539,7 @@ const buildSummaryMetrics = (
   requirementCoverage: RequirementCoverageStatus[] = [],
   qualityFindings: ComplianceSnapshot['qualityFindings'] = [],
   risk?: ComplianceSnapshot['risk'],
+  independenceSummary?: ComplianceSnapshot['independenceSummary'],
 ): LayoutSummaryMetric[] => {
   const metrics: LayoutSummaryMetric[] = [];
 
@@ -2384,6 +2598,20 @@ const buildSummaryMetrics = (
       label: 'Kritik/Uyarı',
       value: `${criticalCount}/${warningCount}`,
       accent: criticalCount > 0,
+    });
+  }
+
+  if (independenceSummary) {
+    const affected = independenceSummary.objectives.length;
+    metrics.push({
+      label: 'Bağımsızlık Eksikleri',
+      value: `${affected} hedef`,
+      accent: affected > 0,
+    });
+    metrics.push({
+      label: 'Kısmi/Eksik Bağımsızlık',
+      value: `${independenceSummary.totals.partial}/${independenceSummary.totals.missing}`,
+      accent: independenceSummary.totals.partial > 0 || independenceSummary.totals.missing > 0,
     });
   }
 
@@ -2500,11 +2728,13 @@ const buildComplianceMatrixView = (
       snapshot.requirementCoverage,
       snapshot.qualityFindings,
       snapshot.risk,
+      snapshot.independenceSummary,
     ),
     stageTabs,
     risk: buildRiskView(snapshot.risk),
     signoffs: buildSignoffTimelineView(options.signoffs),
     toolQualification,
+    independence: buildIndependenceSummaryView(snapshot.independenceSummary, objectiveLookup),
   };
 };
 
@@ -2595,6 +2825,15 @@ const buildComplianceMatrixJson = (
     reason: suggestion.reason,
     viaTestId: suggestion.viaTestId,
   })),
+  independenceSummary: {
+    totals: { ...snapshot.independenceSummary.totals },
+    objectives: snapshot.independenceSummary.objectives.map((entry) => ({
+      objectiveId: entry.objectiveId,
+      independence: entry.independence,
+      status: entry.status,
+      missingArtifacts: [...entry.missingArtifacts],
+    })),
+  },
   git: options.git ?? null,
   risk: snapshot.risk ?? null,
   complianceDelta: view.risk?.delta?.summary,
@@ -2638,6 +2877,7 @@ export const renderComplianceMatrix = (
       stageTabs: view.stageTabs,
       requirementCoverage: view.requirementCoverage,
       qualityFindings: view.qualityFindings,
+      independence: view.independence,
     }),
   );
   if (view.signoffs) {
@@ -2685,6 +2925,7 @@ export const renderComplianceCoverageReport = (
       stageTabs: view.stageTabs,
       requirementCoverage: view.requirementCoverage,
       qualityFindings: view.qualityFindings,
+      independence: view.independence,
     }),
   );
   if (view.signoffs) {
