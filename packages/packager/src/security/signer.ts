@@ -60,7 +60,15 @@ type ManifestLedgerMetadata = {
 
 type ManifestStageMetadata = { stage?: string | null };
 
-type LedgerAwareManifest = Manifest & ManifestLedgerMetadata & ManifestStageMetadata;
+type ManifestSbomMetadata = {
+  sbom?: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+  } | null;
+};
+
+type LedgerAwareManifest = Manifest & ManifestLedgerMetadata & ManifestStageMetadata & ManifestSbomMetadata;
 
 export interface ManifestDigest {
   algorithm: 'SHA-256';
@@ -862,6 +870,18 @@ const canonicalizeManifest = (manifest: Manifest & ManifestLedgerMetadata & Mani
               : manifest.ledger.previousRoot,
         }
       : null;
+  }
+
+  const sbomMetadata = (manifest as ManifestSbomMetadata).sbom;
+  if (sbomMetadata !== undefined) {
+    canonical.sbom =
+      sbomMetadata === null
+        ? null
+        : {
+            path: sbomMetadata.path,
+            algorithm: 'sha256',
+            digest: sbomMetadata.digest,
+          };
   }
 
   return canonical;

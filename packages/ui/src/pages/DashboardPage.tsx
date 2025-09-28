@@ -1,4 +1,4 @@
-import { Alert, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
+import { Alert, Badge, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useT } from '../providers/I18nProvider';
@@ -6,6 +6,8 @@ import {
   ApiError,
   listJobs,
   listReviews,
+  fetchComplianceSummary,
+  type ComplianceSummaryLatest,
   type QueueMetricsResponse,
   type ReviewResource,
 } from '../services/api';
@@ -46,6 +48,12 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     error: string | null;
     reviews: ReviewResource[];
   }>({ loading: true, error: null, reviews: [] });
+  const [complianceState, setComplianceState] = useState<{
+    loading: boolean;
+    error: string | null;
+    summary: ComplianceSummaryLatest | null;
+    computedAt: string | null;
+  }>({ loading: true, error: null, summary: null, computedAt: null });
   const t = useT();
   const trimmedToken = token.trim();
   const trimmedLicense = license.trim();
@@ -54,14 +62,22 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     if (!trimmedToken || !trimmedLicense) {
       setQueueState({ loading: false, error: t('dashboard.credentialsRequired'), metrics: null });
       setReviewState({ loading: false, error: t('dashboard.credentialsRequired'), reviews: [] });
+      setComplianceState({
+        loading: false,
+        error: t('dashboard.credentialsRequired'),
+        summary: null,
+        computedAt: null,
+      });
       return;
     }
 
     const queueController = new AbortController();
     const reviewController = new AbortController();
+    const complianceController = new AbortController();
 
     setQueueState((previous) => ({ ...previous, loading: true, error: null }));
     setReviewState((previous) => ({ ...previous, loading: true, error: null }));
+    setComplianceState((previous) => ({ ...previous, loading: true, error: null }));
 
     listJobs({
       token: trimmedToken,
@@ -101,9 +117,32 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         setReviewState({ loading: false, error: message, reviews: [] });
       });
 
+    fetchComplianceSummary({
+      token: trimmedToken,
+      license: trimmedLicense,
+      signal: complianceController.signal,
+    })
+      .then((response) => {
+        setComplianceState({
+          loading: false,
+          error: null,
+          summary: response.latest,
+          computedAt: response.computedAt,
+        });
+      })
+      .catch((error) => {
+        if (complianceController.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof ApiError ? error.message : t('dashboard.complianceError');
+        setComplianceState({ loading: false, error: message, summary: null, computedAt: null });
+      });
+
     return () => {
       queueController.abort();
       reviewController.abort();
+      complianceController.abort();
     };
   }, [trimmedToken, trimmedLicense, t]);
 
@@ -128,6 +167,19 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     [reviewState.reviews],
   );
 
+  const complianceSummary = complianceState.summary;
+  const complianceTimestamp =
+    complianceSummary?.generatedAt ?? complianceSummary?.createdAt ?? complianceState.computedAt;
+  const formattedComplianceTimestamp = complianceTimestamp
+    ? new Date(complianceTimestamp).toLocaleString()
+    : '—';
+  const readinessPercent = complianceSummary?.summary.total
+    ? Math.round((complianceSummary.summary.covered / complianceSummary.summary.total) * 100)
+    : 0;
+  const complianceReady =
+    complianceSummary?.summary.missing === 0 &&
+    complianceSummary?.gaps.openObjectiveCount === 0;
+
   return (
     <div className="space-y-8">
       <PageHeader
@@ -135,6 +187,65 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         description={t('dashboard.description')}
         breadcrumb={[{ label: t('dashboard.title') }]}
       />
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-white">{t('dashboard.complianceReadiness')}</h2>
+        {complianceState.loading ? (
+          <div data-testid="compliance-loading" className="space-y-2">
+            <Skeleton className="h-24 w-full" />
+          </div>
+        ) : complianceState.error ? (
+          <Alert
+            data-testid="compliance-error"
+            title={t('dashboard.complianceErrorTitle')}
+            description={complianceState.error}
+            variant="error"
+          />
+        ) : !complianceSummary ? (
+          <EmptyState
+            data-testid="compliance-empty"
+            title={t('dashboard.complianceEmpty')}
+            description=""
+          />
+        ) : (
+          <div className="space-y-4" data-testid="compliance-summary">
+            <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
+              <Badge
+                data-testid="compliance-status"
+                variant={complianceReady ? 'success' : 'warning'}
+              >
+                {complianceReady
+                  ? t('dashboard.complianceStatusReady')
+                  : t('dashboard.complianceStatusAttention')}
+              </Badge>
+              <span>
+                {t('dashboard.complianceOpenObjectivesLabel')} {complianceSummary.gaps.openObjectiveCount}
+              </span>
+              <span>
+                {t('dashboard.complianceLastComputed')} {formattedComplianceTimestamp}
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <Card
+                title={t('dashboard.complianceCoverage')}
+                description={`${readinessPercent}%`}
+              />
+              <Card
+                title={t('dashboard.complianceCovered')}
+                description={complianceSummary.summary.covered.toString()}
+              />
+              <Card
+                title={t('dashboard.compliancePartial')}
+                description={complianceSummary.summary.partial.toString()}
+              />
+              <Card
+                title={t('dashboard.complianceMissing')}
+                description={complianceSummary.summary.missing.toString()}
+              />
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-white">{t('dashboard.queueMetrics')}</h2>

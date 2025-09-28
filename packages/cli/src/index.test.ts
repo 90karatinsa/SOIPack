@@ -17,6 +17,10 @@ import type { PlanTemplateId } from '@soipack/report';
 import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
 import { ZipFile } from 'yazl';
 
+type ManifestWithSbom = Manifest & {
+  sbom?: { path: string; algorithm: string; digest: string } | null;
+};
+
 import type { LicensePayload } from './license';
 import { setCliLocale } from './localization';
 import type { Logger } from './logging';
@@ -73,6 +77,7 @@ import {
   runIngestAndPackage,
   runReport,
   runVerify,
+  runRiskSimulate,
   __internal,
 } from './index';
 
@@ -221,7 +226,15 @@ describe('@soipack/cli pipeline', () => {
     const manifestStats = await fs.stat(packResult.manifestPath);
     expect(manifestStats.isFile()).toBe(true);
 
-    const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as Manifest & {
+    expect(packResult.sbomPath).toBe(path.join(releaseDir, 'sbom.spdx.json'));
+    const sbomContent = await fs.readFile(packResult.sbomPath, 'utf8');
+    const sbomDigest = createHash('sha256').update(sbomContent).digest('hex');
+    expect(packResult.sbomSha256).toBe(sbomDigest);
+    const sbomDocument = JSON.parse(sbomContent) as { spdxVersion: string; files: unknown[] };
+    expect(sbomDocument.spdxVersion).toBe('SPDX-2.3');
+    expect(Array.isArray(sbomDocument.files)).toBe(true);
+
+    const manifest = JSON.parse(await fs.readFile(packResult.manifestPath, 'utf8')) as ManifestWithSbom & {
       ledger?: { root: string | null; previousRoot: string | null } | null;
     };
     const signature = (await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8')).trim();
@@ -235,6 +248,11 @@ describe('@soipack/cli pipeline', () => {
     expect(manifest.ledger).toEqual({
       root: packResult.ledgerEntry?.ledgerRoot ?? null,
       previousRoot: packResult.ledgerEntry?.previousRoot ?? null,
+    });
+    expect(manifest.sbom).toEqual({
+      path: 'sbom.spdx.json',
+      algorithm: 'sha256',
+      digest: packResult.sbomSha256,
     });
 
     const detailedVerification = verifyManifestSignatureDetailed(manifest, signature, {
@@ -322,7 +340,7 @@ describe('@soipack/cli pipeline', () => {
     expect(storedLedger.entries[0]?.manifestDigest).toBe(result.manifestDigest);
     expect(storedLedger.entries[0]?.snapshotId).toBe(result.ledgerEntry?.snapshotId);
 
-    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as Manifest;
+    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as ManifestWithSbom;
     expect(manifest.files.length).toBeGreaterThan(0);
 
     const firstEntry = manifest.files[0];
@@ -330,6 +348,18 @@ describe('@soipack/cli pipeline', () => {
     const assetContent = await fs.readFile(assetPath);
     const computedHash = createHash('sha256').update(assetContent).digest('hex');
     expect(computedHash).toBe(firstEntry.sha256);
+
+    expect(result.sbomPath).toBe(path.join(packageOutput, 'sbom.spdx.json'));
+    const sbomContent = await fs.readFile(result.sbomPath, 'utf8');
+    const sbomDigest = createHash('sha256').update(sbomContent).digest('hex');
+    expect(result.sbomSha256).toBe(sbomDigest);
+    const sbomDocument = JSON.parse(sbomContent) as { spdxVersion: string };
+    expect(sbomDocument.spdxVersion).toBe('SPDX-2.3');
+    expect(manifest.sbom).toEqual({
+      path: 'sbom.spdx.json',
+      algorithm: 'sha256',
+      digest: result.sbomSha256,
+    });
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
@@ -435,7 +465,7 @@ describe('@soipack/cli pipeline', () => {
       packageName: 'soi-pack.zip',
     });
 
-    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as Manifest;
+    const manifest = JSON.parse(await fs.readFile(result.manifestPath, 'utf8')) as ManifestWithSbom;
     expect(manifest.files.length).toBeGreaterThan(0);
     manifest.files[0].sha256 = '0'.repeat(64);
     await fs.writeFile(result.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
@@ -1202,7 +1232,7 @@ describe('runVerify', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  const createManifest = (): Manifest => ({
+  const createManifest = (): ManifestWithSbom => ({
     files: [
       {
         path: 'reports/compliance_matrix.html',
@@ -1260,7 +1290,7 @@ describe('runVerify', () => {
     return createHash('sha256').update(buffer).digest('hex');
   };
 
-  const createManifestFromEntries = (entries: PackageEntry[]): Manifest => ({
+  const createManifestFromEntries = (entries: PackageEntry[]): ManifestWithSbom => ({
     files: entries.map((entry) => ({ path: entry.path, sha256: digestFor(entry.data) })),
     createdAt: '2024-01-01T00:00:00.000Z',
     toolVersion: '1.0.0-test',
@@ -1301,6 +1331,7 @@ describe('runVerify', () => {
     expect(result.isValid).toBe(true);
     expect(result.manifestId).toHaveLength(12);
     expect(result.packageIssues).toEqual([]);
+    expect(result.sbom).toBeUndefined();
   });
 
   it('flags tampered manifests as invalid', async () => {
@@ -1329,6 +1360,7 @@ describe('runVerify', () => {
     expect(result.isValid).toBe(false);
     expect(result.manifestId).toHaveLength(12);
     expect(result.packageIssues).toEqual([]);
+    expect(result.sbom).toBeUndefined();
   });
 
   it('throws on malformed manifest inputs', async () => {
@@ -1349,7 +1381,10 @@ describe('runVerify', () => {
       { path: 'reports/gaps.html', data: '<html>gaps</html>' },
     ];
 
+    const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3', files: [] });
+    const sbomDigest = digestFor(sbomContent);
     const manifest = createManifestFromEntries(dataEntries);
+    manifest.sbom = { path: 'sbom.spdx.json', algorithm: 'sha256', digest: sbomDigest };
     const { manifestPath, signaturePath, publicKeyPath, manifestContent, signatureContent } =
       await writeVerificationFiles(manifest);
 
@@ -1358,12 +1393,19 @@ describe('runVerify', () => {
       ...dataEntries,
       { path: 'manifest.json', data: manifestContent },
       { path: 'manifest.sig', data: signatureContent },
+      { path: 'sbom.spdx.json', data: sbomContent },
     ]);
 
     const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, packagePath });
 
     expect(result.isValid).toBe(true);
     expect(result.packageIssues).toEqual([]);
+    expect(result.sbom).toEqual({
+      path: 'sbom.spdx.json',
+      algorithm: 'sha256',
+      expectedDigest: sbomDigest,
+      package: { digest: sbomDigest, matches: true },
+    });
   });
 
   it('reports mismatched files when package content is tampered', async () => {
@@ -1393,6 +1435,7 @@ describe('runVerify', () => {
         dataEntries[0].data,
       )}, bulunan ${digestFor(tamperedContent)})`,
     ]);
+    expect(result.sbom).toBeUndefined();
   });
 
   it('reports missing files when package omits manifest entries', async () => {
@@ -1418,6 +1461,76 @@ describe('runVerify', () => {
     expect(result.packageIssues).toEqual([
       `Manifest dosyası paket içinde bulunamadı: ${dataEntries[0].path}`,
     ]);
+    expect(result.sbom).toBeUndefined();
+  });
+
+  it('reports SBOM mismatches from package contents', async () => {
+    const dataEntries: PackageEntry[] = [
+      { path: 'reports/compliance.json', data: 'original compliance' },
+    ];
+
+    const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3', files: [] });
+    const expectedDigest = digestFor(sbomContent);
+    const manifest = createManifestFromEntries(dataEntries);
+    manifest.sbom = { path: 'sbom.spdx.json', algorithm: 'sha256', digest: expectedDigest };
+    const { manifestPath, signaturePath, publicKeyPath, manifestContent, signatureContent } =
+      await writeVerificationFiles(manifest);
+
+    const tamperedSbom = `${sbomContent}tampered`;
+    const tamperedDigest = digestFor(tamperedSbom);
+    const packagePath = path.join(tempDir, 'sbom-mismatch.zip');
+    await writeZipArchive(packagePath, [
+      ...dataEntries,
+      { path: 'manifest.json', data: manifestContent },
+      { path: 'manifest.sig', data: signatureContent },
+      { path: 'sbom.spdx.json', data: tamperedSbom },
+    ]);
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, packagePath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.packageIssues).toEqual([
+      `SBOM karması uyuşmuyor: sbom.spdx.json (beklenen ${expectedDigest}, bulunan ${tamperedDigest})`,
+    ]);
+    expect(result.sbom).toEqual({
+      path: 'sbom.spdx.json',
+      algorithm: 'sha256',
+      expectedDigest: expectedDigest,
+      package: { digest: tamperedDigest, matches: false },
+    });
+  });
+
+  it('validates SBOM file digests when sbomPath is provided', async () => {
+    const manifest = createManifest();
+    const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3', files: [] });
+    const sbomDigest = digestFor(sbomContent);
+    manifest.sbom = { path: 'sbom.spdx.json', algorithm: 'sha256', digest: sbomDigest };
+
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(manifest);
+    const sbomPath = path.join(tempDir, 'sbom.spdx.json');
+    await fs.writeFile(sbomPath, sbomContent, 'utf8');
+
+    const result = await runVerify({ manifestPath, signaturePath, publicKeyPath, sbomPath });
+
+    expect(result.isValid).toBe(true);
+    expect(result.packageIssues).toEqual([]);
+    expect(result.sbom).toEqual({
+      path: 'sbom.spdx.json',
+      algorithm: 'sha256',
+      expectedDigest: sbomDigest,
+      file: { path: sbomPath, digest: sbomDigest, matches: true },
+    });
+  });
+
+  it('throws when sbomPath is provided without manifest metadata', async () => {
+    const manifest = createManifest();
+    const { manifestPath, signaturePath, publicKeyPath } = await writeVerificationFiles(manifest);
+    const sbomPath = path.join(tempDir, 'unused.sbom');
+    await fs.writeFile(sbomPath, '{}', 'utf8');
+
+    await expect(
+      runVerify({ manifestPath, signaturePath, publicKeyPath, sbomPath }),
+    ).rejects.toThrow(/Manifest SBOM metaverisi/);
   });
 });
 
@@ -1835,6 +1948,70 @@ describe('runFreeze', () => {
       }),
     ).rejects.toThrow('HTTP 409');
     expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runRiskSimulate', () => {
+  const metricsTemplate = {
+    coverageHistory: [
+      { timestamp: '2024-01-01T00:00:00Z', covered: 780, total: 1000 },
+      { timestamp: '2024-02-01T00:00:00Z', covered: 820, total: 1000 },
+      { timestamp: '2024-03-01T00:00:00Z', covered: 860, total: 1000 },
+    ],
+    testHistory: [
+      { timestamp: '2024-01-01T00:00:00Z', passed: 94, failed: 6 },
+      { timestamp: '2024-02-01T00:00:00Z', passed: 95, failed: 5 },
+      { timestamp: '2024-03-01T00:00:00Z', passed: 97, failed: 3 },
+    ],
+  };
+
+  let tempDir: string;
+  let metricsPath: string;
+
+  beforeAll(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-risk-'));
+    metricsPath = path.join(tempDir, 'metrics.json');
+  });
+
+  afterAll(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    await fs.writeFile(metricsPath, JSON.stringify(metricsTemplate));
+  });
+
+  it('returns Monte Carlo summary with provided seed and iteration count', async () => {
+    const result = await runRiskSimulate({ metricsPath, iterations: 250, seed: 2024 });
+
+    expect(result.simulation.iterations).toBe(250);
+    expect(result.simulation.seed).toBe(2024);
+    expect(result.simulation.baseline.coverage).toBe(86);
+    expect(result.simulation.baseline.failureRate).toBe(3);
+    expect(result.simulation.percentiles.p90).toBeGreaterThanOrEqual(0);
+    expect(result.simulation.percentiles.p90).toBeLessThanOrEqual(100);
+  });
+
+  it('applies coverage lift to the latest coverage sample', async () => {
+    const base = await runRiskSimulate({ metricsPath, seed: 17 });
+    const lifted = await runRiskSimulate({ metricsPath, seed: 17, coverageLift: 5 });
+    const capped = await runRiskSimulate({ metricsPath, seed: 17, coverageLift: 50 });
+
+    expect(lifted.simulation.baseline.coverage).toBe(base.simulation.baseline.coverage + 5);
+    expect(capped.simulation.baseline.coverage).toBe(100);
+    expect(lifted.simulation.mean).toBeLessThanOrEqual(base.simulation.mean);
+  });
+
+  it('throws when metrics are malformed', async () => {
+    const invalidPath = path.join(tempDir, 'invalid-metrics.json');
+    await fs.writeFile(
+      invalidPath,
+      JSON.stringify({ coverageHistory: [{ timestamp: '', covered: 'NaN', total: 0 }] }),
+    );
+
+    await expect(runRiskSimulate({ metricsPath: invalidPath })).rejects.toThrow(
+      /coverageHistory\[0\]\.timestamp/,
+    );
   });
 });
 

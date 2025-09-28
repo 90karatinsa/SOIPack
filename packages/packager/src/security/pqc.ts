@@ -354,16 +354,20 @@ export const verifyWithSphincsPlus = (
       return false;
     }
   }
-  return performWithWorker(
-    {
-      op: 'verify',
-      algorithm: canonical,
-      publicKey: sanitizeBase64(publicKeyBase64),
-      message: Buffer.from(message).toString('base64'),
-      signature: Buffer.from(signature).toString('base64'),
-    },
-    (response) => Boolean((response as { verified: boolean }).verified),
-  );
+  try {
+    return performWithWorker(
+      {
+        op: 'verify',
+        algorithm: canonical,
+        publicKey: sanitizeBase64(publicKeyBase64),
+        message: Buffer.from(message).toString('base64'),
+        signature: Buffer.from(signature).toString('base64'),
+      },
+      (response) => Boolean((response as { verified: boolean }).verified),
+    );
+  } catch {
+    return false;
+  }
 };
 
 const DEFAULT_PRIVATE_KEY_BASE64 =

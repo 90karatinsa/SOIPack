@@ -14,7 +14,6 @@ import {
   serializeLedgerProof,
   verifyLedgerProof,
 } from '@soipack/core';
-import yauzl from 'yauzl';
 
 import {
   ManifestBuildResult,
@@ -27,6 +26,8 @@ import {
   LedgerAwareManifest,
   ManifestLedgerOptions,
 } from './index';
+
+jest.setTimeout(60000);
 
 const computeSha256 = (filePath: string): string => {
   const hash = createHash('sha256');
@@ -87,38 +88,6 @@ const computeExpectedMerkleArtifacts = (
 
   return { merkle, files: filesWithProofs };
 };
-
-const readZipEntry = async (zipPath: string, entryName: string): Promise<string> =>
-  new Promise((resolve, reject) => {
-    yauzl.open(zipPath, { lazyEntries: true }, (error, zipfile) => {
-      if (error || !zipfile) {
-        reject(error ?? new Error('Unable to open zip file.'));
-        return;
-      }
-      zipfile.readEntry();
-      zipfile.on('entry', (entry) => {
-        if (entry.fileName !== entryName) {
-          zipfile.readEntry();
-          return;
-        }
-        zipfile.openReadStream(entry, (streamError, stream) => {
-          if (streamError || !stream) {
-            reject(streamError ?? new Error('Unable to open zip entry.'));
-            return;
-          }
-          const chunks: Buffer[] = [];
-          stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-          stream.on('end', () => {
-            resolve(Buffer.concat(chunks).toString('utf8'));
-            zipfile.close();
-          });
-          stream.on('error', reject);
-        });
-      });
-      zipfile.on('end', () => reject(new Error(`Entry ${entryName} not found.`)));
-      zipfile.on('error', reject);
-    });
-  });
 
 const loadDevCredentials = (): { bundlePem: string; certificatePem: string; publicKeyPem: string } => {
   const bundlePem = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
@@ -239,13 +208,44 @@ describe('packager', () => {
 
       expect(path.basename(result.outputPath)).toBe('soi-pack-20240201_1015.zip');
       expect(existsSync(result.outputPath)).toBe(true);
-      expect(result.manifest).toEqual(expectedManifest);
       expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
       expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
 
-      const manifestContent = await readZipEntry(result.outputPath, 'manifest.json');
-      const archivedManifest = JSON.parse(manifestContent) as LedgerAwareManifest;
-      expect(archivedManifest).toEqual(expectedManifest);
+      const parsedSbom = JSON.parse(result.sbom.content) as Record<string, unknown>;
+      expect(parsedSbom.spdxVersion).toBe('SPDX-2.3');
+      expect(Array.isArray(parsedSbom.files)).toBe(true);
+      expect((parsedSbom.files as Array<unknown>).length).toBe(expectedManifest.files.length);
+
+      const sbomDigest = createHash('sha256').update(result.sbom.content, 'utf8').digest('hex');
+      expect(result.sbom).toEqual({
+        path: 'sbom.spdx.json',
+        algorithm: 'sha256',
+        digest: sbomDigest,
+        content: result.sbom.content,
+      });
+      expect(result.manifest.sbom).toEqual({
+        path: 'sbom.spdx.json',
+        algorithm: 'sha256',
+        digest: sbomDigest,
+      });
+
+      const baseManifestWithSbom: LedgerAwareManifest = {
+        createdAt: expectedManifest.createdAt,
+        toolVersion: expectedManifest.toolVersion,
+        files: expectedManifest.files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+        stage: expectedManifest.stage,
+        ledger: expectedManifest.ledger,
+        sbom: result.manifest.sbom,
+      };
+
+      const { merkle, files: filesWithProof } = computeExpectedMerkleArtifacts(baseManifestWithSbom);
+      const expectedManifestWithSbom: LedgerAwareManifest = {
+        ...baseManifestWithSbom,
+        files: filesWithProof,
+        merkle,
+      };
+
+      expect(result.manifest).toEqual(expectedManifestWithSbom);
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }

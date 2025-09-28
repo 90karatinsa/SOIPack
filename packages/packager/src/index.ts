@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { promises as fsPromises, createReadStream, createWriteStream } from 'fs';
 import path from 'path';
 import { finished } from 'stream/promises';
@@ -52,10 +52,19 @@ export interface ManifestStageMetadata {
   stage?: SoiStage | null;
 }
 
+export interface ManifestSbomMetadata {
+  sbom?: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+  } | null;
+}
+
 export type LedgerAwareManifest = Manifest &
   ManifestLedgerMetadata &
   ManifestMerkleMetadata &
-  ManifestStageMetadata;
+  ManifestStageMetadata &
+  ManifestSbomMetadata;
 
 const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
 
@@ -135,6 +144,17 @@ const canonicalizeManifest = (manifest: LedgerAwareManifest): LedgerAwareManifes
 
   if (ledgerMetadata !== undefined) {
     canonical.ledger = ledgerMetadata;
+  }
+
+  if (manifest.sbom !== undefined) {
+    canonical.sbom =
+      manifest.sbom === null
+        ? null
+        : {
+            path: manifest.sbom.path,
+            algorithm: 'sha256',
+            digest: manifest.sbom.digest,
+          };
   }
 
   return canonical;
@@ -352,7 +372,111 @@ export interface PackageCreationResult {
   manifest: LedgerAwareManifest;
   signature: string;
   outputPath: string;
+  sbom: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+    content: string;
+  };
 }
+
+interface SpdxFileEntry {
+  SPDXID: string;
+  fileName: string;
+  checksums: Array<{ algorithm: 'SHA256'; checksumValue: string }>;
+}
+
+interface SpdxDocument {
+  spdxVersion: 'SPDX-2.3';
+  dataLicense: 'CC0-1.0';
+  SPDXID: 'SPDXRef-DOCUMENT';
+  name: string;
+  documentNamespace: string;
+  creationInfo: {
+    created: string;
+    creators: string[];
+  };
+  packages: Array<{
+    SPDXID: string;
+    name: string;
+    downloadLocation: 'NOASSERTION';
+    filesAnalyzed: boolean;
+    hasFiles: string[];
+    licenseConcluded: 'NOASSERTION';
+    licenseDeclared: 'NOASSERTION';
+    originator: string;
+  }>;
+  files: SpdxFileEntry[];
+  relationships: Array<{
+    spdxElementId: string;
+    relationshipType: 'DESCRIBES' | 'CONTAINS';
+    relatedSpdxElement: string;
+  }>;
+}
+
+const SBOM_FILENAME = 'sbom.spdx.json';
+
+const generateSpdxSbom = ({
+  files,
+  toolVersion,
+  timestamp,
+  packageLabel,
+}: {
+  files: FileForPackaging[];
+  toolVersion: string;
+  timestamp: Date;
+  packageLabel: string;
+}): SpdxDocument => {
+  const fileEntries: SpdxFileEntry[] = files.map((file, index) => ({
+    SPDXID: `SPDXRef-File-${index + 1}`,
+    fileName: file.manifestPath,
+    checksums: [
+      {
+        algorithm: 'SHA256',
+        checksumValue: file.sha256,
+      },
+    ],
+  }));
+
+  const packageId = 'SPDXRef-Package-SOIPack';
+
+  return {
+    spdxVersion: 'SPDX-2.3',
+    dataLicense: 'CC0-1.0',
+    SPDXID: 'SPDXRef-DOCUMENT',
+    name: packageLabel,
+    documentNamespace: `urn:uuid:${randomUUID()}`,
+    creationInfo: {
+      created: timestamp.toISOString(),
+      creators: [`Tool: SOIPack Packager ${toolVersion}`],
+    },
+    packages: [
+      {
+        SPDXID: packageId,
+        name: packageLabel,
+        downloadLocation: 'NOASSERTION',
+        filesAnalyzed: true,
+        hasFiles: fileEntries.map((entry) => entry.SPDXID),
+        licenseConcluded: 'NOASSERTION',
+        licenseDeclared: 'NOASSERTION',
+        originator: 'Organization: SOIPack',
+      },
+    ],
+    files: fileEntries,
+    relationships: [
+      {
+        spdxElementId: 'SPDXRef-DOCUMENT',
+        relationshipType: 'DESCRIBES',
+        relatedSpdxElement: packageId,
+      },
+      ...fileEntries.map((entry) => ({
+        spdxElementId: packageId,
+        relationshipType: 'CONTAINS' as const,
+        relatedSpdxElement: entry.SPDXID,
+      })),
+    ],
+  };
+};
 
 export const createSoiDataPack = async ({
   reportDir,
@@ -372,7 +496,7 @@ export const createSoiDataPack = async ({
 
   await mkdir(targetOutputDir, { recursive: true });
 
-  const { manifest, files } = await buildManifest({
+  const { manifest: baseManifest, files } = await buildManifest({
     reportDir: resolvedReportDir,
     evidenceDirs: evidenceDirs.map((dir) => path.resolve(dir)),
     toolVersion,
@@ -380,6 +504,41 @@ export const createSoiDataPack = async ({
     ledger,
     stage,
   });
+
+  const packageLabel = packageName ?? `soi-pack-${formatTimestamp(timestamp)}.zip`;
+  const sbomDocument = generateSpdxSbom({
+    files,
+    toolVersion,
+    timestamp,
+    packageLabel,
+  });
+  const serializedSbom = JSON.stringify(sbomDocument, null, 2);
+  const sbomDigest = createHash('sha256').update(serializedSbom, 'utf8').digest('hex');
+  const sbomMetadata = {
+    path: SBOM_FILENAME,
+    algorithm: 'sha256' as const,
+    digest: sbomDigest,
+  };
+
+  const manifestForSigning: LedgerAwareManifest = {
+    createdAt: baseManifest.createdAt,
+    toolVersion: baseManifest.toolVersion,
+    files: baseManifest.files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+    stage: baseManifest.stage,
+    ledger: baseManifest.ledger,
+    sbom: sbomMetadata,
+  };
+
+  const { summary, proofs } = computeManifestProofs(manifestForSigning);
+
+  const manifestWithSbom: LedgerAwareManifest = {
+    ...manifestForSigning,
+    merkle: summary,
+    files: manifestForSigning.files.map((file) => {
+      const proof = proofs.get(file.path);
+      return proof ? { ...file, proof } : file;
+    }),
+  };
 
   const credentialsPem = await readFile(path.resolve(credentialsPath), 'utf8');
   const ledgerForSigning =
@@ -389,12 +548,12 @@ export const createSoiDataPack = async ({
           previousRoot: ledger.previousRoot ?? null,
         }
       : undefined;
-  const bundle = signManifestBundle(manifest, {
+  const bundle = signManifestBundle(manifestWithSbom, {
     bundlePem: credentialsPem,
     ledger: ledgerForSigning,
   });
   const signature = bundle.signature;
-  const verification = verifyManifestSignatureDetailed(manifest, signature, {
+  const verification = verifyManifestSignatureDetailed(manifestWithSbom, signature, {
     expectedLedgerRoot: ledger?.root ?? null,
     expectedPreviousLedgerRoot: ledger?.previousRoot ?? null,
     requireLedgerProof: Boolean(ledgerForSigning),
@@ -404,9 +563,9 @@ export const createSoiDataPack = async ({
     throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
   }
 
-  if (manifest.ledger) {
-    const manifestLedgerRoot = manifest.ledger.root ?? null;
-    const manifestPrevious = manifest.ledger.previousRoot ?? null;
+  if (manifestWithSbom.ledger) {
+    const manifestLedgerRoot = manifestWithSbom.ledger.root ?? null;
+    const manifestPrevious = manifestWithSbom.ledger.previousRoot ?? null;
     if (verification.ledgerRoot !== manifestLedgerRoot) {
       throw new Error('Manifest ledger kökü imza bağlamıyla eşleşmiyor.');
     }
@@ -415,7 +574,7 @@ export const createSoiDataPack = async ({
     }
   }
 
-  const finalName = packageName ?? `soi-pack-${formatTimestamp(timestamp)}.zip`;
+  const finalName = packageLabel;
   const outputPath = path.join(targetOutputDir, finalName);
 
   const zipFile = new ZipFile();
@@ -428,13 +587,19 @@ export const createSoiDataPack = async ({
     zipFile.addFile(file.absolutePath, file.manifestPath);
   }
 
-  zipFile.addBuffer(Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'), 'manifest.json');
+  zipFile.addBuffer(Buffer.from(JSON.stringify(manifestWithSbom, null, 2), 'utf8'), 'manifest.json');
   zipFile.addBuffer(Buffer.from(signature, 'utf8'), 'manifest.sig');
+  zipFile.addBuffer(Buffer.from(serializedSbom, 'utf8'), SBOM_FILENAME);
 
   zipFile.end();
   await streamCompleted;
 
-  return { manifest, signature, outputPath };
+  return {
+    manifest: manifestWithSbom,
+    signature,
+    outputPath,
+    sbom: { ...sbomMetadata, content: serializedSbom },
+  };
 };
 
 export type {

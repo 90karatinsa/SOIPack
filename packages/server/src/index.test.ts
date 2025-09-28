@@ -1792,6 +1792,15 @@ describe('@soipack/server REST API', () => {
     expect(response.headers['x-dns-prefetch-control']).toBe('off');
     expect(response.headers['x-content-type-options']).toBe('nosniff');
     expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['content-security-policy']).toContain("default-src 'self'");
+    expect(response.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['cross-origin-embedder-policy']).toBe('require-corp');
+    expect(response.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(response.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(response.headers['permissions-policy']).toContain('accelerometer=()');
+    expect(response.headers['permissions-policy']).toContain('geolocation=()');
+    expect(response.headers['x-permitted-cross-domain-policies']).toBe('none');
   });
 
   it('uploads evidence with SHA-256 validation', async () => {
@@ -2217,6 +2226,15 @@ describe('@soipack/server REST API', () => {
     expect(health.headers['strict-transport-security']).toContain('preload');
     expect(health.headers['x-content-type-options']).toBe('nosniff');
     expect(health.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(health.headers['content-security-policy']).toContain("default-src 'self'");
+    expect(health.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    expect(health.headers['referrer-policy']).toBe('no-referrer');
+    expect(health.headers['cross-origin-embedder-policy']).toBe('require-corp');
+    expect(health.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(health.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(health.headers['permissions-policy']).toContain('accelerometer=()');
+    expect(health.headers['permissions-policy']).toContain('geolocation=()');
+    expect(health.headers['x-permitted-cross-domain-policies']).toBe('none');
     expect(health.headers['x-powered-by']).toBeUndefined();
 
     const jobs = await request(app)
@@ -2227,6 +2245,13 @@ describe('@soipack/server REST API', () => {
     expect(jobs.headers['strict-transport-security']).toBe(health.headers['strict-transport-security']);
     expect(jobs.headers['x-content-type-options']).toBe('nosniff');
     expect(jobs.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(jobs.headers['content-security-policy']).toBe(health.headers['content-security-policy']);
+    expect(jobs.headers['referrer-policy']).toBe('no-referrer');
+    expect(jobs.headers['cross-origin-embedder-policy']).toBe('require-corp');
+    expect(jobs.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(jobs.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(jobs.headers['permissions-policy']).toBe(health.headers['permissions-policy']);
+    expect(jobs.headers['x-permitted-cross-domain-policies']).toBe('none');
     expect(jobs.headers['x-powered-by']).toBeUndefined();
   });
 

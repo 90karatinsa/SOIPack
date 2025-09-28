@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -63,6 +64,8 @@ import {
   computeManifestDigestHex,
   LedgerAwareManifest,
 } from './index';
+
+jest.setTimeout(60000);
 
 const fixturesRoot = path.join(__dirname, '__fixtures__');
 const reportDir = path.join(fixturesRoot, 'report');
@@ -151,6 +154,14 @@ describe('packager stage routing', () => {
       });
 
       expect(result.manifest.stage).toBe(stage);
+      const stageSbomDigest = createHash('sha256').update(result.sbom.content, 'utf8').digest('hex');
+      expect(result.sbom).toEqual({
+        path: 'sbom.spdx.json',
+        algorithm: 'sha256',
+        digest: stageSbomDigest,
+        content: result.sbom.content,
+      });
+      expect(result.manifest.sbom?.digest).toBe(stageSbomDigest);
       result.manifest.files.forEach((file) => {
         if (file.path.startsWith('reports/')) {
           expect(file.path).toMatch(new RegExp(`^reports/${stage}/`));

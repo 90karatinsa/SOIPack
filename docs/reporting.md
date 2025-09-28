@@ -12,6 +12,7 @@ SOIPack raporlama paketi; uyum matrisi, izlenebilirlik ve kapsam çıktıları i
 - **Kapsam Özeti** – Statement, dallanma ve MC/DC toplamları ile dosya bazlı kapsam tablosu.
 - **Kapsam Uyarıları** – MC/DC veya karar metrikleri eksik olduğunda gösterilen okunaklı uyarı listesi.
 - **Risk Profili** – Kapsam boşlukları, test hataları, statik analiz bulguları ve audit bayraklarının ağırlıklı risk skoru.
+- **Bağımsızlık Uyarıları** – Zorunlu veya önerilen bağımsız doğrulama gerektiren hedeflerdeki eksik kanıtları rozetlerle öne çıkarır.
 - **Signoff Zaman Çizelgesi** – Workspace belgeleri için kimlerin signoff talep edip onayladığını gösteren kronolojik akış.
 - **Değişiklik Talepleri Birikimi** – Jira üzerinden takip edilen DO-178C değişiklik isteklerinin durumu, atanan kişi ve ekleriyle birlikte listelenir.
 - **Ledger Attestasyon Özeti** – Kanıt defteri attestation farkları sayesinde hangi kanıtların eklendiği ya da çıkarıldığı hızlıca gözlemlenir.
@@ -23,6 +24,10 @@ Rapor başlığında versiyon, manifest kimliği ve otomatik olarak `YYYY-MM-DD 
 Uyum matrisi bölümü artık DO-178C Stage of Involvement (SOI) aşamalarını ayrı sekmeler olarak sunar. `@soipack/engine` tarafında `buildComplianceMatrix({ stage })` parametresi ile oluşturulan bu görünüm, JSON çıktısında `stages` dizisi olarak döner ve her kayıt seçili aşamadaki hedef kimliklerini ve özet sayılarını içerir. HTML/PDF şablonu bu diziyi kullanarak "Tüm Stajlar" sekmesi ile birlikte SOI-1…SOI-4 başlıklarını üretir; her sekmede yalnızca ilgili hedeflerin kanıt durumu listelenir.
 
 Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden planlama (SOI-1), geliştirme (SOI-2) ve doğrulama (SOI-3) hedeflerine hızla geçiş yapabilir. UI uygulaması da aynı `stages` dizisini kullanır; ComplianceMatrix bileşeni seçilen aşamayı yerel depolamada saklayarak kullanıcılar sekmeler arasında geçse dahi tercih edilen SOI görünümünü korur. Böylece SOIPack raporları hem denetim masasında hem de demo arayüzünde aşama bazlı izlenebilirliği tutarlı şekilde gösterir.
+
+### Bağımsızlık göstergeleri
+
+Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen ayrı bir bölüm içerir. Rapordaki “Bağımsızlık Uyarıları” bloğunda toplam etkilenen hedef sayısı, kısmi/eksik durumlar ve hedeflerin zorunlu/önerilen bağımsızlık seviyeleri rozetlerle vurgulanır. Kırmızı (`Zorunlu`) rozetler sertifikasyon için kritik eksiklikleri, sarı (`Önerilen`) rozetler ise bağımsız inceleme bekleyen alanları gösterir. Tablo satırlarında eksik kanıt türleri (ör. `Gözden Geçirme`, `MC/DC Kapsamı`) ayrı rozetler halinde listelenir ve denetçilerin hangi kanıtların bağımsız gözden geçirme gerektirdiğini hızlıca görmesini sağlar. Eğer bağımsızlık eksikliği kalmamışsa bölüm “Bağımsızlık gerektiren hedeflerde eksik bulunamadı.” mesajıyla kapanır.
 
 ## İzlenebilirlik matrisi CSV çıktısı
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import http from 'http';
 import https from 'https';
@@ -81,6 +81,10 @@ import {
   RequirementTrace,
   TraceEngine,
   generateComplianceSnapshot,
+  simulateComplianceRisk,
+  type ComplianceRiskSimulationResult,
+  type RiskSimulationCoverageSample,
+  type RiskSimulationTestSample,
 } from '@soipack/engine';
 import {
   buildManifest,
@@ -225,6 +229,13 @@ const writeJsonFile = async (filePath: string, data: unknown): Promise<void> => 
 const readJsonFile = async <T>(filePath: string): Promise<T> => {
   const content = await fsPromises.readFile(filePath, 'utf8');
   return JSON.parse(content) as T;
+};
+
+const clamp = (value: number, min: number, max: number): number => {
+  if (Number.isNaN(value)) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
 };
 
 const uniqueTraceLinks = (links: TraceLink[]): TraceLink[] => {
@@ -3261,6 +3272,226 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   };
 };
 
+interface RiskSimulationMetricsFile {
+  coverageHistory?: unknown;
+  testHistory?: unknown;
+}
+
+const normalizeNumericField = (
+  value: unknown,
+  message: string,
+): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  throw new Error(message);
+};
+
+const normalizeCoverageHistory = (
+  value: unknown,
+  sourcePath: string,
+): RiskSimulationCoverageSample[] => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${sourcePath} dosyasında coverageHistory alanı dizi olmalıdır.`,
+    );
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(
+        `${sourcePath} coverageHistory[${index}] kaydı nesne olmalıdır.`,
+      );
+    }
+    const sample = entry as Record<string, unknown>;
+    const timestamp = sample.timestamp;
+    if (typeof timestamp !== 'string' || !timestamp.trim()) {
+      throw new Error(
+        `${sourcePath} coverageHistory[${index}].timestamp değeri string olmalıdır.`,
+      );
+    }
+    const covered = normalizeNumericField(
+      sample.covered,
+      `${sourcePath} coverageHistory[${index}].covered sayısal olmalıdır.`,
+    );
+    const total = normalizeNumericField(
+      sample.total,
+      `${sourcePath} coverageHistory[${index}].total sayısal olmalıdır.`,
+    );
+    return {
+      timestamp,
+      covered,
+      total,
+    } satisfies RiskSimulationCoverageSample;
+  });
+};
+
+const normalizeTestHistory = (
+  value: unknown,
+  sourcePath: string,
+): RiskSimulationTestSample[] => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${sourcePath} dosyasında testHistory alanı dizi olmalıdır.`,
+    );
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(
+        `${sourcePath} testHistory[${index}] kaydı nesne olmalıdır.`,
+      );
+    }
+    const sample = entry as Record<string, unknown>;
+    const timestamp = sample.timestamp;
+    if (typeof timestamp !== 'string' || !timestamp.trim()) {
+      throw new Error(
+        `${sourcePath} testHistory[${index}].timestamp değeri string olmalıdır.`,
+      );
+    }
+    const passed = normalizeNumericField(
+      sample.passed,
+      `${sourcePath} testHistory[${index}].passed sayısal olmalıdır.`,
+    );
+    const failed = normalizeNumericField(
+      sample.failed,
+      `${sourcePath} testHistory[${index}].failed sayısal olmalıdır.`,
+    );
+    const quarantinedRaw = sample.quarantined;
+    const quarantined =
+      quarantinedRaw === undefined
+        ? undefined
+        : normalizeNumericField(
+            quarantinedRaw,
+            `${sourcePath} testHistory[${index}].quarantined sayısal olmalıdır.`,
+          );
+    return {
+      timestamp,
+      passed,
+      failed,
+      quarantined,
+    } satisfies RiskSimulationTestSample;
+  });
+};
+
+const loadRiskSimulationMetrics = async (
+  metricsPath: string,
+): Promise<{
+  coverageHistory: RiskSimulationCoverageSample[];
+  testHistory: RiskSimulationTestSample[];
+}> => {
+  let raw: RiskSimulationMetricsFile;
+  try {
+    raw = await readJsonFile<RiskSimulationMetricsFile>(metricsPath);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Risk metrik dosyası okunamadı: ${reason}`);
+  }
+  return {
+    coverageHistory: normalizeCoverageHistory(raw.coverageHistory, metricsPath),
+    testHistory: normalizeTestHistory(raw.testHistory, metricsPath),
+  };
+};
+
+const normalizeIterations = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const numeric = normalizeNumericField(value, '--iterations değeri sayısal olmalıdır.');
+  return clamp(Math.floor(numeric), 1, 10000);
+};
+
+const normalizeSeed = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const numeric = normalizeNumericField(value, '--seed değeri sayısal olmalıdır.');
+  return Math.trunc(numeric);
+};
+
+const normalizeCoverageLift = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const numeric = normalizeNumericField(value, '--coverage-lift değeri sayısal olmalıdır.');
+  return clamp(numeric, -100, 100);
+};
+
+const applyCoverageLift = (
+  history: RiskSimulationCoverageSample[],
+  coverageLift: number | undefined,
+): RiskSimulationCoverageSample[] => {
+  if (!history.length) {
+    return [];
+  }
+  const adjusted = history.map((sample) => ({ ...sample }));
+  if (coverageLift === undefined || coverageLift === 0) {
+    return adjusted;
+  }
+  const ratioLift = coverageLift / 100;
+  const lastIndex = adjusted.length - 1;
+  const lastSample = adjusted[lastIndex];
+  if (lastSample.total <= 0) {
+    return adjusted;
+  }
+  const baseRatio = clamp(lastSample.covered / lastSample.total, 0, 1);
+  const adjustedRatio = clamp(baseRatio + ratioLift, 0, 1);
+  const adjustedCovered = Math.round(adjustedRatio * lastSample.total);
+  adjusted[lastIndex] = {
+    ...lastSample,
+    covered: clamp(adjustedCovered, 0, lastSample.total),
+  };
+  return adjusted;
+};
+
+export interface RiskSimulateOptions {
+  metricsPath: string;
+  iterations?: number;
+  seed?: number;
+  coverageLift?: number;
+}
+
+export interface RiskSimulateResult {
+  metricsPath: string;
+  simulation: ComplianceRiskSimulationResult;
+  coverageHistory: RiskSimulationCoverageSample[];
+  testHistory: RiskSimulationTestSample[];
+}
+
+export const runRiskSimulate = async (
+  options: RiskSimulateOptions,
+): Promise<RiskSimulateResult> => {
+  const metricsPath = path.resolve(options.metricsPath);
+  const { coverageHistory, testHistory } = await loadRiskSimulationMetrics(metricsPath);
+  const coverageLift = normalizeCoverageLift(options.coverageLift);
+  const iterations = normalizeIterations(options.iterations);
+  const seed = normalizeSeed(options.seed);
+  const adjustedCoverage = applyCoverageLift(coverageHistory, coverageLift);
+  const simulation = simulateComplianceRisk({
+    coverageHistory: adjustedCoverage,
+    testHistory,
+    iterations,
+    seed,
+  });
+
+  return {
+    metricsPath,
+    simulation,
+    coverageHistory: adjustedCoverage,
+    testHistory: testHistory.map((sample) => ({ ...sample })),
+  };
+};
+
 export interface PackLedgerOptions {
   path: string;
   signerKey?: string;
@@ -3294,7 +3525,117 @@ export interface PackResult {
   ledgerEntry?: LedgerEntry;
   cmsSignaturePath?: string;
   cmsSignatureSha256?: string;
+  sbomPath: string;
+  sbomSha256: string;
 }
+
+interface ManifestSbomMetadata {
+  path: string;
+  algorithm: 'sha256';
+  digest: string;
+}
+
+type ManifestWithOptionalSbom = LedgerAwareManifest & {
+  sbom?: ManifestSbomMetadata | null;
+};
+
+interface SpdxFileEntry {
+  SPDXID: string;
+  fileName: string;
+  checksums: Array<{ algorithm: 'SHA256'; checksumValue: string }>;
+}
+
+interface SpdxDocument {
+  spdxVersion: 'SPDX-2.3';
+  dataLicense: 'CC0-1.0';
+  SPDXID: 'SPDXRef-DOCUMENT';
+  name: string;
+  documentNamespace: string;
+  creationInfo: {
+    created: string;
+    creators: string[];
+  };
+  packages: Array<{
+    SPDXID: string;
+    name: string;
+    downloadLocation: 'NOASSERTION';
+    filesAnalyzed: boolean;
+    hasFiles: string[];
+    licenseConcluded: 'NOASSERTION';
+    licenseDeclared: 'NOASSERTION';
+    originator: string;
+  }>;
+  files: SpdxFileEntry[];
+  relationships: Array<{
+    spdxElementId: string;
+    relationshipType: 'DESCRIBES' | 'CONTAINS';
+    relatedSpdxElement: string;
+  }>;
+}
+
+const SBOM_FILENAME = 'sbom.spdx.json';
+
+const generateSpdxSbom = ({
+  files,
+  toolVersion,
+  timestamp,
+  packageLabel,
+}: {
+  files: Array<{ manifestPath: string; sha256: string }>;
+  toolVersion: string;
+  timestamp: Date;
+  packageLabel: string;
+}): SpdxDocument => {
+  const fileEntries: SpdxFileEntry[] = files.map((file, index) => ({
+    SPDXID: `SPDXRef-File-${index + 1}`,
+    fileName: file.manifestPath,
+    checksums: [
+      {
+        algorithm: 'SHA256',
+        checksumValue: file.sha256,
+      },
+    ],
+  }));
+
+  const packageId = 'SPDXRef-Package-SOIPack';
+
+  return {
+    spdxVersion: 'SPDX-2.3',
+    dataLicense: 'CC0-1.0',
+    SPDXID: 'SPDXRef-DOCUMENT',
+    name: packageLabel,
+    documentNamespace: `urn:uuid:${randomUUID()}`,
+    creationInfo: {
+      created: timestamp.toISOString(),
+      creators: [`Tool: SOIPack Packager ${toolVersion}`],
+    },
+    packages: [
+      {
+        SPDXID: packageId,
+        name: packageLabel,
+        downloadLocation: 'NOASSERTION',
+        filesAnalyzed: true,
+        hasFiles: fileEntries.map((entry) => entry.SPDXID),
+        licenseConcluded: 'NOASSERTION',
+        licenseDeclared: 'NOASSERTION',
+        originator: 'Organization: SOIPack',
+      },
+    ],
+    files: fileEntries,
+    relationships: [
+      {
+        spdxElementId: 'SPDXRef-DOCUMENT',
+        relationshipType: 'DESCRIBES',
+        relatedSpdxElement: packageId,
+      },
+      ...fileEntries.map((entry) => ({
+        spdxElementId: packageId,
+        relationshipType: 'CONTAINS' as const,
+        relatedSpdxElement: entry.SPDXID,
+      })),
+    ],
+  };
+};
 
 const createArchive = async (
   files: Array<{ absolutePath: string; manifestPath: string }>,
@@ -3302,6 +3643,7 @@ const createArchive = async (
   manifestContent: string,
   signature?: string,
   cmsSignature?: string,
+  sbom?: { absolutePath: string; archivePath: string },
 ): Promise<void> => {
   await ensureDirectory(path.dirname(outputPath));
   const zip = new ZipFile();
@@ -3330,6 +3672,10 @@ const createArchive = async (
     const normalizedCms = cmsSignature.endsWith('\n') ? cmsSignature : `${cmsSignature}\n`;
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
     zip.addBuffer(Buffer.from(normalizedCms, 'utf8'), 'manifest.cms', options);
+  }
+  if (sbom) {
+    const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
+    zip.addFile(sbom.absolutePath, sbom.archivePath, options);
   }
   zip.end();
 
@@ -3413,10 +3759,28 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     evidenceDirs,
     toolVersion: packageInfo.version,
     now,
+    stage: options.stage,
   });
 
-  let manifest: LedgerAwareManifest = baseManifest;
-  let manifestDigest = computeManifestDigestHex(baseManifest);
+  const normalizedPackageName =
+    options.packageName !== undefined ? normalizePackageName(options.packageName) : undefined;
+  const packageLabelForSbom = normalizedPackageName ?? 'soipack-package.zip';
+  const sbomDocument = generateSpdxSbom({
+    files: files.map((file) => ({ manifestPath: file.manifestPath, sha256: file.sha256 })),
+    toolVersion: packageInfo.version,
+    timestamp: now,
+    packageLabel: packageLabelForSbom,
+  });
+  const serializedSbom = JSON.stringify(sbomDocument, null, 2);
+  const sbomSha256 = createHash('sha256').update(serializedSbom, 'utf8').digest('hex');
+  const sbomMetadata: ManifestSbomMetadata = {
+    path: SBOM_FILENAME,
+    algorithm: 'sha256',
+    digest: sbomSha256,
+  };
+
+  let manifest: ManifestWithOptionalSbom = { ...baseManifest, sbom: sbomMetadata };
+  let manifestDigest = computeManifestDigestHex(manifest);
   let ledgerPath: string | undefined;
   let updatedLedger: Ledger | undefined;
   let ledgerEntry: LedgerEntry | undefined;
@@ -3458,7 +3822,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
       ...(signer ? { signer } : {}),
     };
 
-    const manifestDigestForLedger = computeManifestDigestHex(baseManifest);
+    const manifestDigestForLedger = computeManifestDigestHex(manifest);
     const appended = appendEntry(
       ledger,
       {
@@ -3471,8 +3835,8 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
 
     const entry = appended.entries[appended.entries.length - 1];
     manifest = {
-      ...baseManifest,
-      files: baseManifest.files.map((file) => ({ ...file })),
+      ...manifest,
+      files: manifest.files.map((file) => ({ ...file })),
       ledger: {
         root: entry.ledgerRoot,
         previousRoot: entry.previousRoot,
@@ -3522,6 +3886,9 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const signaturePath = path.join(outputDir, 'manifest.sig');
   await fsPromises.writeFile(signaturePath, `${signature}\n`, 'utf8');
 
+  const sbomPath = path.join(outputDir, SBOM_FILENAME);
+  await fsPromises.writeFile(sbomPath, serializedSbom, 'utf8');
+
   let cmsSignaturePath: string | undefined;
   let cmsSignatureSha256: string | undefined;
   const cmsSignaturePem = signatureBundle.cmsSignature?.pem;
@@ -3541,10 +3908,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     await writeJsonFile(ledgerPath, updatedLedger);
   }
 
-  const archiveName =
-    options.packageName !== undefined
-      ? normalizePackageName(options.packageName)
-      : `soipack-${manifestId}.zip`;
+  const archiveName = normalizedPackageName ?? `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
   await createArchive(
     files,
@@ -3552,6 +3916,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     manifestSerialized,
     `${signature}\n`,
     normalizedCmsSignature,
+    { absolutePath: sbomPath, archivePath: SBOM_FILENAME },
   );
 
   return {
@@ -3564,6 +3929,8 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     ledgerEntry,
     cmsSignaturePath,
     cmsSignatureSha256,
+    sbomPath,
+    sbomSha256,
   };
 };
 
@@ -3764,6 +4131,8 @@ export interface PackagePipelineResult extends IngestPipelineResult {
   ledgerEntry?: LedgerEntry;
   cmsSignaturePath?: string;
   cmsSignatureSha256?: string;
+  sbomPath: string;
+  sbomSha256: string;
 }
 
 export const runIngestAndPackage = async (
@@ -3792,6 +4161,8 @@ export const runIngestAndPackage = async (
     ledgerEntry: packResult.ledgerEntry,
     cmsSignaturePath: packResult.cmsSignaturePath,
     cmsSignatureSha256: packResult.cmsSignatureSha256,
+    sbomPath: packResult.sbomPath,
+    sbomSha256: packResult.sbomSha256,
   };
 };
 
@@ -3800,12 +4171,31 @@ export interface VerifyOptions {
   signaturePath: string;
   publicKeyPath: string;
   packagePath?: string;
+  sbomPath?: string;
+}
+
+interface VerifySbomFileCheck {
+  path: string;
+  digest: string;
+  matches: boolean;
+}
+
+interface VerifySbomPackageCheck {
+  digest: string;
+  matches: boolean;
 }
 
 export interface VerifyResult {
   isValid: boolean;
   manifestId: string;
   packageIssues: string[];
+  sbom?: {
+    path: string;
+    algorithm: string;
+    expectedDigest: string;
+    file?: VerifySbomFileCheck;
+    package?: VerifySbomPackageCheck;
+  };
 }
 
 const readUtf8File = async (filePath: string, errorMessage: string): Promise<string> => {
@@ -3921,8 +4311,8 @@ const readEntryData = (archive: Buffer, entry: ZipEntryMetadata): Buffer => {
 
 const verifyPackageAgainstManifest = async (
   packagePath: string,
-  manifest: Manifest,
-): Promise<string[]> => {
+  manifest: ManifestWithOptionalSbom,
+): Promise<{ issues: string[]; sbomChecked: boolean; sbomDigest?: string }> => {
   const expected = new Map<string, string>();
   for (const file of manifest.files) {
     expected.set(normalizeArchivePath(file.path), file.sha256.toLowerCase());
@@ -3932,6 +4322,8 @@ const verifyPackageAgainstManifest = async (
   const entries = readCentralDirectoryEntries(archive);
 
   const issues: string[] = [];
+  let sbomChecked = false;
+  let sbomDigest: string | undefined;
 
   for (const [filePath, expectedHash] of expected.entries()) {
     const entry = entries.get(filePath);
@@ -3952,7 +4344,31 @@ const verifyPackageAgainstManifest = async (
     }
   }
 
-  return issues;
+  const sbomMetadata = manifest.sbom ?? undefined;
+  if (sbomMetadata) {
+    const normalizedPath = normalizeArchivePath(sbomMetadata.path);
+    const entry = entries.get(normalizedPath);
+    if (!entry) {
+      issues.push(`SBOM dosyası paket içinde bulunamadı: ${sbomMetadata.path}`);
+    } else {
+      sbomChecked = true;
+      try {
+        const data = readEntryData(archive, entry);
+        const digest = createHash('sha256').update(data).digest('hex');
+        sbomDigest = digest;
+        if (digest !== sbomMetadata.digest.toLowerCase()) {
+          issues.push(
+            `SBOM karması uyuşmuyor: ${sbomMetadata.path} (beklenen ${sbomMetadata.digest.toLowerCase()}, bulunan ${digest})`,
+          );
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        issues.push(`SBOM dosyası okunamadı: ${sbomMetadata.path} (${reason})`);
+      }
+    }
+  }
+
+  return { issues, sbomChecked, sbomDigest };
 };
 
 export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> => {
@@ -3981,10 +4397,12 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
     'Doğrulama anahtarı dosyası okunamadı (sertifika veya kamu anahtarı).',
   );
 
+  const manifestWithSbom = manifest as ManifestWithOptionalSbom;
   const manifestId = createHash('sha256').update(manifestRaw).digest('hex').slice(0, 12);
-  const isValid = verifyManifestSignature(manifest, signature, verifierPem);
+  const isValid = verifyManifestSignature(manifestWithSbom, signature, verifierPem);
 
   let packageIssues: string[] = [];
+  let packageSbomCheck: { checked: boolean; digest?: string } = { checked: false };
   if (options.packagePath) {
     const packagePath = path.resolve(options.packagePath);
     let stats: fs.Stats;
@@ -4000,14 +4418,53 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
     }
 
     try {
-      packageIssues = await verifyPackageAgainstManifest(packagePath, manifest);
+      const packageResult = await verifyPackageAgainstManifest(packagePath, manifestWithSbom);
+      packageIssues = packageResult.issues;
+      packageSbomCheck = { checked: packageResult.sbomChecked, digest: packageResult.sbomDigest };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(`Paket içeriği doğrulanamadı: ${reason}`);
     }
   }
 
-  return { isValid, manifestId, packageIssues };
+  const sbomMetadata = manifestWithSbom.sbom ?? undefined;
+  let sbomResult: VerifyResult['sbom'];
+  if (options.sbomPath && !sbomMetadata) {
+    throw new Error('Manifest SBOM metaverisi içermiyor ancak --sbom yolu sağlandı.');
+  }
+
+  if (sbomMetadata) {
+    const expectedDigest = sbomMetadata.digest.toLowerCase();
+    let fileCheck: VerifySbomFileCheck | undefined;
+    if (options.sbomPath) {
+      const sbomPath = path.resolve(options.sbomPath);
+      const sbomContent = await fsPromises.readFile(sbomPath);
+      const digest = createHash('sha256').update(sbomContent).digest('hex');
+      fileCheck = {
+        path: sbomPath,
+        digest,
+        matches: digest === expectedDigest,
+      };
+    }
+
+    let packageCheck: VerifySbomPackageCheck | undefined;
+    if (packageSbomCheck.checked && packageSbomCheck.digest) {
+      packageCheck = {
+        digest: packageSbomCheck.digest,
+        matches: packageSbomCheck.digest === expectedDigest,
+      };
+    }
+
+    sbomResult = {
+      path: sbomMetadata.path,
+      algorithm: sbomMetadata.algorithm,
+      expectedDigest,
+      ...(fileCheck ? { file: fileCheck } : {}),
+      ...(packageCheck ? { package: packageCheck } : {}),
+    };
+  }
+
+  return { isValid, manifestId, packageIssues, ...(sbomResult ? { sbom: sbomResult } : {}) };
 };
 
 interface RunConfig {
@@ -4128,11 +4585,21 @@ export const runPipeline = async (
     { complianceHtml: reportResult.complianceHtml, command: 'run' },
     'Raporlar üretildi.',
   );
-  logger?.info({ manifestPath: packResult.manifestPath, command: 'run' }, 'Manifest kaydedildi.');
+  logger?.info(
+    {
+      manifestPath: packResult.manifestPath,
+      sbomPath: packResult.sbomPath,
+      sbomDigest: packResult.sbomSha256,
+      command: 'run',
+    },
+    'Manifest kaydedildi.',
+  );
   logger?.info(
     {
       archivePath: packResult.archivePath,
       manifestId: packResult.manifestId,
+      sbomPath: packResult.sbomPath,
+      sbomDigest: packResult.sbomSha256,
       command: 'run',
     },
     'Paket hazırlandı.',
@@ -5126,9 +5593,12 @@ if (require.main === module) {
               archivePath: result.archivePath,
               manifestPath: result.manifestPath,
               manifestId: result.manifestId,
+              sbomPath: result.sbomPath,
+              sbomDigest: result.sbomSha256,
             },
             'Paket oluşturuldu.',
           );
+          console.log(`SBOM ${result.sbomPath} dosyasına yazıldı (sha256=${result.sbomSha256}).`);
           process.exitCode = exitCodes.success;
         } catch (error) {
           logCliError(logger, error, context);
@@ -5343,12 +5813,15 @@ if (require.main === module) {
               archivePath: result.archivePath,
               manifestPath: result.manifestPath,
               manifestId: result.manifestId,
+              sbomPath: result.sbomPath,
+              sbomDigest: result.sbomSha256,
             },
             'Paket oluşturma tamamlandı.',
           );
 
           console.log(`Paket ${result.archivePath} olarak kaydedildi.`);
           console.log(`Manifest ${result.manifestPath} dosyasına yazıldı.`);
+          console.log(`SBOM ${result.sbomPath} dosyasına yazıldı (sha256=${result.sbomSha256}).`);
           process.exitCode = result.analyzeExitCode;
         } catch (error) {
           logCliError(logger, error, context);
@@ -5379,6 +5852,10 @@ if (require.main === module) {
           .option('package', {
             describe: 'Manifestte listelenen dosyaları içeren ZIP arşivi.',
             type: 'string',
+          })
+          .option('sbom', {
+            describe: 'Manifestte referans verilen SBOM dosyası.',
+            type: 'string',
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -5386,11 +5863,13 @@ if (require.main === module) {
         const signatureOption = Array.isArray(argv.signature) ? argv.signature[0] : argv.signature;
         const publicKeyOption = Array.isArray(argv.publicKey) ? argv.publicKey[0] : argv.publicKey;
         const packageOption = Array.isArray(argv.package) ? argv.package[0] : argv.package;
+        const sbomOption = Array.isArray(argv.sbom) ? argv.sbom[0] : argv.sbom;
 
         const manifestPath = path.resolve(manifestOption as string);
         const signaturePath = path.resolve(signatureOption as string);
         const publicKeyPath = path.resolve(publicKeyOption as string);
         const packagePath = packageOption ? path.resolve(String(packageOption)) : undefined;
+        const sbomPath = sbomOption ? path.resolve(String(sbomOption)) : undefined;
 
         const context = {
           command: 'verify',
@@ -5398,6 +5877,7 @@ if (require.main === module) {
           signaturePath,
           publicKeyPath,
           packagePath,
+          sbomPath,
         };
 
         try {
@@ -5406,10 +5886,14 @@ if (require.main === module) {
             signaturePath,
             publicKeyPath,
             packagePath,
+            sbomPath,
           });
           const hasPackageIssues = result.packageIssues.length > 0;
+          const sbomFileMismatch = Boolean(result.sbom?.file && !result.sbom.file.matches);
+          const sbomPackageMismatch = Boolean(result.sbom?.package && !result.sbom.package.matches);
+          const hasSbomMismatch = sbomFileMismatch || sbomPackageMismatch;
 
-          if (hasPackageIssues || !result.isValid) {
+          if (hasPackageIssues || !result.isValid || hasSbomMismatch) {
             if (hasPackageIssues) {
               logger.error(
                 { ...context, manifestId: result.manifestId, issues: result.packageIssues },
@@ -5418,6 +5902,38 @@ if (require.main === module) {
               console.error(`Paket doğrulaması başarısız oldu (ID: ${result.manifestId}).`);
               for (const issue of result.packageIssues) {
                 console.error(` - ${issue}`);
+              }
+            }
+
+            if (result.sbom) {
+              if (sbomFileMismatch && result.sbom.file) {
+                logger.error(
+                  {
+                    ...context,
+                    manifestId: result.manifestId,
+                    expectedDigest: result.sbom.expectedDigest,
+                    actualDigest: result.sbom.file.digest,
+                    sbomPath: result.sbom.file.path,
+                  },
+                  'SBOM dosya karması eşleşmiyor.',
+                );
+                console.error(
+                  `SBOM doğrulaması başarısız: ${result.sbom.file.path} (beklenen ${result.sbom.expectedDigest}, bulunan ${result.sbom.file.digest}).`,
+                );
+              }
+              if (sbomPackageMismatch && result.sbom.package) {
+                logger.error(
+                  {
+                    ...context,
+                    manifestId: result.manifestId,
+                    expectedDigest: result.sbom.expectedDigest,
+                    packageDigest: result.sbom.package.digest,
+                  },
+                  'Paket içindeki SBOM karması eşleşmiyor.',
+                );
+                console.error(
+                  `Paket SBOM doğrulaması başarısız: beklenen ${result.sbom.expectedDigest}, bulunan ${result.sbom.package.digest}.`,
+                );
               }
             }
 
@@ -5436,6 +5952,21 @@ if (require.main === module) {
               'Manifest imzası doğrulandı.',
             );
             console.log(`Manifest imzası doğrulandı (ID: ${result.manifestId}).`);
+            if (result.sbom) {
+              console.log(
+                `SBOM doğrulaması: ${result.sbom.path} (beklenen ${result.sbom.expectedDigest}).`,
+              );
+              if (result.sbom.file) {
+                console.log(
+                  ` - Dosya karması: ${result.sbom.file.digest} (${result.sbom.file.matches ? 'eşleşti' : 'eşleşmedi'})`,
+                );
+              }
+              if (result.sbom.package) {
+                console.log(
+                  ` - Paket karması: ${result.sbom.package.digest} (${result.sbom.package.matches ? 'eşleşti' : 'eşleşmedi'})`,
+                );
+              }
+            }
             process.exitCode = exitCodes.success;
           }
         } catch (error) {
@@ -5444,6 +5975,129 @@ if (require.main === module) {
           console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
+      },
+    )
+    .command(
+      'risk',
+      'Risk simülasyonu ve tahmin araçları.',
+      (riskYargs) =>
+        riskYargs
+          .command(
+            'simulate',
+            'Kapsam ve test geçmişinden Monte Carlo uyum riski hesaplar.',
+            (y) =>
+              y
+                .option('metrics', {
+                  alias: 'm',
+                  describe: 'Kapsam ve test geçmişini içeren JSON dosyası.',
+                  type: 'string',
+                  demandOption: true,
+                })
+                .option('iterations', {
+                  describe: 'Monte Carlo iterasyon sayısı (varsayılan 1000, maksimum 10000).',
+                  type: 'number',
+                })
+                .option('seed', {
+                  describe: 'Deterministik sonuçlar için RNG tohumu.',
+                  type: 'number',
+                })
+                .option('coverage-lift', {
+                  describe: 'Son kapsama gözlemine uygulanacak yüzde puan artışı/azalışı.',
+                  type: 'number',
+                })
+                .option('json', {
+                  describe: 'Çıktıyı JSON formatında yazdırır.',
+                  type: 'boolean',
+                  default: false,
+                })
+                .option('output', {
+                  alias: 'o',
+                  describe: 'Simülasyon özetini JSON olarak kaydedilecek dosya yolu.',
+                  type: 'string',
+                }),
+            async (argv) => {
+              const logger = getLogger(argv);
+              const licensePath = getLicensePath(argv);
+              const metricsOption = Array.isArray(argv.metrics) ? argv.metrics[0] : argv.metrics;
+              const iterationsOption = Array.isArray(argv.iterations)
+                ? argv.iterations[0]
+                : argv.iterations;
+              const seedOption = Array.isArray(argv.seed) ? argv.seed[0] : argv.seed;
+              const coverageLiftOption = Array.isArray(argv['coverage-lift'])
+                ? argv['coverage-lift'][0]
+                : argv['coverage-lift'];
+              const outputOption = Array.isArray(argv.output) ? argv.output[0] : argv.output;
+              const jsonOutput = Boolean(argv.json);
+
+              const metricsPath = path.resolve(String(metricsOption));
+              const context = {
+                command: 'risk simulate',
+                licensePath,
+                metricsPath,
+                iterations: iterationsOption,
+                seed: seedOption,
+                coverageLift: coverageLiftOption,
+                output: outputOption,
+                jsonOutput,
+              };
+
+              try {
+                const license = await verifyLicenseFile(licensePath);
+                logLicenseValidated(logger, license, context);
+
+                const result = await runRiskSimulate({
+                  metricsPath,
+                  iterations: iterationsOption as number | undefined,
+                  seed: seedOption as number | undefined,
+                  coverageLift: coverageLiftOption as number | undefined,
+                });
+
+                if (outputOption) {
+                  const outputPath = path.resolve(String(outputOption));
+                  await writeJsonFile(outputPath, result.simulation);
+                }
+
+                if (jsonOutput) {
+                  console.log(`${JSON.stringify(result.simulation, null, 2)}`);
+                } else {
+                  console.log(
+                    `Monte Carlo uyum riski (iterasyon: ${result.simulation.iterations}, seed: ${result.simulation.seed}).`,
+                  );
+                  console.log(
+                    `Temel kapsama: ${result.simulation.baseline.coverage}% | Test hata oranı: ${result.simulation.baseline.failureRate}%.`,
+                  );
+                  console.log(
+                    `Ortalama risk: ${result.simulation.mean}% (std sapma ${result.simulation.stddev}%).`,
+                  );
+                  console.log('Yüzdelikler:');
+                  console.log(`  P50: ${result.simulation.percentiles.p50}%`);
+                  console.log(`  P90: ${result.simulation.percentiles.p90}%`);
+                  console.log(`  P95: ${result.simulation.percentiles.p95}%`);
+                  console.log(`  P99: ${result.simulation.percentiles.p99}%`);
+                  console.log(
+                    `Aralık: min ${result.simulation.min}% · max ${result.simulation.max}% (toplam ${result.simulation.iterations} örnek).`,
+                  );
+                }
+
+                logger.info(
+                  {
+                    ...context,
+                    mean: result.simulation.mean,
+                    stddev: result.simulation.stddev,
+                    baselineCoverage: result.simulation.baseline.coverage,
+                    baselineFailure: result.simulation.baseline.failureRate,
+                  },
+                  'Uyum riski simülasyonu tamamlandı.',
+                );
+                process.exitCode = exitCodes.success;
+              } catch (error) {
+                logCliError(logger, error, context);
+                process.exitCode = exitCodes.error;
+              }
+            },
+          )
+          .demandCommand(1, 'Risk komutlarından birini seçmelisiniz.')
+          .strict(),
       },
     )
     .command(

@@ -26,6 +26,7 @@ import {
   updateReview,
   updateWorkspaceDocument,
   getManifestProof,
+  fetchComplianceSummary,
 } from './api';
 
 const IMPORT_META_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
@@ -120,6 +121,41 @@ describe('API integrations', () => {
   });
 
   const credentials = { token: 'token', license: 'license' };
+
+  it('fetches compliance summary payloads', async () => {
+    const payload = {
+      computedAt: '2024-10-01T08:00:00Z',
+      latest: {
+        id: 'comp-1',
+        createdAt: '2024-10-01T07:59:00Z',
+        project: 'Demo',
+        level: 'B',
+        generatedAt: '2024-10-01T07:30:00Z',
+        summary: { total: 3, covered: 2, partial: 1, missing: 0 },
+        coverage: { statements: 87.5, functions: 66.1 },
+        gaps: { missingIds: [], partialIds: ['REQ-2'], openObjectiveCount: 1 },
+      },
+    } as const;
+
+    (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: payload }));
+
+    const response = await fetchComplianceSummary(credentials);
+
+    expect(global.fetch).toHaveBeenCalledWith('http://localhost/v1/compliance/summary', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token', 'X-SOIPACK-License': 'license' },
+      signal: undefined,
+    });
+    expect(response).toEqual(payload);
+  });
+
+  it('throws ApiError when compliance summary request fails', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({ ok: false, status: 502, body: { error: { message: 'Upstream down' } } }),
+    );
+
+    await expect(fetchComplianceSummary(credentials)).rejects.toBeInstanceOf(ApiError);
+  });
 
   it('fetches audit logs with query parameters', async () => {
     (global.fetch as jest.Mock).mockResolvedValue(

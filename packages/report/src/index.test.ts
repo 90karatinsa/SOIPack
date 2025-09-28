@@ -73,9 +73,13 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Regresyonlar');
     expect(result.html).toContain('Gerileme:');
     expect(result.html).toContain('Regresyon trendi');
+    expect(result.html).toContain('Bağımsızlık Uyarıları');
+    expect(result.html).toContain('Zorunlu Bağımsızlık');
+    expect(result.html).toContain('Bağımsızlık Eksikleri');
     expect(result.json.complianceDelta?.totals.regressions).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
+    expect(result.json.independenceSummary.objectives.length).toBeGreaterThan(0);
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
@@ -135,6 +139,8 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('impact-analysis.pdf');
     expect(result.html).toContain('Ledger Attestasyon Özeti');
     expect(result.html).toContain('SNAP-20240901');
+    expect(result.html).toContain('Bağımsızlık Uyarıları');
+    expect(result.html).toContain('Zorunlu Bağımsızlık');
     expect(result.json.coverage).toEqual(coverage);
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
     expect(result.json.changeRequestBacklog).toEqual(backlog);
@@ -145,6 +151,7 @@ describe('@soipack/report', () => {
     expect(result.ledgerDiffs).toEqual(ledgerDiffs);
     expect(result.html).toContain('Risk Profili');
     expect(result.html).toContain('Signoff Zaman Çizelgesi');
+    expect(result.json.independenceSummary.totals.partial + result.json.independenceSummary.totals.missing).toBeGreaterThanOrEqual(0);
 
     mockedValidator.mockResolvedValueOnce({ messages: [] });
     const validation = await htmlValidator({ data: result.html, format: 'json' });

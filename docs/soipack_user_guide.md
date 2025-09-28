@@ -30,6 +30,7 @@ SOIPack, gereksinim-test izlenebilirliği, uyumluluk raporlaması ve imzalı da�
 - `release/soi-pack-*.zip` – raporlar, manifest ve imzaları içeren paket arşivi.【F:docs/demo_script.md†L26-L31】
 - `release/manifest.json` ve `release/manifest.sig` – paket bütünlüğünü denetlemek için kullanılan imzalı manifest çifti.【F:docs/demo_script.md†L29-L31】
 - `release/manifest.cms` – CMS/PKCS#7 imzası; zincirli sertifika paketiyle birlikte harici araçlara sağlanır.
+- `release/sbom.spdx.json` – manifestte referanslanan ve paket içeriğinin tamamını listeleyen SPDX 2.3 yazılım malzeme listesi.
 
 ### Pipeline'ı manuel çalıştırma
 Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi kullanırken özelleştirilebilir:
@@ -130,22 +131,51 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --cms-bundle data/certs/cms-test.pem
    ```
 
-   `--cms-bundle` yerine `--cms-cert` + `--cms-key` (ve gerekiyorsa `--cms-chain`) parametreleri kullanılarak CMS imzası için
-   ayrı sertifika ve anahtar dosyaları belirtilebilir. Komut tamamlandığında `release/manifest.cms` dosyası oluşturulur ve CLI,
-   dosyanın SHA-256 karmasını `PackResult.cmsSignatureSha256` alanında raporlar.
+  `--cms-bundle` yerine `--cms-cert` + `--cms-key` (ve gerekiyorsa `--cms-chain`) parametreleri kullanılarak CMS imzası için
+  ayrı sertifika ve anahtar dosyaları belirtilebilir. Komut tamamlandığında manifest ve imzaların yanında `release/sbom.spdx.json`
+  dosyası yazılır; CLI hem SBOM yolunu hem de SHA-256 karmasını çıktıya ekler ve aynı değer manifestteki `sbom.digest` alanına
+  işlenir.
 
 6. **Manifest imzasını ve paket içeriğini doğrulayın**
-   ```bash
-   node packages/cli/dist/index.js verify \
-     --manifest release/manifest.json \
-     --signature release/manifest.sig \
-     --package release/soipack-demo.zip \
-     --public-key data/certs/demo-signing.pub.pem
-   ```
-  Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini de doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır.
+  ```bash
+  node packages/cli/dist/index.js verify \
+    --manifest release/manifest.json \
+    --signature release/manifest.sig \
+    --package release/soipack-demo.zip \
+    --public-key data/certs/demo-signing.pub.pem \
+    --sbom release/sbom.spdx.json
+  ```
+  Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini ve SBOM dosyasının karmasının manifestteki `sbom.digest` değeriyle uyuştuğunu doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar ile SBOM tutarsızlıkları CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır. SBOM dosyası paketin içinde de bulunuyorsa CLI, paket içindeki SBOM karmasını ayrıca raporlar.
 
   CMS imza doğrulaması için `@soipack/packager` kütüphanesindeki `verifyManifestSignatureDetailed` fonksiyonuna `cms.signaturePem`
   ve `cms.certificatePem` alanları verilerek `release/manifest.cms` dosyası kontrol edilebilir.
+
+### Monte Carlo risk simülasyonu
+
+`risk simulate`, kapsama ve test geçmişinden yararlanarak uyum regresyon olasılıklarını Monte Carlo yöntemi ile tahmin eder. Komut
+aşağıdaki JSON yapısını bekler:
+
+```json
+{
+  "coverageHistory": [
+    { "timestamp": "2024-01-01T00:00:00Z", "covered": 820, "total": 1000 },
+    { "timestamp": "2024-02-01T00:00:00Z", "covered": 860, "total": 1000 }
+  ],
+  "testHistory": [
+    { "timestamp": "2024-01-01T00:00:00Z", "passed": 95, "failed": 5 },
+    { "timestamp": "2024-02-01T00:00:00Z", "passed": 97, "failed": 3, "quarantined": 2 }
+  ]
+}
+```
+
+Kapsam kayıtları `covered` ve `total` sayılarını, test kayıtları ise geçmişteki `passed`/`failed` (isteğe bağlı `quarantined`) değerlerini içerir. JSON dosyası hazırlandıktan sonra komut şu şekilde çalıştırılabilir:
+
+```bash
+node packages/cli/dist/index.js --license data/licenses/demo-license.key risk simulate \
+  --metrics metrics/risk.json --iterations 2000 --seed 1337 --coverage-lift 4 --output dist/risk.json
+```
+
+`--iterations` Monte Carlo döngülerinin sayısını (1-10 000 arası) belirlerken `--seed` aynı dağılımları tekrar üretmek için deterministik tohum sağlar. `--coverage-lift` argümanı, en güncel kapsama gözlemine yüzde puan olarak iyileştirme veya düşüş uygulayarak “ne olurdu” senaryolarını test etmeyi sağlar; değer pozitif/negatif olabilir ancak sonuç 0-100 aralığına sıkıştırılır. Komut varsayılan olarak okunabilir bir tablo yazar, `--json` veya `--output` bayrakları ise simülasyon özetini ham JSON olarak yazdırır ya da dosyaya kaydeder.【F:packages/cli/src/index.ts†L3275-L3493】【F:packages/cli/src/index.ts†L5984-L6100】
 
 ### Paket artefaktlarını indirme
 

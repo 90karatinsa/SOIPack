@@ -78,6 +78,10 @@
     gap: 4px;
   }
 
+  .summary-card--accent {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  }
+
   .summary-card strong {
     font-size: 18px;
     font-weight: 600;
@@ -165,6 +169,21 @@
   .badge-critical {
     background: #fee2e2;
     color: #991b1b;
+  }
+
+  .independence-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .independence-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
   }
 
   .status-covered {
@@ -406,57 +425,788 @@
     <header class="report-header">
       <div>
         <h1>Kurumsal Uyum Matrisi</h1>
-        {% if subtitle %}
           <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
-        {% endif %}
-        <p class="report-meta">Kanıt Manifest ID: <strong>{{ manifestId or 'N/A' }}</strong></p>
+        <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>{{ snapshotId or 'N/A' }}</strong>
-          {% if snapshotVersion and snapshotVersion.isFrozen %}
-            <span class="report-meta-flag">Donduruldu</span>
-          {% endif %}
+          Snapshot: <strong>20240201T120000Z-9c8bea0a1885</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
-        {% if git %}
           <div class="git-meta">
             <p class="report-meta">
               Commit:
               <strong>
-                <abbr title="{{ git.hash }}">{{ git.shortHash }}</abbr>
+                <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
               </strong>
-              {% if git.dirty %}
-                <span class="report-meta-flag">Kirli</span>
-              {% endif %}
             </p>
-            {% if git.branches and git.branches.length %}
-              <p class="report-meta">Dallar: {{ git.branches | join(', ') }}</p>
-            {% endif %}
-            {% if git.tags and git.tags.length %}
-              <p class="report-meta">Etiketler: {{ git.tags | join(', ') }}</p>
-            {% endif %}
-            {% if git.remoteOrigins and git.remoteOrigins.length %}
-              <p class="report-meta">Origin: {{ git.remoteOrigins | join(', ') }}</p>
-            {% endif %}
-            {% if git.author or git.formattedDate %}
-              <p class="report-meta">{% if git.author %}Yazar: {{ git.author }}{% if git.formattedDate %} • {% endif %}{% endif %}{% if git.formattedDate %}{{ git.formattedDate }}{% endif %}</p>
-            {% endif %}
-            {% if git.message %}
-              <p class="report-meta">Mesaj: {{ git.message }}</p>
-            {% endif %}
+              <p class="report-meta">Dallar: main</p>
+              <p class="report-meta">Origin: https://example.com/repo.git</p>
+              <p class="report-meta">Yazar: Stage Bot • 2024-03-15 10:00 UTC</p>
+              <p class="report-meta">Mesaj: Implement stage filtering</p>
           </div>
-        {% endif %}
       </div>
       <div class="summary-grid">
-        {% for metric in summaryMetrics %}
           <div class="summary-card">
-            <span>{{ metric.label }}</span>
-            <strong>{{ metric.value }}</strong>
+            <span>Risk Skoru</span>
+            <strong>76.8/100 (Kritik Risk)</strong>
           </div>
-        {% endfor %}
+          <div class="summary-card">
+            <span>Hedefler</span>
+            <strong>5</strong>
+          </div>
+          <div class="summary-card">
+            <span>Tamamlanan</span>
+            <strong>0</strong>
+          </div>
+          <div class="summary-card">
+            <span>Kısmi</span>
+            <strong>0</strong>
+          </div>
+          <div class="summary-card">
+            <span>Eksik</span>
+            <strong>5</strong>
+          </div>
+          <div class="summary-card">
+            <span>Testler</span>
+            <strong>4</strong>
+          </div>
+          <div class="summary-card">
+            <span>Kod Yolları</span>
+            <strong>2</strong>
+          </div>
+          <div class="summary-card">
+            <span>Tasarım Kayıtları</span>
+            <strong>0</strong>
+          </div>
+          <div class="summary-card">
+            <span>Kapsamlı Gereksinimler</span>
+            <strong>0/3</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Eksik/Kısmi Kapsam</span>
+            <strong>0/3</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Kalite Bulguları</span>
+            <strong>4</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Kritik/Uyarı</span>
+            <strong>3/1</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Bağımsızlık Eksikleri</span>
+            <strong>4 hedef</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Kısmi/Eksik Bağımsızlık</span>
+            <strong>0/4</strong>
+          </div>
       </div>
     </header>
     <main>
-      {{ content | safe }}
+      <section class="section">
+    <h2>Risk Profili</h2>
+    <p class="section-lead">
+      Kanıt boşlukları, test sonuçları, statik analiz bulguları ve denetim uyarıları tek bir risk skorunda toplanır.
+    </p>
+    <div class="risk-grid">
+      <article class="risk-card">
+        <h3>Toplam Skor</h3>
+        <div class="risk-score">
+          <span class="risk-score-value">76.8</span>
+          <span class="badge status-missing">Kritik Risk</span>
+        </div>
+        <p class="muted">0 en düşük, 100 en yüksek riski temsil eder.</p>
+      </article>
+        <article class="risk-card">
+          <h3>Kapsam Eğilimi</h3>
+          <div class="cell-title">Kapsam İyileşiyor</div>
+          <div class="muted">14 günlük ufuk için projeksiyon.</div>
+          <div class="risk-breakdown-stats">
+            <span class="badge badge-soft">Eğim: 0.19 puan/gün</span>
+            <span class="badge badge-soft">Projeksiyon: 70.7%</span>
+            <span class="badge badge-soft">Güven: 100%</span>
+          </div>
+        </article>
+    </div>
+    <div class="risk-breakdown">
+      <h3>Faktör Katkıları</h3>
+      <ul class="list">
+          <li>
+            <div class="cell-title">Kapsam</div>
+            <div class="muted">3 missing, 0 partial across 3 items</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %40</span>
+              <span class="badge status-missing">Katkı 40.0 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Statik Analiz</div>
+            <div class="muted">2 findings (error, warn)</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %20</span>
+              <span class="badge status-missing">Katkı 17.2 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Denetim Bulguları</div>
+            <div class="muted">2 active audit flags</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %15</span>
+              <span class="badge status-partial">Katkı 10.8 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Testler</div>
+            <div class="muted">1 failing, 1 quarantined of 4 tests</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %25</span>
+              <span class="badge status-covered">Katkı 8.8 puan</span>
+            </div>
+          </li>
+      </ul>
+    </div>
+      <div class="risk-breakdown">
+        <h3>Uyum Delta Panosu</h3>
+        <p class="muted">İyileşme: 5, Gerileme: 5</p>
+          <div class="risk-delta-sparkline" role="img" aria-label="Regresyon trendi: 0, 5">
+            <svg viewBox="0 0 60 32" width="60" height="32" xmlns="http://www.w3.org/2000/svg" class="sparkline-graph"><polygon points="0,32 0.0,28.0 60.0,4.0 60.0,32" fill="rgba(244,63,94,0.18)" /><polyline points="0.0,28.0 60.0,4.0" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linecap="round" /></svg>
+          </div>
+        <div class="risk-delta-panels">
+          <div class="risk-delta-panel">
+            <h4>Adım Özeti</h4>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dönem</th>
+                    <th style="text-align:right;">İyileşme</th>
+                    <th style="text-align:right;">Gerileme</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td>
+                        <div class="cell-title">20240110T000000Z-fc6c26ac6fdd → 20240120T000000Z-5b9f872311d5</div>
+                          <div class="muted">2024-01-10 00:00 UTC → 2024-01-20 00:00 UTC</div>
+                      </td>
+                      <td style="text-align:right;">5</td>
+                      <td style="text-align:right;">0</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885</div>
+                          <div class="muted">2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC</div>
+                      </td>
+                      <td style="text-align:right;">0</td>
+                      <td style="text-align:right;">5</td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+          <div class="risk-delta-panel">
+            <h4>Regresyonlar</h4>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum Değişimi</th>
+                    <th>Dönem</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td><span class="cell-title">A-3-04</span></td>
+                      <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="cell-title">A-4-01</span></td>
+                      <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="cell-title">A-5-06</span></td>
+                      <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="cell-title">A-5-08</span></td>
+                      <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="cell-title">A-6-02</span></td>
+                      <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+        </div>
+      </div>
+  </section><section class="section">
+    <h2>Uyum Matrisi</h2>
+    <p class="section-lead">
+      Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
+    </p>
+    <div class="stage-tabs">
+        <input
+          type="radio"
+          id="stage-tab-0"
+          name="stage-tabs"
+checked        />
+        <input
+          type="radio"
+          id="stage-tab-1"
+          name="stage-tabs"
+        />
+        <input
+          type="radio"
+          id="stage-tab-2"
+          name="stage-tabs"
+        />
+        <input
+          type="radio"
+          id="stage-tab-3"
+          name="stage-tabs"
+        />
+      <div class="stage-tabs-nav">
+          <label class="stage-tab-label" for="stage-tab-0">
+            <span class="stage-tab-title">Tüm Stajlar</span>
+            <span class="stage-tab-summary">0/5 hedef tamamlandı</span>
+          </label>
+          <label class="stage-tab-label" for="stage-tab-1">
+            <span class="stage-tab-title">SOI-1 Planlama</span>
+            <span class="stage-tab-summary">0/1 hedef tamamlandı</span>
+          </label>
+          <label class="stage-tab-label" for="stage-tab-2">
+            <span class="stage-tab-title">SOI-2 Geliştirme</span>
+            <span class="stage-tab-summary">0/1 hedef tamamlandı</span>
+          </label>
+          <label class="stage-tab-label" for="stage-tab-3">
+            <span class="stage-tab-title">SOI-3 Doğrulama</span>
+            <span class="stage-tab-summary">0/3 hedef tamamlandı</span>
+          </label>
+      </div>
+      <div class="stage-panels">
+          <div class="stage-panel">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum</th>
+                    <th>Sağlanan Kanıtlar</th>
+                    <th>Eksik Kanıtlar</th>
+                    <th>Kanıt Referansları</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-3-04</div>
+                          <div class="cell-subtitle">
+A-3 • Doğrulama Stratejisi                          </div>
+                          <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Plan</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Plan</span>
+                            <span class="badge badge-critical">Gözden Geçirme</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">plan:docs/verification-plan.md</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-4-01</div>
+                          <div class="cell-subtitle">
+A-4 • Üst Düzey Gereksinimler                          </div>
+                          <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Analiz</span>
+                            <span class="badge badge-soft">İzlenebilirlik</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Analiz</span>
+                            <span class="badge badge-critical">İzlenebilirlik</span>
+                            <span class="badge badge-critical">Gözden Geçirme</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                              <li class="muted">trace:artifacts/trace-map.csv</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-5-06</div>
+                          <div class="cell-subtitle">
+A-5 • Test Stratejisi Uygulandı                          </div>
+                          <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Test</span>
+                            <span class="badge badge-soft">İzlenebilirlik</span>
+                            <span class="badge badge-soft">Analiz</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Test</span>
+                            <span class="badge badge-critical">İzlenebilirlik</span>
+                            <span class="badge badge-critical">Analiz</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">test:reports/junit.xml</li>
+                              <li class="muted">trace:artifacts/trace-map.csv</li>
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-5-08</div>
+                          <div class="cell-subtitle">
+A-5 • Yapısal Kapsam—Statement                          </div>
+                          <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Satır Kapsamı</span>
+                            <span class="badge badge-soft">Analiz</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Satır Kapsamı</span>
+                            <span class="badge badge-critical">Analiz</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">coverage_stmt:reports/coverage-summary.json</li>
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-6-02</div>
+                          <div class="cell-subtitle">
+A-6 • Değişiklik Kontrolü                          </div>
+                          <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                          <span class="muted">Kanıt bulunmuyor</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                            <span class="badge badge-critical">Problem Raporu</span>
+                      </td>
+                      <td>
+                          <span class="muted">Referans bulunmuyor</span>
+                      </td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+          <div class="stage-panel">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum</th>
+                    <th>Sağlanan Kanıtlar</th>
+                    <th>Eksik Kanıtlar</th>
+                    <th>Kanıt Referansları</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-3-04</div>
+                          <div class="cell-subtitle">
+A-3 • Doğrulama Stratejisi                          </div>
+                          <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Plan</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Plan</span>
+                            <span class="badge badge-critical">Gözden Geçirme</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">plan:docs/verification-plan.md</li>
+                          </ul>
+                      </td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+          <div class="stage-panel">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum</th>
+                    <th>Sağlanan Kanıtlar</th>
+                    <th>Eksik Kanıtlar</th>
+                    <th>Kanıt Referansları</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-4-01</div>
+                          <div class="cell-subtitle">
+A-4 • Üst Düzey Gereksinimler                          </div>
+                          <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Analiz</span>
+                            <span class="badge badge-soft">İzlenebilirlik</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Analiz</span>
+                            <span class="badge badge-critical">İzlenebilirlik</span>
+                            <span class="badge badge-critical">Gözden Geçirme</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                              <li class="muted">trace:artifacts/trace-map.csv</li>
+                          </ul>
+                      </td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+          <div class="stage-panel">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hedef</th>
+                    <th>Durum</th>
+                    <th>Sağlanan Kanıtlar</th>
+                    <th>Eksik Kanıtlar</th>
+                    <th>Kanıt Referansları</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-5-06</div>
+                          <div class="cell-subtitle">
+A-5 • Test Stratejisi Uygulandı                          </div>
+                          <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Test</span>
+                            <span class="badge badge-soft">İzlenebilirlik</span>
+                            <span class="badge badge-soft">Analiz</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Test</span>
+                            <span class="badge badge-critical">İzlenebilirlik</span>
+                            <span class="badge badge-critical">Analiz</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">test:reports/junit.xml</li>
+                              <li class="muted">trace:artifacts/trace-map.csv</li>
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-5-08</div>
+                          <div class="cell-subtitle">
+A-5 • Yapısal Kapsam—Statement                          </div>
+                          <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                            <span class="badge badge-soft">Satır Kapsamı</span>
+                            <span class="badge badge-soft">Analiz</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Satır Kapsamı</span>
+                            <span class="badge badge-critical">Analiz</span>
+                      </td>
+                      <td>
+                          <ul class="list">
+                              <li class="muted">coverage_stmt:reports/coverage-summary.json</li>
+                              <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                          </ul>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="cell-title">A-6-02</div>
+                          <div class="cell-subtitle">
+A-6 • Değişiklik Kontrolü                          </div>
+                          <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                      </td>
+                      <td><span class="badge status-missing">Eksik</span></td>
+                      <td>
+                          <span class="muted">Kanıt bulunmuyor</span>
+                      </td>
+                      <td>
+                            <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                            <span class="badge badge-critical">Problem Raporu</span>
+                      </td>
+                      <td>
+                          <span class="muted">Referans bulunmuyor</span>
+                      </td>
+                    </tr>
+                </tbody>
+              </table>
+          </div>
+      </div>
+    </div>
+  </section>
+    <section class="section" aria-labelledby="independence-summary">
+      <h2 id="independence-summary">Bağımsızlık Uyarıları</h2>
+      <p class="section-lead">Bağımsız doğrulama gerektiren hedeflerde eksik veya bağımsız olmayan kanıtları vurgular. Zorunlu eksikler sertifikasyon için kritik kabul edilir.</p>
+      <div class="independence-summary">
+        <span class="badge status-missing">Bağımsızlık Sağlanamadı</span>
+        <span class="muted">Etkilenen hedef: 4 • Kısmi: 0 • Eksik: 4</span>
+      </div>
+        <div class="independence-badges">
+            <span class="badge status-missing">Zorunlu: 4</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Hedef</th>
+              <th>Bağımsızlık</th>
+              <th>Durum</th>
+              <th>Eksik Kanıtlar</th>
+            </tr>
+          </thead>
+          <tbody>
+              <tr>
+                <td>
+                  <div class="cell-title">A-3-04</div>
+                    <div class="cell-subtitle">
+A-3 • Doğrulama Stratejisi                    </div>
+                    <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                </td>
+                <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
+                <td><span class="badge status-missing">Eksik</span></td>
+                <td>
+                      <span class="badge badge-critical">Plan</span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="cell-title">A-4-01</div>
+                    <div class="cell-subtitle">
+A-4 • Üst Düzey Gereksinimler                    </div>
+                    <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                </td>
+                <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
+                <td><span class="badge status-missing">Eksik</span></td>
+                <td>
+                      <span class="badge badge-critical">Analiz</span>
+                      <span class="badge badge-critical">İzlenebilirlik</span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="cell-title">A-5-06</div>
+                    <div class="cell-subtitle">
+A-5 • Test Stratejisi Uygulandı                    </div>
+                    <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                </td>
+                <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
+                <td><span class="badge status-missing">Eksik</span></td>
+                <td>
+                      <span class="badge badge-critical">Test</span>
+                      <span class="badge badge-critical">İzlenebilirlik</span>
+                      <span class="badge badge-critical">Analiz</span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="cell-title">A-5-08</div>
+                    <div class="cell-subtitle">
+A-5 • Yapısal Kapsam—Statement                    </div>
+                    <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                </td>
+                <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
+                <td><span class="badge status-missing">Eksik</span></td>
+                <td>
+                      <span class="badge badge-critical">Satır Kapsamı</span>
+                      <span class="badge badge-critical">Analiz</span>
+                </td>
+              </tr>
+          </tbody>
+        </table>
+    </section>
+    <section class="section">
+      <h2>Kalite Bulguları</h2>
+      <p class="section-lead">
+        Gereksinim durumu, test sonuçları ve kapsam verileri arasındaki tutarsızlıkları vurgular. Bulgular düzeltici eylem gerektiren alanları önceliklendirmenizi sağlar.
+      </p>
+      <ul class="list">
+          <li>
+            <div>
+              <span class="badge status-missing">Kritik</span>
+              <span class="cell-title">REQ-AUTH-2 doğrulandı olarak işaretli ancak başarısız testler mevcut.</span>
+            </div>
+              <div class="muted">Gereksinim: REQ-AUTH-2</div>
+              <div class="muted">İlgili Testler: TC-LOGIN-2</div>
+              <div class="cell-description">Başarısız testleri analiz edin ve gereksinim doğrulama kanıtını güncelleyin.</div>
+          </li>
+          <li>
+            <div>
+              <span class="badge status-missing">Kritik</span>
+              <span class="cell-title">REQ-AUTH-2 için kapsama verisi bulunamadı.</span>
+            </div>
+              <div class="muted">Gereksinim: REQ-AUTH-2</div>
+              <div class="cell-description">Kod izlerini ve kapsam raporlarını gereksinime bağlayın veya durumu yeniden değerlendirin.</div>
+          </li>
+          <li>
+            <div>
+              <span class="badge status-missing">Kritik</span>
+              <span class="cell-title">Polyspace bulgusu FND-SEC-001 (error) açık durumda: Null pointer analizi başarısız oldu.</span>
+            </div>
+              <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+          </li>
+          <li>
+            <div>
+              <span class="badge status-partial">Uyarı</span>
+              <span class="cell-title">VectorCAST bulgusu FND-SEC-002 (warn) açık durumda: Zamanlama toleransı azalıyor.</span>
+            </div>
+              <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+          </li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>Gereksinim Kapsamı</h2>
+      <p class="section-lead">
+        Testler ve kod izleri ile ilişkilendirilen gereksinimlerin kapsam durumunu gösterir. Yetersiz kapsama sahip alanları hızla tespit etmeyi sağlar.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Gereksinim</th>
+            <th>Kapsam Durumu</th>
+            <th>Kod Dosyaları</th>
+          </tr>
+        </thead>
+        <tbody>
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-1</div>
+                <div class="cell-description">Çok faktörlü giriş sağlamalı</div>
+              </td>
+              <td>
+                <span class="badge status-missing">Kapsam Yok</span>
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
+              </td>
+              <td>
+                  <ul class="list">
+                      <li><code class="code-pill">src/auth/login.ts</code></li>
+                      <li><code class="code-pill">src/security/audit.ts</code></li>
+                  </ul>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-2</div>
+                <div class="cell-description">Başarısız girişler kaydedilmeli</div>
+              </td>
+              <td>
+                <span class="badge status-missing">Kapsam Yok</span>
+                  <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
+              </td>
+              <td>
+                  <ul class="list">
+                      <li><code class="code-pill">src/auth/login.ts</code></li>
+                      <li><code class="code-pill">src/security/audit.ts</code></li>
+                  </ul>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="cell-title">REQ-AUTH-3</div>
+                <div class="cell-description">Giriş ihlallerinde uyarı gönderilmeli</div>
+              </td>
+              <td>
+                <span class="badge status-missing">Kapsam Yok</span>
+              </td>
+              <td>
+                  <span class="muted">Kod bağlantısı yok</span>
+              </td>
+            </tr>
+        </tbody>
+      </table>
+    </section>
+<section class="section">
+    <h2>Signoff Zaman Çizelgesi</h2>
+    <p class="section-lead">
+      Workspace belgelerindeki signoff istekleri ve imza onayları denetim izi için tutulur.
+    </p>
+    <div class="timeline-grid">
+        <article class="timeline-card">
+          <header>
+            <div class="cell-title">DOC-SEC-PLAN</div>
+            <div class="muted">Revizyon: rev-main-001</div>
+          </header>
+          <div class="timeline-status">
+            <span class="badge status-covered">Onaylandı</span>
+            <div class="muted">Revizyon Hash: a9f4c2d1e3b56789</div>
+          </div>
+          <ul class="list timeline-events">
+              <li>
+                <div class="cell-title">İstek Gönderildi</div>
+                <div class="muted">2024-01-15 09:45 UTC</div>
+                <div class="muted">Aktör: auditor-istanbul</div>
+                  <div class="cell-description">Onay talep edilen kişi: lead-reviewer</div>
+              </li>
+              <li>
+                <div class="cell-title">İmza Doğrulandı</div>
+                <div class="muted">2024-01-16 13:20 UTC</div>
+                <div class="muted">Aktör: lead-reviewer</div>
+                  <div class="cell-description">Anahtar: …ment123456== • İmza: SIG-APPROVED…</div>
+              </li>
+          </ul>
+        </article>
+        <article class="timeline-card">
+          <header>
+            <div class="cell-title">DOC-SEC-REPORT</div>
+            <div class="muted">Revizyon: rev-main-002</div>
+          </header>
+          <div class="timeline-status">
+            <span class="badge status-partial">Onay Bekliyor</span>
+            <div class="muted">Revizyon Hash: b1e2c3d4f5a67890</div>
+          </div>
+          <ul class="list timeline-events">
+              <li>
+                <div class="cell-title">İstek Gönderildi</div>
+                <div class="muted">2024-01-20 10:15 UTC</div>
+                <div class="muted">Aktör: auditor-istanbul</div>
+                  <div class="cell-description">Onay talep edilen kişi: compliance-owner</div>
+              </li>
+          </ul>
+        </article>
+    </div>
+  </section>
     </main>
     <footer>
       <span>SOIPack Sürüm 0.1.0</span>
