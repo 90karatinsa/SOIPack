@@ -3577,14 +3577,38 @@ describe('@soipack/server REST API', () => {
     type ReportResult = Awaited<ReturnType<typeof cli.runReport>>;
     runReportSpy.mockImplementation(async (options) => {
       capturedOptions = options;
+      const summary = {
+        generatedAt: new Date().toISOString(),
+        programName: 'Plan Config Project',
+        level: 'DAL-B',
+        author: 'QA Lead',
+        tools: [
+          {
+            id: 'tool-1',
+            name: 'Trace Analyzer',
+            version: '1.0.0',
+            category: 'verification' as const,
+            tql: 'TQL-001',
+            outputs: ['Tool Qualification Plan', 'Tool Assessment Report'],
+            pendingActivities: 1,
+          },
+        ],
+      };
+      const toolQualificationDir = path.join(options.output, 'tool-qualification');
       const result: ReportResult = {
         complianceHtml: path.join(options.output, 'compliance.html'),
         complianceJson: path.join(options.output, 'compliance.json'),
+        complianceCsv: path.join(options.output, 'compliance.csv'),
         traceHtml: path.join(options.output, 'trace.html'),
         gapsHtml: path.join(options.output, 'gaps.html'),
         traceCsv: path.join(options.output, 'traces.csv'),
         plans: {} as ReportResult['plans'],
         warnings: [] as ReportResult['warnings'],
+        toolQualification: {
+          tqp: path.join(toolQualificationDir, 'trace-analyzer-plan.md'),
+          tar: path.join(toolQualificationDir, 'trace-analyzer-report.md'),
+          summary,
+        },
       };
       return result;
     });
@@ -3632,6 +3656,31 @@ describe('@soipack/server REST API', () => {
       expect(runReportSpy).toHaveBeenCalledTimes(1);
       expect(capturedOptions).toBeDefined();
 
+      const toolQualificationOutputs = reportJob.result.outputs.toolQualification;
+      expect(toolQualificationOutputs).toBeDefined();
+      expect(toolQualificationOutputs?.summary).toEqual({
+        generatedAt: expect.any(String),
+        programName: 'Plan Config Project',
+        level: 'DAL-B',
+        author: 'QA Lead',
+        tools: [
+          expect.objectContaining({
+            id: 'tool-1',
+            name: 'Trace Analyzer',
+            category: 'verification',
+            pendingActivities: 1,
+          }),
+        ],
+      });
+      expect(toolQualificationOutputs?.tqpHref).toBe('tool-qualification/trace-analyzer-plan.md');
+      expect(toolQualificationOutputs?.tarHref).toBe('tool-qualification/trace-analyzer-report.md');
+      expect(toolQualificationOutputs?.tqp.replace(/\\/g, '/').endsWith(
+        `/tool-qualification/trace-analyzer-plan.md`,
+      )).toBe(true);
+      expect(toolQualificationOutputs?.tar.replace(/\\/g, '/').endsWith(
+        `/tool-qualification/trace-analyzer-report.md`,
+      )).toBe(true);
+
       const expectedUploadBase = path.join(storageDir, 'uploads', tenantId, reportJob.id);
       expect(capturedOptions?.planConfig).toBe(
         path.join(expectedUploadBase, 'planConfig', 'plan.json'),
@@ -3642,10 +3691,30 @@ describe('@soipack/server REST API', () => {
       const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
       const metadata = JSON.parse(metadataContent) as {
         params: { planConfig?: string | null; planOverrides?: Record<string, unknown> | null };
+        outputs: {
+          toolQualification?: {
+            summary: {
+              generatedAt: string;
+              programName?: string | null;
+              level?: string | null;
+              author?: string | null;
+              tools: Array<{ id: string }>;
+            };
+            tqpHref: string;
+            tarHref: string;
+          };
+        };
       };
 
       expect(metadata.params.planConfig).toBe('plan.json');
       expect(metadata.params.planOverrides).toEqual(overrides);
+      expect(metadata.outputs.toolQualification?.tqpHref).toBe(
+        'tool-qualification/trace-analyzer-plan.md',
+      );
+      expect(metadata.outputs.toolQualification?.tarHref).toBe(
+        'tool-qualification/trace-analyzer-report.md',
+      );
+      expect(metadata.outputs.toolQualification?.summary.tools[0]?.id).toBe('tool-1');
     } finally {
       runReportSpy.mockRestore();
     }
@@ -4279,6 +4348,7 @@ describe('@soipack/server REST API', () => {
 
     const reportJob = await waitForJobCompletion(app, token, reportQueued.body.id);
     expect(reportJob.result.outputs.complianceHtml).toMatch(/^reports\//);
+    expect(reportJob.result.outputs.complianceCsv).toMatch(/^reports\//);
 
     const otherTenantToken = await createAccessToken({ tenant: 'tenant-b' });
     const crossTenantJob = await request(app)
@@ -4551,12 +4621,22 @@ describe('@soipack/server REST API', () => {
 
     expect(reportAsset.text).toContain('<html');
 
+    const reportCsv = await request(app)
+      .get(`/v1/reports/${reportQueued.body.id}/compliance.csv`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect('Content-Type', /csv/)
+      .expect(200);
+    expect(reportCsv.text).toContain('Objective ID');
+
     const reportDetails = await request(app)
       .get(`/v1/jobs/${reportQueued.body.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(reportDetails.body.result.outputs.complianceHtml).toBe(
       reportJob.result.outputs.complianceHtml,
+    );
+    expect(reportDetails.body.result.outputs.complianceCsv).toBe(
+      reportJob.result.outputs.complianceCsv,
     );
 
     const forbiddenAsset = await request(app)
@@ -4656,6 +4736,7 @@ describe('@soipack/server REST API', () => {
     const expectedReportDir = `reports/${tenantId}/${soiStage}/${reportResponse.body.id}`;
     expect(reportJob.result.outputs.directory).toBe(expectedReportDir);
     expect(reportJob.result.outputs.complianceHtml.startsWith(`${expectedReportDir}/`)).toBe(true);
+    expect(reportJob.result.outputs.complianceCsv.startsWith(`${expectedReportDir}/`)).toBe(true);
 
     const reportMetadata = JSON.parse(
       await fsPromises.readFile(path.resolve(storageDir, expectedReportDir, 'job.json'), 'utf8'),

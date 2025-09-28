@@ -100,6 +100,7 @@ import {
   renderTraceMatrix,
   renderPlanDocument,
   renderPlanPdf,
+  renderToolQualificationPack,
   planTemplateSections,
   planTemplateTitles,
   printToPDF,
@@ -107,6 +108,8 @@ import {
   type PlanOverrideConfig,
   type PlanSectionOverrides,
   type PlanRenderOptions,
+  type ToolQualificationPackResult,
+  type ToolUsageMetadata,
 } from '@soipack/report';
 import YAML from 'yaml';
 import yargs from 'yargs';
@@ -2501,6 +2504,10 @@ interface AnalysisMetadata {
   generatedAt: string;
   version: SnapshotVersion;
   stage?: SoiStage;
+  toolQualification?: ToolQualificationPackResult['summary'] & {
+    tqpHref?: string;
+    tarHref?: string;
+  };
 }
 
 const loadObjectives = async (filePath: string): Promise<Objective[]> => {
@@ -2805,6 +2812,7 @@ export interface ReportOptions {
   planConfig?: string;
   planOverrides?: PlanSectionOverrides;
   stage?: SoiStage;
+  toolUsage?: string;
 }
 
 export interface GeneratedPlanOutput {
@@ -2818,11 +2826,17 @@ export interface GeneratedPlanOutput {
 export interface ReportResult {
   complianceHtml: string;
   complianceJson: string;
+  complianceCsv: string;
   traceHtml: string;
   traceCsv: string;
   gapsHtml: string;
   plans: Record<PlanTemplateId, GeneratedPlanOutput>;
   warnings: string[];
+  toolQualification?: {
+    tqp: string;
+    tar: string;
+    summary: ToolQualificationPackResult['summary'];
+  };
 }
 
 const planTemplateIdList = Object.keys(planTemplateSections) as PlanTemplateId[];
@@ -3154,6 +3168,34 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     ? parsePlanOverrides(await readJsonFile<unknown>(planConfigPath))
     : undefined;
   const planOverrides = mergePlanOverrides(configOverrides, options.planOverrides);
+  const toolUsagePath = options.toolUsage ? path.resolve(options.toolUsage) : undefined;
+
+  let toolQualificationPack: ToolQualificationPackResult | undefined;
+  let toolQualificationLinks:
+    | {
+        tqpHref: string;
+        tarHref: string;
+        generatedAt: string;
+        tools: ToolQualificationPackResult['summary']['tools'];
+      }
+    | undefined;
+  if (toolUsagePath) {
+    const toolUsageData = await readJsonFile<unknown>(toolUsagePath);
+    if (!Array.isArray(toolUsageData)) {
+      throw new Error('Tool usage metadata must be an array of tool descriptors.');
+    }
+    toolQualificationPack = renderToolQualificationPack(toolUsageData as ToolUsageMetadata[], {
+      programName: analysis.metadata.project?.name,
+      level: analysis.metadata.level,
+      generatedAt: analysis.metadata.generatedAt,
+    });
+    toolQualificationLinks = {
+      tqpHref: path.posix.join('tool-qualification', toolQualificationPack.tqp.filename),
+      tarHref: path.posix.join('tool-qualification', toolQualificationPack.tar.filename),
+      generatedAt: toolQualificationPack.summary.generatedAt,
+      tools: toolQualificationPack.summary.tools,
+    };
+  }
 
   const compliance = renderComplianceMatrix(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -3165,6 +3207,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     git: analysis.git,
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
+    ...(toolQualificationLinks ? { toolQualification: toolQualificationLinks } : {}),
   });
   const traceReport = renderTraceMatrix(traces, {
     generatedAt: analysis.metadata.generatedAt,
@@ -3194,18 +3237,31 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
 
   const complianceHtmlPath = path.join(outputDir, 'compliance.html');
   const complianceJsonPath = path.join(outputDir, 'compliance.json');
+  const complianceCsvPath = path.join(outputDir, 'compliance.csv');
   const traceHtmlPath = path.join(outputDir, 'trace.html');
   const traceCsvPath = path.join(outputDir, 'trace.csv');
   const gapsHtmlPath = path.join(outputDir, 'gaps.html');
+  let toolQualificationPaths: { tqp: string; tar: string } | undefined;
 
   await fsPromises.copyFile(snapshotPath, path.join(outputDir, 'snapshot.json'));
   await fsPromises.copyFile(tracePath, path.join(outputDir, 'traces.json'));
 
   await fsPromises.writeFile(complianceHtmlPath, compliance.html, 'utf8');
   await writeJsonFile(complianceJsonPath, compliance.json);
+  await fsPromises.writeFile(complianceCsvPath, compliance.csv.csv, 'utf8');
   await fsPromises.writeFile(traceHtmlPath, traceReport.html, 'utf8');
   await fsPromises.writeFile(traceCsvPath, traceReport.csv.csv, 'utf8');
   await fsPromises.writeFile(gapsHtmlPath, gapsHtml, 'utf8');
+
+  if (toolQualificationPack) {
+    const toolQualificationDir = path.join(outputDir, 'tool-qualification');
+    await ensureDirectory(toolQualificationDir);
+    const tqpPath = path.join(toolQualificationDir, toolQualificationPack.tqp.filename);
+    const tarPath = path.join(toolQualificationDir, toolQualificationPack.tar.filename);
+    await fsPromises.writeFile(tqpPath, toolQualificationPack.tqp.content, 'utf8');
+    await fsPromises.writeFile(tarPath, toolQualificationPack.tar.content, 'utf8');
+    toolQualificationPaths = { tqp: tqpPath, tar: tarPath };
+  }
 
   const plansDir = path.join(outputDir, 'plans');
   await ensureDirectory(plansDir);
@@ -3255,20 +3311,46 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     };
   }
 
-  const analysisWithPlanWarnings =
-    planWarnings.length > 0
-      ? { ...analysis, warnings: [...analysis.warnings, ...planWarnings] }
+  const augmentedWarnings =
+    planWarnings.length > 0 ? [...analysis.warnings, ...planWarnings] : analysis.warnings;
+  const metadataWithToolQualification = toolQualificationPack
+    ? {
+        ...analysis.metadata,
+        toolQualification: {
+          ...toolQualificationPack.summary,
+          tqpHref: toolQualificationLinks?.tqpHref,
+          tarHref: toolQualificationLinks?.tarHref,
+        },
+      }
+    : analysis.metadata;
+  const analysisAugmented =
+    planWarnings.length > 0 || toolQualificationPack
+      ? {
+          ...analysis,
+          warnings: augmentedWarnings,
+          metadata: metadataWithToolQualification,
+        }
       : analysis;
-  await writeJsonFile(path.join(outputDir, 'analysis.json'), analysisWithPlanWarnings);
+  await writeJsonFile(path.join(outputDir, 'analysis.json'), analysisAugmented);
 
   return {
     complianceHtml: complianceHtmlPath,
     complianceJson: complianceJsonPath,
+    complianceCsv: complianceCsvPath,
     traceHtml: traceHtmlPath,
     traceCsv: traceCsvPath,
     gapsHtml: gapsHtmlPath,
     plans,
     warnings: planWarnings,
+    ...(toolQualificationPaths
+      ? {
+          toolQualification: {
+            tqp: toolQualificationPaths.tqp,
+            tar: toolQualificationPaths.tar,
+            summary: toolQualificationPack!.summary,
+          },
+        }
+      : {}),
   };
 };
 
@@ -4582,7 +4664,13 @@ export const runPipeline = async (
   });
 
   logger?.info(
-    { complianceHtml: reportResult.complianceHtml, command: 'run' },
+    {
+      complianceHtml: reportResult.complianceHtml,
+      complianceJson: reportResult.complianceJson,
+      complianceCsv: reportResult.complianceCsv,
+      traceCsv: reportResult.traceCsv,
+      command: 'run',
+    },
     'Raporlar üretildi.',
   );
   logger?.info(
@@ -5285,6 +5373,10 @@ if (require.main === module) {
             describe: 'Plan şablonlarına ait özelleştirmeleri tanımlayan JSON dosyası.',
             type: 'string',
           })
+          .option('tool-usage', {
+            describe: 'DO-330 araç kullanım metaverisini içeren JSON dosyası.',
+            type: 'string',
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -5299,6 +5391,7 @@ if (require.main === module) {
           input: argv.input,
           output: argv.output,
           stage,
+          toolUsage: argv['tool-usage'],
         };
 
         try {
@@ -5313,6 +5406,7 @@ if (require.main === module) {
             input: argv.input,
             output: argv.output,
             planConfig: argv['plan-config'] as string | undefined,
+            toolUsage: argv['tool-usage'] as string | undefined,
             stage,
           });
 

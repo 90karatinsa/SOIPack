@@ -184,6 +184,13 @@ describe('@soipack/cli pipeline', () => {
 
     const complianceHtmlStats = await fs.stat(reportResult.complianceHtml);
     expect(complianceHtmlStats.isFile()).toBe(true);
+    const complianceCsv = await fs.readFile(reportResult.complianceCsv, 'utf8');
+    const csvLines = complianceCsv.split('\n');
+    expect(csvLines[0]).toBe(
+      'Objective ID,Table,Stage,Status,Satisfied Artifacts,Missing Artifacts,Evidence References',
+    );
+    expect(complianceCsv).toContain('A-5-06');
+    expect(complianceCsv).toContain('SOI-3');
 
     expect(Object.keys(reportResult.plans)).toEqual(
       expect.arrayContaining(['psac', 'sdp', 'svp', 'scmp', 'sqap']),
@@ -822,6 +829,70 @@ describe('@soipack/cli pipeline', () => {
     };
     const recordedGap = analysisJson.gaps.analysis.find((item) => item.objectiveId === 'A-3-99');
     expect(recordedGap?.missingArtifacts).toContain('analysis');
+  });
+
+  it('generates tool qualification packs from tool usage metadata', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'tool-usage');
+    const workspaceDir = path.join(tempRoot, 'tool-usage-workspace');
+    const analysisDir = path.join(tempRoot, 'tool-usage-analysis');
+    const reportDir = path.join(tempRoot, 'tool-usage-report');
+
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(workspaceDir, 'workspace.json'));
+
+    const analysisResult = await runAnalyze({
+      input: workspaceDir,
+      output: analysisDir,
+      objectives: objectivesPath,
+      level: 'C',
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const reportResult = await runReport({
+      input: analysisDir,
+      output: reportDir,
+      toolUsage: path.join(fixtureDir, 'tool-usage.json'),
+    });
+
+    expect(reportResult.toolQualification?.summary.tools).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'tool-analyzer', pendingActivities: 1 })]),
+    );
+
+    const tqpContent = await fs.readFile(reportResult.toolQualification!.tqp, 'utf8');
+    const tarContent = await fs.readFile(reportResult.toolQualification!.tar, 'utf8');
+    expect(tqpContent).toContain('Tool Qualification Plan');
+    expect(tarContent).toContain('Tool Accomplishment Report');
+
+    const analysisData = JSON.parse(
+      await fs.readFile(path.join(reportDir, 'analysis.json'), 'utf8'),
+    ) as {
+      metadata: {
+        toolQualification?: {
+          tqpHref?: string;
+          tarHref?: string;
+          tools: Array<{ id: string; pendingActivities: number }>;
+        };
+      };
+    };
+
+    expect(analysisData.metadata.toolQualification?.tools).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'tool-analyzer', pendingActivities: 1 })]),
+    );
+    expect(analysisData.metadata.toolQualification?.tqpHref).toBe(
+      'tool-qualification/tool-qualification-plan.md',
+    );
+
+    const compliance = JSON.parse(
+      await fs.readFile(path.join(reportDir, 'compliance.json'), 'utf8'),
+    ) as {
+      toolQualification?: { tqpHref?: string; tarHref?: string; tools: unknown[] };
+    };
+
+    expect(compliance.toolQualification?.tarHref).toBe(
+      'tool-qualification/tool-accomplishment-report.md',
+    );
+    expect(compliance.toolQualification?.tools).toHaveLength(1);
   });
 
   describe('certification gating', () => {

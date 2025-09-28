@@ -81,6 +81,37 @@ describe('@soipack/report', () => {
     expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
     expect(result.json.independenceSummary.objectives.length).toBeGreaterThan(0);
+
+    maybeUpdateGolden('compliance-matrix.csv', result.csv.csv);
+    const goldenCsv = readFileSync(path.join(goldenDir, 'compliance-matrix.csv'), 'utf-8');
+    expect(result.csv.csv).toBe(goldenCsv);
+    expect(result.csv.headers).toEqual([
+      'Objective ID',
+      'Table',
+      'Stage',
+      'Status',
+      'Satisfied Artifacts',
+      'Missing Artifacts',
+      'Evidence References',
+    ]);
+    const coveredRow = result.csv.rows.find((row) => row.objectiveId === 'A-5-06');
+    expect(coveredRow).toEqual(
+      expect.objectContaining({
+        objectiveId: 'A-5-06',
+        stage: 'SOI-3',
+        stageLabel: 'SOI-3 Doğrulama',
+        status: 'Eksik',
+      }),
+    );
+    const stageCsv = result.csv.stages['SOI-3'];
+    expect(stageCsv).toBeDefined();
+    expect(stageCsv?.rows.map((row) => row.objectiveId)).toEqual(
+      expect.arrayContaining(['A-5-06', 'A-5-08', 'A-6-02']),
+    );
+    expect(stageCsv?.records[0]?.[2]).toBe('SOI-3');
+    expect(stageCsv?.records[0]?.[3]).toBe('Eksik');
+    const soi1Record = result.csv.stages['SOI-1'];
+    expect(soi1Record?.records[0]?.[2]).toBe('SOI-1');
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
@@ -150,6 +181,7 @@ describe('@soipack/report', () => {
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
     expect(result.changeRequestBacklog).toEqual(backlog);
     expect(result.ledgerDiffs).toEqual(ledgerDiffs);
+    expect(result.csv.headers[0]).toBe('Objective ID');
     expect(result.html).toContain('Risk Profili');
     expect(result.html).toContain('Signoff Zaman Çizelgesi');
     expect(result.json.independenceSummary.totals.partial + result.json.independenceSummary.totals.missing).toBeGreaterThanOrEqual(0);

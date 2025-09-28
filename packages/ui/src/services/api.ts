@@ -1493,11 +1493,18 @@ export const buildReportAssets = (job: ApiJob<ReportJobResult>): ReportAssetMap 
     assets: {
       complianceHtml: extractAssetPath(outputs.complianceHtml, job.id),
       complianceJson: extractAssetPath(outputs.complianceJson, job.id),
+      complianceCsv: extractAssetPath(outputs.complianceCsv, job.id),
       traceHtml: extractAssetPath(outputs.traceHtml, job.id),
       gapsHtml: extractAssetPath(outputs.gapsHtml, job.id),
       analysis: extractAssetPath(outputs.analysis, job.id),
       snapshot: extractAssetPath(outputs.snapshot, job.id),
       traces: extractAssetPath(outputs.traces, job.id),
+      ...(outputs.toolQualification
+        ? {
+            toolQualificationPlan: extractAssetPath(outputs.toolQualification.tqp, job.id),
+            toolQualificationReport: extractAssetPath(outputs.toolQualification.tar, job.id),
+          }
+        : {}),
     },
   };
 };

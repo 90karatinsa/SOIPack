@@ -55,11 +55,33 @@ export interface ReportJobResult {
     directory: string;
     complianceHtml: string;
     complianceJson: string;
+    complianceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysis: string;
     snapshot: string;
     traces: string;
+    toolQualification?: {
+      summary: {
+        generatedAt: string;
+        programName?: string | null;
+        level?: string | null;
+        author?: string | null;
+        tools: Array<{
+          id: string;
+          name: string;
+          version?: string;
+          category: 'development' | 'verification' | 'support';
+          tql?: string;
+          outputs: string[];
+          pendingActivities: number;
+        }>;
+      };
+      tqp: string;
+      tar: string;
+      tqpHref: string;
+      tarHref: string;
+    };
   };
 }
 
@@ -245,10 +267,13 @@ export interface ReportAssetMap {
   assets: {
     complianceHtml: string;
     complianceJson: string;
+    complianceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysis: string;
     snapshot: string;
     traces: string;
+    toolQualificationPlan?: string;
+    toolQualificationReport?: string;
   };
 }

@@ -164,6 +164,7 @@ components:
             - directory
             - complianceHtml
             - complianceJson
+            - complianceCsv
             - traceHtml
             - gapsHtml
             - analysis
@@ -176,6 +177,8 @@ components:
               type: string
             complianceJson:
               type: string
+            complianceCsv:
+              type: string
             traceHtml:
               type: string
             gapsHtml:
@@ -186,6 +189,69 @@ components:
               type: string
             traces:
               type: string
+            toolQualification:
+              type: object
+              nullable: true
+              properties:
+                summary:
+                  type: object
+                  required:
+                    - generatedAt
+                    - tools
+                  properties:
+                    generatedAt:
+                      type: string
+                      format: date-time
+                    programName:
+                      type: string
+                      nullable: true
+                    level:
+                      type: string
+                      nullable: true
+                    author:
+                      type: string
+                      nullable: true
+                    tools:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - id
+                          - name
+                          - category
+                          - outputs
+                          - pendingActivities
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                          version:
+                            type: string
+                            nullable: true
+                          category:
+                            type: string
+                            enum:
+                              - development
+                              - verification
+                              - support
+                          tql:
+                            type: string
+                            nullable: true
+                          outputs:
+                            type: array
+                            items:
+                              type: string
+                          pendingActivities:
+                            type: integer
+                tqp:
+                  type: string
+                tar:
+                  type: string
+                tqpHref:
+                  type: string
+                tarHref:
+                  type: string
     PackResponse:
       type: object
       required:

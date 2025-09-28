@@ -190,6 +190,19 @@ const buildContentDisposition = (fileName: string): string => {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 };
 
+const toReportAssetHref = (reportDir: string, assetPath: string): string => {
+  const relative = path.relative(reportDir, assetPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new HttpError(
+      500,
+      'REPORT_ASSET_OUT_OF_SCOPE',
+      'Rapor çıktısı beklenen dizin dışında oluşturuldu.',
+    );
+  }
+  const normalized = relative.split(path.sep).join('/');
+  return normalized;
+};
+
 const PEM_BLOCK_PATTERN = /-----BEGIN [^-]+-----|-----END [^-]+-----/g;
 
 const extractPemBody = (pem: string): string => pem.replace(PEM_BLOCK_PATTERN, '').replace(/\s+/g, '');
@@ -981,17 +994,45 @@ interface AnalyzeJobMetadata extends BaseJobMetadata {
   };
 }
 
+interface ToolQualificationSummaryItem {
+  id: string;
+  name: string;
+  version?: string;
+  category: 'development' | 'verification' | 'support';
+  tql?: string;
+  outputs: string[];
+  pendingActivities: number;
+}
+
+interface ToolQualificationSummary {
+  generatedAt: string;
+  programName?: string | null;
+  level?: string | null;
+  author?: string | null;
+  tools: ToolQualificationSummaryItem[];
+}
+
+interface ToolQualificationMetadata {
+  summary: ToolQualificationSummary;
+  tqpPath: string;
+  tarPath: string;
+  tqpHref: string;
+  tarHref: string;
+}
+
 interface ReportJobMetadata extends BaseJobMetadata {
   kind: 'report';
   outputs: {
     directory: string;
     complianceHtml: string;
     complianceJson: string;
+    complianceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysisPath: string;
     snapshotPath: string;
     tracesPath: string;
+    toolQualification?: ToolQualificationMetadata;
   };
 }
 
@@ -1047,11 +1088,19 @@ interface ReportJobResult {
     directory: string;
     complianceHtml: string;
     complianceJson: string;
+    complianceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysis: string;
     snapshot: string;
     traces: string;
+    toolQualification?: {
+      summary: ToolQualificationSummary;
+      tqp: string;
+      tar: string;
+      tqpHref: string;
+      tarHref: string;
+    };
   };
 }
 
@@ -2004,11 +2053,23 @@ const toReportResult = (
     directory: storage.toRelativePath(metadata.directory),
     complianceHtml: storage.toRelativePath(metadata.outputs.complianceHtml),
     complianceJson: storage.toRelativePath(metadata.outputs.complianceJson),
+    complianceCsv: storage.toRelativePath(metadata.outputs.complianceCsv),
     traceHtml: storage.toRelativePath(metadata.outputs.traceHtml),
     gapsHtml: storage.toRelativePath(metadata.outputs.gapsHtml),
     analysis: storage.toRelativePath(metadata.outputs.analysisPath),
     snapshot: storage.toRelativePath(metadata.outputs.snapshotPath),
     traces: storage.toRelativePath(metadata.outputs.tracesPath),
+    ...(metadata.outputs.toolQualification
+      ? {
+          toolQualification: {
+            summary: metadata.outputs.toolQualification.summary,
+            tqp: storage.toRelativePath(metadata.outputs.toolQualification.tqpPath),
+            tar: storage.toRelativePath(metadata.outputs.toolQualification.tarPath),
+            tqpHref: metadata.outputs.toolQualification.tqpHref,
+            tarHref: metadata.outputs.toolQualification.tarHref,
+          },
+        }
+      : {}),
   },
 });
 
@@ -3843,6 +3904,15 @@ export const createServer = (config: ServerConfig): Express => {
       await storage.ensureDirectory(payload.reportDir);
       try {
         const result = await runReport(payload.reportOptions);
+        const toolQualificationMetadata = result.toolQualification
+          ? {
+              summary: result.toolQualification.summary,
+              tqpPath: result.toolQualification.tqp,
+              tarPath: result.toolQualification.tar,
+              tqpHref: toReportAssetHref(payload.reportDir, result.toolQualification.tqp),
+              tarHref: toReportAssetHref(payload.reportDir, result.toolQualification.tar),
+            }
+          : undefined;
         const metadata: ReportJobMetadata = {
           tenantId: context.tenantId,
           id: context.id,
@@ -3862,11 +3932,15 @@ export const createServer = (config: ServerConfig): Express => {
             directory: payload.reportDir,
             complianceHtml: result.complianceHtml,
             complianceJson: result.complianceJson,
+            complianceCsv: result.complianceCsv,
             traceHtml: result.traceHtml,
             gapsHtml: result.gapsHtml,
             analysisPath: path.join(payload.reportDir, 'analysis.json'),
             snapshotPath: path.join(payload.reportDir, 'snapshot.json'),
             tracesPath: path.join(payload.reportDir, 'traces.json'),
+            ...(toolQualificationMetadata
+              ? { toolQualification: toolQualificationMetadata }
+              : {}),
           },
         };
 

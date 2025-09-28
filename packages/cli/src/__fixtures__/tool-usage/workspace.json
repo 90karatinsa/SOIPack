@@ -1,0 +1,45 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-TQP-1",
+      "title": "Logger shall timestamp entries",
+      "description": "Audit logs include a monotonic timestamp.",
+      "status": "approved",
+      "tags": []
+    }
+  ],
+  "testResults": [
+    {
+      "testId": "TC-REQ-TQP-1",
+      "className": "LoggerSuite",
+      "name": "timestamps are recorded",
+      "status": "passed",
+      "duration": 2
+    }
+  ],
+  "coverage": null,
+  "structuralCoverage": null,
+  "traceLinks": [],
+  "testToCodeMap": {
+    "TC-REQ-TQP-1": ["src/logger.c"]
+  },
+  "evidenceIndex": {},
+  "git": null,
+  "findings": [],
+  "builds": [],
+  "metadata": {
+    "generatedAt": "2024-05-01T09:30:00.000Z",
+    "warnings": [],
+    "inputs": {},
+    "project": {
+      "name": "Tool Qualification Demo",
+      "version": "0.1.0"
+    },
+    "version": {
+      "id": "20240501T093000Z-tqp001",
+      "createdAt": "2024-05-01T09:30:00.000Z",
+      "fingerprint": "0123456789abcdef0123456789abcdef",
+      "isFrozen": false
+    }
+  }
+}
