@@ -20,6 +20,7 @@ import {
 } from '@soipack/core';
 import type { RiskProfile } from '@soipack/engine';
 import { verifyManifestSignature } from '@soipack/packager';
+import { loadDefaultSphincsPlusKeyPair } from '@soipack/packager/security/pqc';
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
 import pino from 'pino';
 import { Registry } from 'prom-client';
@@ -4370,11 +4371,18 @@ describe('@soipack/server REST API', () => {
     const publishLedgerSpy = jest.spyOn(lifecycle.events, 'publishLedgerEntry');
     const publishProofSpy = jest.spyOn(lifecycle.events, 'publishManifestProof');
 
+    const postQuantumMaterial = loadDefaultSphincsPlusKeyPair();
+    const postQuantumRequest = {
+      algorithm: postQuantumMaterial.algorithm,
+      privateKey: postQuantumMaterial.privateKey,
+      publicKey: postQuantumMaterial.publicKey,
+    };
+
     const packQueued = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
       .set('X-SOIPACK-License', licenseHeader)
-      .send({ reportId: reportQueued.body.id })
+      .send({ reportId: reportQueued.body.id, postQuantum: postQuantumRequest })
       .expect(202);
 
     const packJob = await waitForJobCompletion(app, token, packQueued.body.id);
@@ -4392,6 +4400,14 @@ describe('@soipack/server REST API', () => {
     expect(cmsMetadata.verified).toBe(true);
     expect(cmsMetadata.digestVerified).toBe(true);
     expect(cmsMetadata.signerSerialNumber).toEqual(expect.any(String));
+    expect(packJob.result.postQuantumSignature).toEqual(
+      expect.objectContaining({
+        algorithm: postQuantumMaterial.algorithm,
+        publicKey: postQuantumMaterial.publicKey,
+        signature: expect.any(String),
+      }),
+    );
+    expect(packJob.result.postQuantumSignature?.signature.length).toBeGreaterThan(0);
 
     const ledgerAbsolutePath = path.resolve(storageDir, packJob.result.outputs.ledger!);
     const ledgerContent = JSON.parse(await fsPromises.readFile(ledgerAbsolutePath, 'utf8')) as {
@@ -4428,12 +4444,18 @@ describe('@soipack/server REST API', () => {
       sha256: cmsMetadata.sha256,
       der: cmsMetadata.der,
     });
+    expect(packDetails.body.result.postQuantumSignature).toEqual(
+      expect.objectContaining({
+        algorithm: postQuantumMaterial.algorithm,
+        publicKey: postQuantumMaterial.publicKey,
+      }),
+    );
 
     const packReuse = await request(app)
       .post('/v1/pack')
       .set('Authorization', `Bearer ${token}`)
       .set('X-SOIPACK-License', licenseHeader)
-      .send({ reportId: reportQueued.body.id })
+      .send({ reportId: reportQueued.body.id, postQuantum: postQuantumRequest })
       .expect(200);
     expect(packReuse.body.reused).toBe(true);
     expect(packReuse.body.id).toBe(packQueued.body.id);

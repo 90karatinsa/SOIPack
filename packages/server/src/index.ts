@@ -14,6 +14,7 @@ import {
   normalizePackageName,
   PackCmsOptions,
   PackOptions,
+  PackPostQuantumOptions,
   ReportOptions,
   runAnalyze,
   runImport,
@@ -1049,6 +1050,12 @@ interface CmsSignatureMetadata {
   signatureAlgorithm?: string | null;
 }
 
+interface PostQuantumSignatureMetadata {
+  algorithm: string;
+  publicKey: string;
+  signature: string;
+}
+
 interface PackJobMetadata extends BaseJobMetadata {
   kind: 'pack';
   outputs: {
@@ -1060,6 +1067,7 @@ interface PackJobMetadata extends BaseJobMetadata {
     ledgerRoot?: string;
     previousLedgerRoot?: string | null;
     cmsSignature?: CmsSignatureMetadata;
+    postQuantumSignature?: PostQuantumSignatureMetadata;
   };
 }
 
@@ -1110,11 +1118,14 @@ interface PackJobResult {
   ledgerRoot?: string;
   previousLedgerRoot?: string | null;
   cmsSignature?: CmsSignatureMetadata;
+  postQuantumSignature?: PostQuantumSignatureMetadata;
   outputs: {
     directory: string;
     manifest: string;
     archive: string;
     ledger?: string;
+    cmsSignature?: CmsSignatureMetadata;
+    postQuantumSignature?: PostQuantumSignatureMetadata;
   };
 }
 
@@ -1183,6 +1194,72 @@ const parseStringArrayField = (value: unknown, field: string): string[] | undefi
   });
 
   return normalized;
+};
+
+const parsePackPostQuantumOptions = (
+  value: unknown,
+): PackPostQuantumOptions | false | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === false) {
+    return false;
+  }
+
+  if (value === null) {
+    throw new HttpError(400, 'INVALID_REQUEST', 'postQuantum alanı için nesne bekleniyor.');
+  }
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(400, 'INVALID_REQUEST', 'postQuantum alanı için nesne bekleniyor.');
+  }
+
+  const raw = value as Record<string, unknown>;
+  const normalize = (input: unknown, field: string): string => {
+    if (typeof input !== 'string') {
+      throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı metin olmalıdır.`);
+    }
+    const trimmed = input.trim();
+    if (trimmed.length === 0) {
+      throw new HttpError(400, 'INVALID_REQUEST', `${field} alanı boş olamaz.`);
+    }
+    return trimmed;
+  };
+
+  const options: PackPostQuantumOptions = {};
+
+  if (raw.privateKey !== undefined) {
+    options.privateKey = normalize(raw.privateKey, 'postQuantum.privateKey');
+  }
+  if (raw.privateKeyPath !== undefined) {
+    options.privateKeyPath = normalize(raw.privateKeyPath, 'postQuantum.privateKeyPath');
+  }
+  if (raw.publicKey !== undefined) {
+    options.publicKey = normalize(raw.publicKey, 'postQuantum.publicKey');
+  }
+  if (raw.publicKeyPath !== undefined) {
+    options.publicKeyPath = normalize(raw.publicKeyPath, 'postQuantum.publicKeyPath');
+  }
+  if (raw.algorithm !== undefined) {
+    options.algorithm = normalize(raw.algorithm, 'postQuantum.algorithm');
+  }
+
+  if (
+    options.algorithm === undefined &&
+    options.privateKey === undefined &&
+    options.privateKeyPath === undefined &&
+    options.publicKey === undefined &&
+    options.publicKeyPath === undefined
+  ) {
+    throw new HttpError(
+      400,
+      'INVALID_REQUEST',
+      'postQuantum alanı en az bir anahtar veya algoritma değeri içermelidir.',
+    );
+  }
+
+  return options;
 };
 
 const parseJsonObjectField = (
@@ -2073,32 +2150,39 @@ const toReportResult = (
   },
 });
 
-const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): PackJobResult => ({
-  manifestId: metadata.outputs.manifestId,
-  manifestDigest: metadata.outputs.manifestDigest,
-  ledgerRoot: metadata.outputs.ledgerRoot,
-  previousLedgerRoot: metadata.outputs.previousLedgerRoot,
-  ...(metadata.outputs.cmsSignature
+const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): PackJobResult => {
+  const cmsSignature = metadata.outputs.cmsSignature
     ? {
-        cmsSignature: {
-          ...metadata.outputs.cmsSignature,
-          path: storage.toRelativePath(metadata.outputs.cmsSignature.path),
-          signerSerialNumber: metadata.outputs.cmsSignature.signerSerialNumber ?? null,
-          signerIssuer: metadata.outputs.cmsSignature.signerIssuer ?? null,
-          signerSubject: metadata.outputs.cmsSignature.signerSubject ?? null,
-          signatureAlgorithm: metadata.outputs.cmsSignature.signatureAlgorithm ?? null,
-        },
+        ...metadata.outputs.cmsSignature,
+        path: storage.toRelativePath(metadata.outputs.cmsSignature.path),
+        signerSerialNumber: metadata.outputs.cmsSignature.signerSerialNumber ?? null,
+        signerIssuer: metadata.outputs.cmsSignature.signerIssuer ?? null,
+        signerSubject: metadata.outputs.cmsSignature.signerSubject ?? null,
+        signatureAlgorithm: metadata.outputs.cmsSignature.signatureAlgorithm ?? null,
       }
-    : {}),
-  outputs: {
-    directory: storage.toRelativePath(metadata.directory),
-    manifest: storage.toRelativePath(metadata.outputs.manifestPath),
-    archive: storage.toRelativePath(metadata.outputs.archivePath),
-    ...(metadata.outputs.ledgerPath
-      ? { ledger: storage.toRelativePath(metadata.outputs.ledgerPath) }
-      : {}),
-  },
-});
+    : undefined;
+
+  const postQuantumSignature = metadata.outputs.postQuantumSignature;
+
+  return {
+    manifestId: metadata.outputs.manifestId,
+    manifestDigest: metadata.outputs.manifestDigest,
+    ledgerRoot: metadata.outputs.ledgerRoot,
+    previousLedgerRoot: metadata.outputs.previousLedgerRoot,
+    ...(cmsSignature ? { cmsSignature } : {}),
+    ...(postQuantumSignature ? { postQuantumSignature } : {}),
+    outputs: {
+      directory: storage.toRelativePath(metadata.directory),
+      manifest: storage.toRelativePath(metadata.outputs.manifestPath),
+      archive: storage.toRelativePath(metadata.outputs.archivePath),
+      ...(metadata.outputs.ledgerPath
+        ? { ledger: storage.toRelativePath(metadata.outputs.ledgerPath) }
+        : {}),
+      ...(cmsSignature ? { cmsSignature } : {}),
+      ...(postQuantumSignature ? { postQuantumSignature } : {}),
+    },
+  };
+};
 
 interface ImportJobPayload {
   workspaceDir: string;
@@ -2138,6 +2222,7 @@ interface PackJobPayload {
   signingKeyPath: string;
   reportId: string;
   soiStage?: SoiStage | null;
+  postQuantum?: PackPostQuantumOptions | false;
   license: JobLicenseMetadata;
 }
 
@@ -3985,6 +4070,7 @@ export const createServer = (config: ServerConfig): Express => {
               }
             : {}),
           ...(payload.soiStage ? { soiStage: payload.soiStage } : {}),
+          ...(payload.postQuantum !== undefined ? { postQuantum: payload.postQuantum } : {}),
         };
         const result = await runPack(packOptions);
 
@@ -4060,6 +4146,10 @@ export const createServer = (config: ServerConfig): Express => {
             reportId: payload.reportId,
             packageName: payload.packageName ?? null,
             soiStage: payload.soiStage ?? null,
+            postQuantumAlgorithm:
+              payload.postQuantum && payload.postQuantum !== false
+                ? payload.postQuantum.algorithm ?? null
+                : null,
           },
           license: payload.license,
           outputs: {
@@ -4071,6 +4161,9 @@ export const createServer = (config: ServerConfig): Express => {
             ledgerRoot: result.ledgerEntry?.ledgerRoot,
             previousLedgerRoot: result.ledgerEntry?.previousRoot ?? null,
             ...(cmsSignatureMetadata ? { cmsSignature: cmsSignatureMetadata } : {}),
+            ...(result.signatureMetadata?.postQuantumSignature
+              ? { postQuantumSignature: result.signatureMetadata.postQuantumSignature }
+              : {}),
           },
         };
 
@@ -7471,6 +7564,7 @@ export const createServer = (config: ServerConfig): Express => {
         packageName?: string;
         reviewId?: string;
         soiStage?: string;
+        postQuantum?: unknown;
       };
       if (!body.reportId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'reportId alanı zorunludur.');
@@ -7494,6 +7588,7 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const requestedStage = parseSoiStage(body.soiStage);
+      const postQuantumOptions = parsePackPostQuantumOptions(body.postQuantum);
       const resolvedReportDir = await findStageAwareJobDirectory(
         storage,
         directories.reports,
@@ -7534,6 +7629,26 @@ export const createServer = (config: ServerConfig): Express => {
         { key: 'packageName', value: packageName ?? '' },
         { key: 'soiStage', value: effectiveStage ?? '' },
       ];
+      if (postQuantumOptions !== undefined) {
+        if (postQuantumOptions === false) {
+          hashEntries.push({ key: 'postQuantum', value: 'false' });
+        } else {
+          const fingerprint = toStableJson({
+            algorithm: postQuantumOptions.algorithm ?? null,
+            privateKey:
+              postQuantumOptions.privateKey !== undefined
+                ? createHash('sha256').update(postQuantumOptions.privateKey).digest('hex')
+                : undefined,
+            privateKeyPath: postQuantumOptions.privateKeyPath ?? null,
+            publicKey:
+              postQuantumOptions.publicKey !== undefined
+                ? createHash('sha256').update(postQuantumOptions.publicKey).digest('hex')
+                : undefined,
+            publicKeyPath: postQuantumOptions.publicKeyPath ?? null,
+          });
+          hashEntries.push({ key: 'postQuantum', value: fingerprint });
+        }
+      }
       const hash = computeHash(hashEntries);
       const packId = createJobId(hash);
       const reportDir = resolvedReportDir;
@@ -7586,6 +7701,7 @@ export const createServer = (config: ServerConfig): Express => {
           signingKeyPath,
           reportId: body.reportId,
           soiStage: effectiveStage,
+          ...(postQuantumOptions !== undefined ? { postQuantum: postQuantumOptions } : {}),
           license: toLicenseMetadata(license),
         },
       });

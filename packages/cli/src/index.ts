@@ -3587,6 +3587,14 @@ export interface PackCmsOptions {
   chainPem?: string;
 }
 
+export interface PackPostQuantumOptions {
+  algorithm?: string;
+  privateKey?: string;
+  privateKeyPath?: string;
+  publicKey?: string;
+  publicKeyPath?: string;
+}
+
 export interface PackOptions {
   input: string;
   output: string;
@@ -3595,6 +3603,7 @@ export interface PackOptions {
   ledger?: PackLedgerOptions;
   cms?: PackCmsOptions;
   stage?: SoiStage;
+  postQuantum?: PackPostQuantumOptions | false;
 }
 
 export interface PackResult {
@@ -3609,6 +3618,13 @@ export interface PackResult {
   cmsSignatureSha256?: string;
   sbomPath: string;
   sbomSha256: string;
+  signatureMetadata?: {
+    postQuantumSignature?: {
+      algorithm: string;
+      publicKey: string;
+      signature: string;
+    };
+  };
 }
 
 interface ManifestSbomMetadata {
@@ -3943,6 +3959,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
           chainPem: options.cms.chainPem,
         }
       : undefined,
+    postQuantum: options.postQuantum,
   });
   const signature = signatureBundle.signature;
   const verification = verifyManifestSignatureDetailed(
@@ -3970,6 +3987,14 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
 
   const sbomPath = path.join(outputDir, SBOM_FILENAME);
   await fsPromises.writeFile(sbomPath, serializedSbom, 'utf8');
+
+  const postQuantumSignature = signatureBundle.postQuantumSignature
+    ? {
+        algorithm: signatureBundle.postQuantumSignature.algorithm,
+        publicKey: signatureBundle.postQuantumSignature.publicKey,
+        signature: signatureBundle.postQuantumSignature.signature,
+      }
+    : undefined;
 
   let cmsSignaturePath: string | undefined;
   let cmsSignatureSha256: string | undefined;
@@ -4013,6 +4038,11 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     cmsSignatureSha256,
     sbomPath,
     sbomSha256,
+    signatureMetadata: postQuantumSignature
+      ? {
+          postQuantumSignature,
+        }
+      : undefined,
   };
 };
 
@@ -4215,6 +4245,7 @@ export interface PackagePipelineResult extends IngestPipelineResult {
   cmsSignatureSha256?: string;
   sbomPath: string;
   sbomSha256: string;
+  signatureMetadata?: PackResult['signatureMetadata'];
 }
 
 export const runIngestAndPackage = async (
@@ -4245,6 +4276,7 @@ export const runIngestAndPackage = async (
     cmsSignatureSha256: packResult.cmsSignatureSha256,
     sbomPath: packResult.sbomPath,
     sbomSha256: packResult.sbomSha256,
+    signatureMetadata: packResult.signatureMetadata,
   };
 };
 
@@ -5561,6 +5593,18 @@ if (require.main === module) {
             describe: 'CMS imzasına eklenecek isteğe bağlı sertifika zinciri PEM dosyası.',
             type: 'string',
           })
+          .option('pqc-key', {
+            describe: 'SPHINCS+ özel anahtarının base64 kodlu dosyası.',
+            type: 'string',
+          })
+          .option('pqc-public-key', {
+            describe: 'SPHINCS+ kamu anahtarının base64 kodlu dosyası.',
+            type: 'string',
+          })
+          .option('pqc-algorithm', {
+            describe: 'SPHINCS+ algoritma tanımlayıcısı (örn. SPHINCS+-SHA2-128s).',
+            type: 'string',
+          })
           .option('ledger', {
             describe: 'Güncellenecek ledger.json dosya yolu.',
             type: 'string',
@@ -5671,6 +5715,38 @@ if (require.main === module) {
             cmsOptions = { certificatePem, privateKeyPem, chainPem };
           }
 
+          const pqcKeyOption = Array.isArray(argv.pqcKey)
+            ? (argv.pqcKey[0] as string | undefined)
+            : (argv.pqcKey as string | undefined);
+          const pqcPublicKeyOption = Array.isArray(argv.pqcPublicKey)
+            ? (argv.pqcPublicKey[0] as string | undefined)
+            : (argv.pqcPublicKey as string | undefined);
+          const pqcAlgorithmOption = Array.isArray(argv.pqcAlgorithm)
+            ? (argv.pqcAlgorithm[0] as string | undefined)
+            : (argv.pqcAlgorithm as string | undefined);
+
+          let postQuantumOptions: PackPostQuantumOptions | undefined;
+          if (pqcKeyOption || pqcPublicKeyOption || pqcAlgorithmOption) {
+            postQuantumOptions = {};
+            if (pqcAlgorithmOption) {
+              const algorithm = String(pqcAlgorithmOption).trim();
+              if (algorithm.length > 0) {
+                postQuantumOptions.algorithm = algorithm;
+                context.pqcAlgorithm = algorithm;
+              }
+            }
+            if (pqcKeyOption) {
+              const pqcKeyPath = path.resolve(pqcKeyOption);
+              context.pqcKeyPath = pqcKeyPath;
+              postQuantumOptions.privateKey = await fsPromises.readFile(pqcKeyPath, 'utf8');
+            }
+            if (pqcPublicKeyOption) {
+              const pqcPublicKeyPath = path.resolve(pqcPublicKeyOption);
+              context.pqcPublicKeyPath = pqcPublicKeyPath;
+              postQuantumOptions.publicKey = await fsPromises.readFile(pqcPublicKeyPath, 'utf8');
+            }
+          }
+
           const result = await runPack({
             input: argv.input,
             output: argv.output,
@@ -5679,6 +5755,7 @@ if (require.main === module) {
             ledger: ledgerOptions,
             cms: cmsOptions,
             stage,
+            postQuantum: postQuantumOptions,
           });
 
           logger.info(
@@ -5689,6 +5766,7 @@ if (require.main === module) {
               manifestId: result.manifestId,
               sbomPath: result.sbomPath,
               sbomDigest: result.sbomSha256,
+              postQuantumSignature: result.signatureMetadata?.postQuantumSignature,
             },
             'Paket oluşturuldu.',
           );
