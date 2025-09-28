@@ -284,6 +284,9 @@ components:
         cmsSignature:
           $ref: '#/components/schemas/CmsSignatureMetadata'
           nullable: true
+        postQuantumSignature:
+          $ref: '#/components/schemas/PostQuantumSignatureMetadata'
+          nullable: true
         outputs:
           type: object
           required:
@@ -299,6 +302,9 @@ components:
               type: string
             cmsSignature:
               $ref: '#/components/schemas/CmsSignatureMetadata'
+              nullable: true
+            postQuantumSignature:
+              $ref: '#/components/schemas/PostQuantumSignatureMetadata'
               nullable: true
     ReviewTarget:
       type: object
@@ -884,6 +890,41 @@ components:
         signatureAlgorithm:
           type: string
           nullable: true
+    PostQuantumSignatureMetadata:
+      type: object
+      required:
+        - algorithm
+        - publicKey
+        - signature
+      properties:
+        algorithm:
+          type: string
+          description: Üretilen SPHINCS+ imzasının algoritma tanımlayıcısı.
+        publicKey:
+          type: string
+          description: Base64 kodlu SPHINCS+ kamu anahtarı.
+        signature:
+          type: string
+          description: Base64URL kodlu SPHINCS+ imzası.
+    PackPostQuantumOptions:
+      type: object
+      properties:
+        algorithm:
+          type: string
+          description: SPHINCS+ algoritma tanımlayıcısı (örn. `SPHINCS+-SHA2-128s`).
+        privateKey:
+          type: string
+          description: Base64 kodlu SPHINCS+ özel anahtarı.
+        privateKeyPath:
+          type: string
+          description: Sunucu tarafında erişilebilen SPHINCS+ özel anahtar yolu.
+        publicKey:
+          type: string
+          description: Base64 kodlu SPHINCS+ kamu anahtarı.
+        publicKeyPath:
+          type: string
+          description: Sunucu tarafında erişilebilen SPHINCS+ kamu anahtarı yolu.
+      description: SPHINCS+ hibrit imzalama materyali. En az bir alan belirtilmelidir.
     ManifestMerkleSummary:
       type: object
       required:
@@ -2058,13 +2099,13 @@ paths:
               type: object
               required:
                 - importId
-              properties:
-                importId:
-                  type: string
-                  description: Import işlemi kimliği.
-                reviewId:
-                  type: string
-                  description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
+                properties:
+                  importId:
+                    type: string
+                    description: Import işlemi kimliği.
+                  reviewId:
+                    type: string
+                    description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
                 level:
                   type: string
                   description: Sertifikasyon seviyesi (A-E).
@@ -2224,6 +2265,12 @@ paths:
                 reviewId:
                   type: string
                   description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
+                postQuantum:
+                  description: SPHINCS+ post-kuantum imzalama seçenekleri; belirtilirse manifest hibrit olarak imzalanır.
+                  oneOf:
+                    - $ref: '#/components/schemas/PackPostQuantumOptions'
+                    - type: boolean
+                      enum: [false]
       responses:
         '200':
           description: Paket başarıyla oluşturuldu.

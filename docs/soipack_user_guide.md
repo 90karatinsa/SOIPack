@@ -123,18 +123,26 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
 
    Her anahtar plan kimliğini (`psac`, `sdp`, `svp`, `scmp`, `sqap`) temsil eder. Planlar içinde `overview` başlığı ve `sections` altındaki bölüm kimlikleri (`introduction`, `softwareLifecycle`, `testingStrategy` vb.) HTML içeriği kabul eder; `additionalNotes` alanı ek not bloğu oluşturur.
 5. **Dağıtım paketini oluşturun**
-   ```bash
-   node packages/cli/dist/index.js --license data/licenses/demo-license.key pack \
-     -i dist \
-     -o release \
-     --name soipack-demo.zip \
-     --cms-bundle data/certs/cms-test.pem
-   ```
+  ```bash
+  node packages/cli/dist/index.js --license data/licenses/demo-license.key pack \
+    -i dist \
+    -o release \
+    --name soipack-demo.zip \
+    --cms-bundle data/certs/cms-test.pem \
+    --pqc-key secrets/sphincs-private.key \
+    --pqc-algorithm SPHINCS+-SHA2-128s
+  ```
 
   `--cms-bundle` yerine `--cms-cert` + `--cms-key` (ve gerekiyorsa `--cms-chain`) parametreleri kullanılarak CMS imzası için
   ayrı sertifika ve anahtar dosyaları belirtilebilir. Komut tamamlandığında manifest ve imzaların yanında `release/sbom.spdx.json`
   dosyası yazılır; CLI hem SBOM yolunu hem de SHA-256 karmasını çıktıya ekler ve aynı değer manifestteki `sbom.digest` alanına
   işlenir.
+
+  Post-kuantum imzalama için `--pqc-key` bayrağı SPHINCS+ özel anahtarının base64 kodlu dosyasını, `--pqc-algorithm` ise
+  kullanılacak varyantı belirtir (örn. `SPHINCS+-SHAKE-192f`). Eğer anahtar çiftinin kamu kısmını ayrıca yönetiyorsanız
+  `--pqc-public-key sphincs-public.key` ile base64 kodlu kamu anahtarını da iletebilirsiniz; belirtilmezse CLI özel anahtardan
+  otomatik olarak türetir. Komut çıktısında logger, üretilen post-kuantum imza algoritmasını ve kamu anahtarını içeren
+  metaveriyi raporlar ve `manifest.sig` dosyasının JWS başlığına SPHINCS+ imza segmenti eklenir.
 
 6. **Manifest imzasını ve paket içeriğini doğrulayın**
   ```bash

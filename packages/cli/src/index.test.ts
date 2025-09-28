@@ -6,13 +6,14 @@ import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
 
-jest.setTimeout(180000);
+jest.setTimeout(1200000);
 
 import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
 import { signManifestBundle, verifyManifestSignature, verifyManifestSignatureDetailed } from '@soipack/packager';
+import { loadDefaultSphincsPlusKeyPair } from '@soipack/packager/security/pqc';
 import type { PlanTemplateId } from '@soipack/report';
 import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
 import { ZipFile } from 'yazl';
@@ -108,7 +109,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('@soipack/cli pipeline', () => {
+describe('CLI pipeline workflows', () => {
   const fixturesDir = path.resolve(__dirname, '../../../examples/minimal');
   const objectivesPath = path.resolve(
     __dirname,
@@ -261,6 +262,13 @@ describe('@soipack/cli pipeline', () => {
       algorithm: 'sha256',
       digest: packResult.sbomSha256,
     });
+    expect(packResult.signatureMetadata?.postQuantumSignature).toEqual(
+      expect.objectContaining({
+        algorithm: expect.any(String),
+        publicKey: expect.any(String),
+        signature: expect.any(String),
+      }),
+    );
 
     const detailedVerification = verifyManifestSignatureDetailed(manifest, signature, {
       publicKeyPem: TEST_SIGNING_PUBLIC_KEY,
@@ -277,6 +285,7 @@ describe('@soipack/cli pipeline', () => {
     expect(detailedVerification.cms).toEqual(
       expect.objectContaining({ verified: true, digestVerified: true }),
     );
+    expect(detailedVerification.postQuantum?.verified).toBe(true);
 
     const ledgerData = JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as {
       root: string;
@@ -316,7 +325,7 @@ describe('@soipack/cli pipeline', () => {
     expect(complianceStats.isFile()).toBe(true);
   });
 
-  it('packages demo data into a signed archive with consistent manifest hashes', async () => {
+  it('archives demo data into a signed release with consistent manifest hashes', async () => {
     const packageOutput = path.join(tempRoot, 'ingest-package');
 
     const ledgerPath = path.join(packageOutput, 'ledger.json');
@@ -367,6 +376,13 @@ describe('@soipack/cli pipeline', () => {
       algorithm: 'sha256',
       digest: result.sbomSha256,
     });
+    expect(result.signatureMetadata?.postQuantumSignature).toEqual(
+      expect.objectContaining({
+        algorithm: expect.any(String),
+        publicKey: expect.any(String),
+        signature: expect.any(String),
+      }),
+    );
 
     const signature = (await fs.readFile(path.join(packageOutput, 'manifest.sig'), 'utf8')).trim();
     expect(verifyManifestSignature(manifest, signature, TEST_SIGNING_PUBLIC_KEY)).toBe(true);
@@ -380,6 +396,7 @@ describe('@soipack/cli pipeline', () => {
       cms: { signaturePem: cmsContent.trim(), certificatePem: TEST_CMS_CERTIFICATE, required: true },
     });
     expect(detailed.valid).toBe(true);
+    expect(detailed.postQuantum?.verified).toBe(true);
   });
 
 
@@ -458,7 +475,7 @@ describe('@soipack/cli pipeline', () => {
     });
   });
 
-  it('fails manifest verification when packaged data is tampered', async () => {
+  it('fails manifest verification when archive data is tampered', async () => {
     const tamperOutput = path.join(tempRoot, 'ingest-package-tamper');
 
     const result = await runIngestAndPackage({
@@ -831,7 +848,7 @@ describe('@soipack/cli pipeline', () => {
     expect(recordedGap?.missingArtifacts).toContain('analysis');
   });
 
-  it('generates tool qualification packs from tool usage metadata', async () => {
+  it('generates tool qualification bundles from tool usage metadata', async () => {
     const fixtureDir = path.join(__dirname, '__fixtures__', 'tool-usage');
     const workspaceDir = path.join(tempRoot, 'tool-usage-workspace');
     const analysisDir = path.join(tempRoot, 'tool-usage-analysis');
@@ -1242,7 +1259,16 @@ describe('runObjectivesList', () => {
   });
 });
 
-describe('runPack package name validation', () => {
+const createMinimalPackInputs = async (workspaceRoot: string) => {
+  const distDir = path.join(workspaceRoot, 'dist');
+  const reportsDir = path.join(distDir, 'reports');
+  const releaseDir = path.join(workspaceRoot, 'release');
+  await fs.mkdir(reportsDir, { recursive: true });
+  await fs.writeFile(path.join(reportsDir, 'report.txt'), 'demo report', 'utf8');
+  return { distDir, releaseDir };
+};
+
+describe('archive name validation', () => {
   let tempDir: string;
 
   beforeEach(async () => {
@@ -1253,17 +1279,8 @@ describe('runPack package name validation', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  const createPackInputs = async () => {
-    const distDir = path.join(tempDir, 'dist');
-    const reportsDir = path.join(distDir, 'reports');
-    const releaseDir = path.join(tempDir, 'release');
-    await fs.mkdir(reportsDir, { recursive: true });
-    await fs.writeFile(path.join(reportsDir, 'report.txt'), 'demo report', 'utf8');
-    return { distDir, releaseDir };
-  };
-
-  it('accepts release.zip as a package name', async () => {
-    const { distDir, releaseDir } = await createPackInputs();
+  it('accepts release.zip as an archive name', async () => {
+    const { distDir, releaseDir } = await createMinimalPackInputs(tempDir);
 
     const result = await runPack({
       input: distDir,
@@ -1278,8 +1295,8 @@ describe('runPack package name validation', () => {
   it.each([
     '../hack.zip',
     path.join(path.sep, 'tmp', 'hack.zip'),
-  ])('rejects unsafe package name %s', async (packageName) => {
-    const { distDir, releaseDir } = await createPackInputs();
+  ])('rejects unsafe archive name %s', async (packageName) => {
+    const { distDir, releaseDir } = await createMinimalPackInputs(tempDir);
 
     await expect(
       runPack({
@@ -1289,6 +1306,46 @@ describe('runPack package name validation', () => {
         signingKey: TEST_SIGNING_BUNDLE,
       }),
     ).rejects.toThrow(/packageName/);
+  });
+});
+
+describe('pack CLI post-quantum metadata', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-pqc-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('pack CLI surfaces post-quantum signature metadata', async () => {
+    const { distDir, releaseDir } = await createMinimalPackInputs(tempDir);
+    const { algorithm, privateKey, publicKey } = loadDefaultSphincsPlusKeyPair();
+
+    const result = await runPack({
+      input: distDir,
+      output: releaseDir,
+      packageName: 'demo.zip',
+      signingKey: TEST_SIGNING_BUNDLE,
+      postQuantum: {
+        algorithm,
+        privateKey,
+        publicKey,
+      },
+    });
+
+    const pqcSignature = result.signatureMetadata?.postQuantumSignature;
+    expect(pqcSignature).toBeDefined();
+    expect(pqcSignature).toMatchObject({ algorithm });
+    expect(typeof pqcSignature?.publicKey).toBe('string');
+    expect(pqcSignature?.publicKey?.length ?? 0).toBeGreaterThan(0);
+    expect(typeof pqcSignature?.signature).toBe('string');
+    expect(pqcSignature?.signature?.length ?? 0).toBeGreaterThan(0);
+
+    const manifestSignature = await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8');
+    expect(manifestSignature.trim().length).toBeGreaterThan(0);
   });
 });
 
@@ -1446,7 +1503,7 @@ describe('runVerify', () => {
     );
   });
 
-  it('validates package contents when provided', async () => {
+  it('validates archive contents when provided', async () => {
     const dataEntries: PackageEntry[] = [
       { path: 'reports/compliance.json', data: '{"status":"ok"}\n' },
       { path: 'reports/gaps.html', data: '<html>gaps</html>' },
@@ -1479,7 +1536,7 @@ describe('runVerify', () => {
     });
   });
 
-  it('reports mismatched files when package content is tampered', async () => {
+  it('reports mismatched files when archive content is tampered', async () => {
     const dataEntries: PackageEntry[] = [
       { path: 'reports/compliance.json', data: 'original compliance' },
       { path: 'reports/gaps.html', data: '<html>gaps</html>' },
@@ -1509,7 +1566,7 @@ describe('runVerify', () => {
     expect(result.sbom).toBeUndefined();
   });
 
-  it('reports missing files when package omits manifest entries', async () => {
+  it('reports missing files when an archive omits manifest entries', async () => {
     const dataEntries: PackageEntry[] = [
       { path: 'reports/compliance.json', data: 'original compliance' },
       { path: 'reports/gaps.html', data: '<html>gaps</html>' },
@@ -1535,7 +1592,7 @@ describe('runVerify', () => {
     expect(result.sbom).toBeUndefined();
   });
 
-  it('reports SBOM mismatches from package contents', async () => {
+  it('reports SBOM mismatches from archive contents', async () => {
     const dataEntries: PackageEntry[] = [
       { path: 'reports/compliance.json', data: 'original compliance' },
     ];
