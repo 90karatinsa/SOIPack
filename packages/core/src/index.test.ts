@@ -13,6 +13,7 @@ import {
   createDesignRecord,
   designRecordSchema,
   DesignStatus,
+  type EvidenceSource,
 } from './index';
 
 describe('@soipack/core', () => {
@@ -104,6 +105,31 @@ describe('@soipack/core', () => {
       independent: true,
     });
     expect(parsed.independent).toBe(true);
+  });
+
+  it('accepts jama evidence sources and rejects unknown sources', () => {
+    const timestamp = '2024-07-01T08:30:00.000Z';
+    const snapshotId = createSnapshotIdentifier(timestamp, '0123456789abcdef');
+
+    const jamaEvidence = evidenceSchema.parse({
+      source: 'jama',
+      path: 'exports/jama/requirements.csv',
+      summary: 'Requirements exported from Jama',
+      timestamp,
+      snapshotId,
+    });
+
+    expect(jamaEvidence.source).toBe('jama');
+
+    expect(() =>
+      evidenceSchema.parse({
+        source: 'unknownTool' as EvidenceSource,
+        path: 'invalid/path',
+        summary: 'Invalid evidence',
+        timestamp,
+        snapshotId,
+      }),
+    ).toThrow(/Invalid enum value/);
   });
 
   describe('DO-178C objective catalog', () => {
