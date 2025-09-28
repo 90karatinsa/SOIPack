@@ -57,6 +57,55 @@ const ambiguousLanguagePatterns: Array<{
 
 const passiveVoicePattern = /\b(?:shall|will|must|should)\s+be\s+\w+(?:ed|en)\b/i;
 
+const duplicateWarnThreshold = 0.6;
+const duplicateErrorThreshold = 0.82;
+const duplicateRecommendation =
+  'Benzer gereksinimleri birleştirmeyi, kapsamlarını netleştirmeyi veya benzersiz kimlikler atamayı değerlendirin.';
+
+const sanitizeRequirementText = (text: string): string => {
+  return text
+    .toLocaleLowerCase('tr-TR')
+    .replace(/["'`]/g, ' ')
+    .replace(/[^a-z0-9çğıöşüİı\s]/giu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const buildTrigrams = (text: string): Set<string> => {
+  const sanitized = sanitizeRequirementText(text);
+  if (sanitized.length === 0) {
+    return new Set();
+  }
+  if (sanitized.length < 3) {
+    return new Set([sanitized]);
+  }
+  const trigrams = new Set<string>();
+  const padded = ` ${sanitized} `;
+  for (let index = 0; index <= padded.length - 3; index += 1) {
+    trigrams.add(padded.slice(index, index + 3));
+  }
+  return trigrams;
+};
+
+const computeJaccardSimilarity = (a: Set<string>, b: Set<string>): number => {
+  if (a.size === 0 && b.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  const larger = a.size >= b.size ? a : b;
+  const smaller = larger === a ? b : a;
+  smaller.forEach((value) => {
+    if (larger.has(value)) {
+      intersection += 1;
+    }
+  });
+  const union = a.size + b.size - intersection;
+  if (union <= 0) {
+    return 0;
+  }
+  return intersection / union;
+};
+
 const placeholderRegexes = [
   /\bTBD\b/i,
   /\bTBA\b/i,
@@ -308,6 +357,87 @@ const evaluateRequirement = ({ trace, coverage }: RequirementQualityContext): Qu
   return [...findings, ...evaluateRequirementClarity(requirement)];
 };
 
+const evaluateDuplicateRequirements = (traces: RequirementTrace[]): QualityFinding[] => {
+  const findings: QualityFinding[] = [];
+  const trigramCache = new Map<string, Set<string>>();
+
+  const getRequirementText = (requirement: Requirement): string => {
+    const base = `${requirement.title ?? ''} ${requirement.description ?? ''}`.trim();
+    return base;
+  };
+
+  const getTrigrams = (requirement: Requirement): Set<string> => {
+    const cached = trigramCache.get(requirement.id);
+    if (cached) {
+      return cached;
+    }
+    const text = getRequirementText(requirement);
+    const grams = buildTrigrams(text);
+    trigramCache.set(requirement.id, grams);
+    return grams;
+  };
+
+  for (let index = 0; index < traces.length; index += 1) {
+    const left = traces[index]?.requirement;
+    if (!left) {
+      continue;
+    }
+    const leftText = getRequirementText(left);
+    if (!leftText || leftText.trim().length === 0) {
+      continue;
+    }
+    const leftTrigrams = getTrigrams(left);
+    if (leftTrigrams.size === 0) {
+      continue;
+    }
+
+    for (let siblingIndex = index + 1; siblingIndex < traces.length; siblingIndex += 1) {
+      const right = traces[siblingIndex]?.requirement;
+      if (!right) {
+        continue;
+      }
+      const rightText = getRequirementText(right);
+      if (!rightText || rightText.trim().length === 0) {
+        continue;
+      }
+      const rightTrigrams = getTrigrams(right);
+      if (rightTrigrams.size === 0) {
+        continue;
+      }
+
+      const similarity = computeJaccardSimilarity(leftTrigrams, rightTrigrams);
+      if (similarity < duplicateWarnThreshold) {
+        continue;
+      }
+
+      const severity: QualityFindingSeverity =
+        similarity >= duplicateErrorThreshold ? 'error' : 'warn';
+      const percentage = Math.round(similarity * 100);
+      const sharedMessage = `%${percentage} benzerlik`; // for consistent rounding
+
+      findings.push({
+        id: `${left.id}-duplicate-${right.id}`,
+        severity,
+        category: 'analysis',
+        requirementId: left.id,
+        message: `${left.id} gereksinimi ${right.id} ile ${sharedMessage} gösteriyor; ifadeler neredeyse aynıdır.`,
+        recommendation: duplicateRecommendation,
+      });
+
+      findings.push({
+        id: `${right.id}-duplicate-${left.id}`,
+        severity,
+        category: 'analysis',
+        requirementId: right.id,
+        message: `${right.id} gereksinimi ${left.id} ile ${sharedMessage} gösteriyor; ifadeler neredeyse aynıdır.`,
+        recommendation: duplicateRecommendation,
+      });
+    }
+  }
+
+  return findings;
+};
+
 export const evaluateQualityFindings = (
   traces: RequirementTrace[],
   coverage: RequirementCoverageStatus[],
@@ -320,7 +450,8 @@ export const evaluateQualityFindings = (
   const traceFindings = traces.flatMap((trace) =>
     evaluateRequirement({ trace, coverage: coverageByRequirement.get(trace.requirement.id) }),
   );
+  const duplicateFindings = evaluateDuplicateRequirements(traces);
   const analysisQuality = evaluateAnalysisFindings(analysisFindings);
 
-  return ensureUnique([...traceFindings, ...analysisQuality]);
+  return ensureUnique([...traceFindings, ...duplicateFindings, ...analysisQuality]);
 };

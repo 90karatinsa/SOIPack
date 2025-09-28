@@ -11,6 +11,7 @@ describe('computeRiskProfile', () => {
     const profile = computeRiskProfile({
       coverage: { total: 100, missing: 10, partial: 20 },
       tests: { total: 50, failing: 5, quarantined: 3 },
+      quality: { warn: 3, error: 1, total: 40 },
       analysis: [{ severity: 'error' }, { severity: 'warn' }],
       audit: [
         { severity: 'medium', ageDays: 120 },
@@ -18,19 +19,22 @@ describe('computeRiskProfile', () => {
       ],
     });
 
-    expect(profile.score).toBeCloseTo(40.2, 1);
+    expect(profile.score).toBeCloseTo(31.87, 2);
     expect(profile.classification).toBe('moderate');
     expect(profile.breakdown.map((entry) => entry.factor)).toEqual([
       'analysis',
       'audit',
       'coverage',
       'testing',
+      'quality',
     ]);
 
     const coverageContribution = profile.breakdown.find((entry) => entry.factor === 'coverage');
     const testingContribution = profile.breakdown.find((entry) => entry.factor === 'testing');
-    expect(coverageContribution?.contribution).toBeCloseTo(8, 1);
+    const qualityContribution = profile.breakdown.find((entry) => entry.factor === 'quality');
+    expect(coverageContribution?.contribution).toBeCloseTo(7, 1);
     expect(testingContribution?.contribution).toBeCloseTo(3.1, 1);
+    expect(qualityContribution?.contribution).toBeCloseTo(0.94, 2);
     expect(profile.missingSignals).toHaveLength(0);
   });
 
@@ -43,6 +47,7 @@ describe('computeRiskProfile', () => {
       'analysis',
       'audit',
       'coverage',
+      'quality',
       'testing',
     ]);
   });
@@ -53,15 +58,32 @@ describe('computeRiskProfile', () => {
       tests: { total: 10, failing: 0 },
       analysis: [],
       audit: [],
+      quality: { warn: 0, error: 0, total: 20 },
     });
 
     expect(profile.score).toBe(0);
     expect(profile.breakdown.map((entry) => entry.factor)).toEqual([
       'coverage',
       'testing',
+      'quality',
       'analysis',
       'audit',
     ]);
+  });
+
+  it('elevates risk classification when quality findings accumulate', () => {
+    const profile = computeRiskProfile({
+      quality: { warn: 6, error: 8, total: 20 },
+      coverage: { total: 30, missing: 10, partial: 10 },
+      tests: { total: 12, failing: 3 },
+      analysis: [],
+      audit: [],
+    });
+
+    const qualityEntry = profile.breakdown.find((entry) => entry.factor === 'quality');
+    expect(qualityEntry?.contribution).toBeGreaterThan(7);
+    expect(profile.score).toBeGreaterThan(30);
+    expect(profile.classification).toBe('moderate');
   });
 });
 

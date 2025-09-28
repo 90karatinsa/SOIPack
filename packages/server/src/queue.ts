@@ -3,6 +3,43 @@ import path from 'path';
 
 import { HttpError, toHttpError } from './errors';
 
+const DIRECTORY_MODE = 0o750;
+const FILE_MODE = 0o640;
+
+const CURRENT_UID = typeof process.getuid === 'function' ? process.getuid() : undefined;
+const CURRENT_GID = typeof process.getgid === 'function' ? process.getgid() : undefined;
+
+const shouldIgnoreFsError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EINVAL' || code === 'ENOSYS';
+};
+
+const safeChmodSync = (target: string, mode: number): void => {
+  try {
+    fs.chmodSync(target, mode);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
+const normalizeOwnershipSync = (target: string): void => {
+  if (CURRENT_UID === undefined || CURRENT_GID === undefined) {
+    return;
+  }
+  try {
+    fs.chownSync(target, CURRENT_UID, CURRENT_GID);
+  } catch (error) {
+    if (!shouldIgnoreFsError(error)) {
+      throw error;
+    }
+  }
+};
+
 export type JobKind = 'import' | 'analyze' | 'report' | 'pack';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -116,7 +153,9 @@ export class JobQueue {
     this.persistJobs = options.persistJobs ?? true;
 
     if (this.persistJobs) {
-      fs.mkdirSync(this.directory, { recursive: true, mode: 0o750 });
+      fs.mkdirSync(this.directory, { recursive: true, mode: DIRECTORY_MODE });
+      safeChmodSync(this.directory, DIRECTORY_MODE);
+      normalizeOwnershipSync(this.directory);
       this.loadPersistedJobs();
     }
   }
@@ -442,7 +481,9 @@ export class JobQueue {
       return path.join(this.directory, tenantId, `${id}.json`);
     }
     const tenantDir = path.join(this.directory, tenantId);
-    fs.mkdirSync(tenantDir, { recursive: true, mode: 0o750 });
+    fs.mkdirSync(tenantDir, { recursive: true, mode: DIRECTORY_MODE });
+    safeChmodSync(tenantDir, DIRECTORY_MODE);
+    normalizeOwnershipSync(tenantDir);
     return path.join(tenantDir, `${id}.json`);
   }
 
@@ -462,7 +503,60 @@ export class JobQueue {
       result: job.result,
       error: job.error,
     };
-    fs.writeFileSync(job.filePath, `${JSON.stringify(serialized, null, 2)}\n`, 'utf8');
+    const payload = `${JSON.stringify(serialized, null, 2)}\n`;
+    const directory = path.dirname(job.filePath);
+    fs.mkdirSync(directory, { recursive: true, mode: DIRECTORY_MODE });
+    safeChmodSync(directory, DIRECTORY_MODE);
+    normalizeOwnershipSync(directory);
+
+    const tempFilePath = path.join(
+      directory,
+      `${path.basename(job.filePath)}.${process.pid}.${Date.now()}.tmp`,
+    );
+
+    let fileDescriptor: number | undefined;
+    try {
+      fileDescriptor = fs.openSync(tempFilePath, fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_TRUNC, FILE_MODE);
+      fs.writeFileSync(fileDescriptor, payload, 'utf8');
+      fs.fsyncSync(fileDescriptor);
+    } catch (error) {
+      if (fileDescriptor !== undefined) {
+        try {
+          fs.closeSync(fileDescriptor);
+        } catch {
+          // ignore closing errors while handling write failure
+        }
+        fileDescriptor = undefined;
+      }
+      try {
+        fs.rmSync(tempFilePath, { force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+      throw error;
+    } finally {
+      if (fileDescriptor !== undefined) {
+        try {
+          fs.closeSync(fileDescriptor);
+        } catch {
+          // ignore close errors
+        }
+      }
+    }
+
+    try {
+      fs.renameSync(tempFilePath, job.filePath);
+    } catch (error) {
+      try {
+        fs.rmSync(tempFilePath, { force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+      throw error;
+    }
+
+    safeChmodSync(job.filePath, FILE_MODE);
+    normalizeOwnershipSync(job.filePath);
   }
 
   private deleteJobFile(job: InternalJob<unknown>): void {

@@ -6097,8 +6097,7 @@ if (require.main === module) {
             },
           )
           .demandCommand(1, 'Risk komutlarından birini seçmelisiniz.')
-          .strict(),
-      },
+          .strict()
     )
     .command(
       'generate-plans',

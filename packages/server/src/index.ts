@@ -117,6 +117,59 @@ const sanitizeDownloadFileName = (fileName: string, fallback: string): string =>
   return normalized || fallback;
 };
 
+export const writePersistedJson = async (
+  tenantDir: string,
+  fileName: string,
+  data: unknown,
+): Promise<void> => {
+  await fsPromises.mkdir(tenantDir, { recursive: true });
+  const targetPath = path.join(tenantDir, fileName);
+  const serialized = `${JSON.stringify(data, null, 2)}\n`;
+  const tempPath = path.join(
+    tenantDir,
+    `${fileName}.${process.pid}.${Date.now()}.tmp`,
+  );
+
+  let existingMode: number | undefined;
+  try {
+    const stats = await fsPromises.stat(targetPath);
+    existingMode = stats.mode;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  let handle: fsPromises.FileHandle | undefined;
+  try {
+    handle = await fsPromises.open(tempPath, 'w');
+    await handle.writeFile(serialized, 'utf8');
+    await handle.sync();
+  } catch (error) {
+    await fsPromises.rm(tempPath, { force: true });
+    throw error;
+  } finally {
+    if (handle) {
+      await handle.close();
+    }
+  }
+
+  try {
+    await fsPromises.rename(tempPath, targetPath);
+  } catch (error) {
+    await fsPromises.rm(tempPath, { force: true });
+    throw error;
+  }
+
+  if (existingMode !== undefined) {
+    try {
+      await fsPromises.chmod(targetPath, existingMode);
+    } catch {
+      // ignore permission normalization failures to match prior behavior
+    }
+  }
+};
+
 const JOB_ID_PATTERN = /^[a-f0-9]{16}$/;
 
 const assertJobId = (id: string): void => {
@@ -3178,32 +3231,37 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
 
-  const writePersistedJson = (tenantId: string, fileName: string, data: unknown): void => {
+  const writeTenantJson = async (
+    tenantId: string,
+    fileName: string,
+    data: unknown,
+  ): Promise<void> => {
     const tenantDir = path.join(tenantDataRoot, tenantId);
-    fs.mkdirSync(tenantDir, { recursive: true });
-    const targetPath = path.join(tenantDir, fileName);
-    fs.writeFileSync(targetPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    await writePersistedJson(tenantDir, fileName, data);
   };
 
-  const persistTenantEvidence = (tenantId: string): void => {
+  const persistTenantEvidence = async (tenantId: string): Promise<void> => {
     const store = evidenceStore.get(tenantId);
     if (!store) {
       return;
     }
-    writePersistedJson(tenantId, TENANT_EVIDENCE_FILE, Array.from(store.values()));
+    await writeTenantJson(tenantId, TENANT_EVIDENCE_FILE, Array.from(store.values()));
   };
 
-  const persistTenantCompliance = (tenantId: string): void => {
+  const persistTenantCompliance = async (tenantId: string): Promise<void> => {
     complianceSummaryCache.delete(tenantId);
     const store = complianceStore.get(tenantId);
     if (!store) {
       return;
     }
-    writePersistedJson(tenantId, TENANT_COMPLIANCE_FILE, Array.from(store.values()));
+    await writeTenantJson(tenantId, TENANT_COMPLIANCE_FILE, Array.from(store.values()));
   };
 
-  const persistTenantSnapshotVersion = (tenantId: string, version: SnapshotVersion): void => {
-    writePersistedJson(tenantId, TENANT_SNAPSHOT_FILE, version);
+  const persistTenantSnapshotVersion = async (
+    tenantId: string,
+    version: SnapshotVersion,
+  ): Promise<void> => {
+    await writeTenantJson(tenantId, TENANT_SNAPSHOT_FILE, version);
   };
   const isValidSha256Hex = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
   const computeObjectSha256 = (value: unknown): string =>
@@ -3247,7 +3305,7 @@ export const createServer = (config: ServerConfig): Express => {
     return version;
   };
 
-  const ensureTenantSnapshotVersion = (tenantId: string): SnapshotVersion => {
+  const ensureTenantSnapshotVersion = async (tenantId: string): Promise<SnapshotVersion> => {
     const existing = tenantSnapshotVersions.get(tenantId);
     if (existing) {
       return existing;
@@ -3255,7 +3313,7 @@ export const createServer = (config: ServerConfig): Express => {
     const now = new Date().toISOString();
     const version = createSnapshotVersion(computeTenantEvidenceFingerprint(tenantId), { createdAt: now });
     tenantSnapshotVersions.set(tenantId, version);
-    persistTenantSnapshotVersion(tenantId, version);
+    await persistTenantSnapshotVersion(tenantId, version);
     return version;
   };
 
@@ -3316,7 +3374,9 @@ export const createServer = (config: ServerConfig): Express => {
           const fingerprint = deriveFingerprint(evidenceRecords.map((record) => record.sha256));
           const fallbackVersion = createSnapshotVersion(fingerprint, { createdAt: new Date().toISOString() });
           tenantSnapshotVersions.set(tenantId, fallbackVersion);
-          persistTenantSnapshotVersion(tenantId, fallbackVersion);
+          void persistTenantSnapshotVersion(tenantId, fallbackVersion).catch((error) => {
+            logger.error({ err: error, tenantId }, 'Failed to persist fallback snapshot version.');
+          });
         }
 
         knownTenants.add(tenantId);
@@ -5539,9 +5599,37 @@ export const createServer = (config: ServerConfig): Express => {
       const tenantEvidence = getTenantEvidenceMap(tenantId);
       tenantEvidence.set(record.id, record);
       hashIndex.set(computedHash, record.id);
+      const previousVersion = tenantSnapshotVersions.get(tenantId);
       const version = updateTenantSnapshotVersion(tenantId, uploadedAt);
-      persistTenantEvidence(tenantId);
-      persistTenantSnapshotVersion(tenantId, version);
+      const snapshotVersionChanged = version !== previousVersion;
+
+      try {
+        await persistTenantEvidence(tenantId);
+      } catch (error) {
+        tenantEvidence.delete(record.id);
+        hashIndex.delete(computedHash);
+        if (snapshotVersionChanged) {
+          if (previousVersion) {
+            tenantSnapshotVersions.set(tenantId, previousVersion);
+          } else {
+            tenantSnapshotVersions.delete(tenantId);
+          }
+        }
+        throw error;
+      }
+
+      try {
+        await persistTenantSnapshotVersion(tenantId, version);
+      } catch (error) {
+        if (snapshotVersionChanged) {
+          if (previousVersion) {
+            tenantSnapshotVersions.set(tenantId, previousVersion);
+          } else {
+            tenantSnapshotVersions.delete(tenantId);
+          }
+        }
+        throw error;
+      }
 
       res.status(201).json(serializeEvidenceRecord(record));
     }),
@@ -5552,14 +5640,14 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId, subject } = getAuthContext(req);
-      const current = ensureTenantSnapshotVersion(tenantId);
+      const current = await ensureTenantSnapshotVersion(tenantId);
       if (current.isFrozen) {
         res.json({ version: current });
         return;
       }
       const frozen = freezeSnapshotVersion(current, { frozenAt: new Date().toISOString() });
       tenantSnapshotVersions.set(tenantId, frozen);
-      persistTenantSnapshotVersion(tenantId, frozen);
+      await persistTenantSnapshotVersion(tenantId, frozen);
       res.json({ version: frozen });
     }),
   );
@@ -5814,8 +5902,14 @@ export const createServer = (config: ServerConfig): Express => {
         metadata: Object.keys(canonicalMetadata).length > 0 ? canonicalMetadata : undefined,
       };
 
-      getTenantComplianceMap(tenantId).set(record.id, record);
-      persistTenantCompliance(tenantId);
+      const tenantCompliance = getTenantComplianceMap(tenantId);
+      tenantCompliance.set(record.id, record);
+      try {
+        await persistTenantCompliance(tenantId);
+      } catch (error) {
+        tenantCompliance.delete(record.id);
+        throw error;
+      }
 
       res.status(201).json(serializeComplianceRecord(record));
     }),

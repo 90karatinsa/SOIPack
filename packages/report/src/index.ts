@@ -15,6 +15,7 @@ import {
   RequirementCoverageStatus,
   CoverageStatus,
   type TraceSuggestion,
+  type TraceGraph,
 } from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
@@ -65,6 +66,10 @@ export interface TraceMatrixOptions extends BaseReportOptions {
   coverage?: RequirementCoverageStatus[];
   suggestions?: TraceSuggestion[];
   designs?: TraceDesignLink[];
+}
+
+export interface TraceGraphDotOptions {
+  graphName?: string;
 }
 
 export interface GapReportOptions extends BaseReportOptions {
@@ -3135,6 +3140,140 @@ export const renderTraceMatrix = (
   const csv = createTraceMatrixCsv(rows, options);
 
   return { html, csv };
+};
+
+const escapeDotId = (value: string): string => {
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+};
+
+const escapeDotLabel = (value: string): string => {
+  const normalized = value.replace(/\r?\n/g, '\\n');
+  return escapeDotId(normalized);
+};
+
+const traceClusterMeta: Array<{
+  type: TraceGraph['nodes'][number]['type'];
+  id: string;
+  label: string;
+  color: string;
+  fill: string;
+  shape: string;
+}> = [
+  {
+    type: 'requirement',
+    id: 'requirements',
+    label: 'Requirements',
+    color: '#1d4ed8',
+    fill: '#dbeafe',
+    shape: 'rect',
+  },
+  {
+    type: 'design',
+    id: 'designs',
+    label: 'Designs',
+    color: '#7c3aed',
+    fill: '#ede9fe',
+    shape: 'component',
+  },
+  {
+    type: 'code',
+    id: 'code',
+    label: 'Code',
+    color: '#0f766e',
+    fill: '#ccfbf1',
+    shape: 'folder',
+  },
+  {
+    type: 'test',
+    id: 'tests',
+    label: 'Tests',
+    color: '#dc2626',
+    fill: '#fee2e2',
+    shape: 'ellipse',
+  },
+];
+
+const formatTraceNodeLabel = (node: TraceGraph['nodes'][number]): string => {
+  if (node.type === 'requirement') {
+    return `${node.id}\n${node.data.title}`;
+  }
+  if (node.type === 'design') {
+    return `${node.id}\n${node.data.title}`;
+  }
+  if (node.type === 'test') {
+    return `${node.id}\n${node.data.name ?? node.id}`;
+  }
+  return node.data.path;
+};
+
+export const renderTraceGraphDot = (
+  graph: TraceGraph,
+  options: TraceGraphDotOptions = {},
+): string => {
+  const graphName = options.graphName ?? 'TraceGraph';
+  const nodesByKey = new Map(graph.nodes.map((node) => [node.key, node]));
+  const lines: string[] = [];
+
+  lines.push(`digraph ${escapeDotId(graphName)} {`);
+  lines.push('  rankdir="LR";');
+  lines.push('  splines="spline";');
+  lines.push('  fontname="Inter";');
+  lines.push('  node [fontname="Inter"];');
+  lines.push('  edge [fontname="Inter"];');
+  lines.push('');
+
+  traceClusterMeta.forEach((cluster) => {
+    const clusterNodes = graph.nodes
+      .filter((node) => node.type === cluster.type)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (clusterNodes.length === 0) {
+      return;
+    }
+
+    lines.push(`  subgraph ${escapeDotId(`cluster_${cluster.id}`)} {`);
+    lines.push(`    label=${escapeDotLabel(cluster.label)};`);
+    lines.push(`    color=${escapeDotLabel(cluster.color)};`);
+    lines.push('    style="rounded";');
+    lines.push(
+      `    node [shape=${escapeDotLabel(cluster.shape)} style="filled" color=${escapeDotLabel(cluster.color)} fillcolor=${escapeDotLabel(cluster.fill)} fontname="Inter"];`,
+    );
+
+    clusterNodes.forEach((node) => {
+      lines.push(`    ${escapeDotId(node.key)} [label=${escapeDotLabel(formatTraceNodeLabel(node))}];`);
+    });
+
+    lines.push('  }');
+    lines.push('');
+  });
+
+  const edges: Array<{ from: string; to: string }> = [];
+  graph.nodes
+    .slice()
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .forEach((node) => {
+      const targets = [...node.links].sort((a, b) => a.localeCompare(b));
+      targets.forEach((targetKey) => {
+        if (!nodesByKey.has(targetKey)) {
+          return;
+        }
+        edges.push({ from: node.key, to: targetKey });
+      });
+    });
+
+  edges
+    .sort((a, b) => {
+      if (a.from === b.from) {
+        return a.to.localeCompare(b.to);
+      }
+      return a.from.localeCompare(b.from);
+    })
+    .forEach((edge) => {
+      lines.push(`  ${escapeDotId(edge.from)} -> ${escapeDotId(edge.to)};`);
+    });
+
+  lines.push('}');
+  return `${lines.join('\n')}\n`;
 };
 
 export const renderGaps = (

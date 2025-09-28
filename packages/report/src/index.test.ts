@@ -19,6 +19,7 @@ import {
   renderJsonReport,
   renderToolQualificationPack,
   renderTraceMatrix,
+  renderTraceGraphDot,
   printToPDF,
   type ToolUsageMetadata,
 } from './index';
@@ -247,6 +248,26 @@ describe('@soipack/report', () => {
     expect(requirementRows[0]?.designId).toBe('DES-AUDIT-PIPE');
     const statuses = requirementRows.map((row) => row.testStatus);
     expect(statuses).toEqual(expect.arrayContaining(['Başarılı', 'Başarısız']));
+  });
+
+  it('renders trace graph DOT with grouped clusters', () => {
+    const fixture = createReportFixture();
+    const dot = renderTraceGraphDot(fixture.snapshot.traceGraph, { graphName: 'Trace Graph' });
+
+    maybeUpdateGolden('trace-graph.dot', dot);
+    const goldenDot = readFileSync(path.join(goldenDir, 'trace-graph.dot'), 'utf-8');
+    expect(dot).toBe(goldenDot);
+    expect(dot).toContain('subgraph "cluster_requirements"');
+    expect(dot).toContain('subgraph "cluster_code"');
+    expect(dot).toContain('subgraph "cluster_tests"');
+    expect(dot).toContain('"requirement:REQ-AUTH-1" [label="REQ-AUTH-1\\\\nÇok faktörlü giriş sağlamalı"]');
+    expect(dot).toContain('"test:TC-LOGIN-2" -> "requirement:REQ-AUTH-2"');
+    expect(dot).toContain('"code:src/auth/login.ts" [label="src/auth/login.ts"]');
+    expect(dot).toContain('"requirement:REQ-AUTH-1" -> "test:TC-LOGIN-1"');
+
+    if (fixture.snapshot.traceGraph.nodes.some((node) => node.type === 'design')) {
+      expect(dot).toContain('subgraph "cluster_designs"');
+    }
   });
 
   it('renders gap analysis with objective metadata', () => {
