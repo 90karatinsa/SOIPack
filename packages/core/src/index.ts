@@ -141,6 +141,7 @@ export const evidenceSources = [
   'simulink',
   'doorsNext',
   'staticAnalysis',
+  'jama',
   'other',
 ] as const;
 export type EvidenceSource = (typeof evidenceSources)[number];
