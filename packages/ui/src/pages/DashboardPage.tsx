@@ -19,6 +19,8 @@ type DashboardPageProps = {
   license?: string;
 };
 
+const CHANGE_IMPACT_DISPLAY_LIMIT = 5;
+
 interface QueueMetrics {
   total: number;
   queued: number;
@@ -242,6 +244,110 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
       ),
     [openIndependentObjectives],
   );
+  const changeImpactEntries = complianceSummary?.changeImpact ?? [];
+  const changeImpactSeverityBuckets = useMemo(
+    () => [
+      {
+        id: 'critical' as const,
+        threshold: 0.75,
+        variant: 'error',
+        label: t('dashboard.changeImpactSeverityCritical'),
+      },
+      {
+        id: 'high' as const,
+        threshold: 0.5,
+        variant: 'warning',
+        label: t('dashboard.changeImpactSeverityHigh'),
+      },
+      {
+        id: 'medium' as const,
+        threshold: 0.25,
+        variant: 'info',
+        label: t('dashboard.changeImpactSeverityMedium'),
+      },
+      {
+        id: 'low' as const,
+        threshold: 0,
+        variant: 'neutral',
+        label: t('dashboard.changeImpactSeverityLow'),
+      },
+    ],
+    [t],
+  );
+  const changeImpactSummary = useMemo(() => {
+    type SeverityKey = (typeof changeImpactSeverityBuckets)[number]['id'];
+    const resolveBucket = (severity: number) => {
+      for (const bucket of changeImpactSeverityBuckets) {
+        if (severity >= bucket.threshold) {
+          return bucket;
+        }
+      }
+      return changeImpactSeverityBuckets[changeImpactSeverityBuckets.length - 1];
+    };
+
+    const counts = Object.fromEntries(
+      changeImpactSeverityBuckets.map((bucket) => [bucket.id, 0] as const),
+    ) as Record<SeverityKey, number>;
+
+    changeImpactEntries.forEach((entry) => {
+      const bucket = resolveBucket(entry.severity);
+      counts[bucket.id] += 1;
+    });
+
+    const sorted = [...changeImpactEntries].sort((a, b) => {
+      if (b.severity === a.severity) {
+        return a.id.localeCompare(b.id);
+      }
+      return b.severity - a.severity;
+    });
+
+    const topEntries = sorted.slice(0, CHANGE_IMPACT_DISPLAY_LIMIT).map((entry) => ({
+      entry,
+      bucket: resolveBucket(entry.severity),
+    }));
+
+    return { counts, topEntries };
+  }, [changeImpactEntries, changeImpactSeverityBuckets]);
+  const changeImpactCounts = changeImpactSummary.counts;
+  const changeImpactTopEntries = changeImpactSummary.topEntries;
+  const changeImpactRemaining = Math.max(
+    0,
+    changeImpactEntries.length - changeImpactTopEntries.length,
+  );
+  const changeImpactTypeLabels = useMemo(
+    () => ({
+      requirement: t('dashboard.changeImpactType.requirement'),
+      test: t('dashboard.changeImpactType.test'),
+      code: t('dashboard.changeImpactType.code'),
+      design: t('dashboard.changeImpactType.design'),
+    }),
+    [t],
+  );
+  const changeImpactStateLabels = useMemo(
+    () => ({
+      added: t('dashboard.changeImpactState.added'),
+      removed: t('dashboard.changeImpactState.removed'),
+      modified: t('dashboard.changeImpactState.modified'),
+      impacted: t('dashboard.changeImpactState.impacted'),
+    }),
+    [t],
+  );
+  const formatChangeImpactReasons = (reasons: string[]) => {
+    const filtered = reasons.filter((reason) => reason && reason.trim().length > 0);
+    if (filtered.length === 0) {
+      return t('dashboard.changeImpactNoReason');
+    }
+    if (filtered.length === 1) {
+      return filtered[0];
+    }
+    if (filtered.length === 2) {
+      return `${filtered[0]} • ${filtered[1]}`;
+    }
+    const remaining = filtered.length - 2;
+    return `${filtered[0]} • ${filtered[1]} (+${remaining} ${t(
+      'dashboard.changeImpactMoreReasons',
+    )})`;
+  };
   const changeRequests = changeRequestState.items;
   const resolveStatusVariant = (category?: string): 'success' | 'warning' | undefined => {
     if (!category) {
@@ -322,75 +428,176 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                 description={complianceSummary.summary.missing.toString()}
               />
             </div>
-            <div
-              className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
-              data-testid="independence-card"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-white">{t('dashboard.independenceTitle')}</h3>
-                  <p className="text-xs text-neutral-400">{t('dashboard.independenceSubtitle')}</p>
-                </div>
-                {independenceSummary ? (
-                  <div className="flex items-center gap-2">
-                    <Badge
-                      variant={independenceCounts.missing > 0 ? 'warning' : 'success'}
-                      data-testid="independence-missing-count"
-                    >
-                      {t('dashboard.independenceMissing')}: {independenceCounts.missing}
-                    </Badge>
-                    <Badge
-                      variant={independenceCounts.partial > 0 ? 'warning' : 'success'}
-                      data-testid="independence-partial-count"
-                    >
-                      {t('dashboard.independencePartial')}: {independenceCounts.partial}
-                    </Badge>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div
+                className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+                data-testid="independence-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">{t('dashboard.independenceTitle')}</h3>
+                    <p className="text-xs text-neutral-400">{t('dashboard.independenceSubtitle')}</p>
                   </div>
-                ) : null}
+                  {independenceSummary ? (
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={independenceCounts.missing > 0 ? 'warning' : 'success'}
+                        data-testid="independence-missing-count"
+                      >
+                        {t('dashboard.independenceMissing')}: {independenceCounts.missing}
+                      </Badge>
+                      <Badge
+                        variant={independenceCounts.partial > 0 ? 'warning' : 'success'}
+                        data-testid="independence-partial-count"
+                      >
+                        {t('dashboard.independencePartial')}: {independenceCounts.partial}
+                      </Badge>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="mt-3 space-y-2 text-sm text-neutral-300">
+                  {independenceSummary ? (
+                    openIndependentObjectives.length > 0 ? (
+                      <>
+                        <p className="text-xs uppercase tracking-wide text-neutral-400">
+                          {t('dashboard.independenceOpenSummary')}
+                        </p>
+                        <ul className="space-y-2" data-testid="independence-open-list">
+                          {openIndependentObjectives.map((objective) => (
+                            <li key={objective.objectiveId} className="flex flex-wrap items-center gap-2">
+                              <a
+                                href={`#/compliance?objective=${encodeURIComponent(objective.objectiveId)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-brand hover:underline"
+                                data-testid={`independence-objective-${objective.objectiveId}`}
+                              >
+                                {objective.objectiveId}
+                              </a>
+                              <span className="text-xs text-neutral-400">
+                                {objective.status === 'missing'
+                                  ? t('dashboard.independenceMissing')
+                                  : t('dashboard.independencePartial')}
+                              </span>
+                              {objective.missingArtifacts.length > 0 && (
+                                <span className="text-xs text-neutral-500">
+                                  ({objective.missingArtifacts.join(', ')})
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      <p className="text-sm text-emerald-300" data-testid="independence-all-clear">
+                        {t('dashboard.independenceAllClear')}
+                      </p>
+                    )
+                  ) : (
+                    <p className="text-sm text-neutral-400" data-testid="independence-unavailable">
+                      {t('dashboard.independenceUnavailable')}
+                    </p>
+                  )}
+                </div>
               </div>
-              <div className="mt-3 space-y-2 text-sm text-neutral-300">
-                {independenceSummary ? (
-                  openIndependentObjectives.length > 0 ? (
+              <div
+                className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+                data-testid="change-impact-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3
+                      id="change-impact-heading"
+                      className="text-sm font-semibold text-white"
+                    >
+                      {t('dashboard.changeImpactTitle')}
+                    </h3>
+                    <p className="text-xs text-neutral-400">{t('dashboard.changeImpactSubtitle')}</p>
+                  </div>
+                  {changeImpactEntries.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 text-xs text-neutral-300">
+                      <Badge variant="neutral" data-testid="change-impact-total">
+                        {t('dashboard.changeImpactTotalLabel')}: {changeImpactEntries.length}
+                      </Badge>
+                      {changeImpactSeverityBuckets.map((bucket) => {
+                        const count = changeImpactCounts[bucket.id];
+                        if (count === 0) {
+                          return null;
+                        }
+                        return (
+                          <Badge
+                            key={bucket.id}
+                            variant={bucket.variant}
+                            data-testid={`change-impact-count-${bucket.id}`}
+                          >
+                            {bucket.label}: {count}
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="mt-3 space-y-2 text-sm text-neutral-300">
+                  {changeImpactEntries.length === 0 ? (
+                    <p className="text-sm text-neutral-400" data-testid="change-impact-empty">
+                      {t('dashboard.changeImpactEmpty')}
+                    </p>
+                  ) : (
                     <>
                       <p className="text-xs uppercase tracking-wide text-neutral-400">
-                        {t('dashboard.independenceOpenSummary')}
+                        {t('dashboard.changeImpactTopLabel')}
                       </p>
-                      <ul className="space-y-2" data-testid="independence-open-list">
-                        {openIndependentObjectives.map((objective) => (
-                          <li key={objective.objectiveId} className="flex flex-wrap items-center gap-2">
-                            <a
-                              href={`#/compliance?objective=${encodeURIComponent(objective.objectiveId)}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-brand hover:underline"
-                              data-testid={`independence-objective-${objective.objectiveId}`}
+                      <ul
+                        aria-labelledby="change-impact-heading"
+                        className="space-y-2"
+                        data-testid="change-impact-list"
+                      >
+                        {changeImpactTopEntries.map(({ entry, bucket }) => {
+                          const reasons = formatChangeImpactReasons(entry.reasons);
+                          const severityPercent = Math.round(entry.severity * 100);
+                          const url = (entry as { url?: string }).url;
+                          const stateLabel = changeImpactStateLabels[entry.state];
+                          const typeLabel = changeImpactTypeLabels[entry.type];
+                          return (
+                            <li
+                              key={entry.id}
+                              className="rounded-lg border border-slate-800/60 bg-slate-900/30 p-3"
+                              data-testid={`change-impact-entry-${entry.id}`}
                             >
-                              {objective.objectiveId}
-                            </a>
-                            <span className="text-xs text-neutral-400">
-                              {objective.status === 'missing'
-                                ? t('dashboard.independenceMissing')
-                                : t('dashboard.independencePartial')}
-                            </span>
-                            {objective.missingArtifacts.length > 0 && (
-                              <span className="text-xs text-neutral-500">
-                                ({objective.missingArtifacts.join(', ')})
-                              </span>
-                            )}
-                          </li>
-                        ))}
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <Badge variant={bucket.variant} data-testid={`change-impact-severity-${entry.id}`}>
+                                  {bucket.label} • {severityPercent}%
+                                </Badge>
+                                <span className="text-neutral-400">{typeLabel}</span>
+                                <span className="text-neutral-400">{stateLabel}</span>
+                                <span className="font-medium text-white">
+                                  {url ? (
+                                    <a
+                                      href={url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-brand hover:underline"
+                                    >
+                                      {entry.id}
+                                    </a>
+                                  ) : (
+                                    entry.id
+                                  )}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-xs text-neutral-300">{reasons}</p>
+                            </li>
+                          );
+                        })}
                       </ul>
+                      {changeImpactRemaining > 0 ? (
+                        <p className="text-xs text-neutral-400" data-testid="change-impact-remaining">
+                          +{changeImpactRemaining} {t('dashboard.changeImpactMoreEntries')}
+                        </p>
+                      ) : null}
                     </>
-                  ) : (
-                    <p className="text-sm text-emerald-300" data-testid="independence-all-clear">
-                      {t('dashboard.independenceAllClear')}
-                    </p>
-                  )
-                ) : (
-                  <p className="text-sm text-neutral-400" data-testid="independence-unavailable">
-                    {t('dashboard.independenceUnavailable')}
-                  </p>
-                )}
+                  )}
+                </div>
               </div>
             </div>
           </div>

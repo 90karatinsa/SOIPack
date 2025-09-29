@@ -23,6 +23,7 @@ import {
 
 import { evaluateQualityFindings, QualityFinding } from './quality';
 import { generateTraceSuggestions, type TraceSuggestion } from './traceSuggestions';
+import { analyzeChangeImpact, type ChangeImpactScore } from './impact';
 import {
   computeRiskProfile,
   predictCoverageDrift,
@@ -1029,6 +1030,7 @@ export interface ComplianceSnapshotRiskOptions extends Partial<RiskInput> {
 export interface ComplianceSnapshotOptions {
   includeRisk?: boolean;
   risk?: ComplianceSnapshotRiskOptions;
+  changeImpactBaseline?: TraceGraph;
 }
 
 export interface ComplianceIndependenceEntry {
@@ -1055,6 +1057,7 @@ export interface ComplianceSnapshot {
   traceSuggestions: TraceSuggestion[];
   independenceSummary: ComplianceIndependenceSummary;
   risk?: ComplianceSnapshotRiskBlock;
+  changeImpact?: ChangeImpactScore[];
 }
 
 const summarizeObjectives = (coverage: ObjectiveCoverage[]): ObjectiveStatistics => {
@@ -1190,6 +1193,15 @@ export const generateComplianceSnapshot = (
     requirementCoverage,
     bundle.findings ?? [],
   );
+  let changeImpact: ChangeImpactScore[] | undefined;
+  if (options.changeImpactBaseline) {
+    const impactScores = analyzeChangeImpact(options.changeImpactBaseline, traceGraph)
+      .sort((a, b) => b.severity - a.severity)
+      .slice(0, 25);
+    if (impactScores.length > 0) {
+      changeImpact = impactScores;
+    }
+  }
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
   const baseGapAnalysis = buildGapAnalysis(objectiveCoverage);
@@ -1253,6 +1265,10 @@ export const generateComplianceSnapshot = (
       totals: independenceTotals,
     },
   };
+
+  if (changeImpact) {
+    snapshot.changeImpact = changeImpact;
+  }
 
   if (options.includeRisk) {
     const riskOptions = options.risk ?? {};
@@ -1335,4 +1351,5 @@ export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } f
 export type { TraceSuggestion, TraceSuggestionConfidence, TraceSuggestionType } from './traceSuggestions';
 
 export * from './complianceMatrix';
+export type { ChangeImpactScore } from './impact';
 export * from './impact';

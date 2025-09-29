@@ -150,7 +150,14 @@ describe('API integrations', () => {
       headers: { Authorization: 'Bearer token', 'X-SOIPACK-License': 'license' },
       signal: undefined,
     });
-    expect(response).toEqual(payload);
+    expect(response).toEqual({
+      computedAt: payload.computedAt,
+      latest: {
+        ...payload.latest,
+        changeImpact: [],
+        independence: null,
+      },
+    });
   });
 
   it('throws ApiError when compliance summary request fails', async () => {
@@ -583,6 +590,88 @@ describe('API integrations', () => {
       independence: 'required',
       missingArtifacts: ['evidence.md'],
     });
+    expect(response.latest?.changeImpact).toEqual([]);
+  });
+
+  it('sanitizes compliance change impact entries from the API', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          computedAt: '2024-06-10T12:00:00Z',
+          latest: {
+            id: 'summary-10',
+            createdAt: '2024-06-10T12:00:00Z',
+            summary: { total: 5, covered: 2, partial: 3, missing: 0 },
+            coverage: { statements: 55 },
+            gaps: { missingIds: ['REQ-5'], partialIds: [], openObjectiveCount: 1 },
+            changeImpact: [
+              {
+                id: '  REQ-5  ',
+                type: ' REQUIREMENT ',
+                severity: 1.6,
+                state: 'ADDED',
+                reasons: [' Updated coverage ', '', 123],
+              },
+              {
+                id: 'TC-9',
+                type: 'test',
+                severity: -0.25,
+                state: 'modified',
+                reasons: ['Regression failed'],
+              },
+              {
+                id: 'CODE-1',
+                type: 'component',
+                severity: 0.8,
+                state: 'added',
+                reasons: ['Ignored'],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const response = await fetchComplianceSummary({ token: 'token', license: 'license' });
+
+    expect(response.latest?.changeImpact).toEqual([
+      {
+        id: 'REQ-5',
+        type: 'requirement',
+        severity: 1,
+        state: 'added',
+        reasons: ['Updated coverage'],
+      },
+      {
+        id: 'TC-9',
+        type: 'test',
+        severity: 0,
+        state: 'modified',
+        reasons: ['Regression failed'],
+      },
+    ]);
+  });
+
+  it('handles malformed change impact payloads gracefully', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          computedAt: '2024-06-11T09:00:00Z',
+          latest: {
+            id: 'summary-11',
+            createdAt: '2024-06-11T09:00:00Z',
+            summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+            coverage: { statements: 90 },
+            gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+            changeImpact: [null, {}, { id: '', type: 'code', severity: 0.5, state: 'added' }],
+          },
+        },
+      }),
+    );
+
+    const response = await fetchComplianceSummary({ token: 'token', license: 'license' });
+
+    expect(response.latest?.changeImpact).toEqual([]);
   });
 
   it('fetches and normalizes change request backlog entries', async () => {

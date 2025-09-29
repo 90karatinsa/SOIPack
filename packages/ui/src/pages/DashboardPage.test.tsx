@@ -74,6 +74,29 @@ describe('DashboardPage', () => {
         summary: { total: 4, covered: 3, partial: 1, missing: 0 },
         coverage: { statements: 82 },
         gaps: { missingIds: [], partialIds: ['A-1-01'], openObjectiveCount: 1 },
+        changeImpact: [
+          {
+            id: 'REQ-1',
+            type: 'requirement',
+            severity: 0.9,
+            state: 'modified',
+            reasons: ['Test kapsamı düştü', 'Ek gözden geçirme gerekli'],
+          },
+          {
+            id: 'TC-3',
+            type: 'test',
+            severity: 0.55,
+            state: 'impacted',
+            reasons: ['Test tekrar koşturulmalı'],
+          },
+          {
+            id: 'CODE-1',
+            type: 'code',
+            severity: 0.18,
+            state: 'added',
+            reasons: [],
+          },
+        ],
         independence: {
           totals: { covered: 1, partial: 1, missing: 1 },
           objectives: [
@@ -141,6 +164,14 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Hazırlık (%)')).toBeInTheDocument();
     expect(screen.getByTestId('compliance-summary')).toHaveTextContent('75%');
     expect(screen.getByText(/Açık hedefler:/)).toHaveTextContent('1');
+    const changeImpactCard = screen.getByTestId('change-impact-card');
+    expect(changeImpactCard).toHaveTextContent('Değişiklik Etkisi');
+    expect(screen.getByTestId('change-impact-total')).toHaveTextContent('Kayıtlar: 3');
+    expect(screen.getByTestId('change-impact-count-critical')).toHaveTextContent('Kritik: 1');
+    expect(screen.getByTestId('change-impact-count-high')).toHaveTextContent('Yüksek: 1');
+    expect(screen.getByTestId('change-impact-entry-REQ-1')).toHaveTextContent('REQ-1');
+    expect(screen.getByTestId('change-impact-severity-REQ-1')).toHaveTextContent('Kritik');
+    expect(screen.getByTestId('change-impact-entry-CODE-1')).toHaveTextContent('Gerekçe sağlanmadı.');
 
     expect(screen.getByTestId('queue-total')).toHaveTextContent('3');
     expect(screen.getByTestId('queue-queued')).toHaveTextContent('1');
@@ -207,6 +238,7 @@ describe('DashboardPage', () => {
         summary: { total: 2, covered: 2, partial: 0, missing: 0 },
         coverage: { statements: 100 },
         gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+        changeImpact: [],
         independence: {
           totals: { covered: 2, partial: 0, missing: 0 },
           objectives: [],
@@ -227,6 +259,44 @@ describe('DashboardPage', () => {
     expect(screen.getByText(/Hazırlık \(%\)/)).toBeInTheDocument();
     expect(screen.getByTestId('compliance-summary')).toHaveTextContent('100%');
     expect(screen.getByTestId('independence-all-clear')).toBeInTheDocument();
+    expect(screen.getByTestId('change-impact-empty')).toHaveTextContent('Değişiklik etkisi verisi bulunamadı.');
     expect(screen.getByTestId('change-requests-empty')).toBeInTheDocument();
+  });
+
+  it('renders remaining indicator when more change impact entries exist than displayed', async () => {
+    const now = new Date().toISOString();
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-3',
+        createdAt: now,
+        summary: { total: 10, covered: 5, partial: 3, missing: 2 },
+        coverage: { statements: 70 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 2 },
+        changeImpact: Array.from({ length: 7 }).map((_, index) => ({
+          id: `REQ-${index + 1}`,
+          type: 'requirement' as const,
+          severity: 0.5 - index * 0.05,
+          state: index % 2 === 0 ? ('modified' as const) : ('impacted' as const),
+          reasons: [`Gerekçe ${index + 1}`],
+        })),
+        independence: {
+          totals: { covered: 5, partial: 3, missing: 2 },
+          objectives: [],
+        },
+      },
+    });
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('change-impact-list')).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByTestId(/change-impact-entry-REQ-/)).toHaveLength(5);
+    expect(screen.getByTestId('change-impact-remaining')).toHaveTextContent('+2 ek kayıt');
   });
 });

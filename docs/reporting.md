@@ -29,6 +29,14 @@ Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden pla
 
 Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen ayrı bir bölüm içerir. Rapordaki “Bağımsızlık Uyarıları” bloğunda toplam etkilenen hedef sayısı, kısmi/eksik durumlar ve hedeflerin zorunlu/önerilen bağımsızlık seviyeleri rozetlerle vurgulanır. Kırmızı (`Zorunlu`) rozetler sertifikasyon için kritik eksiklikleri, sarı (`Önerilen`) rozetler ise bağımsız inceleme bekleyen alanları gösterir. Tablo satırlarında eksik kanıt türleri (ör. `Gözden Geçirme`, `MC/DC Kapsamı`) ayrı rozetler halinde listelenir ve denetçilerin hangi kanıtların bağımsız gözden geçirme gerektirdiğini hızlıca görmesini sağlar. Eğer bağımsızlık eksikliği kalmamışsa bölüm “Bağımsızlık gerektiren hedeflerde eksik bulunamadı.” mesajıyla kapanır.
 
+### Değişiklik etki analizi
+
+Uyum matrisi ve kapsam raporu, snapshot değişiklik etkisi verisi içerdiğinde "Değişiklik Etki Analizi" adlı yeni bir bölüm ekler. Bölüm, uyum tablosunun hemen ardından yer alır ve signoff zaman çizelgesi gibi takip eden panellerden önce gösterilir; böylece denetçiler önce öncelikli değişiklikleri gözden geçirip ardından onay akışına geçebilir.【F:packages/report/src/index.ts†L2915-L3211】
+
+Şablon, en yüksek şiddet değerine sahip kayıtları sınırlandırıp (varsayılan 25) rozetlerle özetleyen bir üst bilgi üretir. Özet satırı toplam kayıt sayısını, kritik/yüksek/orta seviyelerdeki dağılımı ve her seviyenin renk kodlu sınıflarını gösterir; satır içindeki tablo ise öğe kimliği, düğüm türü, yüzde olarak şiddet değeri ve durum rozetleriyle gerekçe özetini içerir. Çok sayıda gerekçe kısa biçimde birleştirilir ve kalan sayısı parantez içinde belirtilir.【F:packages/report/src/index.ts†L2640-L2730】【F:packages/report/src/complianceReport.html.ts†L145-L189】
+
+Aynı veri kümeleri JSON çıktısına da eklenir; `compliance-matrix.json` dosyası `changeImpact` alanını taşırken özet metrikler değişiklik etkisi bulunan snapshot'larda toplam kayıt sayısını gösterir. PDF çıktısı HTML bölümünü yeniden kullandığından, rozet renkleri ve aria öznitelikleri erişilebilirlik gereksinimlerini de korur.【F:packages/report/src/index.ts†L2753-L3083】
+
 ## İzlenebilirlik matrisi CSV çıktısı
 
 `renderTraceMatrix` fonksiyonu artık HTML düzeninin yanı sıra gereksinim→tasarım→kod→test zincirlerini düzleştiren bir CSV yardımcıyı (`trace.csv`) döner. CSV başlıkları gereksinim kimliği, kapsam durumları, eşlenen tasarım kimlikleri, kod yolları ve test durumlarını içerir. Kod yolları ve testler çoklayıcı olduğunda satırlar çapraz çarpanla çoğaltılarak her bağlantı açıkça temsil edilir. CLI çıktısı varsayılan olarak bu dosyayı `reports/trace.csv` olarak yazar; denetçiler veya otomasyonlar bu dosyayı Excel/BI araçlarına aktararak izlenebilirlik denetimlerini hızlandırabilir.

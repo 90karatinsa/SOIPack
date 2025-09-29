@@ -29,6 +29,7 @@ jest.mock('html-validator', () => ({
   default: jest.fn(async () => ({ messages: [] })),
 }));
 
+
 type PlaywrightModule = typeof import('playwright');
 
 describe('@soipack/report', () => {
@@ -77,6 +78,10 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Bağımsızlık Uyarıları');
     expect(result.html).toContain('Zorunlu Bağımsızlık');
     expect(result.html).toContain('Bağımsızlık Eksikleri');
+    expect(result.html).toContain('Değişiklik Etki Analizi');
+    expect(result.html).toContain('TC-AUDIT-NEW');
+    expect(result.json.changeImpact).toBeDefined();
+    expect(result.json.changeImpact?.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.totals.regressions).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
@@ -173,10 +178,13 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('SNAP-20240901');
     expect(result.html).toContain('Bağımsızlık Uyarıları');
     expect(result.html).toContain('Zorunlu Bağımsızlık');
+    expect(result.html).toContain('Değişiklik Etki Analizi');
+    expect(result.html).toContain('src/security/new-audit.ts');
     expect(result.json.coverage).toEqual(coverage);
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
     expect(result.json.changeRequestBacklog).toEqual(backlog);
     expect(result.json.ledgerDiffs).toEqual(ledgerDiffs);
+    expect(result.json.changeImpact).toEqual(fixture.snapshot.changeImpact);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
     expect(result.changeRequestBacklog).toEqual(backlog);

@@ -16,6 +16,7 @@ import {
   CoverageStatus,
   type TraceSuggestion,
   type TraceGraph,
+  type ChangeImpactScore,
 } from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
@@ -23,9 +24,11 @@ import type { Browser, Page } from 'playwright';
 import packageInfo from '../package.json';
 
 import {
+  renderChangeImpactSection,
   renderChangeRequestBacklogSection,
   renderCoverageSummarySection,
   renderLedgerDiffSection,
+  type ChangeImpactSectionContext,
   type ChangeRequestBacklogItem,
   type LedgerAttestationDiffItem,
 } from './complianceReport.html';
@@ -157,6 +160,24 @@ interface QualityFindingRow {
   requirementId?: string;
   recommendation?: string;
   relatedTests: string[];
+}
+
+interface ChangeImpactEntryView {
+  key: string;
+  id: string;
+  typeLabel: string;
+  severityLabel: string;
+  severityClass: string;
+  severityValue: string;
+  stateLabel: string;
+  stateClass: string;
+  reasons: string;
+}
+
+interface ChangeImpactView {
+  entries: ChangeImpactEntryView[];
+  summaryBadges: ChangeImpactSectionContext['summaryBadges'];
+  total: number;
 }
 
 export interface SignoffTimelineEntry {
@@ -302,6 +323,7 @@ interface ComplianceMatrixView {
   objectives: ComplianceMatrixRow[];
   requirementCoverage: RequirementCoverageRow[];
   qualityFindings: QualityFindingRow[];
+  changeImpact?: ChangeImpactView;
   summaryMetrics: LayoutSummaryMetric[];
   stageTabs: StageComplianceTab[];
   risk?: RiskView;
@@ -515,6 +537,7 @@ export interface ComplianceMatrixJson {
     recommendation?: string;
     relatedTests?: string[];
   }>;
+  changeImpact?: ChangeImpactScore[];
   traceSuggestions: Array<{
     requirementId: string;
     type: TraceSuggestion['type'];
@@ -610,6 +633,31 @@ const qualitySeverityLabels: Record<
   error: { label: 'Kritik', className: 'status-missing' },
   warn: { label: 'Uyarı', className: 'status-partial' },
   info: { label: 'Bilgi', className: 'badge-soft' },
+};
+
+const changeImpactSeverityBuckets = [
+  { id: 'critical', label: 'Kritik', threshold: 12, className: 'status-missing' },
+  { id: 'high', label: 'Yüksek', threshold: 8, className: 'status-partial' },
+  { id: 'medium', label: 'Orta', threshold: 0, className: 'badge-soft' },
+] as const;
+
+type ChangeImpactSeverityKey = (typeof changeImpactSeverityBuckets)[number]['id'];
+
+const changeImpactStateLabels: Record<
+  ChangeImpactScore['state'],
+  { label: string; className: string }
+> = {
+  added: { label: 'Eklendi', className: 'status-partial' },
+  removed: { label: 'Kaldırıldı', className: 'status-missing' },
+  modified: { label: 'Güncellendi', className: 'status-partial' },
+  impacted: { label: 'Etkilendi', className: 'badge-soft' },
+};
+
+const changeImpactTypeLabels: Record<ChangeImpactScore['type'], string> = {
+  requirement: 'Gereksinim',
+  test: 'Test',
+  code: 'Kod',
+  design: 'Tasarım',
 };
 
 const suggestionConfidenceLabels: Record<TraceSuggestion['confidence'], { label: string; className: string }> = {
@@ -2578,10 +2626,103 @@ const buildSignoffTimelineView = (
   return { entries };
 };
 
+const CHANGE_IMPACT_LIMIT = 25;
+
+const getChangeImpactSeverityMeta = (severity: number) => {
+  for (const bucket of changeImpactSeverityBuckets) {
+    if (severity >= bucket.threshold) {
+      return bucket;
+    }
+  }
+  return changeImpactSeverityBuckets[changeImpactSeverityBuckets.length - 1];
+};
+
+const condenseChangeImpactReasons = (reasons: string[]): string => {
+  const filtered = reasons.filter((reason) => reason && reason.trim().length > 0);
+  if (filtered.length === 0) {
+    return 'Gerekçe sağlanmadı.';
+  }
+  if (filtered.length === 1) {
+    return filtered[0];
+  }
+  if (filtered.length === 2) {
+    return `${filtered[0]} • ${filtered[1]}`;
+  }
+  const remaining = filtered.length - 2;
+  return `${filtered[0]} • ${filtered[1]} (+${remaining} ek gerekçe)`;
+};
+
+const buildChangeImpactView = (
+  changeImpact?: ChangeImpactScore[],
+): ChangeImpactView | undefined => {
+  if (!changeImpact || changeImpact.length === 0) {
+    return undefined;
+  }
+
+  const sorted = [...changeImpact]
+    .sort((a, b) => {
+      if (b.severity === a.severity) {
+        return a.id.localeCompare(b.id);
+      }
+      return b.severity - a.severity;
+    })
+    .slice(0, CHANGE_IMPACT_LIMIT);
+
+  const severityCounts: Record<ChangeImpactSeverityKey, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+  };
+
+  const entries = sorted.map<ChangeImpactEntryView>((entry) => {
+    const severityMeta = getChangeImpactSeverityMeta(entry.severity);
+    severityCounts[severityMeta.id] += 1;
+    const stateMeta = changeImpactStateLabels[entry.state];
+    return {
+      key: entry.key,
+      id: entry.id,
+      typeLabel: changeImpactTypeLabels[entry.type],
+      severityLabel: severityMeta.label,
+      severityClass: severityMeta.className,
+      severityValue: entry.severity.toFixed(1),
+      stateLabel: stateMeta.label,
+      stateClass: stateMeta.className,
+      reasons: condenseChangeImpactReasons(entry.reasons),
+    };
+  });
+
+  const displayedLabel =
+    sorted.length === changeImpact.length
+      ? `${sorted.length}`
+      : `${sorted.length}/${changeImpact.length}`;
+
+  const summaryBadges: ChangeImpactSectionContext['summaryBadges'] = [
+    { label: 'Kayıtlar', className: 'badge-soft', value: displayedLabel },
+  ];
+
+  changeImpactSeverityBuckets.forEach((bucket) => {
+    const count = severityCounts[bucket.id];
+    if (count > 0) {
+      summaryBadges.push({
+        label: `${bucket.label} Seviyesi`,
+        className: bucket.className,
+        value: count.toString(),
+      });
+    }
+  });
+
+  return {
+    entries,
+    summaryBadges,
+    total: changeImpact.length,
+  };
+};
+
 const buildSummaryMetrics = (
   stats: ComplianceStatistics,
   requirementCoverage: RequirementCoverageStatus[] = [],
   qualityFindings: ComplianceSnapshot['qualityFindings'] = [],
+  changeImpact?: ChangeImpactScore[],
   risk?: ComplianceSnapshot['risk'],
   independenceSummary?: ComplianceSnapshot['independenceSummary'],
 ): LayoutSummaryMetric[] => {
@@ -2608,6 +2749,14 @@ const buildSummaryMetrics = (
     { label: 'Kod Yolları', value: stats.codePaths.total.toString() },
     { label: 'Tasarım Kayıtları', value: stats.designs.total.toString() },
   );
+
+  if (changeImpact && changeImpact.length > 0) {
+    metrics.push({
+      label: 'Değişiklik Etkileri',
+      value: changeImpact.length.toString(),
+      accent: true,
+    });
+  }
 
   if (requirementCoverage.length > 0) {
     const coverageCounts = requirementCoverage.reduce<Record<CoverageStatus, number>>(
@@ -2763,14 +2912,18 @@ const buildComplianceMatrixView = (
       }
     : undefined;
 
+  const changeImpact = buildChangeImpactView(snapshot.changeImpact);
+
   return {
     objectives,
     requirementCoverage,
     qualityFindings,
+    changeImpact,
     summaryMetrics: buildSummaryMetrics(
       snapshot.stats,
       snapshot.requirementCoverage,
       snapshot.qualityFindings,
+      snapshot.changeImpact,
       snapshot.risk,
       snapshot.independenceSummary,
     ),
@@ -2923,6 +3076,21 @@ const buildComplianceMatrixJson = (
     recommendation: finding.recommendation,
     relatedTests: finding.relatedTests,
   })),
+  ...(snapshot.changeImpact && snapshot.changeImpact.length > 0
+    ? {
+        changeImpact: snapshot.changeImpact.map((entry) => ({
+          key: entry.key,
+          id: entry.id,
+          type: entry.type,
+          severity: entry.severity,
+          state: entry.state,
+          reasons: [...entry.reasons],
+          base: entry.base,
+          coverage: entry.coverage,
+          ripple: entry.ripple,
+        })),
+      }
+    : {}),
   traceSuggestions: snapshot.traceSuggestions.map((suggestion) => ({
     requirementId: suggestion.requirementId,
     type: suggestion.type,
@@ -2987,6 +3155,9 @@ export const renderComplianceMatrix = (
       independence: view.independence,
     }),
   );
+  if (view.changeImpact) {
+    sections.push(renderChangeImpactSection(view.changeImpact));
+  }
   if (view.signoffs) {
     sections.push(signoffTimelineTemplate.render(view.signoffs));
   }
@@ -3036,6 +3207,9 @@ export const renderComplianceCoverageReport = (
       independence: view.independence,
     }),
   );
+  if (view.changeImpact) {
+    sections.push(renderChangeImpactSection(view.changeImpact));
+  }
   if (view.signoffs) {
     sections.push(signoffTimelineTemplate.render(view.signoffs));
   }

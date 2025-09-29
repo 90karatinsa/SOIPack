@@ -428,7 +428,7 @@
           <p class="report-meta">Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü</p>
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>20240201T120000Z-9c8bea0a1885</strong>
+          Snapshot: <strong>20240201T120000Z-83e26294b06b</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
           <div class="git-meta">
@@ -452,11 +452,11 @@
           </div>
           <div class="summary-card">
             <span>Bağlı Testler</span>
-            <strong>5</strong>
+            <strong>6</strong>
           </div>
           <div class="summary-card">
             <span>Kod İzleri</span>
-            <strong>4</strong>
+            <strong>6</strong>
           </div>
           <div class="summary-card">
             <span>Kapsamlı Gereksinimler</span>
@@ -564,6 +564,7 @@
                 <div class="muted">Durum: draft</div>
                 <div>
                   <span class="badge status-missing">Kapsam Yok</span>
+                    <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50% | MC/DC: 50%</div>
                 </div>
             </td>
             <td>
@@ -573,10 +574,23 @@
                       <div class="cell-title">uyarı bildirimleri gönderilmeli</div>
                       <div class="muted">TC-AUDIT-2</div>
                     </li>
+                    <li>
+                      <span class="badge status-missing">Başarısız</span>
+                      <div class="cell-title">ek audit bildirimleri kaydedilmeli</div>
+                      <div class="muted">TC-AUDIT-NEW</div>
+                    </li>
                 </ul>
             </td>
             <td>
-                <span class="muted">Kod bağlantısı yok</span>
+                <ul class="list">
+                    <li>
+                      <code class="code-pill">src/security/audit.ts</code>
+                        <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50% | MC/DC: 50%</div>
+                    </li>
+                    <li>
+                      <code class="code-pill">src/security/new-audit.ts</code>
+                    </li>
+                </ul>
             </td>
           </tr>
       </tbody>

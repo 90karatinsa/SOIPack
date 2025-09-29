@@ -22,11 +22,22 @@ export interface JamaTraceLink {
   relationshipType?: string;
 }
 
+export interface JamaAttachment {
+  itemId: string;
+  itemType?: string;
+  filename?: string;
+  url?: string;
+  size?: number;
+  contentType?: string;
+  createdAt?: string;
+}
+
 export interface JamaImportBundle {
   requirements: Requirement[];
   objectives: [];
   testResults: TestResult[];
   traceLinks: JamaTraceLink[];
+  attachments: JamaAttachment[];
   evidenceIndex: Record<string, never[]>;
   generatedAt: string;
 }
@@ -195,6 +206,146 @@ const fetchPaginated = async <T>(
   }
 
   return results;
+};
+
+interface JamaAttachmentRecord {
+  id?: number | string | null;
+  fileName?: string | null;
+  filename?: string | null;
+  url?: string | null;
+  downloadUrl?: string | null;
+  contentType?: string | null;
+  mimeType?: string | null;
+  size?: number | null;
+  fileSize?: number | null;
+  createdDate?: string | null;
+  created?: string | null;
+  createdAt?: string | null;
+  item?: { id?: number | string | null; itemType?: string | null } | null;
+  urls?: { download?: string | null } | null;
+  location?: { url?: string | null } | null;
+}
+
+const normalizeAttachmentRecord = (
+  record: JamaAttachmentRecord,
+  context: { rawItemId: string; itemTypeHint: string; normalizedItemId?: string },
+  warnings: string[],
+): { id?: string; attachment?: JamaAttachment } => {
+  if (!record || typeof record !== 'object') {
+    warnings.push(`Received malformed attachment payload for item ${context.normalizedItemId ?? context.rawItemId}.`);
+    return {};
+  }
+
+  const attachmentId =
+    record.id !== null && record.id !== undefined && record.id !== '' ? String(record.id) : undefined;
+  if (!attachmentId) {
+    warnings.push(
+      `Skipped attachment for item ${context.normalizedItemId ?? context.rawItemId} because it was missing an identifier.`,
+    );
+  }
+
+  const filenameRaw = record.fileName ?? record.filename;
+  const filename = typeof filenameRaw === 'string' && filenameRaw.trim().length > 0 ? filenameRaw.trim() : undefined;
+
+  const sizeRaw = record.size ?? record.fileSize;
+  const size = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) && sizeRaw >= 0 ? sizeRaw : undefined;
+
+  const contentTypeRaw = record.contentType ?? record.mimeType;
+  const contentType = typeof contentTypeRaw === 'string' && contentTypeRaw.trim().length > 0
+    ? contentTypeRaw.trim()
+    : undefined;
+
+  const createdRaw = record.createdAt ?? record.createdDate ?? record.created;
+  const createdAt = typeof createdRaw === 'string' && createdRaw.trim().length > 0 ? createdRaw.trim() : undefined;
+
+  const downloadUrlRaw =
+    record.url ?? record.downloadUrl ?? record.location?.url ?? record.urls?.download ?? undefined;
+  const url = typeof downloadUrlRaw === 'string' && downloadUrlRaw.trim().length > 0 ? downloadUrlRaw.trim() : undefined;
+
+  const item = record.item ?? {};
+  const itemTypeValue = typeof item?.itemType === 'string' && item.itemType.trim().length > 0
+    ? item.itemType.trim()
+    : undefined;
+
+  const normalizedItemId = context.normalizedItemId ?? context.rawItemId;
+
+  const attachment: JamaAttachment = {
+    itemId: normalizedItemId,
+    itemType: itemTypeValue ?? context.itemTypeHint,
+    filename,
+    url,
+    size,
+    contentType,
+    createdAt,
+  };
+
+  return { id: attachmentId, attachment };
+};
+
+const fetchItemAttachments = async (
+  itemId: string,
+  headers: Record<string, string>,
+  options: {
+    baseUrl: string;
+    timeoutMs?: number;
+    rateLimitDelays: number[];
+    maxPages: number;
+    itemTypeHint: string;
+    normalizedItemId?: string;
+    warnings: string[];
+    seen: Set<string>;
+    results: JamaAttachment[];
+  },
+): Promise<void> => {
+  let currentUrl: URL | undefined = new URL(`/rest/latest/items/${encodeURIComponent(itemId)}/attachments`, options.baseUrl);
+  let pageCount = 0;
+
+  while (currentUrl && pageCount < options.maxPages) {
+    let payload: PaginatedResponse<JamaAttachmentRecord>;
+    try {
+      payload = await requestWithBackoff<PaginatedResponse<JamaAttachmentRecord>>(
+        { url: currentUrl, headers, timeoutMs: options.timeoutMs },
+        options.rateLimitDelays,
+      );
+    } catch (error) {
+      const reason =
+        error instanceof HttpError
+          ? `${error.statusCode} ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : 'Unknown error';
+      options.warnings.push(
+        `Failed to fetch attachments for item ${options.normalizedItemId ?? itemId}: ${reason}.`,
+      );
+      break;
+    }
+
+    const records = extractItems<JamaAttachmentRecord>(payload);
+    records.forEach((record) => {
+      const { id, attachment } = normalizeAttachmentRecord(
+        record,
+        { rawItemId: itemId, itemTypeHint: options.itemTypeHint, normalizedItemId: options.normalizedItemId },
+        options.warnings,
+      );
+      if (!attachment) {
+        return;
+      }
+      if (id) {
+        if (options.seen.has(id)) {
+          return;
+        }
+        options.seen.add(id);
+      }
+      options.results.push(attachment);
+    });
+
+    const nextCursor = extractNextCursor(payload);
+    if (!nextCursor) {
+      break;
+    }
+    currentUrl = new URL(nextCursor, currentUrl);
+    pageCount += 1;
+  }
 };
 
 const toRequirementStatus = (raw: unknown): RequirementStatus => {
@@ -376,10 +527,14 @@ export const fetchJamaArtifacts = async (
 
   const requirementMap = new Map<string, Requirement>();
   const requirementIdByRaw = new Map<string, string>();
+  const rawRequirementIds = new Set<string>();
+  const rawTestIds = new Set<string>();
+
   requirementsRaw.forEach((item) => {
     const { requirement, rawId } = normalizeRequirement(item, warnings);
     requirementMap.set(requirement.id, requirement);
     requirementIdByRaw.set(rawId, requirement.id);
+    rawRequirementIds.add(rawId);
   });
 
   const testResultMap = new Map<string, TestResult>();
@@ -388,6 +543,7 @@ export const fetchJamaArtifacts = async (
     const { testResult, rawId } = normalizeTestCase(item, warnings);
     testResultMap.set(testResult.testId, testResult);
     testIdByRaw.set(rawId, testResult.testId);
+    rawTestIds.add(rawId);
   });
 
   const traceLinks: JamaTraceLink[] = [];
@@ -445,11 +601,43 @@ export const fetchJamaArtifacts = async (
     }
   });
 
+  const attachments: JamaAttachment[] = [];
+  const seenAttachmentIds = new Set<string>();
+
+  for (const rawId of rawRequirementIds) {
+    await fetchItemAttachments(rawId, headers, {
+      baseUrl: options.baseUrl,
+      timeoutMs: options.timeoutMs,
+      rateLimitDelays,
+      maxPages,
+      itemTypeHint: 'requirement',
+      normalizedItemId: requirementIdByRaw.get(rawId),
+      warnings,
+      seen: seenAttachmentIds,
+      results: attachments,
+    });
+  }
+
+  for (const rawId of rawTestIds) {
+    await fetchItemAttachments(rawId, headers, {
+      baseUrl: options.baseUrl,
+      timeoutMs: options.timeoutMs,
+      rateLimitDelays,
+      maxPages,
+      itemTypeHint: 'testCase',
+      normalizedItemId: testIdByRaw.get(rawId),
+      warnings,
+      seen: seenAttachmentIds,
+      results: attachments,
+    });
+  }
+
   const data: JamaImportBundle = {
     requirements: Array.from(requirementMap.values()),
     objectives: [],
     testResults: Array.from(testResultMap.values()),
     traceLinks,
+    attachments,
     evidenceIndex: {},
     generatedAt: new Date().toISOString(),
   };

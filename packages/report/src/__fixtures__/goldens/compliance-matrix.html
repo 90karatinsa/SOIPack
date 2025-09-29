@@ -2,7 +2,7 @@
 <html lang="tr">
   <head>
     <meta charset="utf-8" />
-    <title>Kurumsal Uyum Matrisi</title>
+    <title>SOIPack Uyum Matrisi</title>
     <style>
       
   :root {
@@ -424,30 +424,18 @@
   <body>
     <header class="report-header">
       <div>
-        <h1>Kurumsal Uyum Matrisi</h1>
+        <h1>SOIPack Uyum Matrisi</h1>
           <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
-          Snapshot: <strong>20240201T120000Z-9c8bea0a1885</strong>
+          Snapshot: <strong>20240201T120000Z-83e26294b06b</strong>
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
-          <div class="git-meta">
-            <p class="report-meta">
-              Commit:
-              <strong>
-                <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
-              </strong>
-            </p>
-              <p class="report-meta">Dallar: main</p>
-              <p class="report-meta">Origin: https://example.com/repo.git</p>
-              <p class="report-meta">Yazar: Stage Bot • 2024-03-15 10:00 UTC</p>
-              <p class="report-meta">Mesaj: Implement stage filtering</p>
-          </div>
       </div>
       <div class="summary-grid">
           <div class="summary-card">
             <span>Risk Skoru</span>
-            <strong>76.8/100 (Kritik Risk)</strong>
+            <strong>80.2/100 (Kritik Risk)</strong>
           </div>
           <div class="summary-card">
             <span>Hedefler</span>
@@ -467,15 +455,19 @@
           </div>
           <div class="summary-card">
             <span>Testler</span>
-            <strong>4</strong>
+            <strong>5</strong>
           </div>
           <div class="summary-card">
             <span>Kod Yolları</span>
-            <strong>2</strong>
+            <strong>3</strong>
           </div>
           <div class="summary-card">
             <span>Tasarım Kayıtları</span>
             <strong>0</strong>
+          </div>
+          <div class="summary-card summary-card--accent">
+            <span>Değişiklik Etkileri</span>
+            <strong>12</strong>
           </div>
           <div class="summary-card">
             <span>Kapsamlı Gereksinimler</span>
@@ -513,7 +505,7 @@
       <article class="risk-card">
         <h3>Toplam Skor</h3>
         <div class="risk-score">
-          <span class="risk-score-value">76.8</span>
+          <span class="risk-score-value">80.2</span>
           <span class="badge status-missing">Kritik Risk</span>
         </div>
         <p class="muted">0 en düşük, 100 en yüksek riski temsil eder.</p>
@@ -536,32 +528,40 @@
             <div class="cell-title">Kapsam</div>
             <div class="muted">3 missing, 0 partial across 3 items</div>
             <div class="risk-breakdown-stats">
-              <span class="badge badge-soft">Ağırlık %40</span>
-              <span class="badge status-missing">Katkı 40.0 puan</span>
+              <span class="badge badge-soft">Ağırlık %35</span>
+              <span class="badge status-missing">Katkı 35.0 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">quality</div>
+            <div class="muted">3 error, 1 warn findings of 4 evaluated</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %15</span>
+              <span class="badge status-missing">Katkı 13.1 puan</span>
             </div>
           </li>
           <li>
             <div class="cell-title">Statik Analiz</div>
             <div class="muted">2 findings (error, warn)</div>
             <div class="risk-breakdown-stats">
-              <span class="badge badge-soft">Ağırlık %20</span>
-              <span class="badge status-missing">Katkı 17.2 puan</span>
+              <span class="badge badge-soft">Ağırlık %15</span>
+              <span class="badge status-missing">Katkı 12.9 puan</span>
+            </div>
+          </li>
+          <li>
+            <div class="cell-title">Testler</div>
+            <div class="muted">2 failing, 1 quarantined of 5 tests</div>
+            <div class="risk-breakdown-stats">
+              <span class="badge badge-soft">Ağırlık %25</span>
+              <span class="badge status-partial">Katkı 12.0 puan</span>
             </div>
           </li>
           <li>
             <div class="cell-title">Denetim Bulguları</div>
             <div class="muted">2 active audit flags</div>
             <div class="risk-breakdown-stats">
-              <span class="badge badge-soft">Ağırlık %15</span>
-              <span class="badge status-partial">Katkı 10.8 puan</span>
-            </div>
-          </li>
-          <li>
-            <div class="cell-title">Testler</div>
-            <div class="muted">1 failing, 1 quarantined of 4 tests</div>
-            <div class="risk-breakdown-stats">
-              <span class="badge badge-soft">Ağırlık %25</span>
-              <span class="badge status-covered">Katkı 8.8 puan</span>
+              <span class="badge badge-soft">Ağırlık %10</span>
+              <span class="badge status-partial">Katkı 7.2 puan</span>
             </div>
           </li>
       </ul>
@@ -594,7 +594,7 @@
                     </tr>
                     <tr>
                       <td>
-                        <div class="cell-title">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885</div>
+                        <div class="cell-title">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b</div>
                           <div class="muted">2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC</div>
                       </td>
                       <td style="text-align:right;">0</td>
@@ -617,27 +617,27 @@
                     <tr>
                       <td><span class="cell-title">A-3-04</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
-                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
                     <tr>
                       <td><span class="cell-title">A-4-01</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
-                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
                     <tr>
                       <td><span class="cell-title">A-5-06</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
-                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
                     <tr>
                       <td><span class="cell-title">A-5-08</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
-                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
                     <tr>
                       <td><span class="cell-title">A-6-02</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
-                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-9c8bea0a1885 (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
+                      <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
                 </tbody>
               </table>
@@ -1149,15 +1149,207 @@ A-5 • Yapısal Kapsam—Statement                    </div>
               </td>
               <td>
                 <span class="badge status-missing">Kapsam Yok</span>
+                  <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50% | MC/DC: 50%</div>
               </td>
               <td>
-                  <span class="muted">Kod bağlantısı yok</span>
+                  <ul class="list">
+                      <li><code class="code-pill">src/security/audit.ts</code></li>
+                      <li><code class="code-pill">src/security/new-audit.ts</code></li>
+                  </ul>
               </td>
             </tr>
         </tbody>
       </table>
     </section>
-<section class="section">
+<section class="section" aria-labelledby="change-impact-heading">
+    <h2 id="change-impact-heading">Değişiklik Etki Analizi</h2>
+    <p class="section-lead">Baseline karşılaştırmasına göre en yüksek riskli iz öğeleri listelenmiştir.</p>
+    <div class="risk-breakdown-stats" role="list">
+        <span role="listitem" class="badge badge-soft">Kayıtlar: 12</span><span role="listitem" class="badge status-missing">Kritik Seviyesi: 6</span><span role="listitem" class="badge status-partial">Yüksek Seviyesi: 6</span>
+      </div>
+    <table aria-describedby="change-impact-heading">
+      <thead>
+        <tr>
+          <th scope="col">Öğe</th>
+          <th scope="col">Tür</th>
+          <th scope="col">Şiddet</th>
+          <th scope="col">Durum</th>
+          <th scope="col">Gerekçe</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+        <th scope="row">
+          <div class="cell-title">REQ-AUTH-3</div>
+          <div class="muted">requirement:REQ-AUTH-3</div>
+        </th>
+        <td>Gereksinim</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(18.4)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">REQ-AUTH-3 düğümüne 1 bağlantı eklendi. • REQ-AUTH-3 gereksinimi için test kapsamı %100&#39;den %0&#39;e düştü.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">TC-LOGIN-2</div>
+          <div class="muted">test:TC-LOGIN-2</div>
+        </th>
+        <td>Test</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(17.2)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">TC-LOGIN-2 testi failed durumuna düştü (önceki: passed).</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">TC-AUDIT-2</div>
+          <div class="muted">test:TC-AUDIT-2</div>
+        </th>
+        <td>Test</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(16.5)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">TC-AUDIT-2 testi skipped durumuna düştü (önceki: passed).</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">TC-AUDIT-NEW</div>
+          <div class="muted">test:TC-AUDIT-NEW</div>
+        </th>
+        <td>Test</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(14.4)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Eklendi</span></td>
+        <td><div class="cell-description">TC-AUDIT-NEW düğümü yeni eklendi.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">src/security/audit.ts</div>
+          <div class="muted">code:src/security/audit.ts</div>
+        </th>
+        <td>Kod</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(14.3)</span>
+          </span>
+        </td>
+        <td><span class="badge badge-soft">Etkilendi</span></td>
+        <td><div class="cell-description">src/security/audit.ts düğümü, REQ-AUTH-1 değişikliğinden 2. seviyede etkilendi. • src/security/audit.ts düğümü, REQ-AUTH-2 değişikliğinden 2. seviyede etkilendi. (+5 ek gerekçe)</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">REQ-AUTH-1</div>
+          <div class="muted">requirement:REQ-AUTH-1</div>
+        </th>
+        <td>Gereksinim</td>
+        <td>
+          <span class="badge status-missing">
+            Kritik
+            <span class="muted">(13.7)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">REQ-AUTH-1 gereksinimi için test kapsamı %100&#39;den %50&#39;e düştü.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">REQ-AUTH-2</div>
+          <div class="muted">requirement:REQ-AUTH-2</div>
+        </th>
+        <td>Gereksinim</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(11.4)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">REQ-AUTH-2 gereksinimi için test kapsamı %100&#39;den %50&#39;e düştü.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">src/security/new-audit.ts</div>
+          <div class="muted">code:src/security/new-audit.ts</div>
+        </th>
+        <td>Kod</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(11.2)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Eklendi</span></td>
+        <td><div class="cell-description">src/security/new-audit.ts düğümü yeni eklendi.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">TC-LOGIN-1</div>
+          <div class="muted">test:TC-LOGIN-1</div>
+        </th>
+        <td>Test</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(10.7)</span>
+          </span>
+        </td>
+        <td><span class="badge status-partial">Güncellendi</span></td>
+        <td><div class="cell-description">TC-LOGIN-1 düğümünden 1 bağlantı kaldırıldı.</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">src/auth/login.ts</div>
+          <div class="muted">code:src/auth/login.ts</div>
+        </th>
+        <td>Kod</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(10.5)</span>
+          </span>
+        </td>
+        <td><span class="badge badge-soft">Etkilendi</span></td>
+        <td><div class="cell-description">src/auth/login.ts düğümü, REQ-AUTH-1 değişikliğinden 2. seviyede etkilendi. • src/auth/login.ts düğümü, REQ-AUTH-2 değişikliğinden 2. seviyede etkilendi. (+4 ek gerekçe)</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">TC-AUDIT-1</div>
+          <div class="muted">test:TC-AUDIT-1</div>
+        </th>
+        <td>Test</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(9.8)</span>
+          </span>
+        </td>
+        <td><span class="badge badge-soft">Etkilendi</span></td>
+        <td><div class="cell-description">TC-AUDIT-1 düğümü, REQ-AUTH-1 değişikliğinden 3. seviyede etkilendi. • TC-AUDIT-1 düğümü, REQ-AUTH-2 değişikliğinden 1. seviyede etkilendi. (+3 ek gerekçe)</div></td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">src/auth/legacy.ts</div>
+          <div class="muted">code:src/auth/legacy.ts</div>
+        </th>
+        <td>Kod</td>
+        <td>
+          <span class="badge status-partial">
+            Yüksek
+            <span class="muted">(9.0)</span>
+          </span>
+        </td>
+        <td><span class="badge status-missing">Kaldırıldı</span></td>
+        <td><div class="cell-description">src/auth/legacy.ts düğümü çalışma alanından kaldırıldı.</div></td>
+      </tr>
+      </tbody>
+    </table>
+  </section><section class="section">
     <h2>Signoff Zaman Çizelgesi</h2>
     <p class="section-lead">
       Workspace belgelerindeki signoff istekleri ve imza onayları denetim izi için tutulur.

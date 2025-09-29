@@ -46,6 +46,7 @@ import {
   translate,
   verifyLedgerProof,
 } from '@soipack/core';
+import type { ChangeImpactScore } from '@soipack/engine';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
 import helmet from 'helmet';
@@ -241,6 +242,14 @@ interface ComplianceIndependenceSummaryPayload {
   }>;
 }
 
+interface ComplianceChangeImpactEntry {
+  id: string;
+  type: ChangeImpactScore['type'];
+  severity: number;
+  state: ChangeImpactScore['state'];
+  reasons: string[];
+}
+
 interface ComplianceSummaryResponsePayload {
   computedAt: string;
   latest: {
@@ -262,6 +271,7 @@ interface ComplianceSummaryResponsePayload {
       openObjectiveCount: number;
     };
     independence?: ComplianceIndependenceSummaryPayload;
+    changeImpact?: ComplianceChangeImpactEntry[];
   } | null;
 }
 
@@ -3219,6 +3229,7 @@ export const createServer = (config: ServerConfig): Express => {
     generatedAt?: string;
     requirements: ComplianceRequirementEntry[];
     summary: ComplianceSummary;
+    changeImpact?: ComplianceChangeImpactEntry[];
   }
 
   interface ComplianceRecord {
@@ -3569,6 +3580,96 @@ export const createServer = (config: ServerConfig): Express => {
     return latest;
   };
 
+  const MAX_CHANGE_IMPACT_SUMMARY_ENTRIES = 25;
+  const allowedChangeImpactTypes: ReadonlySet<ChangeImpactScore['type']> = new Set([
+    'requirement',
+    'test',
+    'code',
+    'design',
+  ]);
+  const allowedChangeImpactStates: ReadonlySet<ChangeImpactScore['state']> = new Set([
+    'added',
+    'removed',
+    'modified',
+    'impacted',
+  ]);
+
+  const sanitizeChangeImpactEntries = (value: unknown): ComplianceChangeImpactEntry[] | undefined => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const entries: ComplianceChangeImpactEntry[] = [];
+    value.forEach((raw) => {
+      if (!raw || typeof raw !== 'object') {
+        return;
+      }
+      const entry = raw as Record<string, unknown>;
+      const idRaw = typeof entry.id === 'string' ? entry.id.trim() : '';
+      if (!idRaw) {
+        return;
+      }
+      const typeRaw = typeof entry.type === 'string' ? entry.type.trim() : '';
+      if (!allowedChangeImpactTypes.has(typeRaw as ChangeImpactScore['type'])) {
+        return;
+      }
+      const stateRaw = typeof entry.state === 'string' ? entry.state.trim() : '';
+      if (!allowedChangeImpactStates.has(stateRaw as ChangeImpactScore['state'])) {
+        return;
+      }
+      const severityNumeric = Number(entry.severity);
+      if (!Number.isFinite(severityNumeric)) {
+        return;
+      }
+      const normalizedSeverity = Math.max(0, Math.min(1, severityNumeric));
+      const severity = Math.round(normalizedSeverity * 1000) / 1000;
+      const reasons = Array.isArray(entry.reasons)
+        ? (entry.reasons as unknown[])
+            .map((reason) => (typeof reason === 'string' ? reason.trim() : ''))
+            .filter((reason): reason is string => reason.length > 0)
+        : [];
+      entries.push({
+        id: idRaw,
+        type: typeRaw as ChangeImpactScore['type'],
+        severity,
+        state: stateRaw as ChangeImpactScore['state'],
+        reasons,
+      });
+    });
+    if (entries.length === 0) {
+      return undefined;
+    }
+    entries.sort((a, b) => {
+      if (b.severity !== a.severity) {
+        return b.severity - a.severity;
+      }
+      if (a.type !== b.type) {
+        return a.type.localeCompare(b.type);
+      }
+      return a.id.localeCompare(b.id);
+    });
+    return entries.slice(0, MAX_CHANGE_IMPACT_SUMMARY_ENTRIES);
+  };
+
+  const extractChangeImpactSummary = (
+    record: ComplianceRecord | undefined,
+  ): ComplianceChangeImpactEntry[] | undefined => {
+    if (!record) {
+      return undefined;
+    }
+    const fromMatrix = sanitizeChangeImpactEntries(record.matrix?.changeImpact);
+    if (fromMatrix && fromMatrix.length > 0) {
+      return fromMatrix;
+    }
+    if (record.metadata && typeof record.metadata === 'object') {
+      const metadata = record.metadata as Record<string, unknown>;
+      const fromMetadata = sanitizeChangeImpactEntries(metadata.changeImpact);
+      if (fromMetadata && fromMetadata.length > 0) {
+        return fromMetadata;
+      }
+    }
+    return undefined;
+  };
+
   const sanitizeIndependenceSummary = (
     value: unknown,
   ): ComplianceIndependenceSummaryPayload | undefined => {
@@ -3650,6 +3751,7 @@ export const createServer = (config: ServerConfig): Express => {
     record: ComplianceRecord | undefined,
     computedAtIso: string,
     independenceSummary: ComplianceIndependenceSummaryPayload | undefined = extractIndependenceSummary(record),
+    changeImpact: ComplianceChangeImpactEntry[] | undefined = extractChangeImpactSummary(record),
   ): ComplianceSummaryResponsePayload => {
     if (!record) {
       return { computedAt: computedAtIso, latest: null };
@@ -3693,6 +3795,10 @@ export const createServer = (config: ServerConfig): Express => {
 
     if (independenceSummary) {
       latestPayload.independence = independenceSummary;
+    }
+
+    if (changeImpact && changeImpact.length > 0) {
+      latestPayload.changeImpact = changeImpact;
     }
 
     return {
@@ -5927,9 +6033,10 @@ export const createServer = (config: ServerConfig): Express => {
       const latest = getLatestComplianceRecord(tenantId);
       const cached = complianceSummaryCache.get(tenantId);
       const independenceSummary = extractIndependenceSummary(latest);
-      const metadataSignature =
-        independenceSummary &&
-        computeObjectSha256({
+      const changeImpactSummary = extractChangeImpactSummary(latest);
+      const metadataSignaturePayload: Record<string, unknown> = {};
+      if (independenceSummary) {
+        metadataSignaturePayload.independence = {
           totals: independenceSummary.totals,
           objectives: independenceSummary.objectives.map((entry) => ({
             objectiveId: entry.objectiveId,
@@ -5937,7 +6044,21 @@ export const createServer = (config: ServerConfig): Express => {
             independence: entry.independence,
             missingArtifacts: entry.missingArtifacts,
           })),
-        });
+        };
+      }
+      if (changeImpactSummary && changeImpactSummary.length > 0) {
+        metadataSignaturePayload.changeImpact = changeImpactSummary.map((entry) => ({
+          id: entry.id,
+          type: entry.type,
+          severity: entry.severity,
+          state: entry.state,
+          reasons: entry.reasons,
+        }));
+      }
+      const metadataSignature =
+        Object.keys(metadataSignaturePayload).length > 0
+          ? computeObjectSha256(metadataSignaturePayload)
+          : undefined;
 
       if (
         cached &&
@@ -5958,6 +6079,7 @@ export const createServer = (config: ServerConfig): Express => {
         latest,
         new Date(now).toISOString(),
         independenceSummary,
+        changeImpactSummary,
       );
       complianceSummaryCache.set(tenantId, {
         recordId: latest?.id,
@@ -6153,6 +6275,14 @@ export const createServer = (config: ServerConfig): Express => {
         });
       }
 
+      const changeImpactSource =
+        matrixRaw.changeImpact !== undefined
+          ? matrixRaw.changeImpact
+          : metadata
+            ? (metadata['changeImpact'] as unknown)
+            : undefined;
+      const changeImpact = sanitizeChangeImpactEntries(changeImpactSource);
+
       const canonicalPayload = {
         matrix: {
           project,
@@ -6177,14 +6307,26 @@ export const createServer = (config: ServerConfig): Express => {
         });
       }
 
+      const storedMetadata = { ...canonicalMetadata };
+      if (changeImpact && storedMetadata.changeImpact === undefined) {
+        storedMetadata.changeImpact = changeImpact;
+      }
+
       const record: ComplianceRecord = {
         id: randomUUID(),
         tenantId,
         sha256: computedHash,
         createdAt: new Date().toISOString(),
-        matrix: { project, level, generatedAt, requirements, summary },
+        matrix: {
+          project,
+          level,
+          generatedAt,
+          requirements,
+          summary,
+          ...(changeImpact ? { changeImpact } : {}),
+        },
         coverage,
-        metadata: Object.keys(canonicalMetadata).length > 0 ? canonicalMetadata : undefined,
+        metadata: Object.keys(storedMetadata).length > 0 ? storedMetadata : undefined,
       };
 
       const tenantCompliance = getTenantComplianceMap(tenantId);

@@ -261,7 +261,18 @@ export const signoffTimelineFixture = (): SignoffTimelineEntry[] => [
 export const createReportFixture = (): ReportFixture => {
   const requirements = requirementFixture();
   const objectives = objectivesFixture();
-  const testResults = testResultsFixture();
+  const baseTestResults = testResultsFixture();
+  const currentTestResults: TestResult[] = [
+    ...baseTestResults.map((test) => ({ ...test })),
+    {
+      testId: 'TC-AUDIT-NEW',
+      className: 'AuditFlow',
+      name: 'ek audit bildirimleri kaydedilmeli',
+      status: 'failed',
+      duration: 6,
+      requirementsRefs: ['REQ-AUTH-3'],
+    },
+  ];
   const coverage = coverageSummaryFixture();
   const structuralCoverage = structuralCoverageFixture();
   const evidenceIndex = evidenceFixture();
@@ -281,23 +292,39 @@ export const createReportFixture = (): ReportFixture => {
       status: 'open' as const,
     },
   ];
+  const testToCodeMap: ImportBundle['testToCodeMap'] = {
+    'TC-LOGIN-1': ['src/auth/login.ts'],
+    'TC-LOGIN-2': ['src/auth/login.ts', 'src/security/audit.ts'],
+    'TC-AUDIT-1': ['src/security/audit.ts'],
+    'TC-AUDIT-2': ['src/security/audit.ts'],
+    'TC-AUDIT-NEW': ['src/security/new-audit.ts'],
+  };
   const bundle: ImportBundle = {
     requirements,
     objectives,
-    testResults,
+    testResults: currentTestResults,
     coverage,
     structuralCoverage,
     evidenceIndex,
     findings,
-    testToCodeMap: {
-      'TC-LOGIN-1': ['src/auth/login.ts'],
-      'TC-LOGIN-2': ['src/auth/login.ts', 'src/security/audit.ts'],
-      'TC-AUDIT-1': ['src/security/audit.ts'],
-    },
+    testToCodeMap,
     generatedAt: '2024-02-01T12:00:00Z',
   };
 
-  const baseline = generateComplianceSnapshot(bundle);
+  const baselineBundle: ImportBundle = {
+    ...bundle,
+    testResults: baseTestResults.map((test) => ({ ...test, status: 'passed' as const })),
+    testToCodeMap: {
+      'TC-LOGIN-1': ['src/auth/login.ts', 'src/auth/legacy.ts'],
+      'TC-LOGIN-2': ['src/auth/login.ts', 'src/security/audit.ts'],
+      'TC-AUDIT-1': ['src/security/audit.ts'],
+      'TC-AUDIT-2': ['src/security/audit.ts'],
+    },
+  };
+
+  const baselineEngine = new TraceEngine(baselineBundle);
+  const baselineGraph = baselineEngine.getGraph();
+  const baselineSnapshot = generateComplianceSnapshot(baselineBundle);
 
   const downgradeStatus = (status: ComplianceSnapshot['objectives'][number]['status']):
     ComplianceSnapshot['objectives'][number]['status'] => {
@@ -327,7 +354,7 @@ export const createReportFixture = (): ReportFixture => {
     return {
       version,
       generatedAt: createdAt,
-      objectives: baseline.objectives.map((objective) => ({
+      objectives: baselineSnapshot.objectives.map((objective) => ({
         ...objective,
         status: mapper(objective.status),
       })),
@@ -340,7 +367,7 @@ export const createReportFixture = (): ReportFixture => {
   ];
 
   const snapshot = generateComplianceSnapshot(
-    { ...bundle, snapshot: baseline.version },
+    { ...bundle, snapshot: baselineSnapshot.version },
     {
       includeRisk: true,
       risk: {
@@ -348,6 +375,7 @@ export const createReportFixture = (): ReportFixture => {
         coverageHistory: coverageHistoryFixture(),
         snapshotHistory,
       },
+      changeImpactBaseline: baselineGraph,
     },
   );
   const engine = new TraceEngine(bundle);
