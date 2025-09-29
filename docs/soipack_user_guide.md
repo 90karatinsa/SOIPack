@@ -103,6 +103,39 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
      --project-name "SOIPack Demo Avionics" \
      --project-version "1.0.0"
    ```
+
+#### Değişiklik etkisi puanlaması
+
+`analyze` komutu, önceki bir çalıştırmadan alınan `snapshot.json` dosyasını
+`--baseline-snapshot <dosyaYolu>` argümanıyla kabul eder. CLI bu dosyayı JSON
+olarak okuyup içindeki `traceGraph` düğümlerini doğrular; grafik eksikse veya
+dosya okunamazsa aynı çalıştırmanın `analysis.json` çıktısına bir uyarı eklenir
+ve değişiklik etkisi hesaplanmadan devam edilir. Başarılı durumlarda baseline
+grafiği `generateComplianceSnapshot` çağrısına aktarılır, böylece güncel iz
+grafiği ile kıyaslanarak değişiklik puanlaması yapılır ve sonuçlar hem
+`snapshot.json` hem de `analysis.json` metaverisine yazılır.【F:packages/cli/src/index.ts†L3249-L3294】【F:packages/cli/src/index.test.ts†L828-L902】
+
+Değişiklik etkisi skorları; düğümdeki doğrudan değişiklikler, gereksinim/test
+kapsamı ve bağlantı ripple etkilerinin ağırlıklı toplamıyla (`base + coverage +
+ripple`) hesaplanır. Analiz çıktısı dört durumdan (eklenen, kaldırılan,
+güncellenen, etkilenen) birini içerir ve en yüksek şiddet değerine sahip ilk 25
+kayıt azalan sırayla listelenir. Bu sonuçlar, aynı düğümün iz anahtarını ve
+gerekçe özetini koruyarak raporlama katmanına aktarılır.【F:packages/engine/src/impact.ts†L41-L120】【F:packages/engine/src/impact.ts†L332-L360】【F:packages/engine/src/index.ts†L1194-L1270】
+
+Baseline dosyaları tamamen belleğe alındığından, önceki `analyze` çalıştırmasından
+alınmış ve yalnızca ilgili sürüme ait iz düğümlerini içeren snapshot'ları
+kullanmanız önerilir. Çok büyük trace graph'ları (ör. on binlerce düğüm)
+analiz süresini uzatabileceği için gerekiyorsa `jq` ile gereksiz düğümleri
+temizleyebilir veya kapsamı azalan modüllerle sınırlayabilirsiniz. CLI uyarıları
+“iz grafiği içermiyor” ya da “okunamadı” mesajları veriyorsa, baseline
+dosyasının geçerli JSON olduğunu ve `traceGraph.nodes` alanının dolu olduğunu
+doğrulayın; böylece değişiklik etkisi tablosu yeniden oluşturulur.【F:packages/cli/src/index.ts†L3257-L3286】【F:packages/cli/src/index.test.ts†L889-L936】
+
+Üretilen değişiklik etkisi verileri; uyum raporundaki "Değişiklik Etki Analizi"
+bölümüne, uyum özeti API yanıtındaki `changeImpact` alanına ve Dashboard'daki
+"Değişiklik Etkisi" kartına aynen yansıtılır. Böylece mühendislik ekipleri hem
+CI raporlarından hem de web arayüzünden aynı öncelikli değişiklik listesini
+görüntüleyebilir.【F:packages/report/src/index.ts†L2915-L3211】【F:packages/server/src/index.ts†L3748-L3807】【F:packages/ui/src/pages/DashboardPage.tsx†L498-L590】
 4. **Raporları üretin**
    ```bash
    node packages/cli/dist/index.js --license data/licenses/demo-license.key report -i .soipack/out -o dist/reports

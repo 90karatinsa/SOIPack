@@ -1,0 +1,43 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-CHANGE-1",
+      "title": "Autopilot shall bound bank angle",
+      "description": "The autopilot must prevent bank angle beyond 35 degrees.",
+      "status": "approved",
+      "tags": []
+    }
+  ],
+  "designs": [],
+  "testResults": [
+    {
+      "testId": "TC-CHANGE-1",
+      "className": "AutopilotChangeSuite",
+      "name": "REQ-CHANGE-1 limits angle",
+      "status": "failed",
+      "duration": 2,
+      "requirementsRefs": ["REQ-CHANGE-1"]
+    }
+  ],
+  "coverage": null,
+  "structuralCoverage": null,
+  "traceLinks": [],
+  "testToCodeMap": {
+    "TC-CHANGE-1": ["src/autopilot.c"]
+  },
+  "evidenceIndex": {},
+  "git": null,
+  "findings": [],
+  "builds": [],
+  "metadata": {
+    "generatedAt": "2024-04-02T12:00:00.000Z",
+    "warnings": [],
+    "inputs": {},
+    "version": {
+      "id": "20240402T120000Z-change",
+      "createdAt": "2024-04-02T12:00:00.000Z",
+      "fingerprint": "abcdef1234567890abcdef1234567890",
+      "isFrozen": false
+    }
+  }
+}

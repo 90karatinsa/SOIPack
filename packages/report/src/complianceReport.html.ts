@@ -1,5 +1,20 @@
 import type { CoverageMetric, CoverageReport } from '@soipack/adapters';
 
+export interface ChangeImpactSectionContext {
+  entries: Array<{
+    key: string;
+    id: string;
+    typeLabel: string;
+    severityLabel: string;
+    severityClass: string;
+    severityValue: string;
+    stateLabel: string;
+    stateClass: string;
+    reasons: string;
+  }>;
+  summaryBadges: Array<{ label: string; className: string; value: string }>;
+}
+
 const escapeHtml = (value: string): string =>
   value
     .replace(/&/g, '&amp;')
@@ -87,6 +102,66 @@ export interface CoverageSummarySectionContext {
   coverage: CoverageReport;
   warnings: string[];
 }
+
+export const renderChangeImpactSection = ({
+  entries,
+  summaryBadges,
+}: ChangeImpactSectionContext): string => {
+  if (!entries.length) {
+    return '';
+  }
+
+  const summary = summaryBadges.length
+    ? `<div class="risk-breakdown-stats" role="list">
+        ${summaryBadges
+          .map(
+            (badge) =>
+              `<span role="listitem" class="badge ${badge.className}">${badge.label}: ${badge.value}</span>`,
+          )
+          .join('')}
+      </div>`
+    : '';
+
+  const rows = entries
+    .map(
+      (entry) => `<tr>
+        <th scope="row">
+          <div class="cell-title">${escapeHtml(entry.id)}</div>
+          <div class="muted">${escapeHtml(entry.key)}</div>
+        </th>
+        <td>${escapeHtml(entry.typeLabel)}</td>
+        <td>
+          <span class="badge ${entry.severityClass}">
+            ${escapeHtml(entry.severityLabel)}
+            <span class="muted">(${escapeHtml(entry.severityValue)})</span>
+          </span>
+        </td>
+        <td><span class="badge ${entry.stateClass}">${escapeHtml(entry.stateLabel)}</span></td>
+        <td><div class="cell-description">${escapeHtml(entry.reasons)}</div></td>
+      </tr>`,
+    )
+    .join('');
+
+  return `<section class="section" aria-labelledby="change-impact-heading">
+    <h2 id="change-impact-heading">Değişiklik Etki Analizi</h2>
+    <p class="section-lead">Baseline karşılaştırmasına göre en yüksek riskli iz öğeleri listelenmiştir.</p>
+    ${summary}
+    <table aria-describedby="change-impact-heading">
+      <thead>
+        <tr>
+          <th scope="col">Öğe</th>
+          <th scope="col">Tür</th>
+          <th scope="col">Şiddet</th>
+          <th scope="col">Durum</th>
+          <th scope="col">Gerekçe</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  </section>`;
+};
 
 export const renderCoverageSummarySection = ({
   coverage,

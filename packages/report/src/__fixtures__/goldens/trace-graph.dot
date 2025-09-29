@@ -22,6 +22,7 @@ digraph "Trace Graph" {
     node [shape="folder" style="filled" color="#0f766e" fillcolor="#ccfbf1" fontname="Inter"];
     "code:src/auth/login.ts" [label="src/auth/login.ts"];
     "code:src/security/audit.ts" [label="src/security/audit.ts"];
+    "code:src/security/new-audit.ts" [label="src/security/new-audit.ts"];
   }
 
   subgraph "cluster_tests" {
@@ -31,6 +32,7 @@ digraph "Trace Graph" {
     node [shape="ellipse" style="filled" color="#dc2626" fillcolor="#fee2e2" fontname="Inter"];
     "test:TC-AUDIT-1" [label="TC-AUDIT-1\\ndenetim kayıtları oluşturulmalı"];
     "test:TC-AUDIT-2" [label="TC-AUDIT-2\\nuyarı bildirimleri gönderilmeli"];
+    "test:TC-AUDIT-NEW" [label="TC-AUDIT-NEW\\nek audit bildirimleri kaydedilmeli"];
     "test:TC-LOGIN-1" [label="TC-LOGIN-1\\ngeçerli kullanıcı giriş yapabilmeli"];
     "test:TC-LOGIN-2" [label="TC-LOGIN-2\\nbaşarısız girişler kilitlenmeli"];
   }
@@ -38,15 +40,21 @@ digraph "Trace Graph" {
   "code:src/auth/login.ts" -> "test:TC-LOGIN-1";
   "code:src/auth/login.ts" -> "test:TC-LOGIN-2";
   "code:src/security/audit.ts" -> "test:TC-AUDIT-1";
+  "code:src/security/audit.ts" -> "test:TC-AUDIT-2";
   "code:src/security/audit.ts" -> "test:TC-LOGIN-2";
+  "code:src/security/new-audit.ts" -> "test:TC-AUDIT-NEW";
   "requirement:REQ-AUTH-1" -> "test:TC-LOGIN-1";
   "requirement:REQ-AUTH-1" -> "test:TC-LOGIN-2";
   "requirement:REQ-AUTH-2" -> "test:TC-AUDIT-1";
   "requirement:REQ-AUTH-2" -> "test:TC-LOGIN-2";
   "requirement:REQ-AUTH-3" -> "test:TC-AUDIT-2";
+  "requirement:REQ-AUTH-3" -> "test:TC-AUDIT-NEW";
   "test:TC-AUDIT-1" -> "code:src/security/audit.ts";
   "test:TC-AUDIT-1" -> "requirement:REQ-AUTH-2";
+  "test:TC-AUDIT-2" -> "code:src/security/audit.ts";
   "test:TC-AUDIT-2" -> "requirement:REQ-AUTH-3";
+  "test:TC-AUDIT-NEW" -> "code:src/security/new-audit.ts";
+  "test:TC-AUDIT-NEW" -> "requirement:REQ-AUTH-3";
   "test:TC-LOGIN-1" -> "code:src/auth/login.ts";
   "test:TC-LOGIN-1" -> "requirement:REQ-AUTH-1";
   "test:TC-LOGIN-2" -> "code:src/auth/login.ts";

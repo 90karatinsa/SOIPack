@@ -2,6 +2,7 @@ import { createHash, X509Certificate } from 'crypto';
 import { EventEmitter } from 'events';
 import { promises as fs, readFileSync, createWriteStream } from 'fs';
 import http from 'http';
+import https from 'https';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
@@ -400,6 +401,131 @@ describe('CLI pipeline workflows', () => {
     expect(detailed.postQuantum?.verified).toBe(true);
   });
 
+  it('packages downloaded Jira Cloud attachments as evidence', async () => {
+    const workspaceDir = path.join(tempRoot, 'jira-attachments-workspace');
+    const analysisDir = path.join(tempRoot, 'jira-attachments-analysis');
+    const packageDir = path.join(tempRoot, 'jira-attachments-package');
+
+    const attachmentBody = Buffer.from('binary-attachment-content');
+    const attachmentResponses: Record<string, { statusCode: number; body?: Buffer }> = {
+      'https://jira.example.com/secure/attachment/att-req-901': {
+        statusCode: 200,
+        body: attachmentBody,
+      },
+    };
+
+    const httpsSpy = jest.spyOn(https, 'request').mockImplementation((input, options, callback) => {
+      let requestCallback: ((res: http.IncomingMessage) => void) | undefined = callback;
+      if (typeof options === 'function') {
+        requestCallback = options;
+      }
+      const targetUrl = typeof input === 'string' ? input : input.toString();
+      const responseConfig = attachmentResponses[targetUrl] ?? { statusCode: 404 };
+      const req = new EventEmitter() as unknown as http.ClientRequest;
+      Object.assign(req, {
+        setTimeout: () => req,
+        abort: () => undefined,
+        destroy: () => undefined,
+        end: () => {
+          const response = new PassThrough() as unknown as http.IncomingMessage;
+          (response as http.IncomingMessage).statusCode = responseConfig.statusCode;
+          (response as http.IncomingMessage).headers = {};
+          process.nextTick(() => {
+            requestCallback?.(response as http.IncomingMessage);
+            if (responseConfig.body) {
+              response.write(responseConfig.body);
+            }
+            response.end();
+          });
+        },
+      });
+      return req;
+    });
+
+    const fetchSpy = jest.spyOn(adapters, 'fetchJiraArtifacts');
+    fetchSpy.mockResolvedValue({
+      data: {
+        requirements: [
+          {
+            id: 'REQ-901',
+            title: 'Record telemetry data',
+            description: 'System shall record telemetry for 30 minutes.',
+            status: 'Approved',
+            type: 'Requirement',
+            url: 'https://jira.example.com/browse/REQ-901',
+          },
+        ],
+        tests: [],
+        traces: [],
+        attachments: [
+          {
+            id: 'att-req-901',
+            issueId: '10101',
+            issueKey: 'REQ-901',
+            filename: 'telemetry-log.bin',
+            url: 'https://jira.example.com/secure/attachment/att-req-901',
+            size: 2048,
+            createdAt: '2024-09-10T10:00:00Z',
+          },
+        ],
+      },
+      warnings: [],
+    });
+
+    try {
+      await runImport({
+        output: workspaceDir,
+        jiraCloud: {
+          baseUrl: 'https://jira.example.com',
+          projectKey: 'AERO',
+          email: 'alice@example.com',
+          authToken: 'token-xyz',
+        },
+      });
+
+      await runAnalyze({
+        input: workspaceDir,
+        output: analysisDir,
+        objectives: objectivesPath,
+      });
+
+      await runReport({
+        input: analysisDir,
+        output: path.join(workspaceDir, 'reports'),
+      });
+
+      const packResult = await runPack({
+        input: workspaceDir,
+        output: packageDir,
+        signingKey: TEST_SIGNING_BUNDLE,
+        packageName: 'jira-attachments.zip',
+      });
+
+      const manifest = JSON.parse(
+        await fs.readFile(packResult.manifestPath, 'utf8'),
+      ) as ManifestWithSbom;
+      const attachmentManifestEntry = manifest.files.find((entry) =>
+        entry.path.includes('attachments/jiraCloud/REQ-901/telemetry-log.bin'),
+      );
+      expect(attachmentManifestEntry).toBeDefined();
+      const expectedHash = createHash('sha256').update(attachmentBody).digest('hex');
+      expect(attachmentManifestEntry?.sha256).toBe(expectedHash);
+      expect(manifest.files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.stringContaining('attachments/jiraCloud/REQ-901/telemetry-log.bin'),
+          }),
+        ]),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      httpsSpy.mockRestore();
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+      await fs.rm(analysisDir, { recursive: true, force: true });
+      await fs.rm(packageDir, { recursive: true, force: true });
+    }
+  });
+
 
   it('generates plan documents from configuration JSON', async () => {
     const configDir = path.join(tempRoot, 'plan-generator');
@@ -691,9 +817,149 @@ describe('CLI pipeline workflows', () => {
     expect(changeControl?.status).toBe('covered');
   });
 
+  it('emits change impact insights when a baseline snapshot is supplied', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
+    const inputDir = path.join(tempRoot, 'change-impact-input');
+    const analysisDir = path.join(tempRoot, 'change-impact-analysis');
+
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    const analysisResult = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+      baselineSnapshot: path.join(fixtureDir, 'baseline-snapshot.json'),
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'snapshot.json'), 'utf8'),
+    ) as {
+      changeImpact?: Array<{ id: string; severity: number; reasons: string[]; state: string }>;
+    };
+
+    expect(snapshot.changeImpact).toBeDefined();
+    expect(snapshot.changeImpact).not.toHaveLength(0);
+    expect(snapshot.changeImpact?.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['REQ-CHANGE-1', 'TC-CHANGE-1']),
+    );
+
+    const testImpact = snapshot.changeImpact?.find((entry) => entry.id === 'TC-CHANGE-1');
+    expect(testImpact?.severity).toBeGreaterThan(0);
+    expect(testImpact?.reasons.join(' ')).toContain('durumuna');
+
+    const requirementImpact = snapshot.changeImpact?.find((entry) => entry.id === 'REQ-CHANGE-1');
+    expect(requirementImpact?.reasons.join(' ')).toContain('test kapsamı');
+
+    const analysisData = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+    ) as { metadata: { changeImpact?: unknown } };
+    expect(analysisData.metadata.changeImpact).toEqual(snapshot.changeImpact);
+
+    const noBaselineInput = path.join(tempRoot, 'change-impact-no-baseline-input');
+    const noBaselineAnalysis = path.join(tempRoot, 'change-impact-no-baseline-analysis');
+    await fs.mkdir(noBaselineInput, { recursive: true });
+    await fs.copyFile(
+      path.join(fixtureDir, 'workspace.json'),
+      path.join(noBaselineInput, 'workspace.json'),
+    );
+
+    const resultWithoutBaseline = await runAnalyze({
+      input: noBaselineInput,
+      output: noBaselineAnalysis,
+      level: 'C',
+      objectives: objectivesPath,
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(resultWithoutBaseline.exitCode);
+
+    const snapshotWithoutBaseline = JSON.parse(
+      await fs.readFile(path.join(noBaselineAnalysis, 'snapshot.json'), 'utf8'),
+    ) as { changeImpact?: unknown };
+    expect(snapshotWithoutBaseline.changeImpact).toBeUndefined();
+
+    const analysisWithoutBaseline = JSON.parse(
+      await fs.readFile(path.join(noBaselineAnalysis, 'analysis.json'), 'utf8'),
+    ) as { metadata: { changeImpact?: unknown } };
+    expect(analysisWithoutBaseline.metadata.changeImpact).toBeUndefined();
+  });
+
+  it('warns about change impact when the provided baseline snapshot lacks a trace graph', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
+    const inputDir = path.join(tempRoot, 'change-impact-invalid-input');
+    const analysisDir = path.join(tempRoot, 'change-impact-invalid-analysis');
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    const invalidBaselinePath = path.join(tempRoot, 'baseline-missing-trace.json');
+    await fs.writeFile(invalidBaselinePath, JSON.stringify({ traceGraph: {} }), 'utf8');
+
+    const result = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+      baselineSnapshot: invalidBaselinePath,
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(result.exitCode);
+
+    const analysisData = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+    ) as { warnings: string[]; metadata: { changeImpact?: unknown } };
+    expect(analysisData.metadata.changeImpact).toBeUndefined();
+    expect(analysisData.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('iz grafiği içermiyor; değişiklik etkisi hesaplanamadı'),
+      ]),
+    );
+  });
+
   it('merges Jira Cloud REST artifacts into the workspace', async () => {
     const workDir = path.join(tempRoot, 'jira-cloud-workspace');
     const fetchSpy = jest.spyOn(adapters, 'fetchJiraArtifacts');
+
+    const attachmentSuccess = Buffer.from('%PDF-1.4 sample');
+    const attachmentResponses: Record<string, { statusCode: number; body?: Buffer }> = {
+      'https://jira.example.com/secure/attachment/att-req-900': {
+        statusCode: 200,
+        body: attachmentSuccess,
+      },
+      'https://jira.example.com/secure/attachment/att-req-900-missing': {
+        statusCode: 404,
+      },
+    };
+
+    const httpsSpy = jest.spyOn(https, 'request').mockImplementation((input, options, callback) => {
+      let requestCallback: ((res: http.IncomingMessage) => void) | undefined = callback;
+      if (typeof options === 'function') {
+        requestCallback = options;
+      }
+      const targetUrl = typeof input === 'string' ? input : input.toString();
+      const responseConfig = attachmentResponses[targetUrl] ?? { statusCode: 500 };
+      const req = new EventEmitter() as unknown as http.ClientRequest;
+      Object.assign(req, {
+        setTimeout: () => req,
+        abort: () => undefined,
+        destroy: () => undefined,
+        end: () => {
+          const response = new PassThrough() as unknown as http.IncomingMessage;
+          (response as http.IncomingMessage).statusCode = responseConfig.statusCode;
+          (response as http.IncomingMessage).headers = {};
+          process.nextTick(() => {
+            requestCallback?.(response as http.IncomingMessage);
+            if (responseConfig.body) {
+              response.write(responseConfig.body);
+            }
+            response.end();
+          });
+        },
+      });
+      return req;
+    });
 
     fetchSpy.mockResolvedValue({
       data: {
@@ -727,6 +993,15 @@ describe('CLI pipeline workflows', () => {
             size: 4096,
             createdAt: '2024-08-31T12:00:00Z',
           },
+          {
+            id: 'att-req-900-missing',
+            issueId: '10090',
+            issueKey: 'REQ-900',
+            filename: 'missing-data.bin',
+            url: 'https://jira.example.com/secure/attachment/att-req-900-missing',
+            size: 1024,
+            createdAt: '2024-09-01T00:00:00Z',
+          },
         ],
       },
       warnings: ['Jira pagination truncated after 2 pages.'],
@@ -757,7 +1032,10 @@ describe('CLI pipeline workflows', () => {
       );
 
       expect(result.warnings).toEqual(
-        expect.arrayContaining(['Jira pagination truncated after 2 pages.']),
+        expect.arrayContaining([
+          'Jira pagination truncated after 2 pages.',
+          expect.stringContaining('HTTP 404'),
+        ]),
       );
       expect(result.workspace.requirements).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: 'REQ-900', status: 'verified' })]),
@@ -779,6 +1057,30 @@ describe('CLI pipeline workflows', () => {
 
       const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
       expect(traceEvidence.filter((entry) => entry.source === 'jiraCloud')).toHaveLength(3);
+      const attachmentEvidence = traceEvidence.find(
+        (entry) => entry.summary?.includes('impact-analysis.pdf') ?? false,
+      );
+      const savedAttachmentPath = path.join(
+        workDir,
+        'attachments',
+        'jiraCloud',
+        'REQ-900',
+        'impact-analysis.pdf',
+      );
+      const normalizedAttachmentPath = path
+        .relative(process.cwd(), savedAttachmentPath)
+        .split(path.sep)
+        .join('/');
+      const expectedAttachmentHash = createHash('sha256').update(attachmentSuccess).digest('hex');
+      expect(attachmentEvidence).toEqual(
+        expect.objectContaining({
+          path: normalizedAttachmentPath,
+          hash: expectedAttachmentHash,
+        }),
+      );
+      const savedContent = await fs.readFile(savedAttachmentPath);
+      expect(savedContent.equals(attachmentSuccess)).toBe(true);
+
       const testEvidence = result.workspace.evidenceIndex.test ?? [];
       expect(testEvidence.filter((entry) => entry.source === 'jiraCloud')).toHaveLength(1);
 
@@ -792,13 +1094,29 @@ describe('CLI pipeline workflows', () => {
           traces: 1,
         }),
       );
-      expect(metadata?.attachments?.total).toBe(1);
-      expect(metadata?.attachments?.items[0]).toEqual(
-        expect.objectContaining({ issueKey: 'REQ-900', filename: 'impact-analysis.pdf' }),
+      expect(metadata?.attachments?.total).toBe(2);
+      expect(metadata?.attachments?.totalBytes).toBe(attachmentSuccess.length);
+      expect(metadata?.attachments?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            issueKey: 'REQ-900',
+            filename: 'impact-analysis.pdf',
+            path: 'attachments/jiraCloud/REQ-900/impact-analysis.pdf',
+            sha256: expectedAttachmentHash,
+            bytes: attachmentSuccess.length,
+          }),
+          expect.objectContaining({
+            issueKey: 'REQ-900',
+            filename: 'missing-data.bin',
+            path: undefined,
+            sha256: undefined,
+          }),
+        ]),
       );
       expect(result.workspace.metadata.inputs.jiraCloud).toBe('https://jira.example.com#AERO');
     } finally {
       fetchSpy.mockRestore();
+      httpsSpy.mockRestore();
       await fs.rm(workDir, { recursive: true, force: true });
     }
   });

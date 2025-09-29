@@ -182,6 +182,7 @@ export interface JiraArtifactAttachment {
   mimeType?: string;
   size?: number;
   createdAt?: string;
+  sha256?: string;
 }
 
 export interface JiraArtifactsOptions extends JiraCloudClientOptions {

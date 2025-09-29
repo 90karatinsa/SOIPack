@@ -498,6 +498,10 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.risk).toBeUndefined();
   });
 
+  it('omits change impact analysis when baseline is not provided', () => {
+    expect(snapshot.changeImpact).toBeUndefined();
+  });
+
   it('attaches computed risk insights when requested', () => {
     const withRisk = generateComplianceSnapshot(bundle, {
       includeRisk: true,
@@ -513,6 +517,43 @@ describe('Compliance snapshot generation', () => {
     expect(withRisk.risk?.profile.score).toBeGreaterThanOrEqual(0);
     expect(withRisk.risk?.profile.breakdown.length).toBeGreaterThan(0);
     expect(withRisk.risk?.coverageDrift?.classification).toBeDefined();
+  });
+
+  it('includes change impact analysis when a baseline graph is provided', () => {
+    const baselineBundle = {
+      ...bundleFixture(),
+      testResults: bundleFixture().testResults.map((test) =>
+        test.testId === 'TC-2' ? { ...test, status: 'passed' as const } : test,
+      ),
+    };
+
+    const baselineGraph = new TraceEngine(baselineBundle).getGraph();
+
+    const withImpact = generateComplianceSnapshot(bundleFixture(), {
+      changeImpactBaseline: baselineGraph,
+    });
+
+    expect(withImpact.changeImpact).toBeDefined();
+    expect(withImpact.changeImpact?.length).toBeGreaterThan(0);
+    expect(withImpact.changeImpact?.length).toBeLessThanOrEqual(25);
+
+    const severities = withImpact.changeImpact?.map((entry) => entry.severity) ?? [];
+    expect(severities).toEqual([...severities].sort((a, b) => b - a));
+
+    const failingTest = withImpact.changeImpact?.find((entry) => entry.id === 'TC-2');
+    expect(failingTest).toBeDefined();
+    expect(failingTest?.severity).toBeGreaterThan(0);
+    expect(failingTest?.state).toBe('modified');
+    expect(failingTest?.reasons.join(' ')).toContain(
+      'TC-2 testi failed durumuna düştü (önceki: passed).',
+    );
+
+    const requirementImpact = withImpact.changeImpact?.find((entry) => entry.id === 'REQ-1');
+    expect(requirementImpact).toBeDefined();
+    expect(requirementImpact?.severity).toBeGreaterThan(0);
+    expect(requirementImpact?.reasons.join(' ')).toContain(
+      "REQ-1 gereksinimi için test kapsamı %100'den %50'e düştü.",
+    );
   });
 
   it('derives gap analysis grouped by artifact category', () => {

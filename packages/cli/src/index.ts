@@ -86,9 +86,11 @@ import {
   TraceEngine,
   generateComplianceSnapshot,
   simulateComplianceRisk,
+  type ChangeImpactScore,
   type ComplianceRiskSimulationResult,
   type RiskSimulationCoverageSample,
   type RiskSimulationTestSample,
+  type TraceGraph,
 } from '@soipack/engine';
 import {
   buildManifest,
@@ -276,6 +278,187 @@ const normalizeRelativePath = (filePath: string): string => {
   const relative = path.relative(process.cwd(), absolute);
   const normalized = relative.length > 0 ? relative : '.';
   return normalized.split(path.sep).join('/');
+};
+
+const sanitizeAttachmentSegment = (value: string, fallback: string): string => {
+  const sanitized = value.replace(/[^A-Za-z0-9._-]/g, '_');
+  return sanitized.length > 0 ? sanitized : fallback;
+};
+
+interface AttachmentDownloadDescriptor {
+  issueKey: string;
+  filename: string;
+  url?: string;
+  authHeader?: string;
+  expectedSha256?: string;
+}
+
+interface AttachmentDownloadOutcome {
+  descriptor: AttachmentDownloadDescriptor;
+  absolutePath?: string;
+  relativePath?: string;
+  sha256?: string;
+  bytes?: number;
+}
+
+const ATTACHMENT_DOWNLOAD_CONCURRENCY = 4;
+
+const streamConnectorAttachments = async (
+  workspaceDir: string,
+  connectorKey: string,
+  descriptors: AttachmentDownloadDescriptor[],
+): Promise<{ results: AttachmentDownloadOutcome[]; warnings: string[] }> => {
+  if (descriptors.length === 0) {
+    return { results: [], warnings: [] };
+  }
+
+  const baseDir = path.join(workspaceDir, 'attachments', sanitizeAttachmentSegment(connectorKey, connectorKey));
+  await ensureDirectory(baseDir);
+
+  const warnings: string[] = [];
+  const results: AttachmentDownloadOutcome[] = new Array(descriptors.length);
+
+  const downloadSingle = async (
+    descriptor: AttachmentDownloadDescriptor,
+    index: number,
+  ): Promise<void> => {
+    if (!descriptor.url) {
+      warnings.push(
+        `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} indirilemedi: URL eksik.`,
+      );
+      results[index] = { descriptor };
+      return;
+    }
+
+    try {
+      const parsed = new URL(descriptor.url);
+      const client = parsed.protocol === 'http:' ? http : https;
+      const headers: Record<string, string> = {};
+      if (descriptor.authHeader) {
+        headers.Authorization = descriptor.authHeader;
+      }
+
+      const attachmentDir = path.join(
+        baseDir,
+        sanitizeAttachmentSegment(descriptor.issueKey, 'issue'),
+      );
+      await ensureDirectory(attachmentDir);
+      const sanitizedName = sanitizeAttachmentSegment(descriptor.filename, 'attachment');
+      const targetPath = path.join(attachmentDir, sanitizedName);
+      const tempPath = path.join(attachmentDir, `${randomUUID()}.tmp`);
+
+      const downloadResult = await new Promise<AttachmentDownloadOutcome>((resolve) => {
+        const request = client.request(parsed, { method: 'GET', headers }, (response) => {
+          const status = response.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            response.resume();
+            warnings.push(
+              `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} indirilemedi: HTTP ${status}.`,
+            );
+            resolve({ descriptor });
+            return;
+          }
+
+          const hash = createHash('sha256');
+          let bytes = 0;
+          response.on('data', (chunk: Buffer) => {
+            hash.update(chunk);
+            bytes += chunk.length;
+          });
+
+          const fileStream = fs.createWriteStream(tempPath);
+
+          const finalize = async () => {
+            try {
+              await fsPromises.rename(tempPath, targetPath);
+            } catch {
+              await fsPromises.rm(tempPath, { force: true }).catch(() => undefined);
+              throw new Error('Dosya taşınamadı.');
+            }
+          };
+
+          streamPipeline(response, fileStream)
+            .then(async () => {
+              const sha256 = hash.digest('hex');
+              await finalize();
+              const relativePath = path
+                .relative(workspaceDir, targetPath)
+                .split(path.sep)
+                .join('/');
+              if (
+                descriptor.expectedSha256 &&
+                descriptor.expectedSha256.trim().length > 0 &&
+                descriptor.expectedSha256.toLowerCase() !== sha256
+              ) {
+                warnings.push(
+                  `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} karması uyuşmadı. Beklenen: ${descriptor.expectedSha256.toLowerCase()}, hesaplanan: ${sha256}.`,
+                );
+              }
+              resolve({ descriptor, absolutePath: targetPath, relativePath, sha256, bytes });
+            })
+            .catch(async (error) => {
+              await fsPromises.rm(tempPath, { force: true }).catch(() => undefined);
+              const reason = error instanceof Error ? error.message : String(error);
+              warnings.push(
+                `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} indirilemedi: ${reason}.`,
+              );
+              resolve({ descriptor });
+            });
+        });
+
+        request.on('error', (error) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          warnings.push(
+            `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} indirilemedi: ${reason}.`,
+          );
+          fsPromises.rm(tempPath, { force: true }).catch(() => undefined);
+          resolve({ descriptor });
+        });
+
+        request.end();
+      });
+
+      results[index] = downloadResult;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warnings.push(
+        `${connectorKey} eki ${descriptor.issueKey}/${descriptor.filename} indirilemedi: ${reason}.`,
+      );
+      results[index] = { descriptor };
+    }
+  };
+
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    const current = cursor;
+    cursor += 1;
+    if (current >= descriptors.length) {
+      return;
+    }
+    await downloadSingle(descriptors[current]!, current);
+    await worker();
+  };
+
+  const workers: Promise<void>[] = [];
+  const limit = Math.min(ATTACHMENT_DOWNLOAD_CONCURRENCY, descriptors.length);
+  for (let index = 0; index < limit; index += 1) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+
+  return { results, warnings };
+};
+
+const buildJiraCloudAuthHeader = (options: JiraArtifactsOptions): string | undefined => {
+  if (options.email && options.authToken) {
+    const credentials = Buffer.from(`${options.email}:${options.authToken}`).toString('base64');
+    return `Basic ${credentials}`;
+  }
+  if (options.authToken) {
+    return `Bearer ${options.authToken}`;
+  }
+  return undefined;
 };
 
 const computeEvidenceHash = async (filePath: string): Promise<string | undefined> => {
@@ -493,7 +676,17 @@ interface ExternalSourceMetadata {
     traces: number;
     attachments: {
       total: number;
-      items: Array<{ issueKey: string; filename: string; url?: string; size?: number; createdAt?: string }>;
+      totalBytes: number;
+      items: Array<{
+        issueKey: string;
+        filename: string;
+        url?: string;
+        size?: number;
+        createdAt?: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+      }>;
     } | null;
     requirementsJql?: string;
     testsJql?: string;
@@ -1945,6 +2138,9 @@ const buildTraceLinksFromTests = (tests: TestResult[]): TraceLink[] => {
 };
 
 export const runImport = async (options: ImportOptions): Promise<ImportResult> => {
+  const outputDir = path.resolve(options.output);
+  await ensureDirectory(outputDir);
+
   const warnings: string[] = [];
   const requirements: Requirement[][] = [];
   const designs: DesignRecord[][] = [];
@@ -2113,13 +2309,60 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       await appendEvidence('trace', 'jiraCloud', `${sourceId}:relationships`, 'Jira Cloud izlenebilirlik');
     }
 
+    const attachmentAuthHeader = buildJiraCloudAuthHeader(options.jiraCloud);
+    let attachmentSummary: ExternalSourceMetadata['jiraCloud']['attachments'] = null;
     if (remoteAttachments.length > 0) {
-      await appendEvidence(
-        'trace',
-        'jiraCloud',
-        `${sourceId}:attachments`,
-        `Jira Cloud ekleri (${remoteAttachments.length} kayıt)`,
+      const { results: attachmentResults, warnings: attachmentWarnings } =
+        await streamConnectorAttachments(
+          outputDir,
+          'jiraCloud',
+          remoteAttachments.map((attachment) => ({
+            issueKey: attachment.issueKey,
+            filename: attachment.filename,
+            url: attachment.url,
+            authHeader: attachmentAuthHeader,
+            expectedSha256: (attachment as { sha256?: string }).sha256,
+          })),
+        );
+      warnings.push(...attachmentWarnings);
+
+      for (const outcome of attachmentResults) {
+        if (!outcome.absolutePath) {
+          continue;
+        }
+        const summary = `Jira Cloud eki ${outcome.descriptor.issueKey} / ${outcome.descriptor.filename}`;
+        const { evidence } = await createEvidence(
+          'trace',
+          'jiraCloud',
+          outcome.absolutePath,
+          summary,
+          independence,
+        );
+        mergeEvidence(evidenceIndex, 'trace', evidence);
+      }
+
+      const totalBytes = attachmentResults.reduce(
+        (accumulator, entry) => accumulator + (entry.bytes ?? 0),
+        0,
       );
+
+      attachmentSummary = {
+        total: remoteAttachments.length,
+        totalBytes,
+        items: remoteAttachments.map((attachment, index) => {
+          const download = attachmentResults[index];
+          return {
+            issueKey: attachment.issueKey,
+            filename: attachment.filename,
+            url: attachment.url,
+            size: attachment.size,
+            createdAt: attachment.createdAt,
+            path: download?.relativePath,
+            sha256: download?.sha256,
+            bytes: download?.bytes,
+          };
+        }),
+      };
     }
 
     sourceMetadata.jiraCloud = {
@@ -2128,19 +2371,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       requirements: remoteRequirements.length,
       tests: remoteTests.length,
       traces: remoteTraces.length,
-      attachments:
-        remoteAttachments.length > 0
-          ? {
-              total: remoteAttachments.length,
-              items: remoteAttachments.map((attachment) => ({
-                issueKey: attachment.issueKey,
-                filename: attachment.filename,
-                url: attachment.url,
-                size: attachment.size,
-                createdAt: attachment.createdAt,
-              })),
-            }
-          : null,
+      attachments: attachmentSummary,
       requirementsJql: options.jiraCloud.requirementsJql,
       testsJql: options.jiraCloud.testsJql,
     };
@@ -2709,8 +2940,6 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     },
   };
 
-  const outputDir = path.resolve(options.output);
-  await ensureDirectory(outputDir);
   const workspacePath = path.join(outputDir, 'workspace.json');
   await writeJsonFile(workspacePath, workspace);
 
@@ -2725,6 +2954,7 @@ export interface AnalyzeOptions {
   projectName?: string;
   projectVersion?: string;
   stage?: SoiStage;
+  baselineSnapshot?: string;
 }
 
 export interface AnalyzeResult {
@@ -2747,6 +2977,7 @@ interface AnalysisMetadata {
     tqpHref?: string;
     tarHref?: string;
   };
+  changeImpact?: ChangeImpactScore[];
 }
 
 const loadObjectives = async (filePath: string): Promise<Objective[]> => {
@@ -2796,6 +3027,36 @@ const normalizeStageOption = (value: unknown): SoiStage | undefined => {
   }
 
   return normalized as SoiStage;
+};
+
+const normalizeBaselineSnapshotOption = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+
+  if (typeof candidate !== 'string') {
+    throw new Error(
+      "'--baseline-snapshot' seçeneği için geçerli bir dosya yolu belirtilmelidir.",
+    );
+  }
+
+  const resolvedPath = path.resolve(candidate);
+  try {
+    const raw = fs.readFileSync(resolvedPath, 'utf8');
+    JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Baseline snapshot JSON dosyası okunamadı (${candidate}): ${message}`,
+    );
+  }
+
+  return resolvedPath;
 };
 
 const sortObjectives = (objectives: Objective[]): Objective[] => {
@@ -2991,7 +3252,35 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   );
 
   const bundle = buildImportBundle(workspace, filteredObjectives, level);
-  const snapshot = generateComplianceSnapshot(bundle);
+  let baselineTraceGraph: TraceGraph | undefined;
+  const baselineWarnings: string[] = [];
+  if (options.baselineSnapshot) {
+    const baselinePath = path.resolve(options.baselineSnapshot);
+    try {
+      const raw = await fsPromises.readFile(baselinePath, 'utf8');
+      const parsed = JSON.parse(raw) as { traceGraph?: TraceGraph } | null;
+      const candidate = parsed?.traceGraph;
+      if (candidate && Array.isArray(candidate.nodes)) {
+        baselineTraceGraph = candidate;
+      } else {
+        const label = path.relative(process.cwd(), baselinePath) || baselinePath;
+        baselineWarnings.push(
+          `Baseline snapshot ${label} iz grafiği içermiyor; değişiklik etkisi hesaplanamadı.`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const label = path.relative(process.cwd(), baselinePath) || baselinePath;
+      baselineWarnings.push(
+        `Baseline snapshot ${label} okunamadı: ${message}.`,
+      );
+    }
+  }
+
+  const snapshot = generateComplianceSnapshot(
+    bundle,
+    baselineTraceGraph ? { changeImpactBaseline: baselineTraceGraph } : undefined,
+  );
   const engine = new TraceEngine(bundle);
   const traces = collectRequirementTraces(engine, workspace.requirements);
 
@@ -3017,11 +3306,16 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     generatedAt: analysisGeneratedAt,
     version: snapshot.version,
     stage: options.stage,
+    ...(snapshot.changeImpact ? { changeImpact: snapshot.changeImpact } : {}),
   };
 
   await writeJsonFile(snapshotPath, snapshot);
   await writeJsonFile(tracePath, traces);
-  const analysisWarnings = [...workspace.metadata.warnings, ...gatingEvaluation.warnings];
+  const analysisWarnings = [
+    ...(workspace.metadata.warnings ?? []),
+    ...gatingEvaluation.warnings,
+    ...baselineWarnings,
+  ];
   await writeJsonFile(analysisPath, {
     metadata: analysisMetadata,
     objectives: filteredObjectives,
@@ -4049,15 +4343,29 @@ const resolveEvidenceDirectories = async (
   inputDir: string,
   reportDir: string,
 ): Promise<string[]> => {
+  const attachmentsDir = path.join(inputDir, 'attachments');
+  const attachmentsExists = await directoryExists(attachmentsDir);
+
   if (inputDir === reportDir) {
-    return [];
+    return attachmentsExists ? [attachmentsDir] : [];
   }
 
   const entries = await fsPromises.readdir(inputDir, { withFileTypes: true });
-  return entries
+  const directories = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => path.join(inputDir, entry.name))
     .filter((dir) => path.resolve(dir) !== path.resolve(reportDir));
+
+  if (attachmentsExists) {
+    const alreadyIncluded = directories.some(
+      (dir) => path.resolve(dir) === path.resolve(attachmentsDir),
+    );
+    if (!alreadyIncluded) {
+      directories.push(attachmentsDir);
+    }
+  }
+
+  return directories;
 };
 
 const PACKAGE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/;
@@ -4311,6 +4619,7 @@ export interface IngestPipelineOptions {
   projectName?: string;
   projectVersion?: string;
   stage?: SoiStage;
+  baselineSnapshot?: string;
 }
 
 export interface IngestPipelineResult {
@@ -4423,6 +4732,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     projectName: options.projectName,
     projectVersion: options.projectVersion,
     stage: options.stage,
+    baselineSnapshot: options.baselineSnapshot,
   });
 
   const reportResult = await runReport({
@@ -4430,6 +4740,12 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     output: reportsDir,
     stage: options.stage,
   });
+
+  const workspaceAttachmentsDir = path.join(workspaceDir, 'attachments');
+  if (await directoryExists(workspaceAttachmentsDir)) {
+    const outputAttachmentsDir = path.join(resolvedOutputDir, 'attachments');
+    await fsPromises.cp(workspaceAttachmentsDir, outputAttachmentsDir, { recursive: true });
+  }
 
   const complianceRaw = await fsPromises.readFile(reportResult.complianceJson, 'utf8');
   const complianceData = JSON.parse(complianceRaw) as {
@@ -4830,6 +5146,9 @@ interface RunConfig {
     file?: string;
   };
   inputs?: ImportPaths;
+  analysis?: {
+    baselineSnapshot?: string;
+  };
   output?: {
     work?: string;
     analysis?: string;
@@ -4900,6 +5219,9 @@ export const runPipeline = async (
     'Çalışma alanı hazırlandı.',
   );
 
+  const baselineSnapshotFromConfig = config.analysis?.baselineSnapshot
+    ? path.resolve(baseDir, config.analysis.baselineSnapshot)
+    : undefined;
   const analyzeResult = await runAnalyze({
     input: workDir,
     output: analysisDir,
@@ -4907,6 +5229,7 @@ export const runPipeline = async (
     objectives: config.objectives?.file ? path.resolve(baseDir, config.objectives.file) : undefined,
     projectName: config.project?.name,
     projectVersion: config.project?.version,
+    baselineSnapshot: baselineSnapshotFromConfig,
   });
 
   const planConfigFromConfig = config.report?.planConfig
@@ -5530,6 +5853,11 @@ if (require.main === module) {
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
+          })
+          .option('baseline-snapshot', {
+            describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
+            type: 'string',
+            coerce: normalizeBaselineSnapshotOption,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -5559,6 +5887,7 @@ if (require.main === module) {
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
             stage,
+            baselineSnapshot: argv.baselineSnapshot as string | undefined,
           });
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
@@ -5780,6 +6109,11 @@ if (require.main === module) {
           .option('project-version', {
             describe: 'Proje sürümü.',
             type: 'string',
+          })
+          .option('baseline-snapshot', {
+            describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
+            type: 'string',
+            coerce: normalizeBaselineSnapshotOption,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -5817,6 +6151,7 @@ if (require.main === module) {
             level: normalizedLevel,
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
+            baselineSnapshot: argv.baselineSnapshot as string | undefined,
           });
 
           logger.info(
@@ -6126,6 +6461,11 @@ if (require.main === module) {
             type: 'string',
             default: 'soi-pack.zip',
           })
+          .option('baseline-snapshot', {
+            describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
+            type: 'string',
+            coerce: normalizeBaselineSnapshotOption,
+          })
           .option('ledger', {
             describe: 'Paketleme ledger dosyasının yolu.',
             type: 'string',
@@ -6261,6 +6601,7 @@ if (require.main === module) {
             level: normalizedLevel,
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
+            baselineSnapshot: argv.baselineSnapshot as string | undefined,
             signingKey,
             packageName,
             ledger: ledgerOptions,

@@ -1,17 +1,11 @@
-import { promises as fs } from 'fs';
+import { createReadStream } from 'fs';
 import path from 'path';
 
+import { SaxesParser, SaxesTagPlain } from 'saxes';
+
 import { CoverageMetric, CoverageReport, FileCoverageSummary, ParseResult } from './types';
-import { parseXml } from './utils/xml';
 
 type UnknownRecord = Record<string, unknown>;
-
-const toArray = <T>(value: T | T[] | undefined): T[] => {
-  if (value === undefined) {
-    return [];
-  }
-  return Array.isArray(value) ? value : [value];
-};
 
 const asNumber = (value: unknown): number => {
   if (typeof value === 'number') {
@@ -95,16 +89,265 @@ const registerTestFile = (
   map.set(normalizedTest, existing);
 };
 
+const REPORT_SIZE_WARNING_BYTES = 5 * 1024 * 1024; // 5 MiB
+const TEST_TAGS = new Set(['tests', 'test', 'covered-by', 'coveredby', 'test-name']);
+
 export const importCobertura = async (filePath: string): Promise<ParseResult<CoverageReport>> => {
   const warnings: string[] = [];
   const location = path.resolve(filePath);
-  const content = await fs.readFile(location, 'utf8');
+  const files: FileCoverageSummary[] = [];
+  const testFiles = new Map<string, Set<string>>();
 
-  let raw: UnknownRecord;
+  interface ClassAccumulator {
+    file: string;
+    statementsCovered: number;
+    statementsTotal: number;
+    branchCovered: number;
+    branchTotal: number;
+    functionsCovered: number;
+    functionsTotal: number;
+  }
+
+  interface LineContext {
+    file: string;
+    tests: Set<string>;
+    tagStack: string[];
+  }
+
+  let currentClass: ClassAccumulator | undefined;
+  let currentLine: LineContext | undefined;
+  let sawClass = false;
+  let totalBytes = 0;
+  let sizeWarningIssued = false;
+  const elementStack: string[] = [];
+
+  const finalizeCurrentClass = () => {
+    if (!currentClass) {
+      return;
+    }
+    const {
+      file,
+      statementsCovered,
+      statementsTotal,
+      branchCovered,
+      branchTotal,
+      functionsCovered,
+      functionsTotal,
+    } = currentClass;
+
+    files.push({
+      file,
+      statements: {
+        covered: statementsCovered,
+        total: statementsTotal,
+        percentage: statementsTotal > 0 ? Number(((statementsCovered / statementsTotal) * 100).toFixed(2)) : 0,
+      },
+      branches:
+        branchTotal > 0
+          ? {
+              covered: branchCovered,
+              total: branchTotal,
+              percentage: Number(((branchCovered / branchTotal) * 100).toFixed(2)),
+            }
+          : undefined,
+      functions:
+        functionsTotal > 0
+          ? {
+              covered: functionsCovered,
+              total: functionsTotal,
+              percentage: Number(((functionsCovered / functionsTotal) * 100).toFixed(2)),
+            }
+          : undefined,
+    });
+
+    currentClass = undefined;
+  };
+
+  const registerLineTests = (line: LineContext | undefined) => {
+    if (!line) {
+      return;
+    }
+    line.tests.forEach((testName) => registerTestFile(testFiles, testName, line.file));
+  };
+
+  const parser = new SaxesParser({ xmlns: false });
+  parser.on('error', (error: unknown) => {
+    warnings.push(`Malformed Cobertura XML at ${location}: ${(error as Error).message}`);
+  });
+
+  parser.on('opentag', (tag: SaxesTagPlain) => {
+    const name = tag.name.toLowerCase();
+    elementStack.push(name);
+
+    if (name === 'class') {
+      sawClass = true;
+      const attributes = tag.attributes;
+      const fileName =
+        (typeof attributes.filename === 'string' && attributes.filename) ||
+        (typeof attributes.name === 'string' && attributes.name) ||
+        'unknown';
+      currentClass = {
+        file: fileName,
+        statementsCovered: 0,
+        statementsTotal: 0,
+        branchCovered: 0,
+        branchTotal: 0,
+        functionsCovered: 0,
+        functionsTotal: 0,
+      };
+      return;
+    }
+
+    if (!currentClass) {
+      return;
+    }
+
+    if (name === 'method') {
+      const hits = asNumber((tag.attributes as Record<string, unknown>).hits);
+      currentClass.functionsTotal += 1;
+      if (hits > 0) {
+        currentClass.functionsCovered += 1;
+      }
+      return;
+    }
+
+    if (name === 'line') {
+      const parent = elementStack[elementStack.length - 2];
+      const insideMethod = elementStack.slice(0, -1).includes('method');
+      if (insideMethod || parent !== 'lines') {
+        currentLine = undefined;
+        return;
+      }
+
+      const attributes = tag.attributes as Record<string, unknown>;
+      const hits = asNumber(attributes.hits);
+      currentClass.statementsTotal += 1;
+      if (hits > 0) {
+        currentClass.statementsCovered += 1;
+      }
+
+      const lineTests = new Set<string>();
+      const testAttributes = [
+        attributes.tests,
+        attributes.test,
+        attributes['covered-by'],
+        attributes.coveredby,
+        attributes['test-name'],
+      ];
+      testAttributes.forEach((attribute) => {
+        toTestNames(attribute).forEach((testName) => lineTests.add(testName));
+      });
+
+      const branchAttribute = attributes.branch;
+      const hasBranchFlag =
+        (typeof branchAttribute === 'string' && branchAttribute.toLowerCase() === 'true') ||
+        (typeof branchAttribute === 'boolean' && branchAttribute);
+      const conditionCoverage = attributes['condition-coverage'];
+      if (hasBranchFlag || conditionCoverage !== undefined) {
+        const { covered, total } = parseConditionCoverage(conditionCoverage);
+        if (total > 0) {
+          currentClass.branchTotal += total;
+          currentClass.branchCovered += covered;
+        } else {
+          currentClass.branchTotal += 1;
+          if (hits > 0) {
+            currentClass.branchCovered += 1;
+          }
+        }
+      }
+
+      currentLine = { file: currentClass.file, tests: lineTests, tagStack: [] };
+      return;
+    }
+
+    if (currentLine) {
+      currentLine.tagStack.push(name);
+      if (TEST_TAGS.has(name)) {
+        const attributes = tag.attributes as Record<string, unknown>;
+        const attributeCandidates = [attributes.name, attributes.value, attributes['test-name']];
+        attributeCandidates.forEach((candidate) => {
+          toTestNames(candidate).forEach((testName) => currentLine!.tests.add(testName));
+        });
+      }
+    }
+  });
+
+  parser.on('text', (text: string) => {
+    const lineContext = currentLine;
+    if (!lineContext || text.trim().length === 0) {
+      return;
+    }
+    const currentTag = lineContext.tagStack[lineContext.tagStack.length - 1];
+    if (currentTag && TEST_TAGS.has(currentTag)) {
+      toTestNames(text).forEach((testName) => lineContext.tests.add(testName));
+    }
+  });
+
+  parser.on('closetag', (tag: unknown) => {
+    const rawTag = tag as { name?: string };
+    const name = typeof rawTag === 'object' && rawTag?.name ? String(rawTag.name).toLowerCase() : String(tag).toLowerCase();
+    const last = elementStack.pop();
+    if (last !== name) {
+      // Maintain stack integrity even when malformed closing tags appear.
+      const mismatchIndex = elementStack.lastIndexOf(name);
+      if (mismatchIndex >= 0) {
+        elementStack.splice(mismatchIndex, 1);
+      }
+    }
+
+    if (name === 'line') {
+      if (currentClass) {
+        registerLineTests(currentLine);
+      }
+      currentLine = undefined;
+      return;
+    }
+
+    if (!currentClass) {
+      return;
+    }
+
+    if (name === 'class') {
+      finalizeCurrentClass();
+      return;
+    }
+
+    if (currentLine) {
+      currentLine.tagStack.pop();
+    }
+  });
+
   try {
-    raw = parseXml<UnknownRecord>(content);
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(location, { encoding: 'utf8' });
+      stream.setEncoding('utf8');
+
+      stream.on('error', (error) => {
+        reject(error);
+      });
+
+      stream.on('data', (chunk) => {
+        const textChunk = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        totalBytes += Buffer.byteLength(textChunk, 'utf8');
+        if (!sizeWarningIssued && totalBytes > REPORT_SIZE_WARNING_BYTES) {
+          warnings.push(
+            `Cobertura report at ${location} exceeded ${REPORT_SIZE_WARNING_BYTES} bytes; continuing with streaming parser.`,
+          );
+          sizeWarningIssued = true;
+        }
+        parser.write(textChunk);
+      });
+
+      stream.on('end', () => {
+        parser.close();
+      });
+
+      parser.on('end', () => {
+        resolve();
+      });
+    });
   } catch (error) {
-    warnings.push(`Failed to parse Cobertura XML at ${location}: ${(error as Error).message}`);
+    warnings.push(`Failed to read Cobertura XML at ${location}: ${(error as Error).message}`);
     return {
       data: {
         totals: { statements: { covered: 0, total: 0, percentage: 0 } },
@@ -114,85 +357,11 @@ export const importCobertura = async (filePath: string): Promise<ParseResult<Cov
     };
   }
 
-  const coverageRoot = (raw.coverage ?? raw) as UnknownRecord;
-  const packages = toArray((coverageRoot.packages as UnknownRecord | undefined)?.package as UnknownRecord | UnknownRecord[] | undefined);
+  finalizeCurrentClass();
 
-  if (packages.length === 0) {
+  if (!sawClass) {
     warnings.push(`No <class> entries found in Cobertura file at ${location}.`);
   }
-
-  const files: FileCoverageSummary[] = [];
-  const testFiles = new Map<string, Set<string>>();
-
-  packages.forEach((pkg) => {
-    const classes = toArray((pkg.classes as UnknownRecord | undefined)?.class as UnknownRecord | UnknownRecord[] | undefined);
-    classes.forEach((clazz) => {
-      const fileName = (clazz.filename as string | undefined) ?? (clazz.name as string | undefined) ?? 'unknown';
-      const lines = toArray((clazz.lines as UnknownRecord | undefined)?.line as UnknownRecord | UnknownRecord[] | undefined);
-      const methods = toArray((clazz.methods as UnknownRecord | undefined)?.method as UnknownRecord | UnknownRecord[] | undefined);
-
-      let statementCovered = 0;
-      let statementTotal = 0;
-      let branchCovered = 0;
-      let branchTotal = 0;
-
-      lines.forEach((line) => {
-        const hits = asNumber(line.hits);
-        statementTotal += 1;
-        if (hits > 0) {
-          statementCovered += 1;
-        }
-        const testAttributes = [line.tests, line.test, line['covered-by'], line['coveredby'], line['test-name']];
-        testAttributes.forEach((attribute) => {
-          toTestNames(attribute).forEach((testName) => registerTestFile(testFiles, testName, fileName));
-        });
-        const branchAttribute = line.branch;
-        const hasBranchFlag =
-          (typeof branchAttribute === 'string' && branchAttribute.toLowerCase() === 'true') ||
-          (typeof branchAttribute === 'boolean' && branchAttribute);
-        if (hasBranchFlag || line['condition-coverage']) {
-          const { covered, total } = parseConditionCoverage(line['condition-coverage']);
-          if (total > 0) {
-            branchTotal += total;
-            branchCovered += covered;
-          } else {
-            branchTotal += 1;
-            if (hits > 0) {
-              branchCovered += 1;
-            }
-          }
-        }
-      });
-
-      const functionsTotal = methods.length;
-      const functionsCovered = methods.reduce((count, method) => count + (asNumber(method.hits) > 0 ? 1 : 0), 0);
-
-      files.push({
-        file: fileName,
-        statements: {
-          covered: statementCovered,
-          total: statementTotal,
-          percentage: statementTotal > 0 ? Number(((statementCovered / statementTotal) * 100).toFixed(2)) : 0,
-        },
-        branches:
-          branchTotal > 0
-            ? {
-                covered: branchCovered,
-                total: branchTotal,
-                percentage: Number(((branchCovered / branchTotal) * 100).toFixed(2)),
-              }
-            : undefined,
-        functions:
-          functionsTotal > 0
-            ? {
-                covered: functionsCovered,
-                total: functionsTotal,
-                percentage: Number(((functionsCovered / functionsTotal) * 100).toFixed(2)),
-              }
-            : undefined,
-      });
-    });
-  });
 
   const totals = files.reduce<CoverageReport['totals']>((acc, file) => {
     acc.statements = addMetric(acc.statements, { ...file.statements });

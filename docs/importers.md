@@ -57,19 +57,32 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - REST API kullanımının mümkün olmadığı ortamlarda Jama raporlarını CSV/Excel olarak dışa aktarabilir, ardından CSV dosyalarını `importJiraCsv` veya özel dönüştürücülerle SOIPack’e alarak kanıt indeksine ekleyebilirsiniz.
 - CLI `import` komutu `--jama-url`, `--jama-project` ve `--jama-token` bayraklarıyla Jama REST API’sine bağlanır; çekilen gereksinim, test ve ilişki kayıtları çalışma alanına birleştirilir ve kanıt indeksine `source=jama` olarak kaydedilir.
 
+### Jama ek dosyalarının indirilmesi
+
+- Jama REST API’sinin döndürdüğü her gereksinim veya test için listelenen ekler, `runImport` sırasında aynı istekte toplanır ve `attachments/jama/<öğeKimliği>/<dosyaAdı>` klasörüne akış (stream) halinde yazılır.
+- İndirmeler en fazla dört eş zamanlı istekle sınırlandırılır; bir ek okunamazsa veya API 2xx dışında durum döndürürse CLI günlüklerinde uyarı olarak raporlanır ve sorunlu dosya yoksayılır.
+- Başarılı indirmeler SHA-256 karmaları hesaplanarak kanıt indeksine eklenir; `workspace.json` ile `analysis.json` dosyalarındaki metaveri toplam ek sayısını, bayt cinsinden boyutu ve her dosyanın göreli yolunu içerir.
+- Paketleme (`pack`) aşamasında `attachments/` dizini manifest içinde listelenir; böylece SOI paketleri Jama eklerini ve bunlara ait karmaları içerir.
+
 ## Jira Cloud REST API entegrasyonu
 
 - `fetchJiraArtifacts(options)` Jira Cloud REST API’sini sayfalayarak gereksinim ve test kayıtlarını, izlenebilirlik bağlantılarını ve ilişkilendirilmiş ekleri tek bir pakette toplar.
 - Varsayılan JQL ifadeleri yalnızca ilgili proje için `Requirement`, `Story`, `Test` gibi türleri çeker; `requirementsJql` ve `testsJql` alanlarıyla özel JQL sorguları tanımlanabilir.
 - Jira test kayıtları üzerindeki `issuelinks`, `requirementIds` gibi alanlar normalize edilerek `RemoteTraceLink` listesine `verifies/implements/satisfies` türleriyle dönüştürülür.
-- Ek meta veriler (dosya boyutu, MIME türü, oluşturulma tarihi) her iliştirilmiş dosya için `attachments` listesinde saklanır; CLI bu listeyi çalışma alanı kanıtı olarak kaydeder.
 - CLI `import` komutu için yeni bayraklar:
   - `--jira-api-url` (zorunlu): Jira Cloud taban URL’si.
   - `--jira-api-project` (zorunlu): Proje anahtarı veya kimliği.
-  - `--jira-api-email` ve `--jira-api-token`: Temel kimlik doğrulaması veya PAT kullanarak oturum açmak için.
+  - `--jira-api-email` ve `--jira-api-token`: REST API’ye erişim ve ek indirme yetkisi için gerekli kimlik bilgileri.
   - `--jira-api-requirements-jql`, `--jira-api-tests-jql`: Gereksinim ve test aramalarını özelleştirmek için.
   - `--jira-api-page-size`, `--jira-api-max-pages`, `--jira-api-timeout`: Sayfalama ve zaman aşımı parametrelerini ayarlar.
-- CLI bu parametrelerle çağrıldığında REST API’den gelen gereksinim, test ve izlenebilirlik verilerini çalışma alanındaki mevcut kayıtlarla birleştirir; `trace` ve `test` kanıt indeksine `source=jiraCloud` olarak kaydeder ve ekleri çalışma alanı metaverisine işler.
+- CLI bu parametrelerle çağrıldığında REST API’den gelen gereksinim, test ve izlenebilirlik verilerini çalışma alanındaki mevcut kayıtlarla birleştirir; `trace` ve `test` kanıt indeksine `source=jiraCloud` olarak kaydeder.
+
+### Jira Cloud eklerinin yerel kopyaları
+
+- Jira Cloud’dan dönen her ek, `runImport` sırasında `attachments/jiraCloud/<ISSUE-KEY>/<dosyaAdı>` yoluna akış halinde indirilir. Dosya adları ve konu anahtarları güvenli biçimde sanitize edilerek dosya sistemi çakışmaları önlenir.
+- İstekler eş zamanlı olarak en fazla dört bağlantıyla yürütülür. HTTP 2xx olmayan yanıtlar, indirme hataları veya SHA-256 karma uyuşmazlıkları CLI uyarısı olarak raporlanır ve ilgili ek göz ardı edilir.
+- Jira eklerine erişim için `--jira-api-email` ve `--jira-api-token` ile sağlanan kimlik bilgilerinin ek indirme yetkisi olması gerekir; büyük dosyalar ağ süresini uzatacağından `--jira-api-timeout` değerini artırmanız önerilir.
+- Başarıyla indirilen her dosyanın SHA-256 karması hesaplanır ve kanıt indeksindeki `attachments` metaverisine yazılır. Çalışma alanı ve paketleme çıktıları manifest içinde `attachments/` dizinini listeler, böylece SOI paketleri tüm Jira eklerini ve karmalarını içerir.
 
 ## Polarion REST API ilişkileri
 

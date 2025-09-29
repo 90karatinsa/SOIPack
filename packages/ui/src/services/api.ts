@@ -214,6 +214,14 @@ export interface ComplianceGapSummary {
   openObjectiveCount: number;
 }
 
+export interface ComplianceChangeImpactEntry {
+  id: string;
+  type: 'requirement' | 'test' | 'code' | 'design';
+  severity: number;
+  state: 'added' | 'removed' | 'modified' | 'impacted';
+  reasons: string[];
+}
+
 export interface ComplianceIndependenceObjective {
   objectiveId: string;
   status: CoverageStatus;
@@ -239,6 +247,7 @@ export interface ComplianceSummaryLatest {
   summary: ComplianceStagePayload['summary'];
   coverage: ComplianceCoverageSnapshot;
   gaps: ComplianceGapSummary;
+  changeImpact: ComplianceChangeImpactEntry[];
   independence?: ComplianceIndependenceSummary | null;
 }
 
@@ -529,6 +538,71 @@ const sanitizeStringArray = (value: unknown): string[] => {
   return value
     .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
     .filter((entry) => entry.length > 0);
+};
+
+const allowedChangeImpactTypes: ReadonlyArray<ComplianceChangeImpactEntry['type']> = [
+  'requirement',
+  'test',
+  'code',
+  'design',
+];
+
+const allowedChangeImpactStates: ReadonlyArray<ComplianceChangeImpactEntry['state']> = [
+  'added',
+  'removed',
+  'modified',
+  'impacted',
+];
+
+const sanitizeComplianceChangeImpactEntries = (value: unknown): ComplianceChangeImpactEntry[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const entries: ComplianceChangeImpactEntry[] = [];
+
+  value.forEach((raw) => {
+    if (!raw || typeof raw !== 'object') {
+      return;
+    }
+
+    const entry = raw as Record<string, unknown>;
+    const idRaw = typeof entry.id === 'string' ? entry.id.trim() : '';
+    if (!idRaw) {
+      return;
+    }
+
+    const typeCandidate =
+      typeof entry.type === 'string' ? entry.type.trim().toLowerCase() : '';
+    if (!allowedChangeImpactTypes.includes(typeCandidate as ComplianceChangeImpactEntry['type'])) {
+      return;
+    }
+    const type = typeCandidate as ComplianceChangeImpactEntry['type'];
+
+    const stateCandidate =
+      typeof entry.state === 'string' ? entry.state.trim().toLowerCase() : '';
+    if (!allowedChangeImpactStates.includes(stateCandidate as ComplianceChangeImpactEntry['state'])) {
+      return;
+    }
+    const state = stateCandidate as ComplianceChangeImpactEntry['state'];
+
+    const severityNumeric = Number(entry.severity);
+    if (!Number.isFinite(severityNumeric)) {
+      return;
+    }
+    const normalizedSeverity = Math.max(0, Math.min(1, severityNumeric));
+    const severity = Math.round(normalizedSeverity * 1000) / 1000;
+
+    const reasons = Array.isArray(entry.reasons)
+      ? (entry.reasons as unknown[])
+          .map((reason) => (typeof reason === 'string' ? reason.trim() : ''))
+          .filter((reason): reason is string => reason.length > 0)
+      : [];
+
+    entries.push({ id: idRaw, type, state, severity, reasons });
+  });
+
+  return entries;
 };
 
 const sanitizeComplianceIndependenceSummary = (
@@ -1085,6 +1159,17 @@ export const fetchComplianceMatrix = async ({
   return readJson<ComplianceMatrixPayload>(response);
 };
 
+interface ComplianceSummaryLatestPayload
+  extends Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact'> {
+  independence?: unknown;
+  changeImpact?: unknown;
+}
+
+interface ComplianceSummaryResponsePayload {
+  computedAt: string;
+  latest: ComplianceSummaryLatestPayload | null;
+}
+
 interface FetchComplianceSummaryOptions {
   token: string;
   license: string;
@@ -1102,12 +1187,19 @@ export const fetchComplianceSummary = async ({
     signal,
   });
 
-  const payload = await readJson<ComplianceSummaryResponse>(response);
-  const latest = payload.latest
-    ? { ...payload.latest, independence: sanitizeComplianceIndependenceSummary(payload.latest.independence) }
-    : null;
+  const payload = await readJson<ComplianceSummaryResponsePayload>(response);
+  if (!payload.latest) {
+    return { computedAt: payload.computedAt, latest: null };
+  }
 
-  return { computedAt: payload.computedAt, latest };
+  const { changeImpact, independence, ...rest } = payload.latest;
+  const normalized: ComplianceSummaryLatest = {
+    ...(rest as Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact'>),
+    changeImpact: sanitizeComplianceChangeImpactEntries(changeImpact),
+    independence: sanitizeComplianceIndependenceSummary(independence),
+  };
+
+  return { computedAt: payload.computedAt, latest: normalized };
 };
 
 interface FetchChangeRequestsOptions {

@@ -2023,6 +2023,29 @@ describe('@soipack/server REST API', () => {
           },
         ],
       },
+      changeImpact: [
+        {
+          id: ' TC-200 ',
+          type: ' test ',
+          severity: 0.42,
+          state: ' modified ',
+          reasons: [' Regression detected ', '', ''],
+        },
+        {
+          id: 'REQ-200',
+          type: 'requirement',
+          severity: 0.87,
+          state: 'impacted',
+          reasons: ['Downstream coverage drop', 'Missing tests'],
+        },
+        {
+          id: 'CODE-1',
+          type: 'code',
+          severity: 1.2,
+          state: 'added',
+          reasons: ['New logic'],
+        },
+      ],
     };
     const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
     const complianceHash = createHash('sha256').update(JSON.stringify(canonicalPayload)).digest('hex');
@@ -2067,6 +2090,29 @@ describe('@soipack/server REST API', () => {
         },
       ],
     });
+    expect(summaryResponse.body.latest?.changeImpact).toEqual([
+      {
+        id: 'CODE-1',
+        type: 'code',
+        severity: 1,
+        state: 'added',
+        reasons: ['New logic'],
+      },
+      {
+        id: 'REQ-200',
+        type: 'requirement',
+        severity: 0.87,
+        state: 'impacted',
+        reasons: ['Downstream coverage drop', 'Missing tests'],
+      },
+      {
+        id: 'TC-200',
+        type: 'test',
+        severity: 0.42,
+        state: 'modified',
+        reasons: ['Regression detected'],
+      },
+    ]);
 
     const cachedResponse = await request(app)
       .get('/v1/compliance/summary')
