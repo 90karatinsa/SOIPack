@@ -15,10 +15,52 @@ import { RiskCockpitPage } from './pages/RiskCockpitPage';
 import RequirementsEditorPage, { type RequirementRecord } from './pages/RequirementsEditorPage';
 import { RoleGate, useRbac } from './providers/RbacProvider';
 import { ApiError, getWorkspaceDocumentThread, type WorkspaceDocumentThread } from './services/api';
+import type {
+  DoorsNextConnectorFormState,
+  JamaConnectorFormState,
+  JenkinsConnectorFormState,
+  PolarionConnectorFormState,
+  UploadRunPayload,
+} from './types/connectors';
 import type { CoverageStatus, StageIdentifier } from './types/pipeline';
 
 const STAGE_STORAGE_KEY = 'soipack:ui:activeStage';
 const VALID_STAGE_IDS: StageIdentifier[] = ['all', 'SOI-1', 'SOI-2', 'SOI-3', 'SOI-4'];
+
+const createPolarionFormState = (): PolarionConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  projectId: '',
+  username: '',
+  password: '',
+  token: '',
+});
+
+const createJenkinsFormState = (): JenkinsConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  job: '',
+  build: '',
+  username: '',
+  password: '',
+  token: '',
+});
+
+const createDoorsNextFormState = (): DoorsNextConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  projectArea: '',
+  username: '',
+  password: '',
+  accessToken: '',
+});
+
+const createJamaFormState = (): JamaConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  projectId: '',
+  token: '',
+});
 
 const readStoredStage = (): StageIdentifier => {
   if (typeof window === 'undefined') {
@@ -39,6 +81,10 @@ export default function App() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [independentSources, setIndependentSources] = useState<string[]>([]);
   const [independentArtifacts, setIndependentArtifacts] = useState<string[]>([]);
+  const [polarion, setPolarion] = useState<PolarionConnectorFormState>(createPolarionFormState);
+  const [jenkins, setJenkins] = useState<JenkinsConnectorFormState>(createJenkinsFormState);
+  const [doorsNext, setDoorsNext] = useState<DoorsNextConnectorFormState>(createDoorsNextFormState);
+  const [jama, setJama] = useState<JamaConnectorFormState>(createJamaFormState);
   const [activeStatuses, setActiveStatuses] = useState<CoverageStatus[]>([
     'covered',
     'partial',
@@ -141,12 +187,16 @@ export default function App() {
     };
   }, [activeView, canAccessRequirements, isAuthorized, trimmedToken, trimmedLicense]);
 
-  const handleRun = () => {
+  const handleRun = (submission: UploadRunPayload) => {
     if (!canRunPipeline || isRunning) return;
     void runPipeline({
       files: selectedFiles,
       independentSources,
       independentArtifacts,
+      polarion: submission.connectors.polarion,
+      jenkins: submission.connectors.jenkins,
+      doorsNext: submission.connectors.doorsNext,
+      jama: submission.connectors.jama,
     });
   };
 
@@ -187,6 +237,9 @@ export default function App() {
   const complianceRows = reportData?.requirements ?? [];
   const complianceSummary = reportData?.summary ?? { total: 0, covered: 0, partial: 0, missing: 0 };
   const stageOptions = reportData?.objectivesByStage ?? [];
+  const packJobStatus = packageJob?.status ?? null;
+  const postQuantumSignature =
+    packageJob?.result?.postQuantumSignature ?? packageJob?.result?.outputs?.postQuantumSignature ?? null;
 
   const handleTokenClear = () => {
     setToken('');
@@ -194,6 +247,10 @@ export default function App() {
     setSelectedFiles([]);
     setIndependentSources([]);
     setIndependentArtifacts([]);
+    setPolarion(createPolarionFormState());
+    setJenkins(createJenkinsFormState());
+    setDoorsNext(createDoorsNextFormState());
+    setJama(createJamaFormState());
     reset();
   };
 
@@ -202,6 +259,10 @@ export default function App() {
     setSelectedFiles([]);
     setIndependentSources([]);
     setIndependentArtifacts([]);
+    setPolarion(createPolarionFormState());
+    setJenkins(createJenkinsFormState());
+    setDoorsNext(createDoorsNextFormState());
+    setJama(createJamaFormState());
     reset();
   };
 
@@ -271,6 +332,16 @@ export default function App() {
               independentArtifacts={independentArtifacts}
               onIndependentSourcesChange={setIndependentSources}
               onIndependentArtifactsChange={setIndependentArtifacts}
+              polarion={polarion}
+              onPolarionChange={setPolarion}
+              jenkins={jenkins}
+              onJenkinsChange={setJenkins}
+              doorsNext={doorsNext}
+              onDoorsNextChange={setDoorsNext}
+              jama={jama}
+              onJamaChange={setJama}
+              packJobStatus={packJobStatus}
+              postQuantumSignature={postQuantumSignature}
             />
           )}
 

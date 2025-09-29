@@ -296,11 +296,21 @@ const reportAssets: Record<string, string> = {
 
 const packResult: PackJobResult = {
   manifestId: 'MANIFEST-1234',
+  postQuantumSignature: {
+    algorithm: 'SPHINCS+-SHAKE-256s-simple',
+    publicKey: 'BASE64PUBLICKEY==',
+    signature: 'BASE64SIGNATURE==',
+  },
   outputs: {
     directory: 'packages/demo/job-pack',
     manifest: 'packages/demo/job-pack/manifest.json',
-    archive: 'packages/demo/job-pack/archive.zip'
-  }
+    archive: 'packages/demo/job-pack/archive.zip',
+    postQuantumSignature: {
+      algorithm: 'SPHINCS+-SHAKE-256s-simple',
+      publicKey: 'BASE64PUBLICKEY==',
+      signature: 'BASE64SIGNATURE==',
+    },
+  },
 };
 
 const jobStore = new Map<string, JobState<unknown>>();
@@ -598,6 +608,10 @@ describe('App integration', () => {
     const downloadButton = screen.getByRole('button', { name: 'Rapor paketini indir' });
     await waitFor(() => expect(downloadButton).toBeEnabled(), { timeout: 10000 });
 
+    await screen.findByTestId('pack-signature-algorithm');
+    expect(screen.getByTestId('pack-signature-algorithm')).toHaveTextContent('SPHINCS+-SHAKE-256s-simple');
+    expect(screen.getByTestId('pack-signature-public-key')).toHaveTextContent('BASE64PUBLICKEY==');
+
     const complianceTab = screen.getByRole('button', { name: 'Uyum Matrisi' });
     await act(async () => {
       await user.click(complianceTab);
@@ -707,6 +721,71 @@ describe('App integration', () => {
       expect(value).toBe(expectedLicenseHeader);
       expect(value).not.toMatch(/\s/);
     });
+  });
+
+  it('shows fallback messaging when the pack job lacks a post-quantum signature', async () => {
+    const user = userEvent.setup();
+
+    server.use(
+      rest.post('/v1/pack', async (req, res, ctx) => {
+        const authError = ensureLicense(req, res, ctx);
+        if (authError) {
+          return authError;
+        }
+        const jobId = 'job-pack-no-pqc';
+        const result: PackJobResult = {
+          manifestId: 'MANIFEST-0000',
+          outputs: {
+            directory: 'packages/demo/job-pack',
+            manifest: 'packages/demo/job-pack/manifest.json',
+            archive: 'packages/demo/job-pack/archive.zip',
+          },
+        };
+        jobStore.set(jobId, buildJob(jobId, 'pack', result));
+        return res(
+          ctx.status(202),
+          ctx.json({
+            id: jobId,
+            kind: 'pack',
+            hash: 'hash-pack-no-pqc',
+            status: 'queued',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            reused: false,
+          }),
+        );
+      }),
+    );
+
+    render(<App />);
+
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
+    const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    const file = new File(['reqif'], 'requirements.reqif', { type: 'application/xml' });
+    const fileInput = screen.getByLabelText(/Dosyaları sürükleyip bırakın ya da seçin/i, { selector: 'input' });
+    await act(async () => {
+      await user.upload(fileInput, file);
+    });
+
+    const runButton = screen.getByRole('button', { name: 'Pipeline Başlat' });
+    await act(async () => {
+      await user.click(runButton);
+    });
+
+    const downloadButton = screen.getByRole('button', { name: 'Rapor paketini indir' });
+    await waitFor(() => expect(downloadButton).toBeEnabled(), { timeout: 10000 });
+
+    expect(screen.getByTestId('pack-signature-missing')).toBeInTheDocument();
   });
 
   it('renders risk cockpit analytics and enforces RBAC gating', async () => {

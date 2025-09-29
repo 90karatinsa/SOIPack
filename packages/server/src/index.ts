@@ -231,6 +231,16 @@ export const __clearChangeRequestCacheForTesting = (): void => {
 
 type CoverageSummaryPayload = Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>;
 
+interface ComplianceIndependenceSummaryPayload {
+  totals: Record<'covered' | 'partial' | 'missing', number>;
+  objectives: Array<{
+    objectiveId: string;
+    independence: string;
+    status: 'covered' | 'partial' | 'missing';
+    missingArtifacts: string[];
+  }>;
+}
+
 interface ComplianceSummaryResponsePayload {
   computedAt: string;
   latest: {
@@ -251,6 +261,7 @@ interface ComplianceSummaryResponsePayload {
       partialIds: string[];
       openObjectiveCount: number;
     };
+    independence?: ComplianceIndependenceSummaryPayload;
   } | null;
 }
 
@@ -258,6 +269,7 @@ interface ComplianceSummaryCacheEntry {
   recordId?: string;
   recordCreatedAt?: string;
   payload: ComplianceSummaryResponsePayload;
+  metadataSignature?: string;
   expiresAt: number;
 }
 
@@ -3557,9 +3569,87 @@ export const createServer = (config: ServerConfig): Express => {
     return latest;
   };
 
+  const sanitizeIndependenceSummary = (
+    value: unknown,
+  ): ComplianceIndependenceSummaryPayload | undefined => {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+    const record = value as { totals?: unknown; objectives?: unknown };
+    const allowedStatuses = new Set(['covered', 'partial', 'missing']);
+    const allowedIndependence = new Set(['none', 'recommended', 'required']);
+    const totalsBase: Record<'covered' | 'partial' | 'missing', number> = {
+      covered: 0,
+      partial: 0,
+      missing: 0,
+    };
+    if (record.totals && typeof record.totals === 'object') {
+      (['covered', 'partial', 'missing'] as const).forEach((key) => {
+        const rawValue = (record.totals as Record<string, unknown>)[key];
+        const numeric = Number(rawValue);
+        if (Number.isFinite(numeric)) {
+          const normalized = Math.trunc(Math.max(0, numeric));
+          totalsBase[key] = normalized;
+        }
+      });
+    }
+
+    const objectives: ComplianceIndependenceSummaryPayload['objectives'] = [];
+    if (Array.isArray(record.objectives)) {
+      record.objectives.forEach((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const data = entry as Record<string, unknown>;
+        const objectiveIdRaw = data.objectiveId;
+        if (typeof objectiveIdRaw !== 'string') {
+          return;
+        }
+        const objectiveId = objectiveIdRaw.trim();
+        if (!objectiveId) {
+          return;
+        }
+        const statusRaw = typeof data.status === 'string' ? data.status.trim() : '';
+        const status: 'covered' | 'partial' | 'missing' =
+          allowedStatuses.has(statusRaw) ? (statusRaw as 'covered' | 'partial' | 'missing') : 'missing';
+        const independenceRaw = typeof data.independence === 'string' ? data.independence.trim() : '';
+        const independence = allowedIndependence.has(independenceRaw)
+          ? (independenceRaw as 'none' | 'recommended' | 'required')
+          : 'none';
+        const missingArtifacts = Array.isArray(data.missingArtifacts)
+          ? (data.missingArtifacts as unknown[])
+              .map((artifact) => (typeof artifact === 'string' ? artifact.trim() : ''))
+              .filter((artifact): artifact is string => artifact.length > 0)
+          : [];
+        objectives.push({
+          objectiveId,
+          independence,
+          status,
+          missingArtifacts,
+        });
+      });
+    }
+
+    return {
+      totals: totalsBase,
+      objectives,
+    };
+  };
+
+  const extractIndependenceSummary = (
+    record: ComplianceRecord | undefined,
+  ): ComplianceIndependenceSummaryPayload | undefined => {
+    if (!record || !record.metadata || typeof record.metadata !== 'object') {
+      return undefined;
+    }
+    const metadata = record.metadata as Record<string, unknown>;
+    return sanitizeIndependenceSummary(metadata.independenceSummary);
+  };
+
   const buildComplianceSummaryPayload = (
     record: ComplianceRecord | undefined,
     computedAtIso: string,
+    independenceSummary: ComplianceIndependenceSummaryPayload | undefined = extractIndependenceSummary(record),
   ): ComplianceSummaryResponsePayload => {
     if (!record) {
       return { computedAt: computedAtIso, latest: null };
@@ -3586,22 +3676,28 @@ export const createServer = (config: ServerConfig): Express => {
       }
     });
 
+    const latestPayload: NonNullable<ComplianceSummaryResponsePayload['latest']> = {
+      id: record.id,
+      createdAt: record.createdAt,
+      project: record.matrix.project,
+      level: record.matrix.level,
+      generatedAt: record.matrix.generatedAt,
+      summary: record.matrix.summary,
+      coverage,
+      gaps: {
+        missingIds,
+        partialIds,
+        openObjectiveCount: missingIds.length + partialIds.length,
+      },
+    };
+
+    if (independenceSummary) {
+      latestPayload.independence = independenceSummary;
+    }
+
     return {
       computedAt: computedAtIso,
-      latest: {
-        id: record.id,
-        createdAt: record.createdAt,
-        project: record.matrix.project,
-        level: record.matrix.level,
-        generatedAt: record.matrix.generatedAt,
-        summary: record.matrix.summary,
-        coverage,
-        gaps: {
-          missingIds,
-          partialIds,
-          openObjectiveCount: missingIds.length + partialIds.length,
-        },
-      },
+      latest: latestPayload,
     };
   };
 
@@ -5830,22 +5926,44 @@ export const createServer = (config: ServerConfig): Express => {
       const ttlSeconds = Math.floor(COMPLIANCE_SUMMARY_CACHE_TTL_MS / 1000);
       const latest = getLatestComplianceRecord(tenantId);
       const cached = complianceSummaryCache.get(tenantId);
+      const independenceSummary = extractIndependenceSummary(latest);
+      const metadataSignature =
+        independenceSummary &&
+        computeObjectSha256({
+          totals: independenceSummary.totals,
+          objectives: independenceSummary.objectives.map((entry) => ({
+            objectiveId: entry.objectiveId,
+            status: entry.status,
+            independence: entry.independence,
+            missingArtifacts: entry.missingArtifacts,
+          })),
+        });
 
       if (
         cached &&
         cached.expiresAt > now &&
-        ((latest && cached.recordId === latest.id && cached.recordCreatedAt === latest.createdAt) ||
+        ((
+          latest &&
+          cached.recordId === latest.id &&
+          cached.recordCreatedAt === latest.createdAt &&
+          cached.metadataSignature === metadataSignature
+        ) ||
           (!latest && cached.recordId === undefined))
       ) {
         res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(cached.payload);
         return;
       }
 
-      const payload = buildComplianceSummaryPayload(latest, new Date(now).toISOString());
+      const payload = buildComplianceSummaryPayload(
+        latest,
+        new Date(now).toISOString(),
+        independenceSummary,
+      );
       complianceSummaryCache.set(tenantId, {
         recordId: latest?.id,
         recordCreatedAt: latest?.createdAt,
         payload,
+        metadataSignature,
         expiresAt: now + COMPLIANCE_SUMMARY_CACHE_TTL_MS,
       });
 

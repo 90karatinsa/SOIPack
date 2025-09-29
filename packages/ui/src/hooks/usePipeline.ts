@@ -14,6 +14,12 @@ import {
   pollJob,
   reportArtifacts,
 } from '../services/api';
+import type {
+  DoorsNextConnectorConfig,
+  JamaConnectorConfig,
+  JenkinsConnectorConfig,
+  PolarionConnectorConfig,
+} from '../services/api';
 import { createReportDataset } from '../services/report';
 import type {
   AnalyzeJobResult,
@@ -75,6 +81,10 @@ export interface PipelineRunOptions {
   files: File[];
   independentSources?: string[];
   independentArtifacts?: string[];
+  polarion?: PolarionConnectorConfig;
+  jenkins?: JenkinsConnectorConfig;
+  doorsNext?: DoorsNextConnectorConfig;
+  jama?: JamaConnectorConfig;
 }
 
 export interface UsePipelineResult {
@@ -205,6 +215,10 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
       files,
       independentSources = [],
       independentArtifacts = [],
+      polarion,
+      jenkins,
+      doorsNext,
+      jama,
     }: PipelineRunOptions) => {
       const trimmedToken = token.trim();
       const trimmedLicense = license.trim();
@@ -244,6 +258,10 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
           signal: controller.signal,
           independentSources,
           independentArtifacts,
+          polarion,
+          jenkins,
+          doorsNext,
+          jama,
         });
         updateJob('import', importInitial, importInitial.reused);
 

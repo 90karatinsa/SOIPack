@@ -85,12 +85,34 @@ export interface ReportJobResult {
   };
 }
 
+export interface CmsSignatureMetadata {
+  path: string;
+  signerSerialNumber: string | null;
+  signerIssuer: string | null;
+  signerSubject: string | null;
+  signatureAlgorithm: string | null;
+}
+
+export interface PostQuantumSignatureMetadata {
+  algorithm: string;
+  publicKey: string;
+  signature: string;
+}
+
 export interface PackJobResult {
   manifestId: string;
+  manifestDigest?: string;
+  ledgerRoot?: string;
+  previousLedgerRoot?: string | null;
+  cmsSignature?: CmsSignatureMetadata;
+  postQuantumSignature?: PostQuantumSignatureMetadata;
   outputs: {
     directory: string;
     manifest: string;
     archive: string;
+    ledger?: string;
+    cmsSignature?: CmsSignatureMetadata;
+    postQuantumSignature?: PostQuantumSignatureMetadata;
   };
 }
 

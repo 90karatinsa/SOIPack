@@ -7,9 +7,11 @@ import {
   listJobs,
   listReviews,
   fetchComplianceSummary,
+  fetchChangeRequests,
   type ComplianceSummaryLatest,
   type QueueMetricsResponse,
   type ReviewResource,
+  type ChangeRequestItem,
 } from '../services/api';
 
 type DashboardPageProps = {
@@ -54,6 +56,12 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     summary: ComplianceSummaryLatest | null;
     computedAt: string | null;
   }>({ loading: true, error: null, summary: null, computedAt: null });
+  const [changeRequestState, setChangeRequestState] = useState<{
+    loading: boolean;
+    error: string | null;
+    items: ChangeRequestItem[];
+    fetchedAt: string | null;
+  }>({ loading: true, error: null, items: [], fetchedAt: null });
   const t = useT();
   const trimmedToken = token.trim();
   const trimmedLicense = license.trim();
@@ -68,16 +76,24 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         summary: null,
         computedAt: null,
       });
+      setChangeRequestState({
+        loading: false,
+        error: t('dashboard.credentialsRequired'),
+        items: [],
+        fetchedAt: null,
+      });
       return;
     }
 
     const queueController = new AbortController();
     const reviewController = new AbortController();
     const complianceController = new AbortController();
+    const changeRequestController = new AbortController();
 
     setQueueState((previous) => ({ ...previous, loading: true, error: null }));
     setReviewState((previous) => ({ ...previous, loading: true, error: null }));
     setComplianceState((previous) => ({ ...previous, loading: true, error: null }));
+    setChangeRequestState((previous) => ({ ...previous, loading: true, error: null }));
 
     listJobs({
       token: trimmedToken,
@@ -139,10 +155,33 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         setComplianceState({ loading: false, error: message, summary: null, computedAt: null });
       });
 
+    fetchChangeRequests({
+      token: trimmedToken,
+      license: trimmedLicense,
+      signal: changeRequestController.signal,
+    })
+      .then((response) => {
+        setChangeRequestState({
+          loading: false,
+          error: null,
+          items: response.items,
+          fetchedAt: response.fetchedAt,
+        });
+      })
+      .catch((error) => {
+        if (changeRequestController.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof ApiError ? error.message : t('dashboard.changeRequestsError');
+        setChangeRequestState({ loading: false, error: message, items: [], fetchedAt: null });
+      });
+
     return () => {
       queueController.abort();
       reviewController.abort();
       complianceController.abort();
+      changeRequestController.abort();
     };
   }, [trimmedToken, trimmedLicense, t]);
 
@@ -179,6 +218,46 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
   const complianceReady =
     complianceSummary?.summary.missing === 0 &&
     complianceSummary?.gaps.openObjectiveCount === 0;
+  const independenceSummary = complianceSummary?.independence ?? null;
+  const independentObjectives = useMemo(
+    () => independenceSummary?.objectives.filter((objective) => objective.independence !== 'none') ?? [],
+    [independenceSummary],
+  );
+  const openIndependentObjectives = useMemo(
+    () => independentObjectives.filter((objective) => objective.status !== 'covered'),
+    [independentObjectives],
+  );
+  const independenceCounts = useMemo(
+    () =>
+      openIndependentObjectives.reduce(
+        (acc, objective) => {
+          if (objective.status === 'missing') {
+            acc.missing += 1;
+          } else if (objective.status === 'partial') {
+            acc.partial += 1;
+          }
+          return acc;
+        },
+        { missing: 0, partial: 0 },
+      ),
+    [openIndependentObjectives],
+  );
+  const changeRequests = changeRequestState.items;
+  const resolveStatusVariant = (category?: string): 'success' | 'warning' | undefined => {
+    if (!category) {
+      return undefined;
+    }
+    const normalized = category.toLowerCase();
+    if (normalized.includes('done') || normalized.includes('tamam')) {
+      return 'success';
+    }
+    if (normalized.includes('progress') || normalized.includes('devam') || normalized.includes('to do')) {
+      return 'warning';
+    }
+    return undefined;
+  };
+  const formatChangeRequestDate = (value?: string) =>
+    value && value.trim().length > 0 ? new Date(value).toLocaleString() : '—';
 
   return (
     <div className="space-y-8">
@@ -243,6 +322,77 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                 description={complianceSummary.summary.missing.toString()}
               />
             </div>
+            <div
+              className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+              data-testid="independence-card"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">{t('dashboard.independenceTitle')}</h3>
+                  <p className="text-xs text-neutral-400">{t('dashboard.independenceSubtitle')}</p>
+                </div>
+                {independenceSummary ? (
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant={independenceCounts.missing > 0 ? 'warning' : 'success'}
+                      data-testid="independence-missing-count"
+                    >
+                      {t('dashboard.independenceMissing')}: {independenceCounts.missing}
+                    </Badge>
+                    <Badge
+                      variant={independenceCounts.partial > 0 ? 'warning' : 'success'}
+                      data-testid="independence-partial-count"
+                    >
+                      {t('dashboard.independencePartial')}: {independenceCounts.partial}
+                    </Badge>
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-3 space-y-2 text-sm text-neutral-300">
+                {independenceSummary ? (
+                  openIndependentObjectives.length > 0 ? (
+                    <>
+                      <p className="text-xs uppercase tracking-wide text-neutral-400">
+                        {t('dashboard.independenceOpenSummary')}
+                      </p>
+                      <ul className="space-y-2" data-testid="independence-open-list">
+                        {openIndependentObjectives.map((objective) => (
+                          <li key={objective.objectiveId} className="flex flex-wrap items-center gap-2">
+                            <a
+                              href={`#/compliance?objective=${encodeURIComponent(objective.objectiveId)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand hover:underline"
+                              data-testid={`independence-objective-${objective.objectiveId}`}
+                            >
+                              {objective.objectiveId}
+                            </a>
+                            <span className="text-xs text-neutral-400">
+                              {objective.status === 'missing'
+                                ? t('dashboard.independenceMissing')
+                                : t('dashboard.independencePartial')}
+                            </span>
+                            {objective.missingArtifacts.length > 0 && (
+                              <span className="text-xs text-neutral-500">
+                                ({objective.missingArtifacts.join(', ')})
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <p className="text-sm text-emerald-300" data-testid="independence-all-clear">
+                      {t('dashboard.independenceAllClear')}
+                    </p>
+                  )
+                ) : (
+                  <p className="text-sm text-neutral-400" data-testid="independence-unavailable">
+                    {t('dashboard.independenceUnavailable')}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </section>
@@ -270,6 +420,78 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
             </div>
             <div data-testid="queue-completed">
               <Card title={t('dashboard.queueCompleted')} description={queueMetrics.completed.toString()} />
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-white">{t('dashboard.changeRequests')}</h2>
+        {changeRequestState.loading ? (
+          <div data-testid="change-requests-loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <Skeleton key={index} className="h-12 w-full" />
+            ))}
+          </div>
+        ) : changeRequestState.error ? (
+          <Alert
+            data-testid="change-requests-error"
+            title={t('dashboard.changeRequestsErrorTitle')}
+            description={changeRequestState.error}
+            variant="error"
+          />
+        ) : changeRequests.length === 0 ? (
+          <EmptyState
+            data-testid="change-requests-empty"
+            title={t('dashboard.changeRequestsEmpty')}
+            description=""
+          />
+        ) : (
+          <div
+            className="overflow-hidden rounded-xl border border-slate-800/60 bg-slate-900/40"
+            data-testid="change-requests-table"
+          >
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800 text-left text-sm">
+                <thead className="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsKey')}</th>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsSummary')}</th>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsStatus')}</th>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsAssignee')}</th>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsAttachments')}</th>
+                    <th className="px-4 py-3">{t('dashboard.changeRequestsUpdatedAt')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-sm text-neutral-200">
+                  {changeRequests.map((item) => (
+                    <tr key={item.id} className="hover:bg-slate-900/60">
+                      <td className="px-4 py-3">
+                        <a
+                          href={item.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-brand hover:underline"
+                        >
+                          {item.key}
+                        </a>
+                      </td>
+                      <td className="px-4 py-3">{item.summary}</td>
+                      <td className="px-4 py-3">
+                        <Badge variant={resolveStatusVariant(item.statusCategory)}>{item.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3">{item.assignee ?? '—'}</td>
+                      <td
+                        className="px-4 py-3"
+                        data-testid={`change-request-attachments-${item.id}`}
+                      >
+                        {item.attachments.length}
+                      </td>
+                      <td className="px-4 py-3">{formatChangeRequestDate(item.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}

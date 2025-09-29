@@ -9,6 +9,7 @@ import {
   type RequirementTracePayload,
   type PackJobResult,
   type StageIdentifier,
+  type CoverageStatus,
 } from '../types/pipeline';
 
 export interface AuditLogEntry {
@@ -213,6 +214,22 @@ export interface ComplianceGapSummary {
   openObjectiveCount: number;
 }
 
+export interface ComplianceIndependenceObjective {
+  objectiveId: string;
+  status: CoverageStatus;
+  independence: 'none' | 'recommended' | 'required';
+  missingArtifacts: string[];
+}
+
+export interface ComplianceIndependenceSummary {
+  totals: {
+    covered: number;
+    partial: number;
+    missing: number;
+  };
+  objectives: ComplianceIndependenceObjective[];
+}
+
 export interface ComplianceSummaryLatest {
   id: string;
   createdAt: string;
@@ -222,6 +239,7 @@ export interface ComplianceSummaryLatest {
   summary: ComplianceStagePayload['summary'];
   coverage: ComplianceCoverageSnapshot;
   gaps: ComplianceGapSummary;
+  independence?: ComplianceIndependenceSummary | null;
 }
 
 export interface ComplianceSummaryResponse {
@@ -232,6 +250,42 @@ export interface ComplianceSummaryResponse {
 export interface StageRiskForecastResponse {
   generatedAt?: string;
   forecasts: StageRiskForecastEntry[];
+}
+
+export interface ChangeRequestAttachment {
+  id: string;
+  filename: string;
+  url?: string;
+  size?: number;
+  mimeType?: string;
+  createdAt?: string;
+}
+
+export interface ChangeRequestTransition {
+  id: string;
+  name: string;
+  toStatus: string;
+  category?: string;
+}
+
+export interface ChangeRequestItem {
+  id: string;
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory?: string;
+  assignee?: string | null;
+  updatedAt?: string;
+  priority?: string | null;
+  issueType?: string | null;
+  url: string;
+  transitions: ChangeRequestTransition[];
+  attachments: ChangeRequestAttachment[];
+}
+
+export interface ChangeRequestListResponse {
+  items: ChangeRequestItem[];
+  fetchedAt: string;
 }
 
 type ImportMetaEnv = Record<string, string>;
@@ -437,10 +491,280 @@ const sanitizeStageRiskForecastEntry = (
   };
 };
 
+const normalizeCoverageStatus = (status: unknown): CoverageStatus => {
+  if (status === 'covered' || status === 'partial' || status === 'missing') {
+    return status;
+  }
+  return 'missing';
+};
+
+const normalizeIndependenceLevel = (value: unknown): 'none' | 'recommended' | 'required' => {
+  if (typeof value !== 'string') {
+    return 'none';
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'recommended' || normalized === 'required') {
+    return normalized;
+  }
+  return 'none';
+};
+
+const toSafeCount = (value: unknown): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.trunc(parsed));
+    }
+  }
+  return 0;
+};
+
+const sanitizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0);
+};
+
+const sanitizeComplianceIndependenceSummary = (
+  summary: unknown,
+): ComplianceIndependenceSummary | null => {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+
+  const raw = summary as { totals?: Record<string, unknown>; objectives?: unknown };
+  const totalsRaw = raw.totals ?? {};
+  const totals = {
+    covered: toSafeCount(totalsRaw.covered),
+    partial: toSafeCount(totalsRaw.partial),
+    missing: toSafeCount(totalsRaw.missing),
+  };
+
+  const objectivesRaw = Array.isArray(raw.objectives) ? raw.objectives : [];
+  const objectives = objectivesRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const objectiveIdRaw = record.objectiveId;
+      const objectiveId =
+        typeof objectiveIdRaw === 'string'
+          ? objectiveIdRaw.trim()
+          : objectiveIdRaw !== undefined
+            ? String(objectiveIdRaw)
+            : '';
+      if (!objectiveId) {
+        return null;
+      }
+
+      const status = normalizeCoverageStatus(record.status);
+      const independence = normalizeIndependenceLevel(record.independence);
+      const missingArtifacts = sanitizeStringArray(record.missingArtifacts);
+
+      return { objectiveId, status, independence, missingArtifacts };
+    })
+    .filter((entry): entry is ComplianceIndependenceObjective => entry !== null);
+
+  return { totals, objectives };
+};
+
+const sanitizeChangeRequestAttachment = (entry: unknown): ChangeRequestAttachment | null => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const idRaw = record.id;
+  const filenameRaw = record.filename;
+  const id =
+    typeof idRaw === 'string'
+      ? idRaw.trim()
+      : idRaw !== undefined
+        ? String(idRaw)
+        : '';
+  const filename = typeof filenameRaw === 'string' ? filenameRaw.trim() : '';
+  if (!id || !filename) {
+    return null;
+  }
+
+  const url = typeof record.url === 'string' && record.url.trim().length > 0 ? record.url.trim() : undefined;
+  const size = typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : undefined;
+  const mimeType =
+    typeof record.mimeType === 'string' && record.mimeType.trim().length > 0 ? record.mimeType.trim() : undefined;
+  const createdAt =
+    typeof record.createdAt === 'string' && record.createdAt.trim().length > 0
+      ? record.createdAt.trim()
+      : undefined;
+
+  return {
+    id,
+    filename,
+    ...(url ? { url } : {}),
+    ...(size !== undefined ? { size } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    ...(createdAt ? { createdAt } : {}),
+  };
+};
+
+const sanitizeChangeRequestTransition = (entry: unknown): ChangeRequestTransition | null => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const idRaw = record.id;
+  const nameRaw = record.name;
+  const toStatusRaw = record.toStatus ?? record.to_status ?? record.to;
+  const id =
+    typeof idRaw === 'string'
+      ? idRaw.trim()
+      : idRaw !== undefined
+        ? String(idRaw)
+        : '';
+  const name = typeof nameRaw === 'string' ? nameRaw.trim() : '';
+  const toStatus = typeof toStatusRaw === 'string' ? toStatusRaw.trim() : '';
+  if (!id || !name || !toStatus) {
+    return null;
+  }
+
+  const category =
+    typeof record.category === 'string' && record.category.trim().length > 0
+      ? record.category.trim()
+      : typeof record.statusCategory === 'string' && record.statusCategory.trim().length > 0
+        ? record.statusCategory.trim()
+        : undefined;
+
+  return { id, name, toStatus, ...(category ? { category } : {}) };
+};
+
+const sanitizeChangeRequestItem = (entry: unknown): ChangeRequestItem | null => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const record = entry as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const key = typeof record.key === 'string' ? record.key.trim() : '';
+  const summary = typeof record.summary === 'string' ? record.summary.trim() : '';
+  const status = typeof record.status === 'string' ? record.status.trim() : '';
+  const url = typeof record.url === 'string' ? record.url.trim() : '';
+  if (!id || !key || !summary || !status || !url) {
+    return null;
+  }
+
+  const statusCategory =
+    typeof record.statusCategory === 'string' && record.statusCategory.trim().length > 0
+      ? record.statusCategory.trim()
+      : undefined;
+
+  let assignee: string | null | undefined;
+  if (typeof record.assignee === 'string') {
+    const trimmed = record.assignee.trim();
+    assignee = trimmed.length > 0 ? trimmed : null;
+  } else if (record.assignee === null) {
+    assignee = null;
+  }
+
+  const updatedAt = typeof record.updatedAt === 'string' ? record.updatedAt.trim() : undefined;
+  const priority = typeof record.priority === 'string' ? record.priority.trim() : undefined;
+  const issueType = typeof record.issueType === 'string' ? record.issueType.trim() : undefined;
+
+  const transitions = Array.isArray(record.transitions)
+    ? record.transitions
+        .map(sanitizeChangeRequestTransition)
+        .filter((transition): transition is ChangeRequestTransition => transition !== null)
+    : [];
+
+  const attachments = Array.isArray(record.attachments)
+    ? record.attachments
+        .map(sanitizeChangeRequestAttachment)
+        .filter((attachment): attachment is ChangeRequestAttachment => attachment !== null)
+    : [];
+
+  return {
+    id,
+    key,
+    summary,
+    status,
+    ...(statusCategory ? { statusCategory } : {}),
+    ...(assignee !== undefined ? { assignee } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(priority ? { priority } : {}),
+    ...(issueType ? { issueType } : {}),
+    url,
+    transitions,
+    attachments,
+  };
+};
+
+const sanitizeChangeRequestListResponse = (
+  payload: ChangeRequestListResponse,
+): ChangeRequestListResponse => {
+  const fetchedAt = typeof payload.fetchedAt === 'string' ? payload.fetchedAt : new Date().toISOString();
+  const items = Array.isArray(payload.items)
+    ? payload.items
+        .map(sanitizeChangeRequestItem)
+        .filter((item): item is ChangeRequestItem => item !== null)
+    : [];
+
+  return { fetchedAt, items };
+};
+
 const readJson = async <T>(response: Response): Promise<T> => {
   await ensureOk(response);
   return (await response.json()) as T;
 };
+
+export interface PolarionConnectorConfig {
+  baseUrl: string;
+  projectId: string;
+  username?: string;
+  password?: string;
+  token?: string;
+  requirementsEndpoint?: string;
+  testsEndpoint?: string;
+  buildsEndpoint?: string;
+}
+
+export interface JenkinsConnectorConfig {
+  baseUrl: string;
+  job: string;
+  build?: string | number;
+  username?: string;
+  password?: string;
+  token?: string;
+  buildEndpoint?: string;
+  testReportEndpoint?: string;
+}
+
+export interface DoorsNextConnectorConfig {
+  baseUrl: string;
+  projectArea: string;
+  pageSize?: number;
+  maxPages?: number;
+  timeoutMs?: number;
+  username?: string;
+  password?: string;
+  accessToken?: string;
+}
+
+export interface JamaConnectorConfig {
+  baseUrl: string;
+  projectId: string | number;
+  token: string;
+  pageSize?: number;
+  maxPages?: number;
+  timeoutMs?: number;
+  rateLimitDelaysMs?: number[];
+  requirementsEndpoint?: string;
+  testCasesEndpoint?: string;
+  relationshipsEndpoint?: string;
+}
 
 interface ImportOptions {
   token: string;
@@ -452,6 +776,10 @@ interface ImportOptions {
   signal?: AbortSignal;
   independentSources?: string[];
   independentArtifacts?: string[];
+  polarion?: PolarionConnectorConfig;
+  jenkins?: JenkinsConnectorConfig;
+  doorsNext?: DoorsNextConnectorConfig;
+  jama?: JamaConnectorConfig;
 }
 
 const inferImportField = (file: File): string | undefined => {
@@ -511,6 +839,10 @@ export const importArtifacts = async ({
   signal,
   independentSources,
   independentArtifacts,
+  polarion,
+  jenkins,
+  doorsNext,
+  jama,
 }: ImportOptions): Promise<ApiJob<ImportJobResult>> => {
   const formData = new FormData();
   let appended = 0;
@@ -539,6 +871,22 @@ export const importArtifacts = async ({
 
   if (independentArtifacts && independentArtifacts.length > 0) {
     formData.append('independentArtifacts', JSON.stringify(independentArtifacts));
+  }
+
+  if (polarion) {
+    formData.append('polarion', JSON.stringify(polarion));
+  }
+
+  if (jenkins) {
+    formData.append('jenkins', JSON.stringify(jenkins));
+  }
+
+  if (doorsNext) {
+    formData.append('doorsNext', JSON.stringify(doorsNext));
+  }
+
+  if (jama) {
+    formData.append('jama', JSON.stringify(jama));
   }
 
   const response = await fetch(joinUrl('/v1/import'), {
@@ -754,7 +1102,47 @@ export const fetchComplianceSummary = async ({
     signal,
   });
 
-  return readJson<ComplianceSummaryResponse>(response);
+  const payload = await readJson<ComplianceSummaryResponse>(response);
+  const latest = payload.latest
+    ? { ...payload.latest, independence: sanitizeComplianceIndependenceSummary(payload.latest.independence) }
+    : null;
+
+  return { computedAt: payload.computedAt, latest };
+};
+
+interface FetchChangeRequestsOptions {
+  token: string;
+  license: string;
+  projectKey?: string;
+  jql?: string;
+  signal?: AbortSignal;
+}
+
+export const fetchChangeRequests = async ({
+  token,
+  license,
+  projectKey,
+  jql,
+  signal,
+}: FetchChangeRequestsOptions): Promise<ChangeRequestListResponse> => {
+  const params = new URLSearchParams();
+  const trimmedProject = projectKey?.trim();
+  if (trimmedProject) {
+    params.set('projectKey', trimmedProject);
+  }
+  const trimmedJql = jql?.trim();
+  if (trimmedJql) {
+    params.set('jql', trimmedJql);
+  }
+  const query = params.toString();
+  const response = await fetch(joinUrl(`/v1/change-requests${query ? `?${query}` : ''}`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  const payload = await readJson<ChangeRequestListResponse>(response);
+  return sanitizeChangeRequestListResponse(payload);
 };
 
 export const fetchRequirementTraces = async ({
