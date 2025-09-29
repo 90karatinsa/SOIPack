@@ -64,6 +64,13 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
   --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
   CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
   `polarion`/`jenkins` olarak işler.
+  Jira Cloud REST API’sinden gereksinim ve test çekmek için `--jira-api-url`,
+  `--jira-api-project`, gerekiyorsa `--jira-api-email` ve `--jira-api-token`
+  bayraklarını ekleyin; isteğe bağlı olarak `--jira-api-requirements-jql` ve
+  `--jira-api-tests-jql` değerleriyle özel JQL sorguları tanımlayabilirsiniz.
+  CLI, API’den dönen gereksinim/test kayıtlarını, ilişkilendirilmiş ekleri ve
+  otomatik `verifies`/`implements` bağlantılarını çalışma alanına birleştirir
+  ve kanıt indeksine `source=jiraCloud` olarak kaydeder.
   Tasarım doğrulama CSV dışa aktarımlarını `--design-csv` ile,
   Polyspace/LDRA/VectorCAST statik analiz arşivlerini sırasıyla `--polyspace`,
   `--ldra`, `--vectorcast` bayraklarıyla ve kalite denetim günlüklerini birden
