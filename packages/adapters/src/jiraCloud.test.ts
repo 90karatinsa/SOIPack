@@ -1,7 +1,7 @@
 import http from 'http';
 import { AddressInfo } from 'net';
 
-import { fetchJiraChangeRequests } from './jiraCloud';
+import { fetchJiraChangeRequests, fetchJiraArtifacts } from './jiraCloud';
 
 const listen = (server: http.Server): Promise<AddressInfo> =>
   new Promise((resolve) => {
@@ -244,6 +244,228 @@ describe('fetchJiraChangeRequests', () => {
       expect(searchCount).toBe(2);
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ key: 'CR-10', assignee: 'Morgan Systems' });
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+describe('fetchJiraArtifacts', () => {
+  const respondWithJson = (res: http.ServerResponse, payload: unknown): void => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(payload));
+  };
+
+  it('paginates requirements and tests while collecting attachments and traces', async () => {
+    const server = http.createServer((req, res) => {
+      if (!req.url) {
+        res.statusCode = 400;
+        res.end();
+        return;
+      }
+
+      const parsed = new URL(req.url, 'http://localhost');
+      if (parsed.pathname === '/rest/api/3/search') {
+        const jql = parsed.searchParams.get('jql') ?? '';
+        const startAt = Number.parseInt(parsed.searchParams.get('startAt') ?? '0', 10);
+
+        if (jql.includes('Requirement')) {
+          if (startAt === 0) {
+            respondWithJson(res, {
+              startAt: 0,
+              maxResults: 1,
+              total: 2,
+              issues: [
+                {
+                  id: 'req-1',
+                  key: 'REQ-1',
+                  fields: {
+                    summary: 'Autopilot requirement',
+                    description: 'Maintain altitude',
+                    status: { name: 'Approved' },
+                    issuetype: { name: 'Requirement' },
+                    attachment: [
+                      {
+                        id: 'att-req-1',
+                        filename: 'analysis.pdf',
+                        content: 'https://jira.example.com/secure/attachment/att-req-1',
+                        mimeType: 'application/pdf',
+                        size: 1024,
+                        created: '2024-09-01T10:00:00Z',
+                      },
+                    ],
+                  },
+                },
+              ],
+            });
+            return;
+          }
+
+          respondWithJson(res, {
+            startAt: 1,
+            maxResults: 1,
+            total: 2,
+            issues: [
+              {
+                id: 'req-2',
+                key: 'REQ-2',
+                fields: {
+                  summary: 'Stability requirement',
+                  status: { name: 'In Progress' },
+                  issuetype: { name: 'Story' },
+                  attachment: [],
+                },
+              },
+            ],
+          });
+          return;
+        }
+
+        if (jql.includes('Test')) {
+          respondWithJson(res, {
+            startAt: 0,
+            maxResults: 50,
+            total: 1,
+            issues: [
+              {
+                id: 'test-1',
+                key: 'TEST-1',
+                fields: {
+                  summary: 'Verify altitude hold',
+                  status: { name: 'Passed' },
+                  timetracking: { timeSpentSeconds: 120 },
+                  issuelinks: [
+                    {
+                      id: 'link-1',
+                      outwardIssue: { key: 'REQ-1' },
+                    },
+                    {
+                      id: 'link-2',
+                      inwardIssue: { key: 'REQ-2' },
+                    },
+                  ],
+                  attachment: [
+                    {
+                      id: 'att-test-1',
+                      filename: 'results.txt',
+                      size: 256,
+                      content: 'https://jira.example.com/secure/attachment/att-test-1',
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+          return;
+        }
+      }
+
+      res.statusCode = 404;
+      res.end();
+    });
+
+    try {
+      const address = await listen(server);
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const result = await fetchJiraArtifacts({
+        baseUrl,
+        projectKey: 'FLIGHT',
+        authToken: 'token',
+        pageSize: 1,
+      });
+
+      expect(result.data.requirements).toHaveLength(2);
+      expect(result.data.tests).toHaveLength(1);
+      expect(result.data.traces).toEqual(
+        expect.arrayContaining([
+          { fromId: 'REQ-1', toId: 'TEST-1', type: 'verifies' },
+          { fromId: 'REQ-2', toId: 'TEST-1', type: 'verifies' },
+        ]),
+      );
+      expect(result.data.attachments).toHaveLength(2);
+      expect(result.data.attachments.find((item) => item.id === 'att-req-1')).toMatchObject({
+        issueKey: 'REQ-1',
+        filename: 'analysis.pdf',
+      });
+      expect(result.data.attachments.find((item) => item.id === 'att-test-1')).toMatchObject({
+        issueKey: 'TEST-1',
+        filename: 'results.txt',
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('retries searches when the API responds with 429', async () => {
+    let attempts = 0;
+
+    const server = http.createServer((req, res) => {
+      if (!req.url) {
+        res.statusCode = 400;
+        res.end();
+        return;
+      }
+
+      const parsed = new URL(req.url, 'http://localhost');
+      if (parsed.pathname === '/rest/api/3/search') {
+        const jql = parsed.searchParams.get('jql') ?? '';
+        if (jql.includes('Requirement')) {
+          respondWithJson(res, {
+            startAt: 0,
+            maxResults: 50,
+            total: 0,
+            issues: [],
+          });
+          return;
+        }
+
+        if (jql.includes('Test')) {
+          attempts += 1;
+          if (attempts === 1) {
+            res.statusCode = 429;
+            res.setHeader('Retry-After', '0.05');
+            res.end('Rate limited');
+            return;
+          }
+
+          respondWithJson(res, {
+            startAt: 0,
+            maxResults: 1,
+            total: 1,
+            issues: [
+              {
+                id: 'test-2',
+                key: 'TEST-2',
+                fields: {
+                  summary: 'Regression test',
+                  status: { name: 'In Progress' },
+                },
+              },
+            ],
+          });
+          return;
+        }
+      }
+
+      res.statusCode = 404;
+      res.end();
+    });
+
+    try {
+      const address = await listen(server);
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const result = await fetchJiraArtifacts({
+        baseUrl,
+        projectKey: 'SAFETY',
+        authToken: 'token',
+        rateLimitDelaysMs: [10, 20, 40],
+      });
+
+      expect(attempts).toBe(2);
+      expect(result.data.tests).toHaveLength(1);
+      expect(result.data.tests[0]?.id).toBe('TEST-2');
     } finally {
       await close(server);
     }

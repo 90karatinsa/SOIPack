@@ -1,4 +1,10 @@
 import { HttpError, type HttpRequestOptions, requestJson } from './utils/http';
+import type {
+  ParseResult,
+  RemoteRequirementRecord,
+  RemoteTestRecord,
+  RemoteTraceLink,
+} from './types';
 
 const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_MAX_PAGES = 20;
@@ -79,18 +85,39 @@ interface JiraIssueAttachment {
 
 interface JiraIssueFields {
   summary?: string | null;
+  description?: string | null;
   status?: JiraIssueFieldStatus | null;
   assignee?: JiraIssueFieldUser | null;
   updated?: string | null;
   priority?: JiraIssueFieldPriority | null;
   issuetype?: { name?: string | null } | null;
   attachment?: JiraIssueAttachment[] | null;
+  issuelinks?: JiraIssueLink[] | null;
+  timetracking?: { timeSpentSeconds?: number | null } | null;
 }
 
 interface JiraIssue {
   id: string;
   key: string;
   fields: JiraIssueFields;
+}
+
+interface JiraLinkedIssue {
+  id?: string | null;
+  key?: string | null;
+}
+
+interface JiraIssueLinkType {
+  name?: string | null;
+  inward?: string | null;
+  outward?: string | null;
+}
+
+interface JiraIssueLink {
+  id?: string | null;
+  type?: JiraIssueLinkType | null;
+  inwardIssue?: JiraLinkedIssue | null;
+  outwardIssue?: JiraLinkedIssue | null;
 }
 
 interface JiraSearchResponse {
@@ -144,6 +171,29 @@ export interface JiraChangeRequest {
   url: string;
   transitions: JiraChangeRequestTransition[];
   attachments: JiraChangeRequestAttachment[];
+}
+
+export interface JiraArtifactAttachment {
+  id: string;
+  issueId: string;
+  issueKey: string;
+  filename: string;
+  url?: string;
+  mimeType?: string;
+  size?: number;
+  createdAt?: string;
+}
+
+export interface JiraArtifactsOptions extends JiraCloudClientOptions {
+  requirementsJql?: string;
+  testsJql?: string;
+}
+
+export interface JiraArtifactsBundle {
+  requirements: RemoteRequirementRecord[];
+  tests: RemoteTestRecord[];
+  traces: RemoteTraceLink[];
+  attachments: JiraArtifactAttachment[];
 }
 
 export interface JiraCloudClientOptions {
@@ -211,6 +261,217 @@ const buildIssueUrl = (options: JiraCloudClientOptions, issue: JiraIssue): strin
   } catch {
     return issue.key;
   }
+};
+
+const DEFAULT_REQUIREMENT_JQL = (projectKey: string): string =>
+  `project = "${projectKey}" AND issuetype in ("Requirement", "Story", "Epic") ORDER BY updated DESC`;
+
+const DEFAULT_TEST_JQL = (projectKey: string): string =>
+  `project = "${projectKey}" AND issuetype in ("Test", "Test Case") ORDER BY updated DESC`;
+
+const normalizeRequirementIssue = (
+  issue: JiraIssue,
+  options: JiraCloudClientOptions,
+): RemoteRequirementRecord => ({
+  id: issue.key,
+  title: normalizeSummary(issue),
+  description: issue.fields.description ?? undefined,
+  status: issue.fields.status?.name ?? undefined,
+  type: issue.fields.issuetype?.name ?? undefined,
+  url: buildIssueUrl(options, issue),
+});
+
+const extractRequirementRefs = (
+  links: JiraIssueLink[] | null | undefined,
+  requirementIds: Set<string>,
+): string[] => {
+  if (!links || links.length === 0) {
+    return [];
+  }
+  const refs = new Set<string>();
+
+  links.forEach((link) => {
+    const candidates = [link.outwardIssue?.key, link.inwardIssue?.key];
+    candidates.forEach((candidate) => {
+      if (!candidate) {
+        return;
+      }
+      const normalized = candidate.trim();
+      if (normalized && requirementIds.has(normalized)) {
+        refs.add(normalized);
+      }
+    });
+  });
+
+  return Array.from(refs);
+};
+
+const normalizeTestIssue = (
+  issue: JiraIssue,
+  options: JiraCloudClientOptions,
+  requirementIds: Set<string>,
+): RemoteTestRecord => {
+  const requirementRefs = extractRequirementRefs(issue.fields.issuelinks, requirementIds);
+  const durationSeconds = issue.fields.timetracking?.timeSpentSeconds ?? undefined;
+
+  return {
+    id: issue.key,
+    name: normalizeSummary(issue),
+    className: 'Jira',
+    status: issue.fields.status?.name ?? 'Not Run',
+    durationMs:
+      typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)
+        ? durationSeconds * 1000
+        : undefined,
+    requirementIds: requirementRefs.length > 0 ? requirementRefs : undefined,
+    startedAt: issue.fields.updated ?? undefined,
+  };
+};
+
+const collectAttachments = (
+  issue: JiraIssue,
+  registry: Map<string, JiraArtifactAttachment>,
+): void => {
+  const attachments = issue.fields.attachment;
+  if (!attachments || attachments.length === 0) {
+    return;
+  }
+
+  attachments.forEach((attachment) => {
+    const id = attachment.id !== undefined ? String(attachment.id) : undefined;
+    if (!id) {
+      return;
+    }
+    if (registry.has(id)) {
+      return;
+    }
+    registry.set(id, {
+      id,
+      issueId: issue.id,
+      issueKey: issue.key,
+      filename: attachment.filename?.trim() || 'attachment',
+      url: attachment.content ?? undefined,
+      mimeType: attachment.mimeType ?? undefined,
+      size: typeof attachment.size === 'number' ? attachment.size : undefined,
+      createdAt: attachment.created ?? undefined,
+    });
+  });
+};
+
+const fetchIssues = async (
+  jql: string,
+  options: JiraArtifactsOptions,
+  headers: Record<string, string>,
+  pageSize: number,
+  maxPages: number,
+  rateLimitDelays: number[],
+): Promise<JiraIssue[]> => {
+  const issues: JiraIssue[] = [];
+  let startAt = 0;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const searchUrl = new URL('/rest/api/3/search', options.baseUrl);
+    searchUrl.searchParams.set('jql', jql);
+    searchUrl.searchParams.set('startAt', String(startAt));
+    searchUrl.searchParams.set('maxResults', String(pageSize));
+    searchUrl.searchParams.set(
+      'fields',
+      'summary,description,status,issuetype,priority,attachment,issuelinks,timetracking,updated',
+    );
+
+    const response = await requestWithBackoff<JiraSearchResponse>(
+      {
+        url: searchUrl,
+        headers,
+        timeoutMs: options.timeoutMs,
+      },
+      0,
+      rateLimitDelays,
+    );
+
+    const pageIssues = response.issues ?? [];
+    if (pageIssues.length === 0) {
+      break;
+    }
+
+    issues.push(...pageIssues);
+    startAt += pageIssues.length;
+    const total = response.total ?? startAt;
+    if (startAt >= total) {
+      break;
+    }
+  }
+
+  return issues;
+};
+
+export const fetchJiraArtifacts = async (
+  options: JiraArtifactsOptions,
+): Promise<ParseResult<JiraArtifactsBundle>> => {
+  const warnings: string[] = [];
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const authHeader = buildAuthHeader(options);
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+
+  const pageSize = options.pageSize && options.pageSize > 0 ? Math.trunc(options.pageSize) : DEFAULT_PAGE_SIZE;
+  const maxPages = options.maxPages && options.maxPages > 0 ? Math.trunc(options.maxPages) : DEFAULT_MAX_PAGES;
+  const rateLimitDelays =
+    options.rateLimitDelaysMs && options.rateLimitDelaysMs.length > 0
+      ? options.rateLimitDelaysMs
+      : DEFAULT_RATE_LIMIT_DELAYS_MS;
+
+  const requirementJql = options.requirementsJql?.trim().length
+    ? options.requirementsJql!
+    : DEFAULT_REQUIREMENT_JQL(options.projectKey);
+  const testJql = options.testsJql?.trim().length
+    ? options.testsJql!
+    : DEFAULT_TEST_JQL(options.projectKey);
+
+  const requirementIssues = await fetchIssues(
+    requirementJql,
+    options,
+    headers,
+    pageSize,
+    maxPages,
+    rateLimitDelays,
+  );
+  const requirementIds = new Set(requirementIssues.map((issue) => issue.key));
+
+  const testIssues = await fetchIssues(testJql, options, headers, pageSize, maxPages, rateLimitDelays);
+
+  const attachmentsRegistry = new Map<string, JiraArtifactAttachment>();
+
+  const requirements = requirementIssues.map((issue) => {
+    collectAttachments(issue, attachmentsRegistry);
+    return normalizeRequirementIssue(issue, options);
+  });
+
+  const tests = testIssues.map((issue) => {
+    collectAttachments(issue, attachmentsRegistry);
+    return normalizeTestIssue(issue, options, requirementIds);
+  });
+
+  const traces: RemoteTraceLink[] = [];
+  tests.forEach((test) => {
+    const requirementRefs = test.requirementIds ?? [];
+    requirementRefs.forEach((requirementId) => {
+      traces.push({ fromId: requirementId, toId: test.id, type: 'verifies' });
+    });
+  });
+
+  const attachments = Array.from(attachmentsRegistry.values());
+
+  return {
+    data: {
+      requirements,
+      tests,
+      traces,
+      attachments,
+    },
+    warnings,
+  };
 };
 
 export const fetchJiraChangeRequests = async (

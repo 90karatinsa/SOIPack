@@ -5,6 +5,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
+import type { ArgumentsCamelCase } from 'yargs';
 
 jest.setTimeout(1200000);
 
@@ -690,6 +691,118 @@ describe('CLI pipeline workflows', () => {
     expect(changeControl?.status).toBe('covered');
   });
 
+  it('merges Jira Cloud REST artifacts into the workspace', async () => {
+    const workDir = path.join(tempRoot, 'jira-cloud-workspace');
+    const fetchSpy = jest.spyOn(adapters, 'fetchJiraArtifacts');
+
+    fetchSpy.mockResolvedValue({
+      data: {
+        requirements: [
+          {
+            id: 'REQ-900',
+            title: 'Maintain altitude',
+            description: 'Autopilot shall maintain altitude within ±50ft.',
+            status: 'Approved',
+            type: 'Requirement',
+            url: 'https://jira.example.com/browse/REQ-900',
+          },
+        ],
+        tests: [
+          {
+            id: 'TEST-42',
+            name: 'Verify altitude hold',
+            status: 'Passed',
+            requirementIds: ['REQ-900'],
+            durationMs: 3000,
+          },
+        ],
+        traces: [{ fromId: 'REQ-900', toId: 'TEST-42', type: 'verifies' }],
+        attachments: [
+          {
+            id: 'att-req-900',
+            issueId: '10090',
+            issueKey: 'REQ-900',
+            filename: 'impact-analysis.pdf',
+            url: 'https://jira.example.com/secure/attachment/att-req-900',
+            size: 4096,
+            createdAt: '2024-08-31T12:00:00Z',
+          },
+        ],
+      },
+      warnings: ['Jira pagination truncated after 2 pages.'],
+    });
+
+    try {
+      const result = await runImport({
+        output: workDir,
+        jiraCloud: {
+          baseUrl: 'https://jira.example.com',
+          projectKey: 'AERO',
+          email: 'alice@example.com',
+          authToken: 'token-xyz',
+          requirementsJql: 'project = AERO AND type = Requirement',
+          testsJql: 'project = AERO AND type = Test',
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: 'https://jira.example.com',
+          projectKey: 'AERO',
+          email: 'alice@example.com',
+          authToken: 'token-xyz',
+          requirementsJql: 'project = AERO AND type = Requirement',
+          testsJql: 'project = AERO AND type = Test',
+        }),
+      );
+
+      expect(result.warnings).toEqual(
+        expect.arrayContaining(['Jira pagination truncated after 2 pages.']),
+      );
+      expect(result.workspace.requirements).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'REQ-900', status: 'verified' })]),
+      );
+      expect(result.workspace.testResults).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            testId: 'TEST-42',
+            requirementsRefs: ['REQ-900'],
+            status: 'passed',
+          }),
+        ]),
+      );
+      expect(result.workspace.traceLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: 'REQ-900', to: 'TEST-42', type: 'verifies' }),
+        ]),
+      );
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence.filter((entry) => entry.source === 'jiraCloud')).toHaveLength(3);
+      const testEvidence = result.workspace.evidenceIndex.test ?? [];
+      expect(testEvidence.filter((entry) => entry.source === 'jiraCloud')).toHaveLength(1);
+
+      const metadata = result.workspace.metadata.sources?.jiraCloud;
+      expect(metadata).toEqual(
+        expect.objectContaining({
+          baseUrl: 'https://jira.example.com',
+          projectKey: 'AERO',
+          requirements: 1,
+          tests: 1,
+          traces: 1,
+        }),
+      );
+      expect(metadata?.attachments?.total).toBe(1);
+      expect(metadata?.attachments?.items[0]).toEqual(
+        expect.objectContaining({ issueKey: 'REQ-900', filename: 'impact-analysis.pdf' }),
+      );
+      expect(result.workspace.metadata.inputs.jiraCloud).toBe('https://jira.example.com#AERO');
+    } finally {
+      fetchSpy.mockRestore();
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
+  });
+
   it('propagates static analysis findings into compliance quality warnings', async () => {
     const fixtureDir = path.join(__dirname, '__fixtures__', 'quality');
     const workspaceDir = path.join(tempRoot, 'quality-workspace');
@@ -1298,6 +1411,41 @@ describe('doors next importer', () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildJiraCloudOptions', () => {
+  it('returns undefined when required flags are missing', () => {
+    const options = __internal.buildJiraCloudOptions({} as unknown as ArgumentsCamelCase<unknown>);
+    expect(options).toBeUndefined();
+  });
+
+  it('parses CLI arguments into Jira artifact options', () => {
+    const argv = {
+      jiraApiUrl: 'https://jira.example.com',
+      jiraApiProject: 'AERO',
+      jiraApiEmail: 'ops@example.com',
+      jiraApiToken: 'token-123',
+      jiraApiRequirementsJql: 'project = AERO AND issuetype = Requirement',
+      jiraApiTestsJql: 'project = AERO AND issuetype = Test',
+      jiraApiPageSize: 25,
+      jiraApiMaxPages: 10,
+      jiraApiTimeout: 45000,
+    } as unknown as ArgumentsCamelCase<unknown>;
+
+    const options = __internal.buildJiraCloudOptions(argv);
+
+    expect(options).toEqual({
+      baseUrl: 'https://jira.example.com',
+      projectKey: 'AERO',
+      email: 'ops@example.com',
+      authToken: 'token-123',
+      requirementsJql: 'project = AERO AND issuetype = Requirement',
+      testsJql: 'project = AERO AND issuetype = Test',
+      pageSize: 25,
+      maxPages: 10,
+      timeoutMs: 45000,
+    });
   });
 });
 

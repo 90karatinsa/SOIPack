@@ -127,6 +127,7 @@ export * from './ledger';
 
 export const evidenceSources = [
   'jiraCsv',
+  'jiraCloud',
   'reqif',
   'junit',
   'lcov',

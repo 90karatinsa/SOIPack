@@ -2,7 +2,13 @@ import http, { IncomingHttpHeaders } from 'http';
 import https from 'https';
 import { setTimeout as delay } from 'timers/promises';
 
-import { ParseResult, RemoteBuildRecord, RemoteRequirementRecord, RemoteTestRecord } from './types';
+import {
+  ParseResult,
+  RemoteBuildRecord,
+  RemoteRequirementRecord,
+  RemoteTestRecord,
+  RemoteTraceLink,
+} from './types';
 import { HttpError } from './utils/http';
 
 export interface PolarionClientOptions {
@@ -22,6 +28,7 @@ export interface PolarionArtifactBundle {
   requirements: RemoteRequirementRecord[];
   tests: RemoteTestRecord[];
   builds: RemoteBuildRecord[];
+  relationships: RemoteTraceLink[];
 }
 
 const defaultEndpoints = {
@@ -337,6 +344,173 @@ const fetchCollection = async <T>(
   return items;
 };
 
+const toStringId = (value: unknown): string | undefined => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    if ('id' in source) {
+      return toStringId(source.id);
+    }
+    if ('workItemId' in source) {
+      return toStringId(source.workItemId);
+    }
+    if ('workItem' in source) {
+      return toStringId(source.workItem);
+    }
+    if ('targetId' in source) {
+      return toStringId(source.targetId);
+    }
+    if ('key' in source) {
+      return toStringId(source.key);
+    }
+  }
+  return undefined;
+};
+
+const normalizeTraceType = (role: string | undefined): RemoteTraceLink['type'] => {
+  const normalized = role?.toLowerCase() ?? '';
+  if (normalized.includes('implement')) {
+    return 'implements';
+  }
+  if (normalized.includes('satisf')) {
+    return 'satisfies';
+  }
+  return 'verifies';
+};
+
+const extractLinkedEntries = (value: unknown): Array<{ id: string; role?: string }> => {
+  if (!value) {
+    return [];
+  }
+
+  const entries: Array<{ id: string; role?: string }> = [];
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      if (item === null || item === undefined) {
+        return;
+      }
+      if (typeof item === 'string' || typeof item === 'number') {
+        const id = toStringId(item);
+        if (id) {
+          entries.push({ id });
+        }
+        return;
+      }
+      if (typeof item === 'object') {
+        const source = item as Record<string, unknown>;
+        const id = toStringId(source.id ?? source.workItemId ?? source.workItem ?? source.targetId ?? source.key);
+        if (!id) {
+          return;
+        }
+        const roleValue = source.role ?? source.type ?? source.linkRole ?? source.relationType;
+        const role = typeof roleValue === 'string' ? roleValue : undefined;
+        entries.push({ id, role });
+      }
+    });
+    return entries;
+  }
+
+  if (typeof value === 'object') {
+    const container = value as Record<string, unknown>;
+    if (Array.isArray(container.items)) {
+      entries.push(...extractLinkedEntries(container.items));
+      return entries;
+    }
+  }
+
+  const id = toStringId(value);
+  if (id) {
+    entries.push({ id });
+  }
+
+  return entries;
+};
+
+const gatherLinksFromRecord = (
+  record: Record<string, unknown>,
+  keys: string[],
+): Array<{ id: string; role?: string }> => {
+  const results: Array<{ id: string; role?: string }> = [];
+  keys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      results.push(...extractLinkedEntries(record[key]));
+    }
+  });
+  return results;
+};
+
+const collectPolarionRelationships = (
+  requirements: Array<RemoteRequirementRecord & Record<string, unknown>>,
+  tests: Array<RemoteTestRecord & Record<string, unknown>>,
+): RemoteTraceLink[] => {
+  const links: RemoteTraceLink[] = [];
+  const seen = new Set<string>();
+  const requirementIds = new Set(requirements.map((item) => item.id));
+  const testIds = new Set(tests.map((item) => item.id));
+
+  const register = (fromId: string | undefined, toId: string | undefined, role?: string) => {
+    if (!fromId || !toId) {
+      return;
+    }
+    const type = normalizeTraceType(role);
+    const key = `${fromId}::${toId}::${type}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    links.push({ fromId, toId, type });
+  };
+
+  requirements.forEach((requirement) => {
+    const fields = requirement as Record<string, unknown>;
+    const related = gatherLinksFromRecord(fields, [
+      'linkedWorkItems',
+      'linkedItems',
+      'linkedTests',
+      'relatedWorkItems',
+      'verifies',
+      'validatedBy',
+    ]);
+    related.forEach(({ id, role }) => {
+      if (testIds.has(id)) {
+        register(requirement.id, id, role);
+      }
+    });
+  });
+
+  tests.forEach((test) => {
+    const fields = test as Record<string, unknown>;
+    const requirementRefs = Array.isArray(test.requirementIds) ? test.requirementIds : [];
+    requirementRefs.forEach((reqId) => {
+      if (requirementIds.has(reqId)) {
+        register(reqId, test.id);
+      }
+    });
+
+    const additional = gatherLinksFromRecord(fields, [
+      'linkedWorkItems',
+      'linkedItems',
+      'relatedWorkItems',
+      'requirements',
+      'requirementIds',
+    ]);
+    additional.forEach(({ id, role }) => {
+      if (requirementIds.has(id)) {
+        register(id, test.id, role);
+      }
+    });
+  });
+
+  return links;
+};
+
 export const fetchPolarionArtifacts = async (
   options: PolarionClientOptions,
 ): Promise<ParseResult<PolarionArtifactBundle>> => {
@@ -345,12 +519,17 @@ export const fetchPolarionArtifacts = async (
   const requirements = await fetchCollection<RemoteRequirementRecord>(options, 'requirements', warnings);
   const tests = await fetchCollection<RemoteTestRecord>(options, 'testRuns', warnings);
   const builds = await fetchCollection<RemoteBuildRecord>(options, 'builds', warnings);
+  const relationships = collectPolarionRelationships(
+    requirements as Array<RemoteRequirementRecord & Record<string, unknown>>,
+    tests as Array<RemoteTestRecord & Record<string, unknown>>,
+  );
 
   return {
     data: {
       requirements,
       tests,
       builds,
+      relationships,
     },
     warnings,
   };

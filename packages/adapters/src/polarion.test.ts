@@ -111,6 +111,9 @@ describe('fetchPolarionArtifacts', () => {
     expect(result.data.requirements).toHaveLength(1);
     expect(result.data.tests).toHaveLength(1);
     expect(result.data.builds).toHaveLength(1);
+    expect(result.data.relationships).toEqual([
+      { fromId: 'REQ-1', toId: 'TR-101', type: 'verifies' },
+    ]);
 
     expect(result.data.requirements[0]).toMatchObject({ id: 'REQ-1', status: 'Approved' });
     expect(result.data.tests[0]).toMatchObject({ id: 'TR-101', status: 'passed', durationMs: 1200 });
@@ -253,6 +256,7 @@ describe('fetchPolarionArtifacts', () => {
     expect(firstPass.data.requirements).toHaveLength(170);
     expect(firstPass.data.tests).toHaveLength(1);
     expect(firstPass.data.builds).toHaveLength(1);
+    expect(firstPass.data.relationships).toHaveLength(0);
     expect(firstPass.warnings).toHaveLength(1);
     expect(firstPass.warnings[0]).toContain('throttled');
     expect(firstPass.warnings[0]).toContain('429');
@@ -260,6 +264,7 @@ describe('fetchPolarionArtifacts', () => {
     const secondPass = await fetchPolarionArtifacts(options);
     expect(secondPass.data.requirements).toHaveLength(170);
     expect(secondPass.warnings).toHaveLength(0);
+    expect(secondPass.data.relationships).toHaveLength(0);
 
     expect(new Set(pageSizes)).toEqual(new Set(['55']));
     expect(attemptCounts.get('start')).toBe(3);
@@ -267,5 +272,154 @@ describe('fetchPolarionArtifacts', () => {
     expect(attemptCounts.get('cursor-2')).toBe(2);
 
     await close(server);
+  });
+
+  it('collects requirement-test trace links across paginated responses with throttling', async () => {
+    const requirementPages = new Map<string, { items: unknown[]; next?: string }>();
+    requirementPages.set('start', {
+      items: [
+        {
+          id: 'REQ-501',
+          title: 'Maintain control law',
+          linkedWorkItems: [
+            { id: 'TR-800', role: 'verifies' },
+            { id: 'TR-801', role: 'implements' },
+          ],
+        },
+      ],
+      next: 'req-next',
+    });
+    requirementPages.set('req-next', {
+      items: [
+        {
+          id: 'REQ-502',
+          title: 'Limit actuator deflection',
+          linkedTests: ['TR-801'],
+        },
+      ],
+    });
+
+    const testPages = new Map<string, { items: unknown[]; next?: string }>();
+    testPages.set('start', {
+      items: [
+        {
+          id: 'TR-800',
+          name: 'Control law regression',
+          status: 'passed',
+          requirementIds: ['REQ-501'],
+        },
+      ],
+      next: 'tests-next',
+    });
+    testPages.set('tests-next', {
+      items: [
+        {
+          id: 'TR-801',
+          name: 'Actuator integration',
+          status: 'failed',
+          linkedWorkItems: [{ workItemId: 'REQ-502', role: 'verifies' }],
+        },
+      ],
+    });
+
+    let testAttempts = 0;
+
+    const server = http.createServer((req, res) => {
+      if (!req.url) {
+        res.statusCode = 400;
+        res.end('Invalid request');
+        return;
+      }
+
+      if (req.url.startsWith('/linked/requirements')) {
+        const url = new URL(req.url, 'http://127.0.0.1');
+        const cursor = url.searchParams.get('cursor') ?? 'start';
+        const entry = requirementPages.get(cursor);
+        if (!entry) {
+          res.statusCode = 404;
+          res.end('Missing requirement page');
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            items: entry.items,
+            pageInfo: entry.next ? { nextCursor: entry.next } : undefined,
+          }),
+        );
+        return;
+      }
+
+      if (req.url.startsWith('/linked/tests')) {
+        const url = new URL(req.url, 'http://127.0.0.1');
+        const cursor = url.searchParams.get('cursor') ?? 'start';
+        const entry = testPages.get(cursor);
+        if (!entry) {
+          res.statusCode = 404;
+          res.end('Missing test page');
+          return;
+        }
+
+        if (cursor === 'start' && testAttempts === 0) {
+          testAttempts += 1;
+          res.statusCode = 429;
+          res.setHeader('Retry-After', '0.01');
+          res.end('Rate limited');
+          return;
+        }
+
+        testAttempts += 1;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            items: entry.items,
+            pageInfo: entry.next ? { nextCursor: entry.next } : undefined,
+          }),
+        );
+        return;
+      }
+
+      if (req.url.startsWith('/linked/builds')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ items: [] }));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end('Not Found');
+    });
+
+    const address = await listen(server);
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const result = await fetchPolarionArtifacts({
+        baseUrl,
+        projectId: 'TRACE',
+        requirementsEndpoint: '/linked/requirements',
+        testRunsEndpoint: '/linked/tests',
+        buildsEndpoint: '/linked/builds',
+        pageSize: 1,
+      });
+
+      expect(result.data.requirements).toHaveLength(2);
+      expect(result.data.tests).toHaveLength(2);
+      expect(result.data.relationships).toEqual(
+        expect.arrayContaining([
+          { fromId: 'REQ-501', toId: 'TR-800', type: 'verifies' },
+          { fromId: 'REQ-501', toId: 'TR-801', type: 'implements' },
+          { fromId: 'REQ-502', toId: 'TR-801', type: 'verifies' },
+        ]),
+      );
+      expect(result.data.relationships).toHaveLength(3);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          'Polarion testRuns request was throttled (HTTP 429). Retrying with backoff.',
+        ]),
+      );
+      expect(testAttempts).toBeGreaterThanOrEqual(2);
+    } finally {
+      await close(server);
+    }
   });
 });

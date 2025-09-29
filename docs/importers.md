@@ -57,6 +57,27 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - REST API kullanımının mümkün olmadığı ortamlarda Jama raporlarını CSV/Excel olarak dışa aktarabilir, ardından CSV dosyalarını `importJiraCsv` veya özel dönüştürücülerle SOIPack’e alarak kanıt indeksine ekleyebilirsiniz.
 - CLI `import` komutu `--jama-url`, `--jama-project` ve `--jama-token` bayraklarıyla Jama REST API’sine bağlanır; çekilen gereksinim, test ve ilişki kayıtları çalışma alanına birleştirilir ve kanıt indeksine `source=jama` olarak kaydedilir.
 
+## Jira Cloud REST API entegrasyonu
+
+- `fetchJiraArtifacts(options)` Jira Cloud REST API’sini sayfalayarak gereksinim ve test kayıtlarını, izlenebilirlik bağlantılarını ve ilişkilendirilmiş ekleri tek bir pakette toplar.
+- Varsayılan JQL ifadeleri yalnızca ilgili proje için `Requirement`, `Story`, `Test` gibi türleri çeker; `requirementsJql` ve `testsJql` alanlarıyla özel JQL sorguları tanımlanabilir.
+- Jira test kayıtları üzerindeki `issuelinks`, `requirementIds` gibi alanlar normalize edilerek `RemoteTraceLink` listesine `verifies/implements/satisfies` türleriyle dönüştürülür.
+- Ek meta veriler (dosya boyutu, MIME türü, oluşturulma tarihi) her iliştirilmiş dosya için `attachments` listesinde saklanır; CLI bu listeyi çalışma alanı kanıtı olarak kaydeder.
+- CLI `import` komutu için yeni bayraklar:
+  - `--jira-api-url` (zorunlu): Jira Cloud taban URL’si.
+  - `--jira-api-project` (zorunlu): Proje anahtarı veya kimliği.
+  - `--jira-api-email` ve `--jira-api-token`: Temel kimlik doğrulaması veya PAT kullanarak oturum açmak için.
+  - `--jira-api-requirements-jql`, `--jira-api-tests-jql`: Gereksinim ve test aramalarını özelleştirmek için.
+  - `--jira-api-page-size`, `--jira-api-max-pages`, `--jira-api-timeout`: Sayfalama ve zaman aşımı parametrelerini ayarlar.
+- CLI bu parametrelerle çağrıldığında REST API’den gelen gereksinim, test ve izlenebilirlik verilerini çalışma alanındaki mevcut kayıtlarla birleştirir; `trace` ve `test` kanıt indeksine `source=jiraCloud` olarak kaydeder ve ekleri çalışma alanı metaverisine işler.
+
+## Polarion REST API ilişkileri
+
+- `fetchPolarionArtifacts(options)` artık yalnızca gereksinim, test ve build kayıtlarını değil, Polarion iş öğeleri arasındaki bağlantıları da toplar.
+- API yanıtlarında yer alan `linkedWorkItems`, `linkedTests`, `requirementIds` gibi alanlar analiz edilerek gereksinim-test ilişkileri `RemoteTraceLink` listesine dönüştürülür; link rolü `implements` veya `verifies` türlerine haritalanır.
+- Sayfalama sırasında alınan `HTTP 429` yanıtları için mevcut ETag önbelleği korunur ve maksimum geri deneme sonrasında bile önbellekteki veri kullanılabildiğinden veri kaybı yaşanmaz; kullanıcıya yalnızca tek seferlik bir uyarı mesajı gösterilir.
+- CLI `import` komutu Polarion’dan dönen `relationships` listesini izlenebilirlik kanıtı olarak ekler ve çalışma alanına yeni bağlantılar ekleyerek `source=polarion` metaverisini ilişkilerin toplam sayısı ile günceller.
+
 ## DOORS Next Generation OSLC
 
 - CLI `import` komutu `--doors-url`, `--doors-project`, `--doors-username`,

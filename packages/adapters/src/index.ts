@@ -25,12 +25,15 @@ export { fetchJamaArtifacts } from './jama';
 export type { JamaClientOptions, JamaImportBundle, JamaTraceLink } from './jama';
 export { fetchJenkinsArtifacts } from './jenkins';
 export type { JenkinsClientOptions } from './jenkins';
-export { fetchJiraChangeRequests } from './jiraCloud';
+export { fetchJiraChangeRequests, fetchJiraArtifacts } from './jiraCloud';
 export type {
   JiraCloudClientOptions,
   JiraChangeRequest,
   JiraChangeRequestAttachment,
   JiraChangeRequestTransition,
+  JiraArtifactsOptions,
+  JiraArtifactsBundle,
+  JiraArtifactAttachment,
 } from './jiraCloud';
 export { fetchDoorsNextArtifacts } from './doorsNext';
 export type {

@@ -18,6 +18,7 @@ import {
   importQaLogs,
   fetchDoorsNextArtifacts,
   fetchJamaArtifacts,
+  fetchJiraArtifacts,
   fetchJenkinsArtifacts,
   fetchPolarionArtifacts,
   importReqIF,
@@ -36,6 +37,7 @@ import {
   type JamaClientOptions,
   type DoorsNextClientOptions,
   type DoorsNextRelationship,
+  type JiraArtifactsOptions,
   type RemoteRequirementRecord,
   type RemoteTestRecord,
   type RemoteDesignRecord,
@@ -147,6 +149,7 @@ const getCurrentTimestamp = (): string => getCurrentDate().toISOString();
 interface ImportPaths {
   jira?: string;
   jiraDefects?: string[];
+  jiraCloud?: string;
   reqif?: string;
   junit?: string;
   lcov?: string;
@@ -170,7 +173,7 @@ interface ImportPaths {
   qaLogs?: string[];
 }
 
-export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext' | 'jama'> & {
+export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext' | 'jama' | 'jiraCloud'> & {
   output: string;
   objectives?: string;
   level?: CertificationLevel;
@@ -180,6 +183,7 @@ export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNex
   jenkins?: JenkinsClientOptions;
   doorsNext?: DoorsNextClientOptions;
   jama?: JamaClientOptions;
+  jiraCloud?: JiraArtifactsOptions;
   independentSources?: Array<EvidenceSource | string>;
   independentArtifacts?: string[];
 };
@@ -450,6 +454,7 @@ interface ExternalSourceMetadata {
     requirements: number;
     tests: number;
     builds: number;
+    relationships: number;
   };
   doorsClassic?: {
     modules: number;
@@ -479,6 +484,19 @@ interface ExternalSourceMetadata {
     build?: string;
     tests: number;
     builds: number;
+  };
+  jiraCloud?: {
+    baseUrl: string;
+    projectKey: string;
+    requirements: number;
+    tests: number;
+    traces: number;
+    attachments: {
+      total: number;
+      items: Array<{ issueKey: string; filename: string; url?: string; size?: number; createdAt?: string }>;
+    } | null;
+    requirementsJql?: string;
+    testsJql?: string;
   };
   jira?: {
     requirements?: number;
@@ -705,6 +723,54 @@ const buildJenkinsOptions = (
     buildEndpoint: coerceOptionalString(raw.jenkinsBuildEndpoint),
     testReportEndpoint: coerceOptionalString(raw.jenkinsTestsEndpoint),
   };
+};
+
+const buildJiraCloudOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): JiraArtifactsOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.jiraApiUrl);
+  const projectKey = coerceOptionalString(raw.jiraApiProject);
+
+  if (!baseUrl || !projectKey) {
+    return undefined;
+  }
+
+  const options: JiraArtifactsOptions = { baseUrl, projectKey };
+  const email = coerceOptionalString(raw.jiraApiEmail);
+  const token = coerceOptionalString(raw.jiraApiToken);
+  const requirementsJql = coerceOptionalString(raw.jiraApiRequirementsJql);
+  const testsJql = coerceOptionalString(raw.jiraApiTestsJql);
+
+  if (email) {
+    options.email = email;
+  }
+  if (token) {
+    options.authToken = token;
+  }
+  if (requirementsJql) {
+    options.requirementsJql = requirementsJql;
+  }
+  if (testsJql) {
+    options.testsJql = testsJql;
+  }
+
+  const pageSize = raw.jiraApiPageSize;
+  if (typeof pageSize === 'number' && Number.isFinite(pageSize) && pageSize > 0) {
+    options.pageSize = Math.trunc(pageSize);
+  }
+
+  const maxPages = raw.jiraApiMaxPages;
+  if (typeof maxPages === 'number' && Number.isFinite(maxPages) && maxPages > 0) {
+    options.maxPages = Math.trunc(maxPages);
+  }
+
+  const timeout = raw.jiraApiTimeout;
+  if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0) {
+    options.timeoutMs = timeout;
+  }
+
+  return options;
 };
 
 const parseContentDispositionFileName = (value: string | string[] | undefined): string | undefined => {
@@ -1659,6 +1725,18 @@ const toRequirementFromJira = (entry: JiraRequirement): Requirement => {
   return requirement;
 };
 
+const toRequirementFromJiraCloud = (entry: RemoteRequirementRecord): Requirement => {
+  const title = entry.title || entry.id;
+  const description = entry.description ?? entry.url;
+  const status = entry.status ? requirementStatusFromJira(entry.status) : 'draft';
+  const tags = entry.type ? [`type:${entry.type.toLowerCase()}`] : [];
+  return createRequirement(entry.id, title, {
+    description,
+    status,
+    tags,
+  });
+};
+
 const toRequirementFromReqif = (entry: ReqIFRequirement): Requirement => {
   const summary = entry.title || entry.text || entry.id;
   const description = entry.descriptionHtml ?? entry.text ?? entry.title ?? entry.id;
@@ -1775,7 +1853,7 @@ const durationFromMilliseconds = (durationMs: number | undefined): number => {
 
 const toTestResultFromRemote = (
   entry: RemoteTestRecord,
-  provider: 'polarion' | 'jenkins' | 'doorsNext',
+  provider: 'polarion' | 'jenkins' | 'doorsNext' | 'jiraCloud',
 ): TestResult => ({
   testId: entry.id,
   className: entry.className ?? provider,
@@ -1883,6 +1961,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const normalizedInputs: ImportPaths = {
     jira: options.jira ? normalizeRelativePath(options.jira) : undefined,
     jiraDefects: options.jiraDefects?.map((filePath) => normalizeRelativePath(filePath)),
+    jiraCloud: options.jiraCloud
+      ? `${options.jiraCloud.baseUrl}#${options.jiraCloud.projectKey}`
+      : undefined,
     reqif: options.reqif ? normalizeRelativePath(options.reqif) : undefined,
     junit: options.junit ? normalizeRelativePath(options.junit) : undefined,
     lcov: options.lcov ? normalizeRelativePath(options.lcov) : undefined,
@@ -1995,6 +2076,74 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       ];
       sourceMetadata.jira = jiraSummary;
     }
+  }
+
+  if (options.jiraCloud) {
+    const jiraResult = await fetchJiraArtifacts(options.jiraCloud);
+    warnings.push(...jiraResult.warnings);
+
+    const remoteRequirements = jiraResult.data.requirements ?? [];
+    const remoteTests = jiraResult.data.tests ?? [];
+    const remoteTraces = jiraResult.data.traces ?? [];
+    const remoteAttachments = jiraResult.data.attachments ?? [];
+    const sourceId = `remote:jiraCloud:${options.jiraCloud.projectKey}`;
+
+    if (remoteRequirements.length > 0) {
+      requirements.push(remoteRequirements.map(toRequirementFromJiraCloud));
+      await appendEvidence('trace', 'jiraCloud', sourceId, 'Jira Cloud gereksinim kataloğu');
+    }
+
+    if (remoteTests.length > 0) {
+      const existingIds = new Set(testResults.map((test) => test.testId));
+      remoteTests.forEach((entry) => {
+        if (existingIds.has(entry.id)) {
+          return;
+        }
+        const normalized = toTestResultFromRemote(entry, 'jiraCloud');
+        testResults.push(normalized);
+        existingIds.add(entry.id);
+      });
+      await appendEvidence('test', 'jiraCloud', sourceId, 'Jira Cloud test kayıtları');
+    }
+
+    if (remoteTraces.length > 0) {
+      manualTraceLinks.push(
+        ...remoteTraces.map((link) => ({ from: link.fromId, to: link.toId, type: link.type })),
+      );
+      await appendEvidence('trace', 'jiraCloud', `${sourceId}:relationships`, 'Jira Cloud izlenebilirlik');
+    }
+
+    if (remoteAttachments.length > 0) {
+      await appendEvidence(
+        'trace',
+        'jiraCloud',
+        `${sourceId}:attachments`,
+        `Jira Cloud ekleri (${remoteAttachments.length} kayıt)`,
+      );
+    }
+
+    sourceMetadata.jiraCloud = {
+      baseUrl: options.jiraCloud.baseUrl,
+      projectKey: options.jiraCloud.projectKey,
+      requirements: remoteRequirements.length,
+      tests: remoteTests.length,
+      traces: remoteTraces.length,
+      attachments:
+        remoteAttachments.length > 0
+          ? {
+              total: remoteAttachments.length,
+              items: remoteAttachments.map((attachment) => ({
+                issueKey: attachment.issueKey,
+                filename: attachment.filename,
+                url: attachment.url,
+                size: attachment.size,
+                createdAt: attachment.createdAt,
+              })),
+            }
+          : null,
+      requirementsJql: options.jiraCloud.requirementsJql,
+      testsJql: options.jiraCloud.testsJql,
+    };
   }
 
   if (options.reqif) {
@@ -2326,6 +2475,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const polarionRequirements = polarionResult.data.requirements ?? [];
     const polarionTests = polarionResult.data.tests ?? [];
     const polarionBuilds = polarionResult.data.builds ?? [];
+    const polarionRelationships = polarionResult.data.relationships ?? [];
 
     if (polarionRequirements.length > 0) {
       requirements.push(polarionRequirements.map(toRequirementFromPolarion));
@@ -2346,6 +2496,22 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
         'polarion',
         `remote:polarion:${options.polarion.projectId}`,
         'Polarion test çalıştırmaları',
+      );
+    }
+
+    if (polarionRelationships.length > 0) {
+      manualTraceLinks.push(
+        ...polarionRelationships.map((link) => ({
+          from: link.fromId,
+          to: link.toId,
+          type: link.type,
+        })),
+      );
+      await appendEvidence(
+        'trace',
+        'polarion',
+        `remote:polarion:${options.polarion.projectId}:relationships`,
+        'Polarion gereksinim-test ilişkileri',
       );
     }
 
@@ -2377,6 +2543,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       requirements: polarionRequirements.length,
       tests: polarionTests.length,
       builds: polarionBuilds.length,
+      relationships: polarionRelationships.length,
     };
   }
 
@@ -5010,6 +5177,42 @@ if (require.main === module) {
             describe: 'Jira CSV dışa aktarımından problem raporları (--jira-defects dosya.csv).',
             type: 'array',
           })
+          .option('jira-api-url', {
+            describe: 'Jira Cloud REST API temel adresi (ör. https://jira.example.com).',
+            type: 'string',
+          })
+          .option('jira-api-project', {
+            describe: 'Jira proje anahtarı veya kimliği.',
+            type: 'string',
+          })
+          .option('jira-api-email', {
+            describe: 'Jira hesabı e-posta adresi (temel kimlik doğrulama için).',
+            type: 'string',
+          })
+          .option('jira-api-token', {
+            describe: 'Jira API erişim jetonu (PAT veya OAuth).',
+            type: 'string',
+          })
+          .option('jira-api-requirements-jql', {
+            describe: 'Gereksinimleri çekecek özel JQL ifadesi.',
+            type: 'string',
+          })
+          .option('jira-api-tests-jql', {
+            describe: 'Test kayıtlarını çekecek özel JQL ifadesi.',
+            type: 'string',
+          })
+          .option('jira-api-page-size', {
+            describe: 'Jira API sayfa boyutu (varsayılan 50).',
+            type: 'number',
+          })
+          .option('jira-api-max-pages', {
+            describe: 'Jira API sayfa üst sınırı (varsayılan 20).',
+            type: 'number',
+          })
+          .option('jira-api-timeout', {
+            describe: 'Jira API istek zaman aşımı (ms).',
+            type: 'number',
+          })
           .option('reqif', {
             describe: 'ReqIF gereksinim paketi yolu.',
             type: 'string',
@@ -5243,6 +5446,7 @@ if (require.main === module) {
             output: argv.output,
             jira: argv.jira,
             jiraDefects,
+            jiraCloud: buildJiraCloudOptions(argv),
             reqif: argv.reqif,
             junit: argv.junit,
             lcov: argv.lcov,
@@ -6453,6 +6657,7 @@ export const __internal = {
   logLicenseValidated,
   logCliError,
   mergeStructuralCoverage,
+  buildJiraCloudOptions,
 };
 
 export {
