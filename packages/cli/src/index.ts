@@ -17,6 +17,7 @@ import {
   importDoorsClassicCsv,
   importQaLogs,
   fetchDoorsNextArtifacts,
+  fetchJamaArtifacts,
   fetchJenkinsArtifacts,
   fetchPolarionArtifacts,
   importReqIF,
@@ -32,6 +33,7 @@ import {
   type JiraRequirement,
   type JenkinsClientOptions,
   type PolarionClientOptions,
+  type JamaClientOptions,
   type DoorsNextClientOptions,
   type DoorsNextRelationship,
   type RemoteRequirementRecord,
@@ -157,6 +159,7 @@ interface ImportPaths {
   doorsClassicTraces?: string[];
   doorsClassicTests?: string[];
   doorsNext?: string;
+  jama?: string;
   polyspace?: string;
   ldra?: string;
   vectorcast?: string;
@@ -167,7 +170,7 @@ interface ImportPaths {
   qaLogs?: string[];
 }
 
-export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext'> & {
+export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext' | 'jama'> & {
   output: string;
   objectives?: string;
   level?: CertificationLevel;
@@ -176,6 +179,7 @@ export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNex
   polarion?: PolarionClientOptions;
   jenkins?: JenkinsClientOptions;
   doorsNext?: DoorsNextClientOptions;
+  jama?: JamaClientOptions;
   independentSources?: Array<EvidenceSource | string>;
   independentArtifacts?: string[];
 };
@@ -462,6 +466,13 @@ interface ExternalSourceMetadata {
     etagCacheSize: number;
     etagCache?: Record<string, string>;
   };
+  jama?: {
+    baseUrl: string;
+    projectId: string;
+    requirements: number;
+    tests: number;
+    traceLinks: number;
+  };
   jenkins?: {
     baseUrl: string;
     job: string;
@@ -652,6 +663,25 @@ const buildDoorsNextOptions = (
   }
 
   return options;
+};
+
+const buildJamaOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): JamaClientOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.jamaUrl);
+  const projectId = coerceOptionalString(raw.jamaProject);
+  const token = coerceOptionalString(raw.jamaToken);
+
+  if (!baseUrl || !projectId || !token) {
+    return undefined;
+  }
+
+  return {
+    baseUrl,
+    projectId,
+    token,
+  };
 };
 
 const buildJenkinsOptions = (
@@ -1869,6 +1899,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     doorsNext: options.doorsNext
       ? `${options.doorsNext.baseUrl}#${options.doorsNext.projectArea}`
       : undefined,
+    jama: options.jama ? `${options.jama.baseUrl}#${options.jama.projectId}` : undefined,
     polyspace: options.polyspace ? normalizeRelativePath(options.polyspace) : undefined,
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
     vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
@@ -2245,6 +2276,47 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       relationships: doorsRelationships.length,
       etagCacheSize,
       etagCache: etagCacheSize > 0 ? etagCacheSnapshot : undefined,
+    };
+  }
+
+  if (options.jama) {
+    const jamaResult = await fetchJamaArtifacts(options.jama);
+    warnings.push(...jamaResult.warnings);
+    const jamaRequirements = jamaResult.data.requirements ?? [];
+    const jamaTests = jamaResult.data.testResults ?? [];
+    const jamaLinks = jamaResult.data.traceLinks ?? [];
+    const sourceId = `remote:jama:${options.jama.projectId}`;
+
+    if (jamaRequirements.length > 0) {
+      requirements.push(jamaRequirements);
+      await appendEvidence('trace', 'jama', sourceId, 'Jama gereksinim kataloğu');
+    }
+
+    if (jamaTests.length > 0) {
+      const existingTestIds = new Set(testResults.map((test) => test.testId));
+      jamaTests.forEach((test) => {
+        if (existingTestIds.has(test.testId)) {
+          return;
+        }
+        testResults.push(test);
+        existingTestIds.add(test.testId);
+      });
+      await appendEvidence('test', 'jama', sourceId, 'Jama test kayıtları');
+    }
+
+    if (jamaLinks.length > 0) {
+      manualTraceLinks.push(
+        ...jamaLinks.map((link) => ({ from: link.requirementId, to: link.testCaseId, type: 'verifies' as const })),
+      );
+      await appendEvidence('trace', 'jama', `${sourceId}:relationships`, 'Jama gereksinim ilişkileri');
+    }
+
+    sourceMetadata.jama = {
+      baseUrl: options.jama.baseUrl,
+      projectId: String(options.jama.projectId),
+      requirements: jamaRequirements.length,
+      tests: jamaTests.length,
+      traceLinks: jamaLinks.length,
     };
   }
 
@@ -4982,6 +5054,18 @@ if (require.main === module) {
             describe: 'DOORS Next OAuth erişim tokenı (opsiyonel).',
             type: 'string',
           })
+          .option('jama-url', {
+            describe: 'Jama REST API temel adresi (ör. https://jama.example.com).',
+            type: 'string',
+          })
+          .option('jama-project', {
+            describe: 'Jama proje kimliği veya anahtar değeri.',
+            type: 'string',
+          })
+          .option('jama-token', {
+            describe: 'Jama REST API erişim tokenı.',
+            type: 'string',
+          })
           .option('doors-page-size', {
             describe: 'DOORS Next sayfalama boyutu (varsayılan 200).',
             type: 'number',
@@ -5180,6 +5264,7 @@ if (require.main === module) {
             polarion: buildPolarionOptions(argv),
             jenkins: buildJenkinsOptions(argv),
             doorsNext: buildDoorsNextOptions(argv),
+            jama: buildJamaOptions(argv),
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,

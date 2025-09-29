@@ -1,6 +1,19 @@
 import { useMemo, type ChangeEvent } from 'react';
 
-import type { JobKind, JobStatus, PipelineLogEntry } from '../types/pipeline';
+import type {
+  DoorsNextConnectorFormState,
+  JamaConnectorFormState,
+  JenkinsConnectorFormState,
+  PolarionConnectorFormState,
+  RemoteConnectorPayload,
+  UploadRunPayload,
+} from '../types/connectors';
+import type {
+  JobKind,
+  JobStatus,
+  PipelineLogEntry,
+  PostQuantumSignatureMetadata,
+} from '../types/pipeline';
 
 import { StatusBadge } from './StatusBadge';
 
@@ -9,7 +22,7 @@ interface UploadAndRunProps {
   onFilesChange: (files: File[]) => void;
   logs: PipelineLogEntry[];
   isEnabled: boolean;
-  onRun: () => void;
+  onRun: (payload: UploadRunPayload) => void;
   isRunning: boolean;
   canRun: boolean;
   jobStates: Array<{
@@ -24,6 +37,16 @@ interface UploadAndRunProps {
   independentArtifacts: string[];
   onIndependentSourcesChange: (values: string[]) => void;
   onIndependentArtifactsChange: (values: string[]) => void;
+  polarion: PolarionConnectorFormState;
+  onPolarionChange: (value: PolarionConnectorFormState) => void;
+  jenkins: JenkinsConnectorFormState;
+  onJenkinsChange: (value: JenkinsConnectorFormState) => void;
+  doorsNext: DoorsNextConnectorFormState;
+  onDoorsNextChange: (value: DoorsNextConnectorFormState) => void;
+  jama: JamaConnectorFormState;
+  onJamaChange: (value: JamaConnectorFormState) => void;
+  packJobStatus: JobStatus | null;
+  postQuantumSignature: PostQuantumSignatureMetadata | null;
 }
 
 const INDEPENDENT_SOURCE_OPTIONS: Array<{ value: string; label: string }> = [
@@ -113,6 +136,16 @@ export function UploadAndRun({
   independentArtifacts,
   onIndependentSourcesChange,
   onIndependentArtifactsChange,
+  polarion,
+  onPolarionChange,
+  jenkins,
+  onJenkinsChange,
+  doorsNext,
+  onDoorsNextChange,
+  jama,
+  onJamaChange,
+  packJobStatus,
+  postQuantumSignature,
 }: UploadAndRunProps) {
   const totalSize = useMemo(() => {
     if (!files.length) return '0 B';
@@ -125,6 +158,105 @@ export function UploadAndRun({
     }
     return `${size} B`;
   }, [files]);
+
+  const trim = (value: string): string => value.trim();
+
+  const buildConnectorPayload = (): RemoteConnectorPayload => {
+    const connectors: RemoteConnectorPayload = {};
+
+    if (polarion.enabled) {
+      const baseUrl = trim(polarion.baseUrl);
+      const projectId = trim(polarion.projectId);
+      if (baseUrl && projectId) {
+        const payload: RemoteConnectorPayload['polarion'] = { baseUrl, projectId };
+        const username = trim(polarion.username);
+        const password = trim(polarion.password);
+        const token = trim(polarion.token);
+        if (username) {
+          payload.username = username;
+        }
+        if (password) {
+          payload.password = password;
+        }
+        if (token) {
+          payload.token = token;
+        }
+        connectors.polarion = payload;
+      }
+    }
+
+    if (jenkins.enabled) {
+      const baseUrl = trim(jenkins.baseUrl);
+      const job = trim(jenkins.job);
+      if (baseUrl && job) {
+        const buildRaw = trim(jenkins.build);
+        let buildValue: string | number | undefined;
+        if (buildRaw) {
+          const numeric = Number.parseInt(buildRaw, 10);
+          buildValue = Number.isNaN(numeric) || `${numeric}` !== buildRaw ? buildRaw : numeric;
+        }
+        const payload: RemoteConnectorPayload['jenkins'] = { baseUrl, job };
+        if (buildValue !== undefined) {
+          payload.build = buildValue;
+        }
+        const username = trim(jenkins.username);
+        const password = trim(jenkins.password);
+        const token = trim(jenkins.token);
+        if (username) {
+          payload.username = username;
+        }
+        if (password) {
+          payload.password = password;
+        }
+        if (token) {
+          payload.token = token;
+        }
+        connectors.jenkins = payload;
+      }
+    }
+
+    if (doorsNext.enabled) {
+      const baseUrl = trim(doorsNext.baseUrl);
+      const projectArea = trim(doorsNext.projectArea);
+      if (baseUrl && projectArea) {
+        const payload: RemoteConnectorPayload['doorsNext'] = { baseUrl, projectArea };
+        const username = trim(doorsNext.username);
+        const password = trim(doorsNext.password);
+        const accessToken = trim(doorsNext.accessToken);
+        if (username) {
+          payload.username = username;
+        }
+        if (password) {
+          payload.password = password;
+        }
+        if (accessToken) {
+          payload.accessToken = accessToken;
+        }
+        connectors.doorsNext = payload;
+      }
+    }
+
+    if (jama.enabled) {
+      const baseUrl = trim(jama.baseUrl);
+      const projectIdRaw = trim(jama.projectId);
+      const token = trim(jama.token);
+      if (baseUrl && projectIdRaw && token) {
+        const numericId = Number.parseInt(projectIdRaw, 10);
+        const projectId = Number.isNaN(numericId) || `${numericId}` !== projectIdRaw ? projectIdRaw : numericId;
+        connectors.jama = { baseUrl, projectId, token };
+      }
+    }
+
+    return connectors;
+  };
+
+  const handleRunClick = () => {
+    onRun({
+      independentSources,
+      independentArtifacts,
+      connectors: buildConnectorPayload(),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -192,6 +324,410 @@ export function UploadAndRun({
               {error}
             </div>
           )}
+          <div className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Uzak bağlayıcılar
+            </h3>
+            <p className="mt-2 text-xs text-slate-400">
+              Polarion, Jenkins, DOORS Next ve Jama kaynakları için API bağlantı bilgilerini girin. Bağlayıcılar
+              etkinleştirildiğinde yapılandırmalar import isteğine JSON olarak eklenir.
+            </p>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="connector-polarion-enabled" className="flex items-center gap-2 text-sm text-slate-200">
+                    <input
+                      id="connector-polarion-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                      checked={polarion.enabled}
+                      disabled={!isEnabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          enabled: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>Polarion ALM</span>
+                  </label>
+                  <span className="text-xs text-slate-500">Gereksinim / test içe aktarma</span>
+                </div>
+                <div className="mt-4 grid gap-3 text-xs text-slate-300">
+                  <label className="grid gap-1" htmlFor="connector-polarion-url">
+                    <span>Polarion URL</span>
+                    <input
+                      id="connector-polarion-url"
+                      type="url"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="https://polarion.example.com"
+                      value={polarion.baseUrl}
+                      disabled={!isEnabled || !polarion.enabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          baseUrl: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-polarion-project">
+                    <span>Proje kimliği</span>
+                    <input
+                      id="connector-polarion-project"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="SOIPACK"
+                      value={polarion.projectId}
+                      disabled={!isEnabled || !polarion.enabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          projectId: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-polarion-username">
+                    <span>Kullanıcı adı</span>
+                    <input
+                      id="connector-polarion-username"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={polarion.username}
+                      disabled={!isEnabled || !polarion.enabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          username: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-polarion-password">
+                    <span>Parola</span>
+                    <input
+                      id="connector-polarion-password"
+                      type="password"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={polarion.password}
+                      disabled={!isEnabled || !polarion.enabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          password: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-polarion-token">
+                    <span>Erişim token</span>
+                    <input
+                      id="connector-polarion-token"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={polarion.token}
+                      disabled={!isEnabled || !polarion.enabled}
+                      onChange={(event) =>
+                        onPolarionChange({
+                          ...polarion,
+                          token: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </section>
+              <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="connector-jenkins-enabled" className="flex items-center gap-2 text-sm text-slate-200">
+                    <input
+                      id="connector-jenkins-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                      checked={jenkins.enabled}
+                      disabled={!isEnabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          enabled: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>Jenkins</span>
+                  </label>
+                  <span className="text-xs text-slate-500">CI pipeline sonuçları</span>
+                </div>
+                <div className="mt-4 grid gap-3 text-xs text-slate-300">
+                  <label className="grid gap-1" htmlFor="connector-jenkins-url">
+                    <span>Jenkins URL</span>
+                    <input
+                      id="connector-jenkins-url"
+                      type="url"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="https://jenkins.example.com"
+                      value={jenkins.baseUrl}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          baseUrl: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jenkins-job">
+                    <span>Job adı</span>
+                    <input
+                      id="connector-jenkins-job"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="soipack-pipeline"
+                      value={jenkins.job}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          job: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jenkins-build">
+                    <span>Build numarası / etiketi</span>
+                    <input
+                      id="connector-jenkins-build"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="latest"
+                      value={jenkins.build}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          build: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jenkins-username">
+                    <span>Kullanıcı adı</span>
+                    <input
+                      id="connector-jenkins-username"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={jenkins.username}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          username: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jenkins-password">
+                    <span>Parola</span>
+                    <input
+                      id="connector-jenkins-password"
+                      type="password"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={jenkins.password}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          password: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jenkins-token">
+                    <span>API token</span>
+                    <input
+                      id="connector-jenkins-token"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={jenkins.token}
+                      disabled={!isEnabled || !jenkins.enabled}
+                      onChange={(event) =>
+                        onJenkinsChange({
+                          ...jenkins,
+                          token: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </section>
+              <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="connector-doorsnext-enabled" className="flex items-center gap-2 text-sm text-slate-200">
+                    <input
+                      id="connector-doorsnext-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                      checked={doorsNext.enabled}
+                      disabled={!isEnabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          enabled: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>DOORS Next</span>
+                  </label>
+                  <span className="text-xs text-slate-500">OSLC gereksinim &amp; ilişki</span>
+                </div>
+                <div className="mt-4 grid gap-3 text-xs text-slate-300">
+                  <label className="grid gap-1" htmlFor="connector-doorsnext-url">
+                    <span>Sunucu URL</span>
+                    <input
+                      id="connector-doorsnext-url"
+                      type="url"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="https://doors-next.example.com"
+                      value={doorsNext.baseUrl}
+                      disabled={!isEnabled || !doorsNext.enabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          baseUrl: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-doorsnext-project">
+                    <span>Project area</span>
+                    <input
+                      id="connector-doorsnext-project"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="SOIPACK-AREA"
+                      value={doorsNext.projectArea}
+                      disabled={!isEnabled || !doorsNext.enabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          projectArea: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-doorsnext-username">
+                    <span>Kullanıcı adı</span>
+                    <input
+                      id="connector-doorsnext-username"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={doorsNext.username}
+                      disabled={!isEnabled || !doorsNext.enabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          username: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-doorsnext-password">
+                    <span>Parola</span>
+                    <input
+                      id="connector-doorsnext-password"
+                      type="password"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={doorsNext.password}
+                      disabled={!isEnabled || !doorsNext.enabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          password: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-doorsnext-token">
+                    <span>OSLC token</span>
+                    <input
+                      id="connector-doorsnext-token"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={doorsNext.accessToken}
+                      disabled={!isEnabled || !doorsNext.enabled}
+                      onChange={(event) =>
+                        onDoorsNextChange({
+                          ...doorsNext,
+                          accessToken: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </section>
+              <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="connector-jama-enabled" className="flex items-center gap-2 text-sm text-slate-200">
+                    <input
+                      id="connector-jama-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                      checked={jama.enabled}
+                      disabled={!isEnabled}
+                      onChange={(event) =>
+                        onJamaChange({
+                          ...jama,
+                          enabled: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>Jama Connect</span>
+                  </label>
+                  <span className="text-xs text-slate-500">REST gereksinim &amp; testleri</span>
+                </div>
+                <div className="mt-4 grid gap-3 text-xs text-slate-300">
+                  <label className="grid gap-1" htmlFor="connector-jama-url">
+                    <span>Jama URL</span>
+                    <input
+                      id="connector-jama-url"
+                      type="url"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="https://jama.example.com"
+                      value={jama.baseUrl}
+                      disabled={!isEnabled || !jama.enabled}
+                      onChange={(event) =>
+                        onJamaChange({
+                          ...jama,
+                          baseUrl: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jama-project">
+                    <span>Proje kimliği</span>
+                    <input
+                      id="connector-jama-project"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="42"
+                      value={jama.projectId}
+                      disabled={!isEnabled || !jama.enabled}
+                      onChange={(event) =>
+                        onJamaChange({
+                          ...jama,
+                          projectId: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jama-token">
+                    <span>REST token</span>
+                    <input
+                      id="connector-jama-token"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={jama.token}
+                      disabled={!isEnabled || !jama.enabled}
+                      onChange={(event) =>
+                        onJamaChange({
+                          ...jama,
+                          token: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </section>
+            </div>
+          </div>
           <div className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Bağımsızlık tercihleri
@@ -303,7 +839,7 @@ export function UploadAndRun({
               <div className="mt-4 flex justify-end">
                 <button
                   type="button"
-                  onClick={onRun}
+                  onClick={handleRunClick}
                   disabled={!isEnabled || isRunning || !canRun}
                   className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 focus:ring-offset-slate-900 ${
                     !isEnabled || isRunning || !canRun
@@ -330,6 +866,48 @@ export function UploadAndRun({
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur-sm" data-testid="pack-signature-panel">
+        <div className="border-b border-slate-800 px-6 py-4">
+          <h3 className="text-lg font-semibold text-white">Paket İmzaları</h3>
+          <p className="text-sm text-slate-400">Post-kuantum imza sonuçları ve anahtar bilgisi</p>
+        </div>
+        <div className="px-6 py-5 text-sm text-slate-200">
+          {packJobStatus === 'completed' ? (
+            postQuantumSignature ? (
+              <div className="space-y-3" data-testid="pack-signature-present">
+                <div className="grid gap-1">
+                  <span className="text-xs uppercase tracking-wide text-slate-500">Algoritma</span>
+                  <span data-testid="pack-signature-algorithm" className="font-mono text-base text-emerald-300">
+                    {postQuantumSignature.algorithm}
+                  </span>
+                </div>
+                <div className="grid gap-1">
+                  <span className="text-xs uppercase tracking-wide text-slate-500">Genel anahtar (Base64)</span>
+                  <code
+                    data-testid="pack-signature-public-key"
+                    className="block overflow-x-auto rounded-md border border-slate-700 bg-slate-950 p-3 text-xs text-emerald-200"
+                  >
+                    {postQuantumSignature.publicKey}
+                  </code>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-amber-200" data-testid="pack-signature-missing">
+                Bu paket için post-kuantum imzası üretilmedi.
+              </p>
+            )
+          ) : packJobStatus ? (
+            <p className="text-sm text-slate-300" data-testid="pack-signature-pending">
+              Post-kuantum imza bilgisi paket işlemi tamamlandığında görüntülenecektir.
+            </p>
+          ) : (
+            <p className="text-sm text-slate-300" data-testid="pack-signature-awaiting">
+              Önce raporu paketleyerek post-kuantum imzası üretmelisiniz.
+            </p>
+          )}
         </div>
       </div>
 

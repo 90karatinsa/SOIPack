@@ -28,6 +28,7 @@ import {
   updateWorkspaceDocument,
   getManifestProof,
   fetchComplianceSummary,
+  fetchChangeRequests,
 } from './api';
 
 import type { ApiJob, ReportJobResult } from '../types/pipeline';
@@ -453,6 +454,44 @@ describe('API integrations', () => {
       new File(['jira'], 'requirements.csv', { type: 'text/csv' }),
     ];
 
+    const polarionConfig = {
+      baseUrl: 'https://polarion.example.com',
+      projectId: 'space-avionics',
+      username: 'polarion-user',
+      token: 'polarion-token',
+      requirementsEndpoint: '/requirements',
+      testsEndpoint: '/tests',
+      buildsEndpoint: '/builds',
+    } as const;
+
+    const jenkinsConfig = {
+      baseUrl: 'https://ci.example.com',
+      job: 'avionics/build',
+      build: '123',
+      username: 'jenkins-user',
+      token: 'jenkins-token',
+      buildEndpoint: '/custom-build',
+      testReportEndpoint: '/custom-report',
+    } as const;
+
+    const doorsNextConfig = {
+      baseUrl: 'https://doors.example.com',
+      projectArea: 'systems',
+      pageSize: 500,
+      maxPages: 10,
+      timeoutMs: 15000,
+      username: 'doors-user',
+    } as const;
+
+    const jamaConfig = {
+      baseUrl: 'https://jama.example.com',
+      projectId: 'proj-88',
+      token: 'jama-token',
+      requirementsEndpoint: '/reqs',
+      testCasesEndpoint: '/tests',
+      relationshipsEndpoint: '/links',
+    } as const;
+
     await importArtifacts({
       token: 'token',
       license: 'license',
@@ -461,6 +500,10 @@ describe('API integrations', () => {
       projectVersion: '1.0.0',
       independentSources: ['junit', 'lcov'],
       independentArtifacts: ['analysis', 'test'],
+      polarion: polarionConfig,
+      jenkins: jenkinsConfig,
+      doorsNext: doorsNextConfig,
+      jama: jamaConfig,
     });
 
     const [, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
@@ -488,6 +531,104 @@ describe('API integrations', () => {
 
     expect(formData.get('independentSources')).toBe(JSON.stringify(['junit', 'lcov']));
     expect(formData.get('independentArtifacts')).toBe(JSON.stringify(['analysis', 'test']));
+
+    expect(formData.get('polarion')).toBe(JSON.stringify(polarionConfig));
+    expect(formData.get('jenkins')).toBe(JSON.stringify(jenkinsConfig));
+    expect(formData.get('doorsNext')).toBe(JSON.stringify(doorsNextConfig));
+    expect(formData.get('jama')).toBe(JSON.stringify(jamaConfig));
+  });
+
+  it('sanitizes compliance independence summaries from the API', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          computedAt: '2024-05-01T10:00:00Z',
+          latest: {
+            id: 'summary-9',
+            createdAt: '2024-05-01T10:00:00Z',
+            summary: { total: 1, covered: 0, partial: 1, missing: 0 },
+            coverage: { statements: 42 },
+            gaps: { missingIds: [], partialIds: ['OBJ-1'], openObjectiveCount: 1 },
+            independence: {
+              totals: { covered: '2', partial: '1', missing: 0 },
+              objectives: [
+                {
+                  objectiveId: ' OBJ-1 ',
+                  status: 'partial',
+                  independence: 'required',
+                  missingArtifacts: ['  evidence.md  '],
+                },
+                {
+                  objectiveId: '',
+                  status: 'unknown',
+                  independence: 'custom',
+                  missingArtifacts: [123],
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+
+    const response = await fetchComplianceSummary({ token: 'token', license: 'license' });
+
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toContain('/v1/compliance/summary');
+    const independence = response.latest?.independence;
+    expect(independence?.totals.partial).toBe(1);
+    expect(independence?.objectives).toHaveLength(1);
+    expect(independence?.objectives[0]).toEqual({
+      objectiveId: 'OBJ-1',
+      status: 'partial',
+      independence: 'required',
+      missingArtifacts: ['evidence.md'],
+    });
+  });
+
+  it('fetches and normalizes change request backlog entries', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          fetchedAt: 123456,
+          items: [
+            {
+              id: 1001,
+              key: 'CR-7',
+              summary: 'Investigate failing regression',
+              status: 'To Do',
+              statusCategory: 'To Do',
+              assignee: '  qa-user  ',
+              updatedAt: '2024-05-02T09:30:00Z',
+              url: 'https://jira.example.com/browse/CR-7',
+              transitions: [
+                { id: '1', name: 'Start Progress', toStatus: 'In Progress', category: 'In Progress' },
+                null,
+              ],
+              attachments: [
+                { id: 'att-1', filename: ' logs.txt ', url: 'https://jira.example.com/att/att-1' },
+                { id: null },
+              ],
+            },
+            { id: null },
+          ],
+        },
+      }),
+    );
+
+    const result = await fetchChangeRequests({
+      token: 'token',
+      license: 'license',
+      projectKey: 'SOI',
+      jql: 'status = "To Do"',
+    });
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0] as [string];
+    expect(url).toContain('/v1/change-requests?projectKey=SOI&jql=status%20%3D%20%22To%20Do%22');
+    expect(result.items).toHaveLength(1);
+    const item = result.items[0];
+    expect(item.assignee).toBe('qa-user');
+    expect(item.attachments[0]?.filename).toBe('logs.txt');
+    expect(item.transitions).toHaveLength(1);
   });
 
   it('manages admin resources with authentication', async () => {

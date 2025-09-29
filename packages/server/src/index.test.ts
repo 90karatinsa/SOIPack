@@ -2010,7 +2010,21 @@ describe('@soipack/server REST API', () => {
     };
 
     const coverage = { statements: 82.5, functions: 61.25 };
-    const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, { release: '2024.10' });
+    const metadata: Record<string, unknown> = {
+      release: '2024.10',
+      independenceSummary: {
+        totals: { covered: 1.7, partial: '2', missing: -4 },
+        objectives: [
+          {
+            objectiveId: '  A-5-06 ',
+            status: ' missing ',
+            independence: ' required ',
+            missingArtifacts: [' test ', '', 'analysis'],
+          },
+        ],
+      },
+    };
+    const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
     const complianceHash = createHash('sha256').update(JSON.stringify(canonicalPayload)).digest('hex');
 
     const complianceResponse = await request(app)
@@ -2020,7 +2034,7 @@ describe('@soipack/server REST API', () => {
         sha256: complianceHash,
         matrix,
         coverage,
-        metadata: { release: '2024.10' },
+        metadata,
       })
       .expect(201);
 
@@ -2041,6 +2055,17 @@ describe('@soipack/server REST API', () => {
         partialIds: ['REQ-200'],
         openObjectiveCount: 2,
       },
+    });
+    expect(summaryResponse.body.latest?.independence).toEqual({
+      totals: { covered: 1, partial: 2, missing: 0 },
+      objectives: [
+        {
+          objectiveId: 'A-5-06',
+          status: 'missing',
+          independence: 'required',
+          missingArtifacts: ['test', 'analysis'],
+        },
+      ],
     });
 
     const cachedResponse = await request(app)

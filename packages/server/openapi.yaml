@@ -653,6 +653,9 @@ components:
           $ref: '#/components/schemas/ComplianceCoverageSnapshot'
         gaps:
           $ref: '#/components/schemas/ComplianceGapSummary'
+        independence:
+          $ref: '#/components/schemas/ComplianceIndependenceSummary'
+          nullable: true
     ComplianceSummaryResponse:
       type: object
       required:
@@ -665,6 +668,52 @@ components:
         latest:
           $ref: '#/components/schemas/ComplianceSummaryLatest'
           nullable: true
+    ComplianceIndependenceSummary:
+      type: object
+      required:
+        - totals
+        - objectives
+      properties:
+        totals:
+          type: object
+          required:
+            - covered
+            - partial
+            - missing
+          properties:
+            covered:
+              type: integer
+              minimum: 0
+            partial:
+              type: integer
+              minimum: 0
+            missing:
+              type: integer
+              minimum: 0
+        objectives:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceIndependenceObjective'
+    ComplianceIndependenceObjective:
+      type: object
+      required:
+        - objectiveId
+        - status
+        - independence
+        - missingArtifacts
+      properties:
+        objectiveId:
+          type: string
+        status:
+          type: string
+          enum: [covered, partial, missing]
+        independence:
+          type: string
+          enum: [none, recommended, required]
+        missingArtifacts:
+          type: array
+          items:
+            type: string
     ComplianceRiskBreakdownEntry:
       type: object
       required: [factor, contribution, weight, details]
@@ -2099,13 +2148,13 @@ paths:
               type: object
               required:
                 - importId
-                properties:
-                  importId:
-                    type: string
-                    description: Import işlemi kimliği.
-                  reviewId:
-                    type: string
-                    description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
+              properties:
+                importId:
+                  type: string
+                  description: Import işlemi kimliği.
+                reviewId:
+                  type: string
+                  description: Onaylanmış inceleme kimliği; yönetici yetkisi olmayan istemciler için zorunludur.
                 level:
                   type: string
                   description: Sertifikasyon seviyesi (A-E).

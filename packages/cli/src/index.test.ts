@@ -1079,6 +1079,99 @@ describe('design CSV importer', () => {
   });
 });
 
+describe('jama importer', () => {
+  it('fetches remote artifacts and merges them into the workspace', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-jama-import-'));
+    try {
+      const workDir = path.join(tempDir, 'work');
+      const fetchSpy = jest.spyOn(adapters, 'fetchJamaArtifacts').mockResolvedValue({
+        data: {
+          requirements: [
+            {
+              id: 'JAMA-REQ-1',
+              title: 'Autopilot engages',
+              description: 'Imported from Jama',
+              status: 'verified',
+              tags: [],
+            },
+          ],
+          objectives: [],
+          testResults: [
+            {
+              testId: 'JAMA-TEST-1',
+              name: 'Engagement scenario',
+              status: 'passed',
+              steps: [],
+              requirementsRefs: ['JAMA-REQ-1'],
+            },
+          ],
+          traceLinks: [
+            {
+              requirementId: 'JAMA-REQ-1',
+              testCaseId: 'JAMA-TEST-1',
+              relationshipType: 'validates',
+            },
+          ],
+          evidenceIndex: {},
+          generatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        warnings: ['Jama returned partial payload.'],
+      });
+
+      const result = await runImport({
+        output: workDir,
+        jama: {
+          baseUrl: 'https://jama.example.com',
+          projectId: 'FlightControls',
+          token: 'secret-token',
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: 'https://jama.example.com',
+          projectId: 'FlightControls',
+          token: 'secret-token',
+        }),
+      );
+
+      expect(result.warnings).toEqual(
+        expect.arrayContaining(['Jama returned partial payload.']),
+      );
+
+      expect(result.workspace.requirements.map((req) => req.id)).toContain('JAMA-REQ-1');
+      expect(result.workspace.testResults).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ testId: 'JAMA-TEST-1', requirementsRefs: ['JAMA-REQ-1'] }),
+        ]),
+      );
+      expect(result.workspace.traceLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ from: 'JAMA-REQ-1', to: 'JAMA-TEST-1', type: 'verifies' }),
+        ]),
+      );
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence.some((entry) => entry.source === 'jama')).toBe(true);
+      const testEvidence = result.workspace.evidenceIndex.test ?? [];
+      expect(testEvidence.some((entry) => entry.source === 'jama')).toBe(true);
+
+      expect(result.workspace.metadata.sources?.jama).toEqual(
+        expect.objectContaining({
+          baseUrl: 'https://jama.example.com',
+          projectId: 'FlightControls',
+          requirements: 1,
+          tests: 1,
+          traceLinks: 1,
+        }),
+      );
+      expect(result.workspace.metadata.inputs.jama).toBe('https://jama.example.com#FlightControls');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('doors next importer', () => {
   it('fetches remote artifacts, deduplicates entries, and surfaces warnings', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-doors-import-'));

@@ -55,6 +55,7 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - Dönüştürücü, Jama sayfa yapısını `pageInfo.next` veya `links.next` alanlarından takip eder; `Retry-After` üstbilgisine göre bekleyerek oran sınırı (rate limit) hatalarını otomatik olarak yeniden dener.
 - Jama öğelerindeki HTML açıklamalar temizlenir, eksik başlıklar için uyarılar üretilir ve test-gereksinim ilişkileri `trace` kanıtları olarak `traceLinks` listesine eklenir. Her test kaydı, bağlı gereksinim kimliklerini `requirementsRefs` alanında taşır.
 - REST API kullanımının mümkün olmadığı ortamlarda Jama raporlarını CSV/Excel olarak dışa aktarabilir, ardından CSV dosyalarını `importJiraCsv` veya özel dönüştürücülerle SOIPack’e alarak kanıt indeksine ekleyebilirsiniz.
+- CLI `import` komutu `--jama-url`, `--jama-project` ve `--jama-token` bayraklarıyla Jama REST API’sine bağlanır; çekilen gereksinim, test ve ilişki kayıtları çalışma alanına birleştirilir ve kanıt indeksine `source=jama` olarak kaydedilir.
 
 ## DOORS Next Generation OSLC
 
