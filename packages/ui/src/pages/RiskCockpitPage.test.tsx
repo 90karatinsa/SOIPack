@@ -51,6 +51,38 @@ describe('RiskCockpitPage', () => {
     mockFetchStageRiskForecast.mockResolvedValue({ generatedAt: '2024-03-01T00:00:00Z', forecasts: [] });
   });
 
+  it('visualizes factorized risk contributions from risk profile events', async () => {
+    renderPage();
+
+    const riskEvent: ComplianceEvent = {
+      type: 'riskProfile',
+      tenantId: 'tenant-risk',
+      profile: {
+        score: 0.62,
+        classification: 'elevated',
+        breakdown: [
+          { factor: 'Kritik Faktör', weight: 0.6, contribution: 0.4, details: 'İşletim riski yüksek.' },
+          { factor: 'Destek Faktörü', weight: 0.2, contribution: 0.1 },
+        ],
+        missingSignals: [],
+      },
+    };
+
+    await act(async () => {
+      handlers.onEvent?.(riskEvent);
+    });
+
+    const factorCard = await screen.findByRole('listitem', {
+      name: /Kritik Faktör ağırlık 0\.60/i,
+    });
+    expect(factorCard).toBeInTheDocument();
+    expect(within(factorCard).getByText('Ağırlık 0.60')).toBeInTheDocument();
+    expect(within(factorCard).getByText('Katkı 0.40')).toBeInTheDocument();
+
+    const shareBar = screen.getByRole('progressbar', { name: 'Kritik Faktör etki payı' });
+    expect(shareBar).toHaveAttribute('aria-valuenow', '92');
+  });
+
   it('renders proof explorer details when manifest proof events arrive', async () => {
     const sampleProof = {
       algorithm: 'ledger-merkle-v1' as const,
