@@ -46,7 +46,17 @@ import {
   translate,
   verifyLedgerProof,
 } from '@soipack/core';
-import type { ChangeImpactScore } from '@soipack/engine';
+import {
+  computeRiskProfile,
+  simulateComplianceRisk,
+  type ChangeImpactScore,
+  type ComplianceRiskFactorContributions,
+  type RiskInput,
+  type RiskProfile,
+  type RiskSimulationBacklogSample,
+  type RiskSimulationCoverageSample,
+  type RiskSimulationTestSample,
+} from '@soipack/engine';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
 import helmet from 'helmet';
@@ -55,6 +65,7 @@ import type { JSONWebKeySet } from 'jose';
 import multer from 'multer';
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+import { parse as parseYaml } from 'yaml';
 
 import { AuditLogStore, type AppendAuditLogInput, type AuditLogQueryOptions } from './audit';
 import type { DatabaseManager } from './database';
@@ -117,6 +128,55 @@ const sanitizeDownloadFileName = (fileName: string, fallback: string): string =>
   const baseName = path.basename(fileName || fallback);
   const normalized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
   return normalized || fallback;
+};
+
+const OPENAPI_SPEC_PATH = path.resolve(__dirname, '../openapi.yaml');
+
+interface OpenApiCacheEntry {
+  yaml: Buffer;
+  json: string;
+  etag: string;
+  mtimeMs: number;
+}
+
+let openApiCache: OpenApiCacheEntry | undefined;
+
+const computeWeakEtag = (input: Buffer): string => {
+  const hash = createHash('sha256').update(input).digest('hex');
+  return `W/"${hash}"`;
+};
+
+const loadOpenApiSpec = async (): Promise<OpenApiCacheEntry> => {
+  const [buffer, stats] = await Promise.all([
+    fsPromises.readFile(OPENAPI_SPEC_PATH),
+    fsPromises.stat(OPENAPI_SPEC_PATH),
+  ]);
+  const document = parseYaml(buffer.toString('utf8'));
+  const json = `${JSON.stringify(document, null, 2)}\n`;
+  return {
+    yaml: buffer,
+    json,
+    etag: computeWeakEtag(buffer),
+    mtimeMs: stats.mtimeMs,
+  };
+};
+
+const getOpenApiSpec = async (): Promise<OpenApiCacheEntry> => {
+  const stats = await fsPromises.stat(OPENAPI_SPEC_PATH);
+  if (!openApiCache || stats.mtimeMs !== openApiCache.mtimeMs) {
+    openApiCache = await loadOpenApiSpec();
+  }
+  return openApiCache;
+};
+
+const etagMatches = (headerValue: string | undefined, etag: string): boolean => {
+  if (!headerValue) {
+    return false;
+  }
+  return headerValue
+    .split(',')
+    .map((value) => value.trim())
+    .some((candidate) => candidate === etag || candidate === '*');
 };
 
 export const writePersistedJson = async (
@@ -230,6 +290,29 @@ export const __clearChangeRequestCacheForTesting = (): void => {
   changeRequestCache.clear();
 };
 
+interface RiskProfileCacheEntry {
+  profile: RiskProfile;
+  contributions: ComplianceRiskFactorContributions;
+  computedAt: string;
+  expiresAt: number;
+}
+
+interface BacklogSeverityCacheEntry {
+  sample: RiskSimulationBacklogSample;
+  expiresAt: number;
+}
+
+const riskProfileCacheRegistry = new Set<Map<string, RiskProfileCacheEntry>>();
+const backlogSeverityCacheRegistry = new Set<Map<string, BacklogSeverityCacheEntry>>();
+
+export const __clearRiskProfileCacheForTesting = (): void => {
+  riskProfileCacheRegistry.forEach((cache) => cache.clear());
+};
+
+export const __clearBacklogSeverityCacheForTesting = (): void => {
+  backlogSeverityCacheRegistry.forEach((cache) => cache.clear());
+};
+
 type CoverageSummaryPayload = Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>;
 
 interface ComplianceIndependenceSummaryPayload {
@@ -336,6 +419,10 @@ export interface ServerLifecycle {
   runAllTenantRetention: () => Promise<Record<string, RetentionStats[]>>;
   logger: Logger;
   events: ComplianceEventStream;
+  refreshRiskProfile: (
+    tenantId: string,
+    options?: { force?: boolean },
+  ) => Promise<{ profile: RiskProfile; contributions: ComplianceRiskFactorContributions; computedAt: string } | null>;
 }
 
 const setRequestContext = (req: Request, context: RequestContext): void => {
@@ -3247,6 +3334,10 @@ export const createServer = (config: ServerConfig): Express => {
   const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
   const complianceSummaryCache = new Map<string, ComplianceSummaryCacheEntry>();
   complianceSummaryCacheRegistry.add(complianceSummaryCache);
+  const riskProfileCache = new Map<string, RiskProfileCacheEntry>();
+  riskProfileCacheRegistry.add(riskProfileCache);
+  const backlogSeverityCache = new Map<string, BacklogSeverityCacheEntry>();
+  backlogSeverityCacheRegistry.add(backlogSeverityCache);
   const tenantSnapshotVersions = new Map<string, SnapshotVersion>();
   const tenantDataRoot = path.join(directories.base, 'tenants');
   const TENANT_EVIDENCE_FILE = 'evidence.json';
@@ -3419,6 +3510,7 @@ export const createServer = (config: ServerConfig): Express => {
 
   const persistTenantCompliance = async (tenantId: string): Promise<void> => {
     complianceSummaryCache.delete(tenantId);
+    riskProfileCache.delete(tenantId);
     const store = complianceStore.get(tenantId);
     if (!store) {
       return;
@@ -3836,6 +3928,250 @@ export const createServer = (config: ServerConfig): Express => {
     coverage: record.coverage,
     metadata: record.metadata ?? {},
   });
+
+  const RISK_PROFILE_CACHE_TTL_MS = 180_000;
+  const BACKLOG_SEVERITY_CACHE_TTL_MS = 120_000;
+
+  const toCoverageHistory = (
+    records: ComplianceRecord[],
+  ): RiskSimulationCoverageSample[] => {
+    return records
+      .map((record) => {
+        const total = Math.max(1, Math.trunc(record.matrix.summary.total));
+        const createdAt = typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString();
+        const partial = Math.max(0, Math.trunc(record.matrix.summary.partial));
+        const covered = Math.max(0, Math.trunc(record.matrix.summary.covered));
+        const blended = Math.min(total, covered + Math.round(partial * 0.5));
+        return { timestamp: createdAt, covered: blended, total } satisfies RiskSimulationCoverageSample;
+      })
+      .filter((sample) => sample.total > 0)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  };
+
+  const sanitizeTestHistoryEntry = (value: unknown): RiskSimulationTestSample | null => {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+    const record = value as Record<string, unknown>;
+    const timestamp = typeof record.timestamp === 'string' ? record.timestamp : undefined;
+    const passed = Number(record.passed);
+    const failed = Number(record.failed);
+    const quarantined = record.quarantined === undefined ? undefined : Number(record.quarantined);
+    if (!timestamp || !Number.isFinite(passed) || !Number.isFinite(failed)) {
+      return null;
+    }
+    const sanitized: RiskSimulationTestSample = {
+      timestamp,
+      passed: Math.max(0, Math.trunc(passed)),
+      failed: Math.max(0, Math.trunc(failed)),
+    };
+    if (quarantined !== undefined && Number.isFinite(quarantined)) {
+      sanitized.quarantined = Math.max(0, Math.trunc(quarantined));
+    }
+    const total = sanitized.passed + sanitized.failed + (sanitized.quarantined ?? 0);
+    if (total <= 0) {
+      return null;
+    }
+    return sanitized;
+  };
+
+  const collectTestHistory = (
+    records: ComplianceRecord[],
+  ): RiskSimulationTestSample[] => {
+    const map = new Map<string, RiskSimulationTestSample>();
+    records.forEach((record) => {
+      const historyRaw = (record.metadata as { testHistory?: unknown })?.testHistory;
+      if (!Array.isArray(historyRaw)) {
+        return;
+      }
+      historyRaw.forEach((entry) => {
+        const sample = sanitizeTestHistoryEntry(entry);
+        if (!sample) {
+          return;
+        }
+        map.set(sample.timestamp, sample);
+      });
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
+    );
+  };
+
+  const isBlockedStatus = (status?: string, category?: string): boolean => {
+    const normalized = `${status ?? ''} ${category ?? ''}`.toLowerCase();
+    return /block|imped|hold|stuck|waiting/.test(normalized);
+  };
+
+  const isCriticalPriority = (priority?: string | null): boolean => {
+    if (!priority) {
+      return false;
+    }
+    const normalized = priority.toLowerCase();
+    return ['critical', 'highest', 'blocker', 'sev1', 'p0'].some((token) =>
+      normalized.includes(token),
+    );
+  };
+
+  const buildBacklogSample = (
+    items: JiraChangeRequest[],
+    timestamp: string,
+  ): RiskSimulationBacklogSample => {
+    const total = items.length;
+    const blocked = items.filter((item) => isBlockedStatus(item.status, item.statusCategory)).length;
+    const critical = items.filter((item) => isCriticalPriority(item.priority)).length;
+    const referenceTime = Date.parse(timestamp);
+    const ages: number[] = [];
+    if (Number.isFinite(referenceTime)) {
+      items.forEach((item) => {
+        if (!item.updatedAt) {
+          return;
+        }
+        const updated = Date.parse(item.updatedAt);
+        if (!Number.isFinite(updated)) {
+          return;
+        }
+        const ageMs = referenceTime - updated;
+        const ageDays = ageMs <= 0 ? 0 : ageMs / (24 * 60 * 60 * 1000);
+        ages.push(ageDays);
+      });
+    }
+    ages.sort((a, b) => a - b);
+    let medianAgeDays: number | undefined;
+    if (ages.length > 0) {
+      const middle = Math.floor(ages.length / 2);
+      const median =
+        ages.length % 2 === 0 ? (ages[middle - 1] + ages[middle]) / 2 : ages[middle];
+      medianAgeDays = Math.round(median * 10) / 10;
+    }
+    return {
+      timestamp,
+      total,
+      blocked,
+      critical,
+      ...(medianAgeDays !== undefined ? { medianAgeDays } : {}),
+    } satisfies RiskSimulationBacklogSample;
+  };
+
+  const fetchBacklogHistory = async (
+    tenantId: string,
+  ): Promise<RiskSimulationBacklogSample[] | undefined> => {
+    const baseUrl = process.env.JIRA_BASE_URL;
+    const token = process.env.JIRA_TOKEN;
+    const projectKey = process.env.JIRA_PROJECT_KEY;
+    const jql = process.env.JIRA_BACKLOG_JQL;
+    if (!baseUrl || !token || !projectKey) {
+      return undefined;
+    }
+    const cacheKey = `${tenantId}:${baseUrl}:${projectKey}:${jql ?? ''}`;
+    const nowMs = Date.now();
+    const cached = backlogSeverityCache.get(cacheKey);
+    if (cached && cached.expiresAt > nowMs) {
+      return [cached.sample];
+    }
+    try {
+      const items = await fetchJiraChangeRequests({
+        baseUrl,
+        projectKey,
+        authToken: token,
+        jql: jql && jql.trim().length > 0 ? jql : undefined,
+      });
+      const timestamp = new Date(nowMs).toISOString();
+      const sample = buildBacklogSample(items, timestamp);
+      backlogSeverityCache.set(cacheKey, {
+        sample,
+        expiresAt: nowMs + BACKLOG_SEVERITY_CACHE_TTL_MS,
+      });
+      return [sample];
+    } catch (error) {
+      logger.warn(
+        { err: error, tenantId },
+        'Jira backlog metrics could not be fetched for risk simulation.',
+      );
+      if (cached && cached.expiresAt > nowMs) {
+        return [cached.sample];
+      }
+      return undefined;
+    }
+  };
+
+  const buildRiskInput = (
+    latest: ComplianceRecord,
+    testHistory: RiskSimulationTestSample[],
+  ): RiskInput => {
+    const coverageSummary = latest.matrix.summary;
+    const coverage = {
+      total: Math.max(0, Math.trunc(coverageSummary.total)),
+      missing: Math.max(0, Math.trunc(coverageSummary.missing)),
+      partial: Math.max(0, Math.trunc(coverageSummary.partial)),
+    };
+    const latestTest = testHistory[testHistory.length - 1];
+    let tests: RiskInput['tests'];
+    if (latestTest) {
+      const total = latestTest.passed + latestTest.failed + (latestTest.quarantined ?? 0);
+      if (total > 0) {
+        tests = {
+          total,
+          failing: latestTest.failed,
+          quarantined: latestTest.quarantined ?? 0,
+        };
+      }
+    }
+    return { coverage, tests } satisfies RiskInput;
+  };
+
+  const refreshComplianceRisk = async (
+    tenantId: string,
+    options: { force?: boolean } = {},
+  ): Promise<{ profile: RiskProfile; contributions: ComplianceRiskFactorContributions; computedAt: string } | null> => {
+    const nowMs = Date.now();
+    const cached = riskProfileCache.get(tenantId);
+    if (cached && !options.force && cached.expiresAt > nowMs) {
+      events.publishRiskProfile(tenantId, cached.profile, {
+        emittedAt: cached.computedAt,
+        contributions: cached.contributions,
+      });
+      return {
+        profile: cached.profile,
+        contributions: cached.contributions,
+        computedAt: cached.computedAt,
+      };
+    }
+
+    const records = Array.from(getTenantComplianceMap(tenantId).values());
+    if (records.length === 0) {
+      return null;
+    }
+    records.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const coverageHistory = toCoverageHistory(records);
+    const testHistory = collectTestHistory(records);
+    const backlogHistory = await fetchBacklogHistory(tenantId);
+
+    const simulation = simulateComplianceRisk({
+      coverageHistory,
+      testHistory,
+      backlogHistory,
+    });
+
+    const latest = records[records.length - 1];
+    const profileInput = buildRiskInput(latest, testHistory);
+    const profile = computeRiskProfile(profileInput);
+    const computedAt = new Date().toISOString();
+    const contributions = simulation.factors;
+
+    riskProfileCache.set(tenantId, {
+      profile,
+      contributions,
+      computedAt,
+      expiresAt: nowMs + RISK_PROFILE_CACHE_TTL_MS,
+    });
+
+    events.publishRiskProfile(tenantId, profile, {
+      emittedAt: computedAt,
+      contributions,
+    });
+
+    return { profile, contributions, computedAt };
+  };
 
   const pruneLicenseCache = (nowMs: number): void => {
     for (const [hash, entry] of licenseCache) {
@@ -4815,6 +5151,40 @@ export const createServer = (config: ServerConfig): Express => {
       }
     }
   };
+
+  const serveOpenApi = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    format: 'yaml' | 'json',
+  ) => {
+    try {
+      const spec = await getOpenApiSpec();
+      const { etag } = spec;
+      if (etagMatches(req.headers['if-none-match'], etag)) {
+        res.status(304).end();
+        return;
+      }
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader('ETag', etag);
+      if (format === 'yaml') {
+        res.type('application/yaml');
+        res.send(spec.yaml);
+      } else {
+        res.type('application/json');
+        res.send(spec.json);
+      }
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  app.get('/v1/openapi.yaml', requireAuth, (req, res, next) =>
+    serveOpenApi(req, res, next, 'yaml'),
+  );
+  app.get('/v1/openapi.json', requireAuth, (req, res, next) =>
+    serveOpenApi(req, res, next, 'json'),
+  );
   const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
   const maxQueuedJobsTotal =
     config.maxQueuedJobsTotal !== undefined ? Math.max(1, config.maxQueuedJobsTotal) : undefined;
@@ -6339,6 +6709,10 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       res.status(201).json(serializeComplianceRecord(record));
+
+      void refreshComplianceRisk(tenantId, { force: true }).catch((error) =>
+        logger.warn({ err: error, tenantId }, 'Risk profile refresh failed after compliance update.'),
+      );
     }),
   );
 
@@ -8102,6 +8476,7 @@ export const createServer = (config: ServerConfig): Express => {
     runAllTenantRetention: () => runAllTenantRetention('manual'),
     logger,
     events,
+    refreshRiskProfile: (tenantId: string, options) => refreshComplianceRisk(tenantId, options ?? {}),
   };
 
   Reflect.set(app, SERVER_CONTEXT_SYMBOL, lifecycle);

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 import type { LedgerEntry, ManifestMerkleSummary } from '@soipack/core';
-import type { RiskProfile } from '@soipack/engine';
+import type { ComplianceRiskFactorContributions, RiskProfile } from '@soipack/engine';
 
 import type { JobSummary } from './queue';
 
@@ -16,6 +16,7 @@ export interface ComplianceEventBase {
 export interface ComplianceRiskEvent extends ComplianceEventBase {
   type: 'riskProfile';
   profile: RiskProfile;
+  contributions: ComplianceRiskFactorContributions;
 }
 
 export interface ComplianceLedgerEvent extends ComplianceEventBase {
@@ -235,12 +236,22 @@ export class ComplianceEventStream {
     clients.forEach((client) => client.send(message));
   }
 
-  public publishRiskProfile(tenantId: string, profile: RiskProfile, options: PublishOptions = {}): void {
+  public publishRiskProfile(
+    tenantId: string,
+    profile: RiskProfile,
+    options: PublishOptions & { contributions?: ComplianceRiskFactorContributions } = {},
+  ): void {
+    const contributions = options.contributions ?? {
+      coverageDrift: 0,
+      testFailures: 0,
+      backlogSeverity: 0,
+    };
     this.publish(
       {
         type: 'riskProfile',
         tenantId,
         profile,
+        contributions,
         emittedAt: options.emittedAt,
       },
       options,

@@ -81,11 +81,26 @@ export interface RiskSimulationTestSample {
   quarantined?: number;
 }
 
+export interface RiskSimulationBacklogSample {
+  timestamp: string;
+  total: number;
+  blocked: number;
+  critical: number;
+  medianAgeDays?: number;
+}
+
 export interface ComplianceRiskSimulationOptions {
   coverageHistory: RiskSimulationCoverageSample[];
   testHistory: RiskSimulationTestSample[];
+  backlogHistory?: RiskSimulationBacklogSample[];
   iterations?: number;
   seed?: number;
+}
+
+export interface ComplianceRiskFactorContributions {
+  coverageDrift: number;
+  testFailures: number;
+  backlogSeverity: number;
 }
 
 export interface ComplianceRiskSimulationResult {
@@ -103,7 +118,9 @@ export interface ComplianceRiskSimulationResult {
   baseline: {
     coverage: number;
     failureRate: number;
+    backlogSeverity: number;
   };
+  factors: ComplianceRiskFactorContributions;
   seed: number;
 }
 
@@ -528,6 +545,33 @@ const sanitizeTestHistory = (
     .sort((a, b) => a.time - b.time);
 };
 
+const computeBacklogSeverity = (sample: RiskSimulationBacklogSample): number => {
+  const total = Math.max(1, sample.total);
+  const blockedRatio = clamp(sample.blocked / total, 0, 1);
+  const criticalRatio = clamp(sample.critical / total, 0, 1);
+  const agingScore = clamp((sample.medianAgeDays ?? 0) / 45, 0, 1);
+  return clamp(blockedRatio * 0.5 + criticalRatio * 0.35 + agingScore * 0.15, 0, 1);
+};
+
+const sanitizeBacklogHistory = (
+  history: RiskSimulationBacklogSample[] | undefined,
+): Array<{ time: number; severity: number }> => {
+  if (!history) {
+    return [];
+  }
+  return history
+    .map((sample) => {
+      const timestamp = Date.parse(sample.timestamp);
+      if (!Number.isFinite(timestamp)) {
+        return null;
+      }
+      const severity = computeBacklogSeverity(sample);
+      return { time: timestamp, severity };
+    })
+    .filter((entry): entry is { time: number; severity: number } => entry !== null)
+    .sort((a, b) => a.time - b.time);
+};
+
 export const simulateComplianceRisk = (
   options: ComplianceRiskSimulationOptions,
 ): ComplianceRiskSimulationResult => {
@@ -557,7 +601,26 @@ export const simulateComplianceRisk = (
     .filter((delta): delta is number => typeof delta === 'number' && Number.isFinite(delta));
   const failureStd = computeStd(failureDeltas.length ? failureDeltas : [0.03]) || 0.03;
 
+  const backlogSeries = sanitizeBacklogHistory(options.backlogHistory);
+  const backlogHasHistory = backlogSeries.length > 0;
+  const backlogBaseline = backlogHasHistory
+    ? backlogSeries[backlogSeries.length - 1].severity
+    : 0;
+  const backlogDeltas = backlogHasHistory
+    ? backlogSeries
+        .map((entry, index) =>
+          index === 0 ? null : entry.severity - backlogSeries[index - 1].severity,
+        )
+        .filter((delta): delta is number => typeof delta === 'number' && Number.isFinite(delta))
+    : [];
+  const backlogStd = backlogHasHistory
+    ? computeStd(backlogDeltas.length ? backlogDeltas : [0.04]) || 0.04
+    : 0;
+
   const samples: number[] = [];
+  let coverageContributionTotal = 0;
+  let failureContributionTotal = 0;
+  let backlogContributionTotal = 0;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     const coverageDeltaBase =
@@ -584,9 +647,29 @@ export const simulateComplianceRisk = (
     );
     const failureRegression = Math.max(0, projectedFailure - failureBaseline);
 
-    const combined = coverageRegression * 1.25 + failureRegression * 1.75;
+    const backlogDeltaBase =
+      backlogHasHistory && backlogDeltas.length > 0
+        ? backlogDeltas[Math.floor(rng.next() * backlogDeltas.length)]
+        : 0;
+    const backlogNoise = backlogHasHistory ? backlogStd * 0.45 * rng.nextGaussian() : 0;
+    const projectedBacklog = backlogHasHistory
+      ? clamp(backlogBaseline + backlogDeltaBase + backlogNoise, 0, 1)
+      : 0;
+
+    const coverageContribution = coverageRegression * 1.25;
+    const failureContribution = failureRegression * 1.75;
+    const backlogContribution = projectedBacklog * 1.5;
+    const combined = coverageContribution + failureContribution + backlogContribution;
     const probability = 1 / (1 + Math.exp(-6 * (combined - 0.15)));
-    samples.push(round(probability * 100));
+    const probabilityPercent = probability * 100;
+    samples.push(round(probabilityPercent));
+
+    const contributionSum = coverageContribution + failureContribution + backlogContribution;
+    if (contributionSum > 0) {
+      coverageContributionTotal += (coverageContribution / contributionSum) * probabilityPercent;
+      failureContributionTotal += (failureContribution / contributionSum) * probabilityPercent;
+      backlogContributionTotal += (backlogContribution / contributionSum) * probabilityPercent;
+    }
   }
 
   const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
@@ -608,6 +691,12 @@ export const simulateComplianceRisk = (
     baseline: {
       coverage: round(coverageBaseline * 100),
       failureRate: round(failureBaseline * 100),
+      backlogSeverity: round(backlogBaseline * 100),
+    },
+    factors: {
+      coverageDrift: round(coverageContributionTotal / iterations),
+      testFailures: round(failureContributionTotal / iterations),
+      backlogSeverity: round(backlogContributionTotal / iterations),
     },
     seed,
   };

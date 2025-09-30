@@ -6,7 +6,9 @@ import https from 'https';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
+import type { AddressInfo } from 'net';
 import type { ArgumentsCamelCase } from 'yargs';
+import yargsFactory from 'yargs/yargs';
 
 jest.setTimeout(1200000);
 
@@ -1601,6 +1603,101 @@ describe('jama importer', () => {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('streams attachments and records hashes and metadata', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-jama-attachments-'));
+    const server = http.createServer((_, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      response.end('remote attachment payload');
+    });
+    try {
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', () => resolve());
+      });
+      const { port } = server.address() as AddressInfo;
+      const attachmentUrl = `http://127.0.0.1:${port}/attachments/JAMA-REQ-77/evidence.txt`;
+      const workDir = path.join(tempDir, 'work');
+      const fetchSpy = jest.spyOn(adapters, 'fetchJamaArtifacts').mockResolvedValue({
+        data: {
+          requirements: [],
+          objectives: [],
+          testResults: [],
+          traceLinks: [],
+          attachments: [
+            {
+              itemId: 'JAMA-REQ-77',
+              itemType: 'requirement',
+              filename: 'evidence.txt',
+              url: attachmentUrl,
+              size: 'remote attachment payload'.length,
+              createdAt: '2024-05-01T10:00:00Z',
+            },
+          ],
+          evidenceIndex: {},
+          generatedAt: '2024-05-01T00:00:00.000Z',
+        },
+        warnings: [],
+      });
+
+      const result = await runImport({
+        output: workDir,
+        jama: {
+          baseUrl: 'https://jama.example.com',
+          projectId: 'FlightControls',
+          token: 'secret-token',
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalled();
+
+      const attachmentPath = path.join(
+        workDir,
+        'attachments',
+        'jama',
+        'JAMA-REQ-77',
+        'evidence.txt',
+      );
+      const savedAttachment = await fs.readFile(attachmentPath, 'utf8');
+      expect(savedAttachment).toBe('remote attachment payload');
+
+      const expectedHash = createHash('sha256')
+        .update('remote attachment payload')
+        .digest('hex');
+      const workspaceRelativePath = 'attachments/jama/JAMA-REQ-77/evidence.txt';
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(
+        traceEvidence,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'jama',
+            path: expect.stringContaining('attachments/jama/JAMA-REQ-77/evidence.txt'),
+            hash: expectedHash,
+          }),
+        ]),
+      );
+
+      const metadata = result.workspace.metadata.sources?.jama;
+      expect(metadata?.attachments?.total).toBe(1);
+      expect(metadata?.attachments?.totalBytes).toBe('remote attachment payload'.length);
+      expect(metadata?.attachments?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            itemId: 'JAMA-REQ-77',
+            itemType: 'requirement',
+            filename: 'evidence.txt',
+            path: workspaceRelativePath,
+            sha256: expectedHash,
+            bytes: 'remote attachment payload'.length,
+          }),
+        ]),
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('doors next importer', () => {
@@ -1729,6 +1826,96 @@ describe('doors next importer', () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildJamaOptions', () => {
+  const parseArgs = (argv: string[]) =>
+    yargsFactory(argv)
+      .exitProcess(false)
+      .showHelpOnFail(false)
+      .option('jama-url', { type: 'string' })
+      .option('jama-project', { type: 'string' })
+      .option('jama-token', { type: 'string' })
+      .option('jama-page-size', { type: 'number' })
+      .option('jama-max-pages', { type: 'number' })
+      .option('jama-timeout', { type: 'number' })
+      .option('jama-rate-limit-delays', { type: 'string' })
+      .option('jama-requirements-endpoint', { type: 'string' })
+      .option('jama-tests-endpoint', { type: 'string' })
+      .option('jama-relationships-endpoint', { type: 'string' })
+      .parseSync();
+
+  it('parses CLI arguments into Jama client options', () => {
+    const argv = parseArgs([
+      '--jama-url',
+      'https://jama.example.com',
+      '--jama-project',
+      'AERO',
+      '--jama-token',
+      'secret-token',
+      '--jama-page-size',
+      '25',
+      '--jama-max-pages',
+      '10',
+      '--jama-timeout',
+      '5000',
+      '--jama-rate-limit-delays',
+      '100,250,500',
+      '--jama-requirements-endpoint',
+      '/rest/custom/requirements',
+      '--jama-tests-endpoint',
+      '/rest/custom/tests',
+      '--jama-relationships-endpoint',
+      '/rest/custom/relationships',
+    ]);
+
+    const options = __internal.buildJamaOptions(argv as unknown as ArgumentsCamelCase<unknown>);
+
+    expect(options).toEqual({
+      baseUrl: 'https://jama.example.com',
+      projectId: 'AERO',
+      token: 'secret-token',
+      pageSize: 25,
+      maxPages: 10,
+      timeoutMs: 5000,
+      rateLimitDelaysMs: [100, 250, 500],
+      requirementsEndpoint: '/rest/custom/requirements',
+      testCasesEndpoint: '/rest/custom/tests',
+      relationshipsEndpoint: '/rest/custom/relationships',
+    });
+  });
+
+  it('throws when numeric arguments are invalid', () => {
+    const argv = parseArgs([
+      '--jama-url',
+      'https://jama.example.com',
+      '--jama-project',
+      'AERO',
+      '--jama-token',
+      'secret-token',
+      '--jama-page-size',
+      '-1',
+    ]);
+
+    expect(() => __internal.buildJamaOptions(argv as unknown as ArgumentsCamelCase<unknown>)).toThrow(
+      '--jama-page-size',
+    );
+
+    const invalidRateLimit = parseArgs([
+      '--jama-url',
+      'https://jama.example.com',
+      '--jama-project',
+      'AERO',
+      '--jama-token',
+      'secret-token',
+      '--jama-rate-limit-delays',
+      '100,abc,500',
+    ]);
+
+    expect(() =>
+      __internal.buildJamaOptions(invalidRateLimit as unknown as ArgumentsCamelCase<unknown>),
+    ).toThrow('--jama-rate-limit-delays');
   });
 });
 
@@ -2650,6 +2837,11 @@ describe('runRiskSimulate', () => {
       { timestamp: '2024-02-01T00:00:00Z', passed: 95, failed: 5 },
       { timestamp: '2024-03-01T00:00:00Z', passed: 97, failed: 3 },
     ],
+    backlogHistory: [
+      { timestamp: '2024-01-01T00:00:00Z', total: 8, blocked: 1, critical: 0, medianAgeDays: 4 },
+      { timestamp: '2024-02-01T00:00:00Z', total: 9, blocked: 2, critical: 1, medianAgeDays: 8 },
+      { timestamp: '2024-03-01T00:00:00Z', total: 10, blocked: 3, critical: 1, medianAgeDays: 12 },
+    ],
   };
 
   let tempDir: string;
@@ -2675,8 +2867,12 @@ describe('runRiskSimulate', () => {
     expect(result.simulation.seed).toBe(2024);
     expect(result.simulation.baseline.coverage).toBe(86);
     expect(result.simulation.baseline.failureRate).toBe(3);
+    expect(result.simulation.baseline.backlogSeverity).toBeGreaterThan(0);
+    expect(result.simulation.factors.backlogSeverity).toBeGreaterThan(0);
     expect(result.simulation.percentiles.p90).toBeGreaterThanOrEqual(0);
     expect(result.simulation.percentiles.p90).toBeLessThanOrEqual(100);
+    expect(result.backlogHistory).toHaveLength(3);
+    expect(result.backlogHistory[2].blocked).toBe(3);
   });
 
   it('applies coverage lift to the latest coverage sample', async () => {
@@ -2687,6 +2883,7 @@ describe('runRiskSimulate', () => {
     expect(lifted.simulation.baseline.coverage).toBe(base.simulation.baseline.coverage + 5);
     expect(capped.simulation.baseline.coverage).toBe(100);
     expect(lifted.simulation.mean).toBeLessThanOrEqual(base.simulation.mean);
+    expect(base.simulation.factors.backlogSeverity).toBeGreaterThan(0);
   });
 
   it('throws when metrics are malformed', async () => {

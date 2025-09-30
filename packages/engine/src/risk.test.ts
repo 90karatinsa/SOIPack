@@ -4,6 +4,8 @@ import {
   simulateComplianceRisk,
   computeStageRiskForecast,
   type StageComplianceTrendPoint,
+  type RiskSimulationCoverageSample,
+  type RiskSimulationTestSample,
 } from './risk';
 
 describe('computeRiskProfile', () => {
@@ -144,6 +146,8 @@ describe('simulateComplianceRisk', () => {
     expect(result.iterations).toBe(500);
     expect(result.baseline.coverage).toBeCloseTo(75, 1);
     expect(result.baseline.failureRate).toBeCloseTo(15, 1);
+    expect(result.baseline.backlogSeverity).toBe(0);
+    expect(result.factors.backlogSeverity).toBe(0);
     expect(result.percentiles.p90).toBeGreaterThan(result.percentiles.p50);
     expect(result.percentiles.p99).toBeLessThanOrEqual(100);
   });
@@ -165,6 +169,54 @@ describe('simulateComplianceRisk', () => {
 
     expect(result.mean).toBeLessThan(35);
     expect(result.percentiles.p95).toBeLessThan(45);
+    expect(result.factors.coverageDrift).toBeLessThan(10);
+    expect(result.factors.testFailures).toBeLessThan(10);
+    expect(result.factors.backlogSeverity).toBe(0);
+  });
+
+  it('tracks backlog-driven severity shifts alongside coverage and testing', () => {
+    const coverageHistory: RiskSimulationCoverageSample[] = [
+      { timestamp: '2024-01-01T00:00:00Z', covered: 92, total: 100 },
+      { timestamp: '2024-02-01T00:00:00Z', covered: 90, total: 100 },
+    ];
+    const testHistory: RiskSimulationTestSample[] = [
+      { timestamp: '2024-01-01T00:00:00Z', passed: 96, failed: 4 },
+      { timestamp: '2024-02-01T00:00:00Z', passed: 95, failed: 5 },
+    ];
+
+    const elevatedBacklog = simulateComplianceRisk({
+      coverageHistory,
+      testHistory,
+      backlogHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', total: 10, blocked: 2, critical: 1, medianAgeDays: 6 },
+        { timestamp: '2024-02-01T00:00:00Z', total: 12, blocked: 5, critical: 3, medianAgeDays: 18 },
+        { timestamp: '2024-03-01T00:00:00Z', total: 15, blocked: 7, critical: 5, medianAgeDays: 26 },
+      ],
+      iterations: 600,
+      seed: 2025,
+    });
+
+    const containedBacklog = simulateComplianceRisk({
+      coverageHistory,
+      testHistory,
+      backlogHistory: [
+        { timestamp: '2024-01-01T00:00:00Z', total: 12, blocked: 1, critical: 0, medianAgeDays: 4 },
+        { timestamp: '2024-02-01T00:00:00Z', total: 14, blocked: 1, critical: 0, medianAgeDays: 5 },
+        { timestamp: '2024-03-01T00:00:00Z', total: 15, blocked: 1, critical: 0, medianAgeDays: 6 },
+      ],
+      iterations: 600,
+      seed: 2025,
+    });
+
+    expect(elevatedBacklog.baseline.backlogSeverity).toBeGreaterThan(
+      containedBacklog.baseline.backlogSeverity,
+    );
+    expect(elevatedBacklog.factors.backlogSeverity).toBeGreaterThan(
+      containedBacklog.factors.backlogSeverity,
+    );
+    expect(elevatedBacklog.factors.backlogSeverity).toBeGreaterThan(
+      elevatedBacklog.factors.coverageDrift,
+    );
   });
 });
 

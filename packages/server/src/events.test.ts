@@ -3,7 +3,7 @@ import { Writable } from 'stream';
 import type { Request, Response } from 'express';
 
 import type { LedgerEntry } from '@soipack/core';
-import type { RiskProfile } from '@soipack/engine';
+import type { ComplianceRiskFactorContributions, RiskProfile } from '@soipack/engine';
 
 import type { JobSummary } from './queue';
 import { ComplianceEventStream, EventAuthorizationError } from './events';
@@ -75,7 +75,17 @@ describe('ComplianceEventStream', () => {
       missingSignals: [],
     };
 
-    stream.publishRiskProfile(tenantId, profile, { id: 'risk-1', emittedAt: '2024-08-01T10:00:00Z' });
+    const contributions: ComplianceRiskFactorContributions = {
+      coverageDrift: 12,
+      testFailures: 7,
+      backlogSeverity: 5,
+    };
+
+    stream.publishRiskProfile(tenantId, profile, {
+      id: 'risk-1',
+      emittedAt: '2024-08-01T10:00:00Z',
+      contributions,
+    });
 
     const ledgerEntry: LedgerEntry = {
       index: 1,
@@ -119,6 +129,7 @@ describe('ComplianceEventStream', () => {
     expect(riskData.type).toBe('riskProfile');
     expect(riskData.tenantId).toBe(tenantId);
     expect(riskData.profile).toMatchObject({ score: 42, classification: 'moderate' });
+    expect(riskData.contributions).toEqual(contributions);
 
     const ledgerData = parseData(ledgerChunk);
     expect(ledgerData.type).toBe('ledgerEntry');
