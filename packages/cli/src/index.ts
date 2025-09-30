@@ -76,6 +76,8 @@ import {
   LedgerEntry,
   LedgerSignerOptions,
   AppendEntryOptions,
+  deserializeLedgerProof,
+  verifyLedgerProof,
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
@@ -5083,6 +5085,38 @@ export interface VerifyResult {
   };
 }
 
+export interface ManifestDiffOptions {
+  baseManifestPath: string;
+  targetManifestPath: string;
+}
+
+export interface ManifestDiffEntry {
+  path: string;
+  sha256: string;
+}
+
+export interface ManifestDiffChange {
+  path: string;
+  baseSha256: string;
+  targetSha256: string;
+}
+
+interface ManifestDiffSummary {
+  path: string;
+  digest: string;
+  createdAt: string;
+  verifiedProofs: number;
+  totalProofs: number;
+}
+
+export interface ManifestDiffResult {
+  base: ManifestDiffSummary;
+  target: ManifestDiffSummary;
+  added: ManifestDiffEntry[];
+  removed: ManifestDiffEntry[];
+  changed: ManifestDiffChange[];
+}
+
 const readUtf8File = async (filePath: string, errorMessage: string): Promise<string> => {
   try {
     return await fsPromises.readFile(filePath, 'utf8');
@@ -5093,6 +5127,96 @@ const readUtf8File = async (filePath: string, errorMessage: string): Promise<str
 };
 
 const normalizeArchivePath = (value: string): string => value.replace(/\\/g, '/');
+
+interface ManifestFileDigestEntry {
+  path: string;
+  sha256: string;
+}
+
+interface ManifestForDiff {
+  manifest: Manifest;
+  resolvedPath: string;
+  digest: string;
+  createdAt: string;
+  proofs: { verified: number; total: number };
+  files: Map<string, ManifestFileDigestEntry>;
+}
+
+const normalizeSha256 = (value: string): string => value.toLowerCase();
+
+const loadManifestForDiff = async (
+  kind: 'base' | 'target',
+  manifestPath: string,
+): Promise<ManifestForDiff> => {
+  const resolved = path.resolve(manifestPath);
+  const manifestLabel = kind === 'base' ? 'Referans manifest' : 'Hedef manifest';
+  const manifestRaw = await readUtf8File(resolved, `${manifestLabel} dosyası okunamadı`);
+
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(manifestRaw) as Manifest;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${manifestLabel} JSON formatı çözümlenemedi: ${reason}`);
+  }
+
+  const digest = computeManifestDigestHex(manifest);
+  const merkle = manifest.merkle ?? undefined;
+
+  if (merkle) {
+    if (merkle.algorithm !== 'ledger-merkle-v1') {
+      throw new Error(`${manifestLabel} Merkle algoritması desteklenmiyor: ${merkle.algorithm}`);
+    }
+    if (merkle.manifestDigest && merkle.manifestDigest !== digest) {
+      throw new Error(`${manifestLabel} özeti Merkle kaydı ile uyuşmuyor.`);
+    }
+  }
+
+  const merkleRoot = merkle?.root;
+  let verifiedProofs = 0;
+  let totalProofs = 0;
+  const files = new Map<string, ManifestFileDigestEntry>();
+
+  manifest.files.forEach((file) => {
+    if (!file || typeof file.path !== 'string' || typeof file.sha256 !== 'string') {
+      throw new Error(`${manifestLabel} dosya girdisi geçersiz.`);
+    }
+
+    const normalizedSha = normalizeSha256(file.sha256);
+    files.set(file.path, { path: file.path, sha256: normalizedSha });
+
+    if (file.proof) {
+      totalProofs += 1;
+      if (file.proof.algorithm !== 'ledger-merkle-v1') {
+        throw new Error(`Ledger kanıtı doğrulanamadı (${file.path}): Desteklenmeyen kanıt algoritması ${file.proof.algorithm}.`);
+      }
+      if (!merkleRoot) {
+        throw new Error(`Ledger kanıtı doğrulanamadı (${file.path}): Manifest Merkle kökü eksik.`);
+      }
+
+      try {
+        const parsed = deserializeLedgerProof(file.proof.proof);
+        verifyLedgerProof(parsed, { expectedMerkleRoot: merkleRoot });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Ledger kanıtı doğrulanamadı (${file.path}): ${reason}`);
+      }
+
+      verifiedProofs += 1;
+    }
+  });
+
+  const createdAt = typeof manifest.createdAt === 'string' ? manifest.createdAt : '';
+
+  return {
+    manifest,
+    resolvedPath: resolved,
+    digest,
+    createdAt,
+    proofs: { verified: verifiedProofs, total: totalProofs },
+    files,
+  };
+};
 
 interface ZipEntryMetadata {
   compressionMethod: number;
@@ -5350,6 +5474,60 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
   }
 
   return { isValid, manifestId, packageIssues, ...(sbomResult ? { sbom: sbomResult } : {}) };
+};
+
+export const runManifestDiff = async (options: ManifestDiffOptions): Promise<ManifestDiffResult> => {
+  const baseInfo = await loadManifestForDiff('base', options.baseManifestPath);
+  const targetInfo = await loadManifestForDiff('target', options.targetManifestPath);
+
+  const added: ManifestDiffEntry[] = [];
+  const removed: ManifestDiffEntry[] = [];
+  const changed: ManifestDiffChange[] = [];
+
+  baseInfo.files.forEach((baseEntry, filePath) => {
+    const targetEntry = targetInfo.files.get(filePath);
+    if (!targetEntry) {
+      removed.push({ path: filePath, sha256: baseEntry.sha256 });
+      return;
+    }
+
+    if (baseEntry.sha256 !== targetEntry.sha256) {
+      changed.push({ path: filePath, baseSha256: baseEntry.sha256, targetSha256: targetEntry.sha256 });
+    }
+  });
+
+  targetInfo.files.forEach((targetEntry, filePath) => {
+    if (!baseInfo.files.has(filePath)) {
+      added.push({ path: filePath, sha256: targetEntry.sha256 });
+    }
+  });
+
+  const sortByPath = <T extends { path: string }>(items: T[]): T[] =>
+    items.sort((a, b) => a.path.localeCompare(b.path));
+
+  sortByPath(added);
+  sortByPath(removed);
+  sortByPath(changed);
+
+  return {
+    base: {
+      path: baseInfo.resolvedPath,
+      digest: baseInfo.digest,
+      createdAt: baseInfo.createdAt,
+      verifiedProofs: baseInfo.proofs.verified,
+      totalProofs: baseInfo.proofs.total,
+    },
+    target: {
+      path: targetInfo.resolvedPath,
+      digest: targetInfo.digest,
+      createdAt: targetInfo.createdAt,
+      verifiedProofs: targetInfo.proofs.verified,
+      totalProofs: targetInfo.proofs.total,
+    },
+    added,
+    removed,
+    changed,
+  };
 };
 
 interface RunConfig {
@@ -7023,6 +7201,95 @@ if (require.main === module) {
           logCliError(logger, error, context);
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'manifest diff',
+      'İki manifest dosyası arasındaki değişiklikleri raporlar.',
+      (y) =>
+        y
+          .option('base', {
+            describe: 'Referans manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('target', {
+            describe: 'Karşılaştırılacak hedef manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const baseOption = Array.isArray(argv.base) ? argv.base[0] : argv.base;
+        const targetOption = Array.isArray(argv.target) ? argv.target[0] : argv.target;
+
+        const baseManifestPath = path.resolve(String(baseOption));
+        const targetManifestPath = path.resolve(String(targetOption));
+
+        const context = {
+          command: 'manifest diff',
+          baseManifest: baseManifestPath,
+          targetManifest: targetManifestPath,
+        };
+
+        try {
+          const result = await runManifestDiff({
+            baseManifestPath,
+            targetManifestPath,
+          });
+
+          logger.info(
+            {
+              ...context,
+              baseDigest: result.base.digest,
+              targetDigest: result.target.digest,
+              added: result.added.length,
+              removed: result.removed.length,
+              changed: result.changed.length,
+            },
+            'Manifest karşılaştırması tamamlandı.',
+          );
+
+          console.log(
+            `Referans manifest: ${path.relative(process.cwd(), result.base.path)} (digest ${result.base.digest})`,
+          );
+          console.log(
+            `Hedef manifest: ${path.relative(process.cwd(), result.target.path)} (digest ${result.target.digest})`,
+          );
+          console.log(
+            `Kanıt doğrulaması: referans ${result.base.verifiedProofs}/${result.base.totalProofs}, hedef ${result.target.verifiedProofs}/${result.target.totalProofs}.`,
+          );
+
+          if (result.added.length === 0 && result.removed.length === 0 && result.changed.length === 0) {
+            console.log('Değişiklik tespit edilmedi.');
+          } else {
+            if (result.added.length > 0) {
+              console.log('Eklenen kanıtlar:');
+              result.added.forEach((entry) => {
+                console.log(` + ${entry.path} (${entry.sha256})`);
+              });
+            }
+            if (result.removed.length > 0) {
+              console.log('Kaldırılan kanıtlar:');
+              result.removed.forEach((entry) => {
+                console.log(` - ${entry.path} (${entry.sha256})`);
+              });
+            }
+            if (result.changed.length > 0) {
+              console.log('Güncellenen kanıtlar:');
+              result.changed.forEach((entry) => {
+                console.log(` * ${entry.path} (${entry.baseSha256} → ${entry.targetSha256})`);
+              });
+            }
+          }
+
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Manifest karşılaştırması sırasında hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
       },

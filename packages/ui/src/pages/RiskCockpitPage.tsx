@@ -203,6 +203,9 @@ const stageClassificationBadgeClasses: Record<string, string> = {
   critical: 'bg-rose-500/20 text-rose-200',
 };
 
+const factorMetricBadgeClass =
+  'inline-flex items-center gap-1 rounded-full border border-slate-800/60 bg-slate-900/70 px-2 py-1 text-[11px] font-semibold text-slate-200 shadow-sm shadow-slate-950/20';
+
 const createRandomGenerator = (seed: number): (() => number) => {
   let state = seed >>> 0;
   if (state === 0) {
@@ -939,35 +942,63 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
             ) : (
               <>
                 {state.heatmap.length > 0 ? (
-                  <ul className="space-y-3">
+                  <ul className="space-y-3" aria-live="polite">
                     {state.heatmap.map((cell) => (
                       <li
                         key={cell.factor}
-                        className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"
+                        className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30 transition-colors"
+                        aria-label={`Faktör ${cell.factor} ağırlık ${cell.weight.toFixed(2)}, katkı ${cell.contribution.toFixed(2)}, etki payı yüzde ${cell.percentage}`}
                       >
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-white">{cell.factor}</p>
-                            {cell.details && <p className="mt-1 text-xs text-slate-400">{cell.details}</p>}
+                        <div className="flex flex-col gap-3">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-white">{cell.factor}</p>
+                              {cell.details && <p className="mt-1 text-xs text-slate-400">{cell.details}</p>}
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-2 text-right text-[11px] text-slate-400">
+                              <span className="rounded-full bg-slate-800/40 px-2 py-1 font-medium text-slate-300">
+                                Etki {cell.impact.toFixed(2)}
+                              </span>
+                              <span className="rounded-full bg-slate-800/40 px-2 py-1 font-medium text-slate-300">
+                                Pay %{cell.percentage}
+                              </span>
+                            </div>
                           </div>
-                          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-right text-xs text-slate-300 sm:w-64">
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wide text-slate-500">Ağırlık</dt>
-                              <dd>{cell.weight.toFixed(2)}</dd>
+                          <div
+                            className="flex flex-wrap gap-2"
+                            role="list"
+                            aria-label={`${cell.factor} metrikleri`}
+                          >
+                            <span className={factorMetricBadgeClass} role="listitem">
+                              Ağırlık {cell.weight.toFixed(2)}
+                            </span>
+                            <span className={factorMetricBadgeClass} role="listitem">
+                              Katkı {cell.contribution.toFixed(2)}
+                            </span>
+                            <span className={factorMetricBadgeClass} role="listitem">
+                              Etki {cell.impact.toFixed(2)}
+                            </span>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between text-[11px] text-slate-400">
+                              <span>Etki payı</span>
+                              <span className="font-semibold text-slate-200">%{cell.percentage}</span>
                             </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wide text-slate-500">Katkı</dt>
-                              <dd>{cell.contribution.toFixed(2)}</dd>
+                            <div
+                              role="progressbar"
+                              aria-label={`${cell.factor} etki payı`}
+                              aria-valuenow={cell.percentage}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800"
+                              data-testid={`risk-factor-share-${cell.factor}`}
+                            >
+                              <div
+                                className="h-full rounded-full bg-brand transition-[width] duration-500 ease-out"
+                                style={{ width: `${cell.percentage}%` }}
+                              />
                             </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wide text-slate-500">Etki</dt>
-                              <dd>{cell.impact.toFixed(2)}</dd>
-                            </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wide text-slate-500">Pay</dt>
-                              <dd>%{cell.percentage}</dd>
-                            </div>
-                          </dl>
+                          </div>
                         </div>
                       </li>
                     ))}

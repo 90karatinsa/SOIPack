@@ -16,7 +16,12 @@ import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
 import { ImportBundle, TraceEngine } from '@soipack/engine';
-import { signManifestBundle, verifyManifestSignature, verifyManifestSignatureDetailed } from '@soipack/packager';
+import {
+  buildManifest,
+  signManifestBundle,
+  verifyManifestSignature,
+  verifyManifestSignatureDetailed,
+} from '@soipack/packager';
 import { loadDefaultSphincsPlusKeyPair } from '@soipack/packager/security/pqc';
 import type { PlanTemplateId } from '@soipack/report';
 import { createReportFixture } from '@soipack/report/__fixtures__/snapshot';
@@ -83,6 +88,7 @@ import {
   runReport,
   runVerify,
   runRiskSimulate,
+  runManifestDiff,
   __internal,
 } from './index';
 
@@ -1400,6 +1406,141 @@ describe('CLI pipeline workflows', () => {
         expect.arrayContaining([expect.stringContaining('Statement coverage evidence')]),
       );
     });
+  });
+});
+
+describe('manifest diff command', () => {
+  let tempRoot: string;
+
+  beforeAll(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-manifest-diff-'));
+  });
+
+  afterAll(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  const writeManifestFixture = async (
+    subdir: string,
+    files: Array<{ name: string; contents: string }>,
+    timestamp: string,
+  ) => {
+    const workDir = path.join(tempRoot, subdir);
+    const reportsDir = path.join(workDir, 'reports');
+    await fs.mkdir(reportsDir, { recursive: true });
+
+    for (const file of files) {
+      const targetPath = path.join(reportsDir, file.name);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, file.contents, 'utf8');
+    }
+
+    const manifestResult = await buildManifest({
+      reportDir: reportsDir,
+      evidenceDirs: [],
+      toolVersion: 'cli-test',
+      now: new Date(timestamp),
+    });
+
+    const manifestPath = path.join(workDir, 'manifest.json');
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifestResult.manifest, null, 2)}\n`, 'utf8');
+
+    return { manifestPath, manifest: manifestResult.manifest };
+  };
+
+  const getSha = (manifest: Manifest, manifestPath: string): string => {
+    const entry = manifest.files.find((file) => file.path === manifestPath);
+    if (!entry) {
+      throw new Error(`Manifest entry not found for path ${manifestPath}`);
+    }
+    return entry.sha256.toLowerCase();
+  };
+
+  it('reports manifest delta and verifies ledger proofs', async () => {
+    const base = await writeManifestFixture(
+      'base',
+      [
+        { name: 'summary.txt', contents: 'Base manifest summary' },
+        { name: 'metrics.csv', contents: 'pass,fail\n1,0\n' },
+      ],
+      '2024-01-01T00:00:00.000Z',
+    );
+
+    const target = await writeManifestFixture(
+      'target',
+      [
+        { name: 'metrics.csv', contents: 'pass,fail\n2,0\n' },
+        { name: 'new.log', contents: 'New evidence' },
+      ],
+      '2024-01-02T00:00:00.000Z',
+    );
+
+    const result = await runManifestDiff({
+      baseManifestPath: base.manifestPath,
+      targetManifestPath: target.manifestPath,
+    });
+
+    expect(result.base.verifiedProofs).toBe(result.base.totalProofs);
+    expect(result.target.verifiedProofs).toBe(result.target.totalProofs);
+    expect(result.base.totalProofs).toBe(base.manifest.files.length);
+    expect(result.target.totalProofs).toBe(target.manifest.files.length);
+
+    expect(result.added).toEqual([
+      {
+        path: 'reports/new.log',
+        sha256: getSha(target.manifest, 'reports/new.log'),
+      },
+    ]);
+
+    expect(result.removed).toEqual([
+      {
+        path: 'reports/summary.txt',
+        sha256: getSha(base.manifest, 'reports/summary.txt'),
+      },
+    ]);
+
+    expect(result.changed).toEqual([
+      {
+        path: 'reports/metrics.csv',
+        baseSha256: getSha(base.manifest, 'reports/metrics.csv'),
+        targetSha256: getSha(target.manifest, 'reports/metrics.csv'),
+      },
+    ]);
+  });
+
+  it('throws when ledger proof verification fails', async () => {
+    const base = await writeManifestFixture(
+      'tampered-base',
+      [
+        { name: 'alpha.txt', contents: 'alpha' },
+      ],
+      '2024-02-01T00:00:00.000Z',
+    );
+
+    const target = await writeManifestFixture(
+      'tampered-target',
+      [
+        { name: 'beta.txt', contents: 'beta' },
+      ],
+      '2024-02-02T00:00:00.000Z',
+    );
+
+    const tamperedManifest: Manifest = {
+      ...base.manifest,
+      files: base.manifest.files.map((file, index) => {
+        if (index === 0 && file.proof) {
+          return { ...file, proof: { ...file.proof, proof: '{"leaf":{}}' } };
+        }
+        return file;
+      }),
+    };
+
+    const tamperedPath = path.join(tempRoot, 'tampered-manifest.json');
+    await fs.writeFile(tamperedPath, `${JSON.stringify(tamperedManifest, null, 2)}\n`, 'utf8');
+
+    await expect(
+      runManifestDiff({ baseManifestPath: tamperedPath, targetManifestPath: target.manifestPath }),
+    ).rejects.toThrow('Ledger kanıtı doğrulanamadı');
   });
 });
 
