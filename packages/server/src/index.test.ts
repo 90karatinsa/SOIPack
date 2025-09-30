@@ -5,9 +5,9 @@ import https from 'https';
 import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
+import { EventEmitter } from 'events';
 import { Writable } from 'stream';
 import tls from 'tls';
-import EventSource from 'eventsource';
 
 import * as cli from '@soipack/cli';
 import { fetchJiraChangeRequests, type JiraChangeRequest } from '@soipack/adapters';
@@ -41,6 +41,8 @@ import {
   getServerLifecycle,
   __clearChangeRequestCacheForTesting,
   __clearComplianceSummaryCacheForTesting,
+  __clearRiskProfileCacheForTesting,
+  __clearBacklogSeverityCacheForTesting,
   type ServerConfig,
 } from './index';
 import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
@@ -212,6 +214,77 @@ const createDeferred = <T = void>() => {
     promise,
     resolve: resolve!,
     reject: reject!,
+  };
+};
+
+const createSseClient = (
+  url: string,
+  init: { headers?: Record<string, string> },
+): {
+  on: (event: string, handler: (data: string) => void) => void;
+  close: () => void;
+  opened: Promise<void>;
+} => {
+  const emitter = new EventEmitter();
+  let response: import('http').IncomingMessage | null = null;
+
+  const opened = new Promise<void>((resolve, reject) => {
+    const request = https.request(
+      url,
+      {
+        method: 'GET',
+        headers: init.headers,
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        response = res;
+        if ((res.statusCode ?? 0) >= 400) {
+          reject(new Error(`Unexpected SSE status: ${res.statusCode}`));
+          res.resume();
+          return;
+        }
+        res.setEncoding('utf8');
+        let buffer = '';
+        res.on('data', (chunk: string) => {
+          buffer += chunk;
+          let index = buffer.indexOf('\n\n');
+          while (index >= 0) {
+            const frame = buffer.slice(0, index);
+            buffer = buffer.slice(index + 2);
+            const lines = frame.split(/\n/);
+            let eventType = 'message';
+            const dataLines: string[] = [];
+            lines.forEach((line) => {
+              if (line.startsWith('event:')) {
+                eventType = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                dataLines.push(line.slice(5).trim());
+              }
+            });
+            emitter.emit(eventType, dataLines.join('\n'));
+            index = buffer.indexOf('\n\n');
+          }
+        });
+        res.on('error', (error: unknown) => {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+        resolve();
+      },
+    );
+    request.on('error', (error) => {
+      reject(error);
+    });
+    request.end();
+  });
+
+  return {
+    on: (event: string, handler: (data: string) => void) => {
+      emitter.on(event, handler);
+    },
+    close: () => {
+      response?.destroy();
+    },
+    opened,
   };
 };
 
@@ -1608,6 +1681,8 @@ describe('@soipack/server REST API', () => {
 
   afterEach(() => {
     __clearComplianceSummaryCacheForTesting();
+    __clearRiskProfileCacheForTesting();
+    __clearBacklogSeverityCacheForTesting();
   });
 
   beforeAll(async () => {
@@ -1716,6 +1791,58 @@ describe('@soipack/server REST API', () => {
         .set('Authorization', `Bearer ${token}`)
         .expect(401);
       expect(response.body.error.code).toBe('UNAUTHORIZED');
+    } finally {
+      delete process.env.SOIPACK_API_KEYS;
+    }
+  });
+
+  it('serves the OpenAPI description with caching headers for authenticated callers', async () => {
+    const specPath = path.resolve(__dirname, '../openapi.yaml');
+    const expectedYaml = await fsPromises.readFile(specPath, 'utf8');
+
+    const yamlResponse = await request(app)
+      .get('/v1/openapi.yaml')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(yamlResponse.text).toBe(expectedYaml);
+    expect(yamlResponse.headers['cache-control']).toBe('private, max-age=300');
+    expect(yamlResponse.headers.etag).toBeDefined();
+
+    const etag = yamlResponse.headers.etag as string;
+
+    await request(app)
+      .get('/v1/openapi.yaml')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-None-Match', etag)
+      .expect(304);
+
+    const jsonResponse = await request(app)
+      .get('/v1/openapi.json')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(jsonResponse.headers['cache-control']).toBe('private, max-age=300');
+    const versionMatch = expectedYaml.match(/^openapi:\s*(.+)$/m);
+    expect(jsonResponse.body.openapi).toBe(versionMatch ? versionMatch[1].trim() : undefined);
+    expect(jsonResponse.body.info).toBeDefined();
+  });
+
+  it('requires API key access for the OpenAPI specification when keys are present', async () => {
+    process.env.SOIPACK_API_KEYS = 'ops=demo-key:reader|maintainer';
+    const securedApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+
+    try {
+      await request(securedApp)
+        .get('/v1/openapi.yaml')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(401);
+
+      await request(securedApp)
+        .get('/v1/openapi.yaml')
+        .set('Authorization', `Bearer ${token}`)
+        .set('x-api-key', 'demo-key')
+        .expect(200);
     } finally {
       delete process.env.SOIPACK_API_KEYS;
     }
@@ -5866,45 +5993,37 @@ describe('@soipack/server REST API', () => {
     const url = `https://localhost:${port}/v1/stream/compliance`;
     const riskMessages: unknown[] = [];
 
-    const source = new EventSource(url, {
+    const client = createSseClient(url, {
       headers: { Authorization: `Bearer ${readerToken}` },
-    } as EventSource.EventSourceInitDict);
-
-    const opened = new Promise<void>((resolve, reject) => {
-      source.onopen = () => resolve();
-      source.onerror = (error: unknown) => reject(error);
     });
 
     const riskPromise = new Promise<Record<string, unknown>>((resolve) => {
-      source.addEventListener('riskProfile', (event: MessageEvent) => {
-        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
+      client.on('riskProfile', (data: string) => {
+        const payload = JSON.parse(data) as Record<string, unknown>;
         riskMessages.push(payload);
         resolve(payload);
       });
     });
 
     const ledgerPromise = new Promise<Record<string, unknown>>((resolve) => {
-      source.addEventListener('ledgerEntry', (event: MessageEvent) => {
-        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
-        resolve(payload);
+      client.on('ledgerEntry', (data: string) => {
+        resolve(JSON.parse(data) as Record<string, unknown>);
       });
     });
 
     const queuePromise = new Promise<Record<string, unknown>>((resolve) => {
-      source.addEventListener('queueState', (event: MessageEvent) => {
-        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
-        resolve(payload);
+      client.on('queueState', (data: string) => {
+        resolve(JSON.parse(data) as Record<string, unknown>);
       });
     });
 
     const proofPromise = new Promise<Record<string, unknown>>((resolve) => {
-      source.addEventListener('manifestProof', (event: MessageEvent) => {
-        const payload = JSON.parse(event.data as string) as Record<string, unknown>;
-        resolve(payload);
+      client.on('manifestProof', (data: string) => {
+        resolve(JSON.parse(data) as Record<string, unknown>);
       });
     });
 
-    await opened;
+    await client.opened;
 
     const lifecycle = getServerLifecycle(streamingApp);
     const profile = {
@@ -5919,6 +6038,7 @@ describe('@soipack/server REST API', () => {
     lifecycle.events.publishRiskProfile(tenantId, profile, {
       id: 'risk-stream',
       emittedAt: '2024-09-01T10:00:00Z',
+      contributions: { coverageDrift: 9, testFailures: 4, backlogSeverity: 3 },
     });
 
     const ledgerEntry: LedgerEntry = {
@@ -5975,6 +6095,7 @@ describe('@soipack/server REST API', () => {
     ]);
 
     expect(riskData.profile).toMatchObject({ score: 37, classification: 'moderate' });
+    expect(riskData.contributions).toEqual({ coverageDrift: 9, testFailures: 4, backlogSeverity: 3 });
     expect(ledgerData.entry).toMatchObject({ ledgerRoot: ledgerEntry.ledgerRoot });
     expect(queueData.jobs).toHaveLength(1);
     expect(queueData.counts).toMatchObject({ running: 1 });
@@ -5986,9 +6107,204 @@ describe('@soipack/server REST API', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(riskMessages).toHaveLength(1);
 
-    source.close();
+    client.close();
     await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
     await lifecycle.shutdown();
+  });
+
+  it('refreshes risk profiles with Jira backlog contributions and caches results', async () => {
+    jest.useFakeTimers();
+
+    const originalEnv = {
+      baseUrl: process.env.JIRA_BASE_URL,
+      token: process.env.JIRA_TOKEN,
+      project: process.env.JIRA_PROJECT_KEY,
+      jql: process.env.JIRA_BACKLOG_JQL,
+    };
+
+    process.env.JIRA_BASE_URL = 'https://example.atlassian.net';
+    process.env.JIRA_TOKEN = 'test-token';
+    process.env.JIRA_PROJECT_KEY = 'RISK';
+    process.env.JIRA_BACKLOG_JQL = 'statusCategory != Done';
+
+    const now = new Date('2024-09-20T12:00:00Z');
+    jest.setSystemTime(now);
+
+    mockedFetchJiraChangeRequests.mockResolvedValue([
+      {
+        id: '1',
+        key: 'RISK-1',
+        summary: 'Blocked change request',
+        status: 'Blocked',
+        statusCategory: 'In Progress',
+        assignee: null,
+        updatedAt: '2024-09-15T10:00:00Z',
+        priority: 'Critical',
+        issueType: 'Bug',
+        url: 'https://example.atlassian.net/browse/RISK-1',
+        transitions: [],
+        attachments: [],
+      },
+      {
+        id: '2',
+        key: 'RISK-2',
+        summary: 'High priority follow-up',
+        status: 'In Progress',
+        statusCategory: 'In Progress',
+        assignee: 'qa',
+        updatedAt: '2024-09-18T08:00:00Z',
+        priority: 'High',
+        issueType: 'Task',
+        url: 'https://example.atlassian.net/browse/RISK-2',
+        transitions: [],
+        attachments: [],
+      },
+      {
+        id: '3',
+        key: 'RISK-3',
+        summary: 'Waiting for analysis',
+        status: 'Waiting',
+        statusCategory: 'To Do',
+        assignee: null,
+        updatedAt: '2024-09-05T09:30:00Z',
+        priority: 'Medium',
+        issueType: 'Story',
+        url: 'https://example.atlassian.net/browse/RISK-3',
+        transitions: [],
+        attachments: [],
+      },
+    ] satisfies JiraChangeRequest[]);
+
+    const riskApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+    const lifecycle = getServerLifecycle(riskApp);
+    const publishSpy = jest.spyOn(lifecycle.events, 'publishRiskProfile');
+
+    try {
+      const matrix = {
+        project: 'Risk Demo',
+        level: 'B',
+        generatedAt: '2024-09-20T10:30:00Z',
+        requirements: [
+          { id: 'REQ-1', status: 'covered' as const, evidenceIds: [] },
+          { id: 'REQ-2', status: 'partial' as const, evidenceIds: [] },
+          { id: 'REQ-3', status: 'missing' as const, evidenceIds: [] },
+        ],
+        summary: { total: 3, covered: 1, partial: 1, missing: 1 },
+      };
+      const coverage = { lines: 72.5 };
+      const metadata = {
+        testHistory: [
+          { timestamp: '2024-08-01T00:00:00Z', passed: 90, failed: 5, quarantined: 5 },
+          { timestamp: '2024-09-01T00:00:00Z', passed: 95, failed: 3, quarantined: 2 },
+        ],
+      } satisfies Record<string, unknown>;
+      const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
+      const complianceHash = createHash('sha256')
+        .update(JSON.stringify(canonicalPayload))
+        .digest('hex');
+
+      await request(riskApp)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sha256: complianceHash, matrix, coverage, metadata })
+        .expect(201);
+
+      await waitForCondition(() => publishSpy.mock.calls.length > 0, 2000).catch(() => undefined);
+      publishSpy.mockClear();
+      mockedFetchJiraChangeRequests.mockClear();
+      __clearBacklogSeverityCacheForTesting();
+
+      const firstResult = await lifecycle.refreshRiskProfile(tenantId, { force: true });
+      expect(firstResult).not.toBeNull();
+      expect(firstResult?.contributions.backlogSeverity).toBeGreaterThan(0);
+      expect(publishSpy).toHaveBeenCalledTimes(1);
+      expect(publishSpy.mock.calls[0][1]).toEqual(firstResult?.profile);
+      expect(publishSpy.mock.calls[0][2]?.contributions).toEqual(firstResult?.contributions);
+
+      publishSpy.mockClear();
+      const secondResult = await lifecycle.refreshRiskProfile(tenantId);
+      expect(secondResult).not.toBeNull();
+      expect(secondResult?.contributions).toEqual(firstResult?.contributions);
+      expect(publishSpy).toHaveBeenCalledTimes(1);
+
+      await lifecycle.shutdown();
+    } finally {
+      jest.useRealTimers();
+      process.env.JIRA_BASE_URL = originalEnv.baseUrl;
+      process.env.JIRA_TOKEN = originalEnv.token;
+      process.env.JIRA_PROJECT_KEY = originalEnv.project;
+      process.env.JIRA_BACKLOG_JQL = originalEnv.jql;
+      publishSpy.mockRestore();
+      mockedFetchJiraChangeRequests.mockReset();
+    }
+  });
+
+  it('falls back to zero backlog severity when Jira metrics cannot be fetched', async () => {
+    jest.useFakeTimers();
+
+    const originalEnv = {
+      baseUrl: process.env.JIRA_BASE_URL,
+      token: process.env.JIRA_TOKEN,
+      project: process.env.JIRA_PROJECT_KEY,
+    };
+
+    process.env.JIRA_BASE_URL = 'https://example.atlassian.net';
+    process.env.JIRA_TOKEN = 'token';
+    process.env.JIRA_PROJECT_KEY = 'RISK';
+
+    mockedFetchJiraChangeRequests.mockRejectedValue(new Error('jira unavailable'));
+
+    const fallbackApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+    const lifecycle = getServerLifecycle(fallbackApp);
+    const publishSpy = jest.spyOn(lifecycle.events, 'publishRiskProfile');
+
+    try {
+      const matrix = {
+        project: 'Fallback Demo',
+        level: 'C',
+        generatedAt: '2024-09-18T09:00:00Z',
+        requirements: [
+          { id: 'REQ-10', status: 'covered' as const, evidenceIds: [] },
+          { id: 'REQ-11', status: 'missing' as const, evidenceIds: [] },
+        ],
+        summary: { total: 2, covered: 1, partial: 0, missing: 1 },
+      };
+      const coverage = { lines: 68 };
+      const metadata = {
+        testHistory: [{ timestamp: '2024-09-01T00:00:00Z', passed: 40, failed: 10 }],
+      } satisfies Record<string, unknown>;
+      const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
+      const complianceHash = createHash('sha256')
+        .update(JSON.stringify(canonicalPayload))
+        .digest('hex');
+
+      await request(fallbackApp)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sha256: complianceHash, matrix, coverage, metadata })
+        .expect(201);
+
+      await waitForCondition(() => mockedFetchJiraChangeRequests.mock.calls.length > 0, 2000).catch(() => undefined);
+      mockedFetchJiraChangeRequests.mockClear();
+      publishSpy.mockClear();
+
+      const result = await lifecycle.refreshRiskProfile(tenantId, { force: true });
+
+      expect(result).not.toBeNull();
+      expect(result?.contributions.backlogSeverity).toBe(0);
+      expect(mockedFetchJiraChangeRequests).toHaveBeenCalledTimes(1);
+      expect(publishSpy).toHaveBeenCalledTimes(1);
+      expect(publishSpy.mock.calls[0][2]?.contributions?.backlogSeverity).toBe(0);
+
+      await lifecycle.shutdown();
+    } finally {
+      jest.useRealTimers();
+      process.env.JIRA_BASE_URL = originalEnv.baseUrl;
+      process.env.JIRA_TOKEN = originalEnv.token;
+      process.env.JIRA_PROJECT_KEY = originalEnv.project;
+      publishSpy.mockRestore();
+      mockedFetchJiraChangeRequests.mockReset();
+    }
   });
 
   it('uses database counts to update queue metrics', async () => {

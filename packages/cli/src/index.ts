@@ -88,6 +88,7 @@ import {
   simulateComplianceRisk,
   type ChangeImpactScore,
   type ComplianceRiskSimulationResult,
+  type RiskSimulationBacklogSample,
   type RiskSimulationCoverageSample,
   type RiskSimulationTestSample,
   type TraceGraph,
@@ -660,6 +661,21 @@ interface ExternalSourceMetadata {
     requirements: number;
     tests: number;
     traceLinks: number;
+    attachments: {
+      total: number;
+      totalBytes: number;
+      items: Array<{
+        itemId: string;
+        itemType?: string;
+        filename?: string;
+        url?: string;
+        size?: number;
+        createdAt?: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+      }>;
+    } | null;
   };
   jenkins?: {
     baseUrl: string;
@@ -888,11 +904,94 @@ const buildJamaOptions = (
     return undefined;
   }
 
-  return {
+  const options: JamaClientOptions = {
     baseUrl,
     projectId,
     token,
   };
+
+  const parsePositiveNumber = (value: unknown, optionName: string): number | undefined => {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    const candidate =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string'
+          ? Number.parseFloat(value)
+          : Number.NaN;
+    if (!Number.isFinite(candidate) || candidate <= 0) {
+      throw new Error(`${optionName} pozitif bir sayı olmalıdır.`);
+    }
+    return candidate;
+  };
+
+  const pageSize = parsePositiveNumber(raw.jamaPageSize, '--jama-page-size');
+  if (pageSize !== undefined) {
+    options.pageSize = pageSize;
+  }
+
+  const maxPages = parsePositiveNumber(raw.jamaMaxPages, '--jama-max-pages');
+  if (maxPages !== undefined) {
+    options.maxPages = maxPages;
+  }
+
+  const timeout = parsePositiveNumber(raw.jamaTimeout, '--jama-timeout');
+  if (timeout !== undefined) {
+    options.timeoutMs = timeout;
+  }
+
+  const parseRateLimitDelays = (value: unknown): number[] | undefined => {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    const entries = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0)
+        : [value];
+    if (entries.length === 0) {
+      return [];
+    }
+    const delays = entries.map((entry) => {
+      const candidate =
+        typeof entry === 'number'
+          ? entry
+          : typeof entry === 'string'
+            ? Number.parseFloat(entry)
+            : Number.NaN;
+      if (!Number.isFinite(candidate) || candidate < 0) {
+        throw new Error('--jama-rate-limit-delays değerleri sıfır veya pozitif sayı olmalıdır.');
+      }
+      return candidate;
+    });
+    return delays;
+  };
+
+  const rateLimitDelays = parseRateLimitDelays(raw.jamaRateLimitDelays);
+  if (rateLimitDelays !== undefined) {
+    options.rateLimitDelaysMs = rateLimitDelays;
+  }
+
+  const requirementsEndpoint = coerceOptionalString(raw.jamaRequirementsEndpoint);
+  if (requirementsEndpoint) {
+    options.requirementsEndpoint = requirementsEndpoint;
+  }
+
+  const testsEndpoint = coerceOptionalString(raw.jamaTestsEndpoint);
+  if (testsEndpoint) {
+    options.testCasesEndpoint = testsEndpoint;
+  }
+
+  const relationshipsEndpoint = coerceOptionalString(raw.jamaRelationshipsEndpoint);
+  if (relationshipsEndpoint) {
+    options.relationshipsEndpoint = relationshipsEndpoint;
+  }
+
+  return options;
 };
 
 const buildJenkinsOptions = (
@@ -2665,6 +2764,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const jamaRequirements = jamaResult.data.requirements ?? [];
     const jamaTests = jamaResult.data.testResults ?? [];
     const jamaLinks = jamaResult.data.traceLinks ?? [];
+    const jamaAttachments = jamaResult.data.attachments ?? [];
     const sourceId = `remote:jama:${options.jama.projectId}`;
 
     if (jamaRequirements.length > 0) {
@@ -2691,12 +2791,69 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       await appendEvidence('trace', 'jama', `${sourceId}:relationships`, 'Jama gereksinim ilişkileri');
     }
 
+    let attachmentSummary: ExternalSourceMetadata['jama']['attachments'] = null;
+    if (jamaAttachments.length > 0) {
+      const { results: attachmentResults, warnings: attachmentWarnings } =
+        await streamConnectorAttachments(
+          outputDir,
+          'jama',
+          jamaAttachments.map((attachment) => ({
+            issueKey: String(attachment.itemId ?? 'item'),
+            filename: attachment.filename ?? `${attachment.itemType ?? 'attachment'}.bin`,
+            url: attachment.url,
+            authHeader: `Bearer ${options.jama.token}`,
+            expectedSha256: (attachment as { sha256?: string }).sha256,
+          })),
+        );
+      warnings.push(...attachmentWarnings);
+
+      for (const outcome of attachmentResults) {
+        if (!outcome.absolutePath) {
+          continue;
+        }
+        const summary = `Jama eki ${outcome.descriptor.issueKey} / ${outcome.descriptor.filename}`;
+        const { evidence } = await createEvidence(
+          'trace',
+          'jama',
+          outcome.absolutePath,
+          summary,
+          independence,
+        );
+        mergeEvidence(evidenceIndex, 'trace', evidence);
+      }
+
+      const totalBytes = attachmentResults.reduce(
+        (accumulator, entry) => accumulator + (entry.bytes ?? 0),
+        0,
+      );
+
+      attachmentSummary = {
+        total: jamaAttachments.length,
+        totalBytes,
+        items: jamaAttachments.map((attachment, index) => {
+          const download = attachmentResults[index];
+          return {
+            itemId: String(attachment.itemId ?? 'item'),
+            itemType: attachment.itemType,
+            filename: attachment.filename,
+            url: attachment.url,
+            size: attachment.size,
+            createdAt: attachment.createdAt,
+            path: download?.relativePath,
+            sha256: download?.sha256,
+            bytes: download?.bytes,
+          };
+        }),
+      };
+    }
+
     sourceMetadata.jama = {
       baseUrl: options.jama.baseUrl,
       projectId: String(options.jama.projectId),
       requirements: jamaRequirements.length,
       tests: jamaTests.length,
       traceLinks: jamaLinks.length,
+      attachments: attachmentSummary,
     };
   }
 
@@ -3890,6 +4047,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
 interface RiskSimulationMetricsFile {
   coverageHistory?: unknown;
   testHistory?: unknown;
+  backlogHistory?: unknown;
 }
 
 const normalizeNumericField = (
@@ -3999,11 +4157,63 @@ const normalizeTestHistory = (
   });
 };
 
+const normalizeBacklogHistory = (
+  value: unknown,
+  sourcePath: string,
+): RiskSimulationBacklogSample[] => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${sourcePath} dosyasında backlogHistory alanı dizi olmalıdır.`);
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`${sourcePath} backlogHistory[${index}] kaydı nesne olmalıdır.`);
+    }
+    const sample = entry as Record<string, unknown>;
+    const timestamp = sample.timestamp;
+    if (typeof timestamp !== 'string' || !timestamp.trim()) {
+      throw new Error(
+        `${sourcePath} backlogHistory[${index}].timestamp değeri string olmalıdır.`,
+      );
+    }
+    const total = normalizeNumericField(
+      sample.total,
+      `${sourcePath} backlogHistory[${index}].total sayısal olmalıdır.`,
+    );
+    const blocked = normalizeNumericField(
+      sample.blocked,
+      `${sourcePath} backlogHistory[${index}].blocked sayısal olmalıdır.`,
+    );
+    const critical = normalizeNumericField(
+      sample.critical,
+      `${sourcePath} backlogHistory[${index}].critical sayısal olmalıdır.`,
+    );
+    const medianAgeDaysRaw = sample.medianAgeDays;
+    const medianAgeDays =
+      medianAgeDaysRaw === undefined
+        ? undefined
+        : normalizeNumericField(
+            medianAgeDaysRaw,
+            `${sourcePath} backlogHistory[${index}].medianAgeDays sayısal olmalıdır.`,
+          );
+    return {
+      timestamp,
+      total,
+      blocked,
+      critical,
+      medianAgeDays,
+    } satisfies RiskSimulationBacklogSample;
+  });
+};
+
 const loadRiskSimulationMetrics = async (
   metricsPath: string,
 ): Promise<{
   coverageHistory: RiskSimulationCoverageSample[];
   testHistory: RiskSimulationTestSample[];
+  backlogHistory: RiskSimulationBacklogSample[];
 }> => {
   let raw: RiskSimulationMetricsFile;
   try {
@@ -4015,6 +4225,7 @@ const loadRiskSimulationMetrics = async (
   return {
     coverageHistory: normalizeCoverageHistory(raw.coverageHistory, metricsPath),
     testHistory: normalizeTestHistory(raw.testHistory, metricsPath),
+    backlogHistory: normalizeBacklogHistory(raw.backlogHistory, metricsPath),
   };
 };
 
@@ -4081,13 +4292,16 @@ export interface RiskSimulateResult {
   simulation: ComplianceRiskSimulationResult;
   coverageHistory: RiskSimulationCoverageSample[];
   testHistory: RiskSimulationTestSample[];
+  backlogHistory: RiskSimulationBacklogSample[];
 }
 
 export const runRiskSimulate = async (
   options: RiskSimulateOptions,
 ): Promise<RiskSimulateResult> => {
   const metricsPath = path.resolve(options.metricsPath);
-  const { coverageHistory, testHistory } = await loadRiskSimulationMetrics(metricsPath);
+  const { coverageHistory, testHistory, backlogHistory } = await loadRiskSimulationMetrics(
+    metricsPath,
+  );
   const coverageLift = normalizeCoverageLift(options.coverageLift);
   const iterations = normalizeIterations(options.iterations);
   const seed = normalizeSeed(options.seed);
@@ -4095,6 +4309,7 @@ export const runRiskSimulate = async (
   const simulation = simulateComplianceRisk({
     coverageHistory: adjustedCoverage,
     testHistory,
+    backlogHistory,
     iterations,
     seed,
   });
@@ -4104,6 +4319,7 @@ export const runRiskSimulate = async (
     simulation,
     coverageHistory: adjustedCoverage,
     testHistory: testHistory.map((sample) => ({ ...sample })),
+    backlogHistory: backlogHistory.map((sample) => ({ ...sample })),
   };
 };
 
@@ -5592,6 +5808,38 @@ if (require.main === module) {
             describe: 'Jama REST API erişim tokenı.',
             type: 'string',
           })
+          .option('jama-page-size', {
+            describe: 'Jama REST API sayfalama boyutu.',
+            type: 'number',
+          })
+          .option('jama-max-pages', {
+            describe: 'Jama REST API sayfa üst sınırı.',
+            type: 'number',
+          })
+          .option('jama-timeout', {
+            describe: 'Jama REST API istek zaman aşımı (ms).',
+            type: 'number',
+          })
+          .option('jama-rate-limit-delays', {
+            describe:
+              'Jama oran sınırlaması tekrar deneme gecikmeleri (ms) virgülle ayrılmış liste.',
+            type: 'string',
+          })
+          .option('jama-requirements-endpoint', {
+            describe:
+              'Jama gereksinimlerini döndüren uç nokta (varsayılan: /rest/latest/projects/:projectId/items?itemType=REQUIREMENT).',
+            type: 'string',
+          })
+          .option('jama-tests-endpoint', {
+            describe:
+              'Jama test kayıtlarını döndüren uç nokta (varsayılan: /rest/latest/projects/:projectId/items?itemType=TEST_CASE).',
+            type: 'string',
+          })
+          .option('jama-relationships-endpoint', {
+            describe:
+              'Jama ilişki kayıtlarını döndüren uç nokta (varsayılan: /rest/latest/projects/:projectId/relationships).',
+            type: 'string',
+          })
           .option('doors-page-size', {
             describe: 'DOORS Next sayfalama boyutu (varsayılan 200).',
             type: 'number',
@@ -6999,6 +7247,7 @@ export const __internal = {
   logCliError,
   mergeStructuralCoverage,
   buildJiraCloudOptions,
+  buildJamaOptions,
 };
 
 export {
