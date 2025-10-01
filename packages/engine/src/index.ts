@@ -32,6 +32,11 @@ import {
   type RiskInput,
   type RiskProfile,
 } from './risk';
+import {
+  detectStaleEvidence,
+  type StaleEvidenceFinding,
+  type StaleEvidenceOptions,
+} from './gaps';
 
 export * from './coverage';
 export * from './gaps';
@@ -891,9 +896,12 @@ export interface GapAnalysis {
   quality: GapItem[];
   issues: GapItem[];
   conformity: GapItem[];
+  staleEvidence: StaleEvidenceFinding[];
 }
 
-const artifactCategoryMap: Record<ObjectiveArtifactType, keyof GapAnalysis> = {
+type GapArtifactCategory = Exclude<keyof GapAnalysis, 'staleEvidence'>;
+
+const artifactCategoryMap: Record<ObjectiveArtifactType, GapArtifactCategory> = {
   plan: 'plans',
   standard: 'standards',
   review: 'reviews',
@@ -909,8 +917,17 @@ const artifactCategoryMap: Record<ObjectiveArtifactType, keyof GapAnalysis> = {
   conformity: 'conformity',
 };
 
-export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAnalysis => {
-  const categoryBuckets: Record<keyof GapAnalysis, Map<string, Set<ObjectiveArtifactType>>> = {
+export interface BuildGapAnalysisOptions {
+  objectives?: Objective[];
+  evidenceIndex?: EvidenceIndex;
+  staleEvidence?: StaleEvidenceOptions;
+}
+
+export const buildGapAnalysis = (
+  objectiveCoverage: ObjectiveCoverage[],
+  options: BuildGapAnalysisOptions = {},
+): GapAnalysis => {
+  const categoryBuckets: Record<GapArtifactCategory, Map<string, Set<ObjectiveArtifactType>>> = {
     plans: new Map(),
     standards: new Map(),
     reviews: new Map(),
@@ -940,6 +957,19 @@ export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAna
       missingArtifacts: Array.from(artifacts.values()),
     }));
 
+  const coverageIds = new Set(objectiveCoverage.map((entry) => entry.objectiveId));
+  let staleEvidence: StaleEvidenceFinding[] = [];
+  if (options.objectives && options.evidenceIndex) {
+    const relevantObjectives = options.objectives.filter((objective) =>
+      coverageIds.has(objective.id),
+    );
+    if (relevantObjectives.length > 0) {
+      staleEvidence = detectStaleEvidence(relevantObjectives, options.evidenceIndex, {
+        ...options.staleEvidence,
+      });
+    }
+  }
+
   return {
     plans: toGapItems(categoryBuckets.plans),
     standards: toGapItems(categoryBuckets.standards),
@@ -952,6 +982,7 @@ export const buildGapAnalysis = (objectiveCoverage: ObjectiveCoverage[]): GapAna
     quality: toGapItems(categoryBuckets.quality),
     issues: toGapItems(categoryBuckets.issues),
     conformity: toGapItems(categoryBuckets.conformity),
+    staleEvidence,
   };
 };
 
@@ -1027,10 +1058,15 @@ export interface ComplianceSnapshotRiskOptions extends Partial<RiskInput> {
   snapshotHistory?: ComplianceDeltaSnapshot[];
 }
 
+export interface GapRuleOptions {
+  staleEvidence?: StaleEvidenceOptions;
+}
+
 export interface ComplianceSnapshotOptions {
   includeRisk?: boolean;
   risk?: ComplianceSnapshotRiskOptions;
   changeImpactBaseline?: TraceGraph;
+  gapRules?: GapRuleOptions;
 }
 
 export interface ComplianceIndependenceEntry {
@@ -1162,7 +1198,9 @@ export const generateComplianceSnapshot = (
   options: ComplianceSnapshotOptions = {},
 ): ComplianceSnapshot => {
   const fingerprint = computeBundleFingerprint(bundle);
-  const baseTimestamp = bundle.generatedAt ?? bundle.snapshot?.createdAt ?? new Date().toISOString();
+  const fallbackTimestamp = new Date().toISOString();
+  const baseTimestamp = bundle.generatedAt ?? bundle.snapshot?.createdAt ?? fallbackTimestamp;
+  const generatedAt = bundle.generatedAt ?? fallbackTimestamp;
   let version: SnapshotVersion;
   if (bundle.snapshot && bundle.snapshot.fingerprint === fingerprint) {
     version = bundle.snapshot;
@@ -1204,7 +1242,23 @@ export const generateComplianceSnapshot = (
   }
   const objectiveStats = summarizeObjectives(objectiveCoverage);
   const testStats = summarizeTests(bundle.testResults);
-  const baseGapAnalysis = buildGapAnalysis(objectiveCoverage);
+  const staleConfig = options.gapRules?.staleEvidence;
+  const staleEvidenceOptions: StaleEvidenceOptions = { ...(staleConfig ?? {}) };
+  if (!staleConfig || !Object.prototype.hasOwnProperty.call(staleConfig, 'analysisTimestamp')) {
+    staleEvidenceOptions.analysisTimestamp = generatedAt;
+  }
+  if (!staleConfig || !Object.prototype.hasOwnProperty.call(staleConfig, 'snapshotTimestamp')) {
+    staleEvidenceOptions.snapshotTimestamp = bundle.snapshot?.frozenAt ?? bundle.snapshot?.createdAt;
+  }
+  if (!staleConfig || !Object.prototype.hasOwnProperty.call(staleConfig, 'maxAgeDays')) {
+    staleEvidenceOptions.maxAgeDays = 90;
+  }
+
+  const baseGapAnalysis = buildGapAnalysis(objectiveCoverage, {
+    objectives: bundle.objectives,
+    evidenceIndex: bundle.evidenceIndex,
+    staleEvidence: staleEvidenceOptions,
+  });
   const designGaps = requirementCoverage
     .filter((entry) => entry.designs.length === 0)
     .map((entry) => ({
@@ -1246,7 +1300,7 @@ export const generateComplianceSnapshot = (
 
   const snapshot: ComplianceSnapshot = {
     version,
-    generatedAt: bundle.generatedAt ?? new Date().toISOString(),
+    generatedAt,
     objectives: objectiveCoverage,
     stats: {
       objectives: objectiveStats,

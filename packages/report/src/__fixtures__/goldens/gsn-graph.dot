@@ -1,0 +1,129 @@
+digraph "ComplianceGSN" {
+  rankdir="TB";
+  nodesep="0.6";
+  ranksep="1.0";
+  fontname="Inter";
+  node [fontname="Inter"];
+  edge [fontname="Inter"];
+
+  subgraph "cluster_SOI-1" {
+    label="SOI-1 Planlama";
+    style="rounded";
+    color="#94a3b8";
+    fontname="Inter";
+    node [fontname="Inter"];
+    "goal:A-3-04" [label="A-3-04 (A-3)\\nDoğrulama Stratejisi\\nSOI: SOI-1 Planlama\\nDurum: Eksik\\nBağımsızlık: Zorunlu Bağımsızlık • Bağımsızlık Sağlanamadı" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=3 peripheries=2];
+  }
+  subgraph "cluster_SOI-2" {
+    label="SOI-2 Geliştirme";
+    style="rounded";
+    color="#94a3b8";
+    fontname="Inter";
+    node [fontname="Inter"];
+    "goal:A-4-01" [label="A-4-01 (A-4)\\nÜst Düzey Gereksinimler\\nSOI: SOI-2 Geliştirme\\nDurum: Eksik\\nBağımsızlık: Zorunlu Bağımsızlık • Bağımsızlık Sağlanamadı" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=3 peripheries=2];
+  }
+  subgraph "cluster_SOI-3" {
+    label="SOI-3 Doğrulama";
+    style="rounded";
+    color="#94a3b8";
+    fontname="Inter";
+    node [fontname="Inter"];
+    "goal:A-5-06" [label="A-5-06 (A-5)\\nTest Stratejisi Uygulandı\\nSOI: SOI-3 Doğrulama\\nDurum: Eksik\\nBağımsızlık: Zorunlu Bağımsızlık • Bağımsızlık Sağlanamadı" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=3 peripheries=2];
+    "goal:A-5-08" [label="A-5-08 (A-5)\\nYapısal Kapsam—Statement\\nSOI: SOI-3 Doğrulama\\nDurum: Eksik\\nBağımsızlık: Zorunlu Bağımsızlık • Bağımsızlık Sağlanamadı" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=3 peripheries=2];
+    "goal:A-6-02" [label="A-6-02 (A-6)\\nDeğişiklik Kontrolü\\nSOI: SOI-3 Doğrulama\\nDurum: Eksik\\nBağımsızlık: Zorunlu Bağımsızlık" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#0f766e" penwidth=2.4 peripheries=2];
+  }
+
+  "evidence:A-3-04:0" [label="Plan\\ndocs/verification-plan.md" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-4-01:0" [label="Analiz\\nreports/safety-analysis.pdf" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-4-01:1" [label="İzlenebilirlik\\nartifacts/trace-map.csv" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-5-06:0" [label="Analiz\\nreports/safety-analysis.pdf" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-5-06:2" [label="İzlenebilirlik\\nartifacts/trace-map.csv" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-5-06:1" [label="Test\\nreports/junit.xml" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-5-08:0" [label="Analiz\\nreports/safety-analysis.pdf" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+  "evidence:A-5-08:1" [label="Satır Kapsamı\\nreports/coverage-summary.json" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+
+  "gap:A-3-04:0" [label="Bağımsız Plan eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-3-04:1" [label="Eksik Gözden Geçirme (Gözden Geçirme Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-3-04:2" [label="Eksik Plan (Planlama Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-3-04:3" [label="Güncel olmayan Plan\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:0" [label="Bağımsız Analiz eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:1" [label="Bağımsız İzlenebilirlik eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:2" [label="Eksik Analiz (Analiz Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:3" [label="Eksik Gözden Geçirme (Gözden Geçirme Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:4" [label="Eksik İzlenebilirlik (İzlenebilirlik)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:5" [label="Güncel olmayan Analiz\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-4-01:6" [label="Güncel olmayan İzlenebilirlik\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:0" [label="Bağımsız Analiz eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:1" [label="Bağımsız İzlenebilirlik eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:2" [label="Bağımsız Test eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:3" [label="Eksik Analiz (Analiz Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:4" [label="Eksik İzlenebilirlik (İzlenebilirlik)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:5" [label="Eksik Test (Test Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:6" [label="Güncel olmayan Analiz\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:7" [label="Güncel olmayan İzlenebilirlik\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-06:8" [label="Güncel olmayan Test\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:0" [label="Bağımsız Analiz eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:1" [label="Bağımsız Satır Kapsamı eksik" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:2" [label="Eksik Analiz (Analiz Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:3" [label="Eksik Satır Kapsamı (Kapsam Kanıtları)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:4" [label="Güncel olmayan Analiz\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-5-08:5" [label="Güncel olmayan Satır Kapsamı\\n2024-01-10 09:30 UTC • Snapshot öncesi • 22g>90g" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-6-02:0" [label="Eksik Konfigürasyon Kaydı (Konfigürasyon Yönetimi)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:A-6-02:1" [label="Eksik Problem Raporu (Problem Takibi)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:REQ-AUTH-1:0" [label="Eksik DESIGN (İzlenebilirlik)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:REQ-AUTH-2:0" [label="Eksik DESIGN (İzlenebilirlik)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+  "gap:REQ-AUTH-3:0" [label="Eksik DESIGN (İzlenebilirlik)" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" fontcolor="#7f1d1d" penwidth=1.8];
+
+  subgraph "cluster_legend" {
+    label="Lejant";
+    style="rounded";
+    color="#94a3b8";
+    fontname="Inter";
+    node [fontname="Inter"];
+    "legend_goal_covered" [label="Hedef • Tam Karşılandı" shape="rect" style="rounded,filled" fillcolor="#dcfce7" color="#15803d" penwidth=1.6];
+    "legend_goal_partial" [label="Hedef • Kısmen Karşılandı" shape="rect" style="rounded,filled" fillcolor="#fef3c7" color="#b45309" penwidth=1.8];
+    "legend_goal_missing" [label="Hedef • Eksik" shape="rect" style="rounded,filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=2];
+    "legend_goal_required" [label="Zorunlu Bağımsız Hedef" shape="rect" style="rounded,filled" fillcolor="#dcfce7" color="#0f766e" penwidth=2.4 peripheries=2];
+    "legend_goal_required_gap" [label="Bağımsızlık Eksikliği" shape="rect" style="rounded,filled" fillcolor="#fef3c7" color="#b91c1c" penwidth=3 peripheries=2];
+    "legend_evidence" [label="Kanıt (Solution)" shape="note" style="filled" fillcolor="#e0f2fe" color="#0c4a6e"];
+    "legend_gap" [label="Boşluk/Kalıntı" shape="diamond" style="filled" fillcolor="#fee2e2" color="#b91c1c" penwidth=1.8];
+  }
+
+  "evidence:A-3-04:0" -> "goal:A-3-04" [color="#0284c7" penwidth=1.4];
+  "evidence:A-4-01:0" -> "goal:A-4-01" [color="#0284c7" penwidth=1.4];
+  "evidence:A-4-01:1" -> "goal:A-4-01" [color="#0284c7" penwidth=1.4];
+  "evidence:A-5-06:0" -> "goal:A-5-06" [color="#0284c7" penwidth=1.4];
+  "evidence:A-5-06:1" -> "goal:A-5-06" [color="#0284c7" penwidth=1.4];
+  "evidence:A-5-06:2" -> "goal:A-5-06" [color="#0284c7" penwidth=1.4];
+  "evidence:A-5-08:0" -> "goal:A-5-08" [color="#0284c7" penwidth=1.4];
+  "evidence:A-5-08:1" -> "goal:A-5-08" [color="#0284c7" penwidth=1.4];
+  "goal:A-3-04" -> "gap:A-3-04:0" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-3-04" -> "gap:A-3-04:1" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-3-04" -> "gap:A-3-04:2" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-3-04" -> "gap:A-3-04:3" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:0" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:1" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:2" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:3" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:4" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:5" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-4-01" -> "gap:A-4-01:6" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:0" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:1" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:2" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:3" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:4" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:5" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:6" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:7" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-06" -> "gap:A-5-06:8" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:0" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:1" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:2" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:3" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:4" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-5-08" -> "gap:A-5-08:5" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-6-02" -> "gap:A-6-02:0" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+  "goal:A-6-02" -> "gap:A-6-02:1" [color="#b91c1c" style="dashed" penwidth=1.4 arrowhead="vee"];
+
+}

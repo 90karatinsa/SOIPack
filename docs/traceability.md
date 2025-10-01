@@ -24,6 +24,31 @@ Gereksinim boşlukları aşağıdaki şiddet seviyeleriyle sınıflandırılır:
 
 `summary.highPriorityRequirements` alanı, kapatılması gereken gereksinimleri hızlıca öne çıkarır.
 
+## Değişiklik Etki Analizi ve Git değişkenliği
+
+`analyzeChangeImpact` fonksiyonu, iki iz grafiği arasındaki farkları inceleyerek gereksinim, tasarım, kod ve test düğümlerinin riskini hesaplar. Motor, temel değişikliklerin yanı sıra Git geçmişinden türetilen değişkenlik sinyallerini de değerlendirir:
+
+- **Recent commits:** Son çalışma haftalarındaki commit sayısı `gitRecentCommitWeight` (varsayılan `0.8`) ile çarpılır.
+- **Diff size:** Toplam satır ekleme/çıkarma miktarı `log1p` ile sıkıştırılır ve `gitDiffSizeWeight` (varsayılan `0.04`) ile ölçeklenir.
+- **Branch divergence:** Özellik dalının ana dal ile ayrıştığı commit sayısı `gitBranchDivergenceWeight` (varsayılan `1.2`) ile ağırlıklandırılır.
+
+Toplam volatilite, ilgili kod düğümünün temel skoruna eklenir ve bağlantılı gereksinim/tasarım düğümlerine dalga etkisiyle yayılır. Böylece yakın zamanda yoğun değişikliğe uğramış dosyalar, doğrudan içerik farkı olmasa bile yüksek riskli olarak raporlanır.
+
+İsteğe bağlı `gitMetrics` seçeneği ile bu veriler çalışma alanına enjekte edilebilir:
+
+```ts
+import { analyzeChangeImpact } from '@soipack/engine';
+
+const gitMetrics = {
+  'code:src/controllers/auth.ts': { recentCommits: 6, diffSize: 180, branchDivergence: 2 },
+  'src/shared/validators.ts': { recentCommits: 1, diffSize: 12, branchDivergence: 0 },
+};
+
+const scores = analyzeChangeImpact(baselineGraph, currentGraph, { gitMetrics });
+```
+
+Anahtar hem `code:` ile başlayan düğüm anahtarı hem de çıplak dosya yolu ile eşleşebilir. Kuruluşlar ağırlıkları `weights` parametresiyle özelleştirerek kendi risk eşiklerini uygulayabilir.
+
 ## Toleranslar
 
 - Sağlık kontrolleri veya yardımcı testler gibi kodla eşleşmeyen testler, manuel olarak hariç tutulmadıkça çatışma olarak raporlanır.

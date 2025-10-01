@@ -63,7 +63,12 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
   almak için sırasıyla `--polarion-url --polarion-project` ve `--jenkins-url
   --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
   CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
-  `polarion`/`jenkins` olarak işler.
+  `polarion`/`jenkins` olarak işler. Polarion REST ekleri otomatik olarak
+  `attachments/polarion/` dizinine indirilir, SHA-256 karmalarıyla birlikte
+  `source=polarion` kanıt kaydı oluşturulur ve `analysis.json` içindeki
+  `sources.polarion.attachments` alanı toplam ek sayısını ve bayt cinsinden
+  boyutunu raporlar. `--independent-source polarion` gibi bayraklar kullanarak
+  indirilen Polarion eklerini bağımsız kanıt olarak işaretleyebilirsiniz.
   Jenkins kapsam artefaktlarını indirmek için `--jenkins-artifacts-dir`
   bayrağıyla yerel indirme klasörünü belirtin, her LCOV/Cobertura dosyası
   için `--jenkins-coverage-artifact type=lcov,path=coverage/lcov.info`
@@ -80,6 +85,14 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
   CLI, API’den dönen gereksinim/test kayıtlarını, ilişkilendirilmiş ekleri ve
   otomatik `verifies`/`implements` bağlantılarını çalışma alanına birleştirir
   ve kanıt indeksine `source=jiraCloud` olarak kaydeder.
+  DOORS Next REST entegrasyonu da benzer şekilde gereksinim, test ve tasarım
+  kayıtlarını içe aktarır; erişilebilen her ek dosyası
+  `attachments/doorsNext/` altında kalıcı hale getirilir, SHA-256 karması ile
+  kanıt indeksine `source=doorsNext` olarak eklenir ve `--independent-source
+  doorsNext` gibi bayraklar kullanıldığında bağımsız kanıt olarak işaretlenir.
+  Çalışma alanı metaverisi, indirilen DOORS Next eklerinin toplam sayısını ve
+  boyutlarını raporlar; böylece hangi gereksinim artefaktlarının fiziksel
+  dosyalarla desteklendiğini hızlıca doğrulayabilirsiniz.
   Tasarım doğrulama CSV dışa aktarımlarını `--design-csv` ile,
   Polyspace/LDRA/VectorCAST statik analiz arşivlerini sırasıyla `--polyspace`,
   `--ldra`, `--vectorcast` bayraklarıyla ve kalite denetim günlüklerini birden
@@ -315,7 +328,7 @@ UI derlemesi Vite'in `import.meta.env` nesnesini doğrudan kullanır ve dinamik 
 
 Token kutusunun hemen yanında yeni “Lisans Anahtarı” bileşeni bulunur. JSON tabanlı lisans dosyanızı yüklediğinizde veya panodan yapıştırdığınızda içerik istemci tarafında doğrulanır, `JSON.stringify` ile normalize edilir ve otomatik olarak base64’e çevrilerek tüm API çağrılarında `X-SOIPACK-License` başlığına eklenir. Lisans alanı boş bırakılırsa UI pipeline’ı başlatmadan önce uyarı gösterir ve sunucuya istek göndermez; bu sayede lisanssız isteklerin msw tabanlı testlerde bile `LICENSE_REQUIRED` hatasıyla reddedildiği doğrulanır.
 
-“Risk kokpiti” sekmesi, sunucunun SSE kanalı üzerinden yayınladığı `riskProfile`, `ledgerEntry` ve yeni `manifestProof` olaylarını dinleyerek canlı sonuçları gösterir. Merkle kanıt gezgini kartı, gelen manifest kimliğini, Merkle kökünü ve dosya başına kanıt/ doğrulama durumlarını listeler; kanıtı bulunan dosyalar seçildiğinde `simulateComplianceRisk` çıktılarının da beslendiği risk paneliyle birlikte kanıt yolundaki her düğümün yön/hash bilgisi görselleştirilir. Seçili kanıt istekle alınırken hata oluşursa kart hata mesajını ve “Yeniden dene” butonunu gösterir; yeni olaylar geldiğinde durum rozeti, kanıt doğrulaması ve özet metaveriler otomatik güncellenir.【F:packages/ui/src/pages/RiskCockpitPage.tsx†L1-L600】【F:packages/engine/src/risk.ts†L1-L270】
+“Risk kokpiti” sekmesi, sunucunun SSE kanalı üzerinden yayınladığı `riskProfile`, `ledgerEntry` ve yeni `manifestProof` olaylarını dinleyerek canlı sonuçları gösterir. Monte Carlo simülasyonlarıyla gelen aşama risk tahminleri, yüzde 10/50/90 bantlarını dolduran eğriler ve zaman içindeki sınıflandırma geçişleriyle görselleştirilir; böylece regresyon olasılığının nasıl evrildiği hızlıca okunabilir. Merkle kanıt gezgini kartı, gelen manifest kimliğini, Merkle kökünü ve dosya başına kanıt/ doğrulama durumlarını listeler; kanıtı bulunan dosyalar seçildiğinde `simulateComplianceRisk` çıktılarının da beslendiği risk paneliyle birlikte kanıt yolundaki her düğümün yön/hash bilgisi görselleştirilir. Seçili kanıt istekle alınırken hata oluşursa kart hata mesajını ve “Yeniden dene” butonunu gösterir; yeni olaylar geldiğinde durum rozeti, kanıt doğrulaması ve özet metaveriler otomatik güncellenir. What-if “Risk Sandbox” kartındaki hazır ayarlar, kapsam artışı/başarısızlık varsayımlarını tek tıkla günceller; özet, dağılım ve sınıf listeleri üzerine eklenen ipuçları her metriğin anlamını netleştirir.【F:packages/ui/src/pages/RiskCockpitPage.tsx†L1-L600】【F:packages/engine/src/risk.ts†L1-L270】
 
 Arayüzdeki temel görünüm aşağıda özetlenmiştir:
 

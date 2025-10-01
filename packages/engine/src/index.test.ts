@@ -586,6 +586,7 @@ describe('Compliance snapshot generation', () => {
     expect(snapshot.gaps.trace).toHaveLength(0);
     expect(snapshot.gaps.quality).toHaveLength(0);
     expect(snapshot.gaps.conformity).toHaveLength(0);
+    expect(snapshot.gaps.staleEvidence).toHaveLength(0);
   });
 
   it('appends design gaps when requirements lack design coverage', () => {

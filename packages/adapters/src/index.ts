@@ -20,7 +20,7 @@ export { fromVectorCAST } from './vectorcast';
 export { fromSimulink } from './simulink';
 export { importQaLogs } from './qaLogs';
 export { fetchPolarionArtifacts } from './polarion';
-export type { PolarionClientOptions } from './polarion';
+export type { PolarionClientOptions, PolarionAttachmentMetadata } from './polarion';
 export { fetchJamaArtifacts } from './jama';
 export type { JamaClientOptions, JamaImportBundle, JamaTraceLink } from './jama';
 export { fetchJenkinsArtifacts } from './jenkins';

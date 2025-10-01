@@ -70,8 +70,40 @@ await fs.promises.writeFile(`reports/${pack.tqp.filename}`, pack.tqp.content);
 await fs.promises.writeFile(`reports/${pack.tar.filename}`, pack.tar.content);
 ```
 
-The generated Markdown captures controls, validation activities, open items, and residual risks for
-each tool. Pending activities are counted automatically so reviewers can focus on remaining work.
+The generated Markdown captures controls, validation activities, compliance cross-links, and residual
+risks for each tool. Pending activities are counted automatically so reviewers can focus on remaining
+work.【F:packages/report/src/index.ts†L864-L1007】
+
+### Link compliance context and ledger hashes
+
+Pass the compliance snapshot and ledger hashes through the optional `compliance` block to add live
+cross-links to the pack. The generator walks each tool's declared objectives, renders their latest
+status badge, independence posture, and any recorded ledger hashes, then appends a residual risk
+summary to both the TQP and TAR outputs.【F:packages/report/src/index.ts†L876-L1007】
+
+```ts
+const pack = renderToolQualificationPack(toolUsage, {
+  programName: 'Flight Control',
+  level: 'A',
+  author: 'QA Team',
+  compliance: {
+    snapshot: {
+      objectives: snapshot.objectives,
+      independenceSummary: snapshot.independenceSummary,
+    },
+    objectivesMetadata,
+    ledgerHashes, // e.g. evidence path -> SHA-256 string
+  },
+});
+```
+
+Both Markdown files now include an "Uyum Bağlantıları" section that lists every referenced objective
+with its stage label, compliance status badge, independence alert (highlighting missing artifacts),
+and any ledger hashes associated with the supporting evidence. A blockquote-style "Kalıcı Risk Özeti"
+is emitted even when no residual risk exists so downstream reviewers can confirm the absence of
+remaining concerns.【F:packages/report/src/index.ts†L948-L1007】 The returned `summary.tools[]`
+entries also expose `residualRiskCount` and `residualRiskSummary`, enabling the compliance dashboard
+to surface the same overview without re-rendering the pack.【F:packages/report/src/index.ts†L910-L934】
 
 ### Generate packs from the CLI
 
@@ -115,7 +147,8 @@ await fs.promises.writeFile('reports/compliance_matrix.json', JSON.stringify(rep
 ```
 
 The compliance report will show a new "DO-330 Araç Niteliklendirme" section containing quick links to
-the TQP/TAR files and a table that highlights each tool's outputs and any open validation tasks.
+the TQP/TAR files and a table that highlights each tool's outputs, open validation tasks, and the
+residual risk summary string carried from the pack generator.【F:packages/report/src/index.ts†L1728-L1785】【F:packages/report/src/index.ts†L3094-L3137】
 
 ## 4. Verify the workflow
 

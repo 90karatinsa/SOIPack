@@ -108,6 +108,10 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - API yanıtlarında yer alan `linkedWorkItems`, `linkedTests`, `requirementIds` gibi alanlar analiz edilerek gereksinim-test ilişkileri `RemoteTraceLink` listesine dönüştürülür; link rolü `implements` veya `verifies` türlerine haritalanır.
 - Sayfalama sırasında alınan `HTTP 429` yanıtları için mevcut ETag önbelleği korunur ve maksimum geri deneme sonrasında bile önbellekteki veri kullanılabildiğinden veri kaybı yaşanmaz; kullanıcıya yalnızca tek seferlik bir uyarı mesajı gösterilir.
 - CLI `import` komutu Polarion’dan dönen `relationships` listesini izlenebilirlik kanıtı olarak ekler ve çalışma alanına yeni bağlantılar ekleyerek `source=polarion` metaverisini ilişkilerin toplam sayısı ile günceller.
+- Aynı API çağrısı, her iş öğesi (`work item`) için ekleri (attachments) REST uç noktalarından toplayarak `attachments` alanında SHA-256 karması, MIME türü ve bayt boyutuyla döndürür. İndirilen her ek ilgili iş öğesi kimliğiyle eşleştirilir.
+- Varsayılan uç nokta şablonu `/polarion/api/v2/projects/:projectId/workitems/:workItemId/attachments` olup `attachmentsEndpoint` ile özelleştirilebilir; koleksiyon sayfa boyutu `attachmentsPageSize`, eşzamanlı istek sayısı ise `attachmentsConcurrency` ile sınırlandırılabilir.
+- Her dosya indirmesi varsayılan olarak 25 MB (`maxAttachmentBytes`) ile sınırlandırılır. Dosya boyutu üst sınırı aşıldığında indirme kesilir ve kullanıcıya uyarı olarak raporlanır, kaynağın URL’si ve dosya adı korunarak manifestte eksik içerik fark edilir.
+- Polarion indirme yanıtlarından gelen ETag üstbilgileri `If-None-Match` ile tekrar kullanılarak gereksiz veri transferi engellenir; 304 yanıtlarında önceki karma değerleri korunur. 2xx/4xx karışık sayfa yanıtlarında her başarısız sayfa için ayrıntılı uyarı mesajı üretilir.
 
 ## DOORS Next Generation OSLC
 

@@ -20,6 +20,7 @@ import {
   renderToolQualificationPack,
   renderTraceMatrix,
   renderTraceGraphDot,
+  renderGsnGraphDot,
   printToPDF,
   type ToolUsageMetadata,
 } from './index';
@@ -310,6 +311,22 @@ describe('@soipack/report', () => {
     }
   });
 
+  it('renders compliance snapshot GSN DOT with legend and independence cues', () => {
+    const fixture = createReportFixture();
+    const dot = renderGsnGraphDot(fixture.snapshot, {
+      graphName: 'ComplianceGSN',
+      objectivesMetadata: fixture.objectives,
+    });
+
+    maybeUpdateGolden('gsn-graph.dot', dot);
+    const goldenDot = readFileSync(path.join(goldenDir, 'gsn-graph.dot'), 'utf-8');
+    expect(dot).toBe(goldenDot);
+    expect(dot).toContain('cluster_SOI-3');
+    expect(dot).toContain('Bağımsızlık:');
+    expect(dot).toContain('legend_goal_required_gap');
+    expect(dot).toContain('Güncel olmayan');
+  });
+
   it('renders gap analysis with objective metadata', () => {
     const fixture = createReportFixture();
     const html = renderGaps(fixture.snapshot, {
@@ -454,6 +471,15 @@ describe('@soipack/report', () => {
         residualRisks: ['Mutasyon sonuçları manuel onay gerektirir.'],
       },
     ];
+    const toolFixture = createReportFixture();
+    const ledgerHashes = {
+      'docs/verification-plan.md': 'hash-plan',
+      'reports/coverage-summary.json': 'hash-coverage',
+      'reports/vectorcast.json': 'hash-mcdc',
+      'reports/safety-analysis.pdf': 'hash-analysis',
+      'reviews/vectorcast-merge.md': 'hash-review',
+      'validation/vectorcast-baseline.csv': 'hash-validation',
+    } as const;
 
     it('ToolQualification pack outlines include validation and controls', () => {
       const pack = renderToolQualificationPack(sampleTools, {
@@ -461,6 +487,14 @@ describe('@soipack/report', () => {
         level: 'A',
         author: 'QA Team',
         generatedAt: '2024-03-01T00:00:00Z',
+        compliance: {
+          snapshot: {
+            objectives: toolFixture.snapshot.objectives,
+            independenceSummary: toolFixture.snapshot.independenceSummary,
+          },
+          objectivesMetadata: toolFixture.objectives,
+          ledgerHashes,
+        },
       });
 
       expect(pack.tqp.filename).toBe('tool-qualification-plan.md');
@@ -468,9 +502,18 @@ describe('@soipack/report', () => {
       expect(pack.tqp.content).toContain('# DO-330 Tool Qualification Plan');
       expect(pack.tqp.content).toContain('VectorCAST');
       expect(pack.tqp.content).toContain('Kontroller ve Doğrulama Aktiviteleri');
+      expect(pack.tqp.content).toContain('Uyum Bağlantıları');
+      expect(pack.tqp.content).toMatch(/Durum: .*status-/);
+      expect(pack.tqp.content).toContain('Bağımsızlık:');
+      expect(pack.tqp.content).toContain('Ledger Hashleri:');
+      expect(pack.tqp.content).toContain('Kalıcı Risk Özeti');
       expect(pack.tar.content).toContain('Tool Accomplishment Report');
       expect(pack.tar.content).toContain('Açık Aktivite Sayısı: 1');
+      expect(pack.tar.content).toContain('Uyum Referansları');
+      expect(pack.tar.content).toContain('Kalıcı Risk Özeti');
       expect(pack.summary.tools[0].pendingActivities).toBe(1);
+      expect(pack.summary.tools[0].residualRiskCount).toBe(1);
+      expect(pack.summary.tools[0].residualRiskSummary).toContain('Mutasyon sonuçları manuel onay gerektirir');
       expect(pack.summary.generatedAt).toBe('2024-03-01T00:00:00Z');
     });
 
@@ -480,6 +523,14 @@ describe('@soipack/report', () => {
         level: 'A',
         author: 'QA Team',
         generatedAt: '2024-03-01T00:00:00Z',
+        compliance: {
+          snapshot: {
+            objectives: toolFixture.snapshot.objectives,
+            independenceSummary: toolFixture.snapshot.independenceSummary,
+          },
+          objectivesMetadata: toolFixture.objectives,
+          ledgerHashes,
+        },
       });
       const fixture = createReportFixture();
 
@@ -499,6 +550,8 @@ describe('@soipack/report', () => {
       expect(result.html).toContain('VectorCAST');
       expect(result.html).toContain('TQP Taslağı');
       expect(result.html).toContain('Açık Aktiviteler');
+      expect(result.json.toolQualification?.tools[0].residualRiskCount).toBe(1);
+      expect(result.json.toolQualification?.tools[0].residualRiskSummary).toContain('Kalıcı Risk Özeti');
       expect(result.json.toolQualification?.tools[0].pendingActivities).toBe(1);
       expect(result.json.toolQualification?.tqpHref).toBe('tool-qualification-plan.md');
       expect(result.json.toolQualification?.tarHref).toBe('tool-accomplishment-report.md');

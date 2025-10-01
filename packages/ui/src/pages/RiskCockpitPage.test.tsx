@@ -254,6 +254,18 @@ describe('RiskCockpitPage', () => {
     expect(screen.getByText('guarded')).toBeInTheDocument();
     expect(screen.getByText('%23')).toBeInTheDocument();
     expect(screen.getByText(/90% güven aralığı: %12 – %34/)).toBeInTheDocument();
+
+    const trendChart = screen.getByRole('img', {
+      name: /SOI-1 Monte Carlo yüzde 10\/50\/90 trendi/i,
+    });
+    expect(trendChart).toBeInTheDocument();
+
+    const classificationTimeline = screen.getByRole('list', {
+      name: /SOI-1 sınıflandırma geçişleri/i,
+    });
+    const timelineItems = within(classificationTimeline).getAllByRole('listitem');
+    expect(timelineItems).toHaveLength(1);
+    expect(timelineItems[0]).toHaveTextContent(/nominal/i);
   });
 
   it('runs the what-if sandbox simulation when sliders are adjusted', async () => {
@@ -285,21 +297,35 @@ describe('RiskCockpitPage', () => {
 
     renderPage();
 
+    const user = userEvent.setup();
+
     await waitFor(() => expect(mockFetchStageRiskForecast).toHaveBeenCalledTimes(1));
 
-    const coverageSlider = await screen.findByLabelText(/Projeksiyon kapsam artışı/i);
-    const failureSlider = screen.getByLabelText(/Test başarısızlığı şiddeti/i);
+    const balancedPreset = await screen.findByTestId('sandbox-preset-balanced');
+    const aggressivePreset = screen.getByTestId('sandbox-preset-aggressive');
+    expect(balancedPreset).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(aggressivePreset);
+    expect(aggressivePreset).toHaveAttribute('aria-pressed', 'true');
+    expect(balancedPreset).toHaveAttribute('aria-pressed', 'false');
+
+    const coverageSlider = (await screen.findByLabelText(
+      /Projeksiyon kapsam artışı/i,
+    )) as HTMLInputElement;
+    const failureSlider = screen.getByLabelText(/Test başarısızlığı şiddeti/i) as HTMLInputElement;
+    expect(coverageSlider.value).toBe('6');
+    expect(failureSlider.value).toBe('18');
 
     fireEvent.change(coverageSlider, { target: { value: '28' } });
     fireEvent.change(failureSlider, { target: { value: '22' } });
+    expect(aggressivePreset).toHaveAttribute('aria-pressed', 'false');
 
-    const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /Simülasyonu çalıştır/i }));
 
     const expected = runRiskSandboxSimulation(sandboxForecasts, {
       coverageLift: 28,
       failureRate: 22,
-      iterations: 500,
+      iterations: 650,
     });
 
     await waitFor(() =>
@@ -314,6 +340,9 @@ describe('RiskCockpitPage', () => {
     expect(screen.getByTestId('sandbox-expected-failures')).toHaveTextContent(
       expected.expectedFailures.toFixed(2),
     );
+    expect(screen.getByTestId('sandbox-average-risk')).toHaveAttribute('title');
+    expect(screen.getByTestId('sandbox-regression-probability')).toHaveAttribute('title');
+    expect(screen.getByTestId('sandbox-expected-failures')).toHaveAttribute('title');
 
     const distributionBars = screen.getAllByTestId('sandbox-distribution-bar');
     expect(distributionBars).toHaveLength(expected.distribution.length);
@@ -321,10 +350,13 @@ describe('RiskCockpitPage', () => {
       'data-failures',
       `${expected.distribution[0].failures}`,
     );
+    const distributionItems = within(screen.getByTestId('sandbox-distribution')).getAllByRole('listitem');
+    expect(distributionItems[0]).toHaveAttribute('title');
 
     const classificationList = screen.getByTestId('sandbox-classifications');
     const classificationItems = within(classificationList).getAllByRole('listitem');
     expect(classificationItems).toHaveLength(expected.classifications.length);
+    expect(classificationItems[0]).toHaveAttribute('title');
     expected.classifications.forEach((entry, index) => {
       expect(classificationItems[index]).toHaveTextContent(
         new RegExp(`${entry.classification}.*%${(entry.share * 100).toFixed(1)}`),
