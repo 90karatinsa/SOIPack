@@ -26,6 +26,24 @@ Dosya: `packages/adapters/src/adapters/lcov.ts`
 - Üretilen `CoverageReport` verileri test-harita eşleşmelerini (`TN:`) de içerir.
 - Üst düzey API `importLcov` aynı işleyiciyi kullanarak uyarıları toplar.
 
+## Jenkins REST API kapsamı
+
+Dosya: `packages/adapters/src/jenkins.ts`
+
+- `fetchJenkinsArtifacts(options)` Jenkins build ve test raporlarının yanı sıra LCOV/Cobertura kapsam
+  artefaktlarını da indirir.
+- `options.coverageArtifacts` dizisindeki her giriş `{ type: 'lcov' | 'cobertura', path, maxBytes? }`
+  şeklindedir; `path` değeri Jenkins artefaktının göreli yolunu belirtir.
+- İndirilen her kapsam dosyası `options.artifactsDir` altında aynı göreli yol hiyerarşisiyle saklanır,
+  SHA-256 karması hesaplanır ve sonuç `coverage` metaverisinde raporlanır.
+- LCOV dosyaları `parseLcovStream`, Cobertura XML'leri `importCobertura` ile akış halinde parse edilerek
+  `CoverageReport` verileri (`totals`, `files`, `testMap`) döndürülür.
+- Jenkins test raporu JSON uç noktaları varsayılan olarak 5 MiB (`maxReportBytes`) ile sınırlıdır; kapsam
+  artefaktları için ayrı bir 10 MiB varsayılan (`maxCoverageArtifactBytes`) bulunur ve gerekirse her artefakt
+  için `maxBytes` ile özelleştirilebilir.
+- HTTP 429/503 yanıtları için geri alma süresi `Retry-After` üstbilgisine göre ayarlanır; indirmeler başarısız
+  olduğunda kullanıcıya ayrıntılı uyarılar iletilir ve aşırı büyük dosyalar diskten silinir.
+
 ## ReqIF
 
 Dosya: `packages/adapters/src/adapters/reqif.ts`
@@ -109,6 +127,14 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - İçe aktarılan kayıtlar çalışma alanındaki gereksinim/test/tasarım dizilerine
   birleştirilir, DO-178C `trace`/`test` kanıt indeksine `source=doorsNext`
   olarak kaydedilir ve ilişki bağlantıları izlenebilirlik matrislerine eklenir.
+- DOORS Next ekleri `attachments/doorsNext/<artifactId>/<dosyaAdı>` dizinine
+  indirilir; dosya adları ve kimlikler güvenli karakterlerle sanitize edilir.
+  Her indirme sırasında SHA-256 karması hesaplanır, varsayılan olarak 25 MB
+  sınırı uygulanır ve `Retry-After` başlığına göre otomatik yeniden denemeler
+  yapılır. 401 yanıtlarında OAuth erişim tokenı yenilenir; token yenileme
+  başarısız olursa adaptör temel kimlik doğrulamasına döner. Eklerin indirilebilmesi için
+  DOORS Next proje alanında OSLC ek indirme yetkisi ve `/rm/.../attachments`
+  uç noktalarına HTTPS erişimi gereklidir.
 
 ## DOORS Classic CSV dışa aktarımları
 

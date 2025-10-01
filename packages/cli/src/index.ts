@@ -29,10 +29,14 @@ import {
   aggregateImportBundle,
   type BuildInfo,
   type CoverageReport,
+  type CoverageMetric,
+  type FileCoverageSummary,
   type CoverageSummary as StructuralCoverageSummary,
   type Finding,
   type JiraRequirement,
   type JenkinsClientOptions,
+  type JenkinsCoverageArtifactMetadata,
+  type JenkinsCoverageArtifactOptions,
   type PolarionClientOptions,
   type JamaClientOptions,
   type DoorsNextClientOptions,
@@ -590,6 +594,18 @@ type StaticAnalysisTool = (typeof staticAnalysisTools)[number];
 
 type ManualArtifactImports = Partial<Record<ObjectiveArtifactType, string[]>>;
 
+type JenkinsCoverageArtifactSummary = Pick<
+  JenkinsCoverageArtifactMetadata,
+  'type' | 'path' | 'sha256'
+> & {
+  localPath: string;
+  statements: number;
+  branches?: number;
+  functions?: number;
+  mcdc?: number;
+  tests?: number;
+};
+
 interface ParsedImportArguments {
   adapters: Partial<Record<StaticAnalysisTool, string>>;
   manualArtifacts: ManualArtifactImports;
@@ -601,6 +617,32 @@ const coerceOptionalString = (value: unknown): string | undefined => {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const coerceOptionalNumber = (value: unknown): number | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : undefined;
+  }
+  return undefined;
+};
+
+const parsePositiveInteger = (value: string, optionLabel: string): number => {
+  const numeric = Number(value.trim());
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new Error(`${optionLabel} pozitif bir sayı olmalıdır.`);
+  }
+  return Math.floor(numeric);
 };
 
 const parseJenkinsBuildIdentifier = (value: unknown): string | number | undefined => {
@@ -619,6 +661,117 @@ const parseJenkinsBuildIdentifier = (value: unknown): string | number | undefine
     return trimmed;
   }
   return undefined;
+};
+
+const parseJenkinsCoverageArtifacts = (
+  value: unknown,
+): JenkinsCoverageArtifactOptions[] | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const entries = Array.isArray(value) ? value : [value];
+  const artifacts: JenkinsCoverageArtifactOptions[] = [];
+
+  entries.forEach((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error('--jenkins-coverage-artifact değeri metin olarak verilmelidir.');
+    }
+
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    let type: JenkinsCoverageArtifactOptions['type'] | undefined;
+    let artifactPath: string | undefined;
+    let maxBytes: number | undefined;
+
+    const parseKeyValueEntry = (segment: string): void => {
+      const [rawKey, ...rest] = segment.split('=');
+      if (!rawKey || rest.length === 0) {
+        throw new Error(
+          `--jenkins-coverage-artifact tanımı "type=lcov,path=coverage.info" biçiminde olmalıdır (${segment}).`,
+        );
+      }
+      const key = rawKey.trim().toLowerCase();
+      const rawValue = rest.join('=').trim();
+      if (!rawValue) {
+        throw new Error(`--jenkins-coverage-artifact için ${key} değeri boş olamaz.`);
+      }
+      if (key === 'type') {
+        const normalized = rawValue.toLowerCase();
+        if (normalized !== 'lcov' && normalized !== 'cobertura') {
+          throw new Error(
+            `--jenkins-coverage-artifact type değeri lcov veya cobertura olmalıdır (${rawValue}).`,
+          );
+        }
+        type = normalized;
+        return;
+      }
+      if (key === 'path') {
+        artifactPath = rawValue;
+        return;
+      }
+      if (key === 'maxbytes' || key === 'max' || key === 'limit') {
+        maxBytes = parsePositiveInteger(rawValue, '--jenkins-coverage-artifact maxBytes');
+        return;
+      }
+      throw new Error(`Bilinmeyen Jenkins coverage artefakt anahtarı: ${rawKey}.`);
+    };
+
+    if (trimmed.includes('=')) {
+      trimmed
+        .split(',')
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0)
+        .forEach(parseKeyValueEntry);
+    } else {
+      const [rawType, rawRest] = trimmed.split(':', 2);
+      if (!rawRest) {
+        throw new Error(
+          '--jenkins-coverage-artifact değeri "lcov:coverage/lcov.info" biçiminde olmalıdır.',
+        );
+      }
+      const normalizedType = rawType.trim().toLowerCase();
+      if (normalizedType === 'lcov' || normalizedType === 'cobertura') {
+        type = normalizedType;
+      } else {
+        throw new Error(
+          `--jenkins-coverage-artifact için geçersiz tür: ${rawType}. (lcov | cobertura) bekleniyor.)`,
+        );
+      }
+      const atIndex = rawRest.lastIndexOf('@');
+      if (atIndex >= 0) {
+        const pathPart = rawRest.slice(0, atIndex).trim();
+        const limitPart = rawRest.slice(atIndex + 1).trim();
+        if (!pathPart) {
+          throw new Error('--jenkins-coverage-artifact için dosya yolu belirtilmelidir.');
+        }
+        artifactPath = pathPart;
+        if (limitPart) {
+          maxBytes = parsePositiveInteger(limitPart, '--jenkins-coverage-artifact maxBytes');
+        }
+      } else {
+        artifactPath = rawRest.trim();
+      }
+    }
+
+    if (!type) {
+      throw new Error('--jenkins-coverage-artifact için type=lcov|cobertura belirtilmelidir.');
+    }
+    if (!artifactPath) {
+      throw new Error('--jenkins-coverage-artifact için path değeri zorunludur.');
+    }
+
+    const artifact: JenkinsCoverageArtifactOptions = { type, path: artifactPath };
+    if (maxBytes !== undefined) {
+      artifact.maxBytes = maxBytes;
+    }
+    artifacts.push(artifact);
+  });
+
+  return artifacts.length > 0 ? artifacts : undefined;
 };
 
 export interface ExternalBuildRecord {
@@ -685,6 +838,10 @@ interface ExternalSourceMetadata {
     build?: string;
     tests: number;
     builds: number;
+    coverageArtifacts?: {
+      total: number;
+      items: JenkinsCoverageArtifactSummary[];
+    };
   };
   jiraCloud?: {
     baseUrl: string;
@@ -1007,7 +1164,7 @@ const buildJenkinsOptions = (
     return undefined;
   }
 
-  return {
+  const options: JenkinsClientOptions = {
     baseUrl,
     job,
     build: parseJenkinsBuildIdentifier(raw.jenkinsBuild),
@@ -1017,6 +1174,26 @@ const buildJenkinsOptions = (
     buildEndpoint: coerceOptionalString(raw.jenkinsBuildEndpoint),
     testReportEndpoint: coerceOptionalString(raw.jenkinsTestsEndpoint),
   };
+
+  const artifactsDir = coerceOptionalString(raw.jenkinsArtifactsDir);
+  if (artifactsDir) {
+    options.artifactsDir = artifactsDir;
+  }
+
+  const coverageArtifacts = parseJenkinsCoverageArtifacts(raw.jenkinsCoverageArtifact);
+  if (coverageArtifacts) {
+    options.coverageArtifacts = coverageArtifacts;
+  }
+
+  const coverageLimit = coerceOptionalNumber(raw.jenkinsCoverageMaxBytes);
+  if (coverageLimit !== undefined) {
+    if (!Number.isFinite(coverageLimit) || coverageLimit <= 0) {
+      throw new Error('--jenkins-coverage-max-bytes pozitif bir sayı olmalıdır.');
+    }
+    options.maxCoverageArtifactBytes = Math.floor(coverageLimit);
+  }
+
+  return options;
 };
 
 const buildJiraCloudOptions = (
@@ -1890,6 +2067,175 @@ const structuralCoverageHasMetric = (
   });
 };
 
+type CoverageMetricKey = 'statements' | 'branches' | 'functions' | 'mcdc';
+
+const cloneCoverageMetric = (metric: CoverageMetric): CoverageMetric => ({
+  covered: metric.covered,
+  total: metric.total,
+  percentage: metric.percentage,
+});
+
+const cloneFileCoverageSummary = (file: FileCoverageSummary): FileCoverageSummary => {
+  const cloned: FileCoverageSummary = {
+    file: file.file,
+    statements: cloneCoverageMetric(file.statements),
+  };
+  if (file.branches) {
+    cloned.branches = cloneCoverageMetric(file.branches);
+  }
+  if (file.functions) {
+    cloned.functions = cloneCoverageMetric(file.functions);
+  }
+  if (file.mcdc) {
+    cloned.mcdc = cloneCoverageMetric(file.mcdc);
+  }
+  return cloned;
+};
+
+const mergeCoverageTestMaps = (
+  base: Record<string, string[]> | undefined,
+  incoming: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined => {
+  if (!base && !incoming) {
+    return undefined;
+  }
+
+  const combined = new Map<string, Set<string>>();
+  const appendEntries = (map: Record<string, string[]> | undefined) => {
+    if (!map) {
+      return;
+    }
+    Object.entries(map).forEach(([testName, files]) => {
+      const existing = combined.get(testName) ?? new Set<string>();
+      files.forEach((file) => {
+        const normalized = typeof file === 'string' ? file.trim() : '';
+        if (normalized) {
+          existing.add(normalized);
+        }
+      });
+      if (existing.size > 0) {
+        combined.set(testName, existing);
+      }
+    });
+  };
+
+  appendEntries(base);
+  appendEntries(incoming);
+
+  if (combined.size === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(
+    Array.from(combined.entries()).map(([testName, files]) => [testName, Array.from(files).sort()]),
+  );
+};
+
+const computeCoveragePercentage = (covered: number, total: number): number => {
+  if (!Number.isFinite(covered) || !Number.isFinite(total) || total <= 0) {
+    return 0;
+  }
+  const ratio = (covered / total) * 100;
+  return Number.isFinite(ratio) ? ratio : 0;
+};
+
+const recomputeCoverageTotals = (files: FileCoverageSummary[]): CoverageReport['totals'] => {
+  const aggregates = new Map<CoverageMetricKey, { covered: number; total: number }>();
+  const addMetric = (key: CoverageMetricKey, metric: CoverageMetric | undefined) => {
+    if (!metric) {
+      return;
+    }
+    const current = aggregates.get(key) ?? { covered: 0, total: 0 };
+    current.covered += metric.covered;
+    current.total += metric.total;
+    aggregates.set(key, current);
+  };
+
+  files.forEach((file) => {
+    addMetric('statements', file.statements);
+    addMetric('branches', file.branches);
+    addMetric('functions', file.functions);
+    addMetric('mcdc', file.mcdc);
+  });
+
+  const buildMetric = (key: CoverageMetricKey): CoverageMetric | undefined => {
+    const aggregate = aggregates.get(key);
+    if (!aggregate) {
+      return undefined;
+    }
+    return {
+      covered: aggregate.covered,
+      total: aggregate.total,
+      percentage: computeCoveragePercentage(aggregate.covered, aggregate.total),
+    };
+  };
+
+  const totals: CoverageReport['totals'] = {
+    statements: buildMetric('statements') ?? { covered: 0, total: 0, percentage: 0 },
+  };
+
+  (['branches', 'functions', 'mcdc'] as CoverageMetricKey[]).forEach((key) => {
+    const metric = buildMetric(key);
+    if (metric) {
+      totals[key] = metric;
+    }
+  });
+
+  return totals;
+};
+
+const mergeCoverageReports = (
+  base: CoverageReport | undefined,
+  incoming: CoverageReport,
+): CoverageReport => {
+  const baseFiles = base ? base.files.map(cloneFileCoverageSummary) : [];
+  const fileMap = new Map<string, FileCoverageSummary>();
+  baseFiles.forEach((file) => {
+    fileMap.set(file.file, file);
+  });
+
+  incoming.files.forEach((file) => {
+    const existing = fileMap.get(file.file);
+    if (!existing) {
+      fileMap.set(file.file, cloneFileCoverageSummary(file));
+      return;
+    }
+    if (existing.statements.total === 0 && file.statements.total > 0) {
+      existing.statements = cloneCoverageMetric(file.statements);
+    }
+    if (!existing.branches && file.branches) {
+      existing.branches = cloneCoverageMetric(file.branches);
+    } else if (existing.branches && file.branches && existing.branches.total === 0 && file.branches.total > 0) {
+      existing.branches = cloneCoverageMetric(file.branches);
+    }
+    if (!existing.functions && file.functions) {
+      existing.functions = cloneCoverageMetric(file.functions);
+    } else if (existing.functions && file.functions && existing.functions.total === 0 && file.functions.total > 0) {
+      existing.functions = cloneCoverageMetric(file.functions);
+    }
+    if (!existing.mcdc && file.mcdc) {
+      existing.mcdc = cloneCoverageMetric(file.mcdc);
+    } else if (existing.mcdc && file.mcdc && existing.mcdc.total === 0 && file.mcdc.total > 0) {
+      existing.mcdc = cloneCoverageMetric(file.mcdc);
+    }
+  });
+
+  const mergedFiles = Array.from(fileMap.values()).sort((a, b) => a.file.localeCompare(b.file));
+  const mergedTotals = recomputeCoverageTotals(mergedFiles);
+  const mergedTestMap = mergeCoverageTestMaps(base?.testMap, incoming.testMap);
+
+  const merged: CoverageReport = {
+    totals: mergedTotals,
+    files: mergedFiles,
+  };
+
+  if (mergedTestMap) {
+    merged.testMap = mergedTestMap;
+  }
+
+  return merged;
+};
+
 const coverageReportHasMetric = (
   report: CoverageReport | undefined,
   metric: 'branches' | 'mcdc',
@@ -1998,13 +2344,13 @@ const requirementStatusFromJira = (status: string): RequirementStatus => {
   if (!normalized) {
     return 'draft';
   }
-  if (/(verify|validated|done|closed|accepted)/.test(normalized)) {
+  if (/(verify|validated|done|closed|accepted|approved)/.test(normalized)) {
     return 'verified';
   }
   if (/(implement|in progress|coding|development)/.test(normalized)) {
     return 'implemented';
   }
-  if (/(review|approved|ready)/.test(normalized)) {
+  if (/(review|ready)/.test(normalized)) {
     return 'approved';
   }
   return 'draft';
@@ -2499,7 +2845,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   if (options.lcov) {
     const result = await importLcov(options.lcov);
     warnings.push(...result.warnings);
-    coverage = result.data;
+    coverage = mergeCoverageReports(coverage, result.data);
     if (result.data.testMap) {
       coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.lcov) });
     }
@@ -2514,25 +2860,10 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     }
   }
 
-  if (!coverage && options.cobertura) {
+  if (options.cobertura) {
     const result = await importCobertura(options.cobertura);
     warnings.push(...result.warnings);
-    coverage = result.data;
-    if (result.data.testMap) {
-      coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
-    }
-    if (result.data.files.length > 0) {
-      await appendEvidence('coverage_stmt', 'cobertura', options.cobertura, 'Cobertura kapsam raporu');
-      if (coverageReportHasMetric(result.data, 'branches')) {
-        await appendEvidence('coverage_dec', 'cobertura', options.cobertura, 'Cobertura karar kapsamı');
-      }
-      if (coverageReportHasMetric(result.data, 'mcdc')) {
-        await appendEvidence('coverage_mcdc', 'cobertura', options.cobertura, 'Cobertura MC/DC kapsamı');
-      }
-    }
-  } else if (options.cobertura) {
-    const result = await importCobertura(options.cobertura);
-    warnings.push(...result.warnings);
+    coverage = mergeCoverageReports(coverage, result.data);
     if (result.data.testMap) {
       coverageMaps.push({ map: result.data.testMap, origin: path.resolve(options.cobertura) });
     }
@@ -2942,6 +3273,8 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     warnings.push(...jenkinsResult.warnings);
     const jenkinsTests = jenkinsResult.data.tests ?? [];
     const jenkinsBuilds = jenkinsResult.data.builds ?? [];
+    const jenkinsCoverage = jenkinsResult.data.coverage ?? [];
+    const coverageSummaries: JenkinsCoverageArtifactSummary[] = [];
 
     if (jenkinsTests.length > 0) {
       testResults.push(
@@ -2977,12 +3310,60 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       );
     }
 
+    for (const artifact of jenkinsCoverage) {
+      coverage = mergeCoverageReports(coverage, artifact.report);
+      if (artifact.report.testMap) {
+        coverageMaps.push({ map: artifact.report.testMap, origin: artifact.localPath });
+      }
+
+      if (artifact.report.files.length > 0) {
+        const label = artifact.type === 'lcov' ? 'LCOV' : 'Cobertura';
+        const summaryBase = `Jenkins ${label} kapsam raporu (${artifact.path})`;
+        await appendEvidence('coverage_stmt', 'jenkins', artifact.localPath, summaryBase);
+        if (coverageReportHasMetric(artifact.report, 'branches')) {
+          await appendEvidence(
+            'coverage_dec',
+            'jenkins',
+            artifact.localPath,
+            `Jenkins ${label} karar kapsamı (${artifact.path})`,
+          );
+        }
+        if (coverageReportHasMetric(artifact.report, 'mcdc')) {
+          await appendEvidence(
+            'coverage_mcdc',
+            'jenkins',
+            artifact.localPath,
+            `Jenkins ${label} MC/DC kapsamı (${artifact.path})`,
+          );
+        }
+      }
+
+      coverageSummaries.push({
+        type: artifact.type,
+        path: artifact.path,
+        localPath: normalizeRelativePath(artifact.localPath),
+        sha256: artifact.sha256,
+        statements: artifact.report.totals.statements.percentage,
+        branches: artifact.report.totals.branches?.percentage,
+        functions: artifact.report.totals.functions?.percentage,
+        mcdc: artifact.report.totals.mcdc?.percentage,
+        tests: artifact.report.testMap ? Object.keys(artifact.report.testMap).length : 0,
+      });
+    }
+
     sourceMetadata.jenkins = {
       baseUrl: options.jenkins.baseUrl,
       job: options.jenkins.job,
       build: options.jenkins.build ? String(options.jenkins.build) : undefined,
       tests: jenkinsTests.length,
       builds: jenkinsBuilds.length,
+      coverageArtifacts:
+        coverageSummaries.length > 0
+          ? {
+              total: coverageSummaries.length,
+              items: coverageSummaries,
+            }
+          : undefined,
     };
   }
 
@@ -6097,6 +6478,19 @@ if (require.main === module) {
             describe:
               'JUnit test raporunu döndüren uç nokta (varsayılan: /job/:job/:build/testReport/api/json).',
             type: 'string',
+          })
+          .option('jenkins-artifacts-dir', {
+            describe: 'Jenkins artefaktlarının indirileceği yerel dizin (varsayılan: çalışma dizini).',
+            type: 'string',
+          })
+          .option('jenkins-coverage-artifact', {
+            describe:
+              'Jenkins coverage artefaktı tanımı (ör. type=lcov,path=coverage/lcov.info veya lcov:coverage/lcov.info@5242880).',
+            type: 'array',
+          })
+          .option('jenkins-coverage-max-bytes', {
+            describe: 'Tüm Jenkins coverage artefaktları için global bayt limiti (varsayılan: 10485760).',
+            type: 'number',
           })
           .option('import', {
             describe:
