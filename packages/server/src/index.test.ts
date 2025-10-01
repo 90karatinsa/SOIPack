@@ -1526,6 +1526,7 @@ describe('@soipack/server REST API', () => {
       workspaceSignoffs.clear();
       ensureRoleRecord(tenantId, 'admin', 'Administrator', 'role-admin');
       ensureRoleRecord(tenantId, 'maintainer', 'Maintainer', 'role-maintainer');
+      ensureRoleRecord(tenantId, 'operator', 'Operator', 'role-operator');
       ensureRoleRecord(tenantId, 'reader', 'Reader', 'role-reader');
       ensureUserRecord(tenantId, 'user-1', ['admin']);
     };
@@ -2708,7 +2709,8 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(roleList.body.items.map((item: { id: string }) => item.id)).toContain('role-auditor');
+    const roleIds = roleList.body.items.map((item: { id: string }) => item.id);
+    expect(roleIds).toEqual(expect.arrayContaining(['role-auditor', 'role-operator']));
 
     const userResponse = await request(app)
       .post('/v1/admin/users')
@@ -2718,12 +2720,14 @@ describe('@soipack/server REST API', () => {
         email: 'auditor@example.com',
         secret: 'Str0ngSecret!',
         displayName: 'Auditor',
-        roleIds: ['role-auditor'],
+        roleIds: ['role-auditor', 'role-operator'],
       })
       .expect(201);
 
     expect(userResponse.body.user.email).toBe('auditor@example.com');
-    expect(userResponse.body.user.roles).toHaveLength(1);
+    const createdRoleIds = userResponse.body.user.roles.map((role: { id: string }) => role.id);
+    expect(createdRoleIds).toHaveLength(2);
+    expect(createdRoleIds).toEqual(expect.arrayContaining(['role-auditor', 'role-operator']));
 
     const userId = userResponse.body.user.id as string;
 
@@ -2732,7 +2736,9 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
 
-    expect(userDetail.body.user.roles.map((role: { id: string }) => role.id)).toEqual(['role-auditor']);
+    const detailRoleIds = userDetail.body.user.roles.map((role: { id: string }) => role.id);
+    expect(detailRoleIds).toHaveLength(2);
+    expect(detailRoleIds).toEqual(expect.arrayContaining(['role-auditor', 'role-operator']));
 
     const updateResponse = await request(app)
       .put(`/v1/admin/users/${userId}`)
@@ -2763,11 +2769,17 @@ describe('@soipack/server REST API', () => {
 
   it('enforces role boundaries for admin endpoints', async () => {
     const maintainerToken = await createAccessToken({ roles: ['maintainer'], subject: 'user-maintainer' });
+    const operatorToken = await createAccessToken({ roles: ['operator'], subject: 'user-operator' });
     const readerToken = await createAccessToken({ roles: ['reader'], subject: 'user-reader' });
 
     await request(app)
       .get('/v1/admin/users')
       .set('Authorization', `Bearer ${maintainerToken}`)
+      .expect(200);
+
+    await request(app)
+      .get('/v1/admin/users')
+      .set('Authorization', `Bearer ${operatorToken}`)
       .expect(200);
 
     const maintainerCreate = await request(app)
@@ -2777,6 +2789,14 @@ describe('@soipack/server REST API', () => {
       .expect(403);
 
     expect(maintainerCreate.body.error.code).toBe('FORBIDDEN_ROLE');
+
+    const operatorCreate = await request(app)
+      .post('/v1/admin/users')
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ email: 'ops@example.com', secret: 'Secret123!', roleIds: [] })
+      .expect(403);
+
+    expect(operatorCreate.body.error.code).toBe('FORBIDDEN_ROLE');
 
     const readerList = await request(app)
       .get('/v1/admin/users')
@@ -2792,11 +2812,11 @@ describe('@soipack/server REST API', () => {
     const createResponse = await request(app)
       .post('/v1/admin/api-keys')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ label: 'CI', roles: ['maintainer'], permissions: ['jobs:read'] })
+      .send({ label: 'CI', roles: ['operator'], permissions: ['jobs:read'] })
       .expect(201);
 
     expect(createResponse.body.secret).toBeDefined();
-    expect(createResponse.body.apiKey.roles).toEqual(['maintainer']);
+    expect(createResponse.body.apiKey.roles).toEqual(['operator']);
 
     const keyId = createResponse.body.apiKey.id as string;
 

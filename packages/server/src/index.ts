@@ -3054,7 +3054,10 @@ export const createServer = (config: ServerConfig): Express => {
       const roles = await rbacStore.listUserRoles(tenantId, userId);
       return roles
         .map((role) => role.name)
-        .filter((name): name is UserRole => name === 'admin' || name === 'maintainer' || name === 'reader');
+        .filter(
+          (name): name is UserRole =>
+            name === 'admin' || name === 'maintainer' || name === 'operator' || name === 'reader',
+        );
     },
   };
 
@@ -3430,7 +3433,7 @@ export const createServer = (config: ServerConfig): Express => {
     return fallback;
   };
 
-  const validRoles: UserRole[] = ['admin', 'maintainer', 'reader'];
+  const validRoles: UserRole[] = ['admin', 'maintainer', 'operator', 'reader'];
 
   const parseRoleIdentifiers = (input: unknown, fieldName: string): UserRole[] => {
     if (input === undefined) {
@@ -5562,7 +5565,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get('/v1/stream/compliance', requireAuth, (req, res, next) => {
-    ensureRole(req, ['reader', 'maintainer', 'admin'])
+    ensureRole(req, ['reader', 'maintainer', 'operator', 'admin'])
       .then((principal) => {
         const { tenantId } = getAuthContext(req);
         try {
@@ -5633,7 +5636,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
-      await ensureRole(req, ['admin', 'maintainer']);
+      await ensureRole(req, ['admin', 'operator', 'maintainer']);
       const { tenantId } = getAuthContext(req);
       const roles = await rbacStore.listRoles(tenantId);
       res.json({ items: roles.map((role) => toRoleSummary(role)) });
@@ -5777,7 +5780,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
-      await ensureRole(req, ['admin', 'maintainer']);
+      await ensureRole(req, ['admin', 'operator', 'maintainer']);
       const { tenantId } = getAuthContext(req);
       const users = await rbacStore.listUsers(tenantId);
       const items = await Promise.all(users.map((user) => buildUserSummary(user)));
@@ -5860,7 +5863,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
-      await ensureRole(req, ['admin', 'maintainer']);
+      await ensureRole(req, ['admin', 'operator', 'maintainer']);
       const context = getAuthContext(req);
       const { userId } = req.params as { userId?: string };
       if (!userId) {
@@ -5999,7 +6002,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
-      await ensureRole(req, ['admin', 'maintainer']);
+      await ensureRole(req, ['admin', 'operator', 'maintainer']);
       const { tenantId } = getAuthContext(req);
       const keys = await rbacStore.listApiKeys(tenantId);
       res.json({ items: keys.map((key) => getApiKeySummary(key)) });
@@ -6091,7 +6094,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       ensureAdminScope(req);
-      await ensureRole(req, ['admin', 'maintainer']);
+      await ensureRole(req, ['admin', 'operator', 'maintainer']);
       const context = getAuthContext(req);
       const { keyId } = req.params as { keyId?: string };
       if (!keyId) {
@@ -6396,7 +6399,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
 
       const now = Date.now();
       const ttlSeconds = Math.floor(COMPLIANCE_SUMMARY_CACHE_TTL_MS / 1000);
@@ -6788,7 +6791,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
 
       const baseUrl = process.env.JIRA_BASE_URL;
       const token = process.env.JIRA_TOKEN;
@@ -6880,7 +6883,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!workspaceId || !documentId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
       }
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
 
       const query = req.query as { cursor?: string | string[]; limit?: string | string[] };
       const cursorValue = Array.isArray(query.cursor) ? query.cursor[0] : query.cursor;
@@ -6944,7 +6947,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!workspaceId || !documentId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
       }
-      await ensureRole(req, ['maintainer', 'admin']);
+      await ensureRole(req, ['maintainer', 'operator', 'admin']);
       const body = req.body as Record<string, unknown> | undefined;
       if (!body || typeof body !== 'object') {
         throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
@@ -6995,7 +6998,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!workspaceId || !documentId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve belge kimliği belirtilmelidir.');
       }
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
       const body = req.body as Record<string, unknown> | undefined;
       if (!body || typeof body !== 'object') {
         throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
@@ -7035,7 +7038,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!workspaceId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Workspace kimliği belirtilmelidir.');
       }
-      await ensureRole(req, ['maintainer', 'admin']);
+      await ensureRole(req, ['maintainer', 'operator', 'admin']);
       const body = req.body as Record<string, unknown> | undefined;
       if (!body || typeof body !== 'object') {
         throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
@@ -7077,7 +7080,7 @@ export const createServer = (config: ServerConfig): Express => {
       if (!workspaceId || !signoffId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Workspace ve signoff kimliği belirtilmelidir.');
       }
-      const principal = await ensureRole(req, ['maintainer', 'admin']);
+      const principal = await ensureRole(req, ['maintainer', 'operator', 'admin']);
       const body = req.body as Record<string, unknown> | undefined;
       if (!body || typeof body !== 'object') {
         throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
@@ -7424,7 +7427,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
       const { manifestId } = req.params as { manifestId?: string };
       if (!manifestId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');
@@ -7467,7 +7470,7 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      await ensureRole(req, ['reader', 'maintainer', 'admin']);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
       const { manifestId, filePath } = req.params as { manifestId?: string; filePath?: string };
       if (!manifestId) {
         throw new HttpError(400, 'INVALID_REQUEST', 'manifestId belirtilmelidir.');

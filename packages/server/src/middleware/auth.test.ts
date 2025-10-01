@@ -5,9 +5,11 @@ import type { Request, Response } from 'express';
 import {
   ApiKeyAuthorizer,
   ApiKeyDefinition,
+  createApiKeyAuthorizer,
   createJwtPrincipalResolver,
   JwtUserLoader,
   JwtUserRecord,
+  parseApiKeyList,
   UserRole,
 } from './auth';
 import { HttpError } from '../errors';
@@ -16,6 +18,7 @@ describe('ApiKeyAuthorizer', () => {
   const permissionMap: Partial<Record<UserRole, string[]>> = {
     admin: ['system:manage'],
     maintainer: ['jobs:write'],
+    operator: ['jobs:execute'],
     reader: ['jobs:read'],
   };
 
@@ -90,6 +93,36 @@ describe('ApiKeyAuthorizer', () => {
     });
 
     expect(authorizer.authenticate('expired-key')).toBeUndefined();
+  });
+
+  it('parses operator roles from CSV definitions', () => {
+    const definitions = parseApiKeyList('operator-key:operator');
+
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.roles).toEqual(['operator']);
+  });
+
+  it('filters unknown roles from CSV definitions', () => {
+    const definitions = parseApiKeyList('unknown-key:superuser');
+
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.roles).toEqual(['reader']);
+  });
+
+  it('produces operator principals from CSV configuration', () => {
+    const authorizer = createApiKeyAuthorizer('operator-auth:operator');
+
+    const principal = authorizer.authenticate('operator-auth');
+
+    expect(principal?.roles).toEqual(['operator']);
+  });
+
+  it('omits unknown roles from CSV configuration', () => {
+    const authorizer = createApiKeyAuthorizer('fallback-auth:superuser');
+
+    const principal = authorizer.authenticate('fallback-auth');
+
+    expect(principal?.roles).toEqual(['reader']);
   });
 });
 
