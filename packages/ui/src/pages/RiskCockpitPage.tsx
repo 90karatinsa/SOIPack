@@ -144,6 +144,20 @@ interface RiskSandboxResult {
   classifications: RiskSandboxClassificationShare[];
 }
 
+interface RiskTrendlinePoint {
+  timestamp: string;
+  percentile10: number;
+  percentile50: number;
+  percentile90: number;
+  classification: 'nominal' | 'guarded' | 'elevated' | 'critical';
+}
+
+interface RiskClassificationShift {
+  classification: 'nominal' | 'guarded' | 'elevated' | 'critical';
+  startIndex: number;
+  endIndex: number;
+}
+
 interface RiskCockpitState {
   status: RiskCockpitStatus;
   heatmap: HeatmapCell[];
@@ -203,6 +217,13 @@ const stageClassificationBadgeClasses: Record<string, string> = {
   critical: 'bg-rose-500/20 text-rose-200',
 };
 
+const stageClassificationTimelineClasses: Record<string, string> = {
+  nominal: 'bg-emerald-500/60 text-slate-950',
+  guarded: 'bg-amber-400/70 text-slate-950',
+  elevated: 'bg-orange-400/70 text-slate-950',
+  critical: 'bg-rose-500/70 text-white',
+};
+
 const factorMetricBadgeClass =
   'inline-flex items-center gap-1 rounded-full border border-slate-800/60 bg-slate-900/70 px-2 py-1 text-[11px] font-semibold text-slate-200 shadow-sm shadow-slate-950/20';
 
@@ -241,6 +262,146 @@ const classifyRiskScore = (score: number): 'nominal' | 'guarded' | 'elevated' | 
     return 'guarded';
   }
   return 'nominal';
+};
+
+const sandboxPresets: Array<{
+  id: string;
+  label: string;
+  description: string;
+  params: RiskSandboxParams;
+}> = [
+  {
+    id: 'conservative',
+    label: 'Temkinli',
+    description:
+      'Daha yüksek kapsam artışı ve düşük başarısızlık varsayımı regresyon olasılığını aşağı çeker.',
+    params: { coverageLift: 25, failureRate: 6, iterations: 750 },
+  },
+  {
+    id: 'balanced',
+    label: 'Dengeli',
+    description: 'Varsayılan senaryo mevcut kapsam ve hata trendlerini temel alır.',
+    params: { coverageLift: 12, failureRate: 8, iterations: 500 },
+  },
+  {
+    id: 'aggressive',
+    label: 'Agresif',
+    description:
+      'Sıkı test artışı ve yüksek başarısızlık oranı varsayımı üst sınır riskini keşfeder.',
+    params: { coverageLift: 6, failureRate: 18, iterations: 650 },
+  },
+];
+
+const toPercentString = (value: number): string => `%${Math.round(Math.max(0, value) * 100)}`;
+
+const buildRiskTrendline = (
+  forecast: StageRiskForecastEntry,
+): { points: RiskTrendlinePoint[]; shifts: RiskClassificationShift[] } => {
+  const baselineMedian = clamp01(forecast.probability / 100);
+  const baselineLower = clamp01(forecast.credibleInterval.lower / 100);
+  const baselineUpper = clamp01(forecast.credibleInterval.upper / 100);
+  const basePoints =
+    forecast.sparkline.length > 0
+      ? forecast.sparkline
+      : [
+          {
+            timestamp: forecast.updatedAt ?? new Date().toISOString(),
+            regressionRatio: baselineMedian,
+          },
+        ];
+
+  const points: RiskTrendlinePoint[] = basePoints.map((point) => {
+    const percentile50 = clamp01(point.regressionRatio);
+    const scale = baselineMedian > 0 ? percentile50 / baselineMedian : 1;
+    const percentile10 = clamp01(baselineLower * scale);
+    const percentile90 = clamp01(Math.max(baselineUpper, baselineLower) * scale);
+    const classification = classifyRiskScore(percentile50);
+    return {
+      timestamp: point.timestamp,
+      percentile10,
+      percentile50,
+      percentile90,
+      classification,
+    };
+  });
+
+  const shifts: RiskClassificationShift[] = [];
+  points.forEach((point, index) => {
+    const previous = shifts[shifts.length - 1];
+    if (!previous || previous.classification !== point.classification) {
+      shifts.push({ classification: point.classification, startIndex: index, endIndex: index });
+    } else {
+      previous.endIndex = index;
+    }
+  });
+
+  return { points, shifts };
+};
+
+const buildLinePath = (
+  points: RiskTrendlinePoint[],
+  accessor: (point: RiskTrendlinePoint) => number,
+  height: number,
+): string => {
+  if (points.length === 0) {
+    return '';
+  }
+  const lastIndex = Math.max(1, points.length - 1);
+  return points
+    .map((point, index) => {
+      const x = (index / lastIndex) * 100;
+      const y = (1 - clamp01(accessor(point))) * height;
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(' ');
+};
+
+const buildAreaPath = (
+  points: RiskTrendlinePoint[],
+  upper: (point: RiskTrendlinePoint) => number,
+  lower: (point: RiskTrendlinePoint) => number,
+  height: number,
+): string => {
+  if (points.length === 0) {
+    return '';
+  }
+  const lastIndex = Math.max(1, points.length - 1);
+  const upperPath = points.map((point, index) => {
+    const x = (index / lastIndex) * 100;
+    const y = (1 - clamp01(upper(point))) * height;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+  });
+  const lowerPath = points
+    .slice()
+    .reverse()
+    .map((point, reverseIndex) => {
+      const index = points.length - 1 - reverseIndex;
+      const x = (index / lastIndex) * 100;
+      const y = (1 - clamp01(lower(point))) * height;
+      return `L ${x.toFixed(2)} ${y.toFixed(2)}`;
+    });
+  return `${upperPath.join(' ')} ${lowerPath.join(' ')} Z`;
+};
+
+const formatTrendlineDate = (timestamp: string): string => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+  return date.toISOString().slice(0, 10);
+};
+
+const createTrendlineAriaLabel = (stage: string, points: RiskTrendlinePoint[]): string => {
+  if (points.length === 0) {
+    return `${stage} Monte Carlo yüzdelik trendi verisi bulunmuyor`;
+  }
+  const segments = points.map((point) => {
+    const date = formatTrendlineDate(point.timestamp);
+    return `${date} ${toPercentString(point.percentile10)}/${toPercentString(point.percentile50)}/${toPercentString(
+      point.percentile90,
+    )}`;
+  });
+  return `${stage} Monte Carlo yüzde 10/50/90 trendi: ${segments.join(', ')}`;
 };
 
 const calculateHeatmap = (event: ComplianceRiskEvent): { cells: HeatmapCell[]; summary: RiskSummary } => {
@@ -710,6 +871,7 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     failureRate: 8,
     iterations: 500,
   });
+  const [selectedSandboxPreset, setSelectedSandboxPreset] = useState<string>('balanced');
   const [sandboxResult, setSandboxResult] = useState<RiskSandboxResult | null>(null);
   const [sandboxLastRun, setSandboxLastRun] = useState<string | null>(null);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
@@ -800,6 +962,10 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
   const parsedProof = useMemo(() => parseMerkleProof(selectedProofEntry?.proof), [selectedProofEntry?.proof]);
   const proofRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
   const sandboxLastRunLabel = useMemo(() => formatTimestamp(sandboxLastRun ?? undefined), [sandboxLastRun]);
+  const activeSandboxPreset = useMemo(
+    () => sandboxPresets.find((preset) => preset.id === selectedSandboxPreset) ?? null,
+    [selectedSandboxPreset],
+  );
 
   const handleSandboxRun = () => {
     if (!stageRisk.forecasts.length) {
@@ -818,7 +984,13 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     (event: ChangeEvent<HTMLInputElement>) => {
       const value = Number(event.target.value);
       setSandboxParams((prev) => ({ ...prev, [field]: Number.isFinite(value) ? value : prev[field] }));
+      setSelectedSandboxPreset('custom');
     };
+
+  const handleSandboxPresetSelect = (presetId: string, params: RiskSandboxParams) => {
+    setSandboxParams({ ...params });
+    setSelectedSandboxPreset(presetId);
+  };
 
   useEffect(() => {
     if (!isAuthorized) {
@@ -1031,19 +1203,26 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                   ) : (
                     <ul className="mt-3 space-y-3 text-xs text-slate-300">
                       {stageRisk.forecasts.map((forecast) => {
-                        const sparklineMaxLocal =
-                          forecast.sparkline.length > 0
-                            ? Math.max(
-                                ...forecast.sparkline.map((point) => Math.max(point.regressionRatio, 0)),
-                                0.01,
-                              )
-                            : 1;
-                        const ariaLabel = `Regresyon oranı: ${forecast.sparkline
-                          .map((point) => `%${Math.round(Math.max(0, point.regressionRatio) * 100)}`)
-                          .join(', ')}`;
                         const badgeClass =
                           stageClassificationBadgeClasses[forecast.classification] ??
                           'bg-slate-700/40 text-slate-300';
+                        const trendline = buildRiskTrendline(forecast);
+                        const chartHeight = 56;
+                        const gradientId = `trend-band-${forecast.stage.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
+                        const areaPath = buildAreaPath(
+                          trendline.points,
+                          (point) => point.percentile90,
+                          (point) => point.percentile10,
+                          chartHeight,
+                        );
+                        const medianPath = buildLinePath(
+                          trendline.points,
+                          (point) => point.percentile50,
+                          chartHeight,
+                        );
+                        const ariaLabel = createTrendlineAriaLabel(forecast.stage, trendline.points);
+                        const classificationTimelineLabel = `${forecast.stage} sınıflandırma geçişleri`;
+                        const totalPoints = trendline.points.length || 1;
                         return (
                           <li
                             key={forecast.stage}
@@ -1069,22 +1248,73 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                               {forecast.credibleInterval.confidence}% güven aralığı: %{forecast.credibleInterval.lower}{' '}
                               – %{forecast.credibleInterval.upper}
                             </p>
-                            {forecast.sparkline.length > 0 && (
-                              <div className="mt-3 flex h-12 items-end gap-1" role="img" aria-label={ariaLabel}>
-                                {forecast.sparkline.map((point, index) => {
-                                  const normalized = Math.max(point.regressionRatio, 0) / sparklineMaxLocal;
-                                  const height = Math.max(6, Math.round(normalized * 48));
-                                  return (
-                                    <span
-                                      key={`${forecast.stage}-spark-${index}`}
-                                      className="w-2 rounded-full bg-amber-400/60"
-                                      style={{ height: `${height}px` }}
-                                      title={`${new Date(point.timestamp).toISOString().slice(0, 10)} – %${Math.round(
-                                        Math.max(0, point.regressionRatio) * 100,
-                                      )}`}
-                                    />
-                                  );
-                                })}
+                            {trendline.points.length > 0 ? (
+                              <div className="mt-3">
+                                <svg
+                                  role="img"
+                                  aria-label={ariaLabel}
+                                  viewBox={`0 0 100 ${chartHeight}`}
+                                  className="h-24 w-full"
+                                  preserveAspectRatio="none"
+                                  focusable="false"
+                                >
+                                  <defs>
+                                    <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+                                      <stop offset="0%" stopColor="rgba(246, 191, 38, 0.35)" />
+                                      <stop offset="100%" stopColor="rgba(56, 189, 248, 0.2)" />
+                                    </linearGradient>
+                                  </defs>
+                                  {areaPath && (
+                                    <path d={areaPath} fill={`url(#${gradientId})`} stroke="none" />
+                                  )}
+                                  {medianPath && (
+                                    <path d={medianPath} fill="none" stroke="rgb(251, 191, 36)" strokeWidth={1.5} />
+                                  )}
+                                </svg>
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                  Bant: %10-%90, çizgi: medyan regresyon oranı
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="mt-3 text-[11px] text-slate-400">Trend verisi bulunamadı.</p>
+                            )}
+                            {trendline.shifts.length > 0 && (
+                              <div className="mt-3">
+                                <div
+                                  role="list"
+                                  aria-label={classificationTimelineLabel}
+                                  className="flex overflow-hidden rounded-full border border-slate-800/60"
+                                >
+                                  {trendline.shifts.map((shift, index) => {
+                                    const length = shift.endIndex - shift.startIndex + 1;
+                                    const width = (length / totalPoints) * 100;
+                                    const className =
+                                      stageClassificationTimelineClasses[shift.classification] ??
+                                      'bg-slate-700/60 text-white';
+                                    const startLabel = formatTrendlineDate(
+                                      trendline.points[shift.startIndex]?.timestamp ?? '',
+                                    );
+                                    const endLabel = formatTrendlineDate(
+                                      trendline.points[shift.endIndex]?.timestamp ?? '',
+                                    );
+                                    return (
+                                      <div
+                                        key={`${forecast.stage}-shift-${index}`}
+                                        role="listitem"
+                                        className={`flex items-center justify-center px-2 text-[10px] font-semibold uppercase tracking-wide ${className}`}
+                                        style={{
+                                          flexGrow: length,
+                                          flexBasis: 0,
+                                          minWidth: `${Math.min(100, Math.max(12, width))}%`,
+                                        }}
+                                        title={`${shift.classification} ${startLabel} → ${endLabel}`}
+                                        aria-label={`${shift.classification} ${startLabel} → ${endLabel}`}
+                                      >
+                                        {shift.classification}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
                           </li>
@@ -1110,6 +1340,39 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                     )}
                   </header>
                   <div className="mt-3 space-y-4">
+                    <div>
+                      <div
+                        role="group"
+                        aria-label="Simülasyon hazır ayarları"
+                        className="flex flex-wrap gap-2"
+                      >
+                        {sandboxPresets.map((preset) => {
+                          const isActive = selectedSandboxPreset === preset.id;
+                          const buttonClass = isActive
+                            ? 'border-brand bg-brand/20 text-slate-50 shadow shadow-brand/30'
+                            : 'border-slate-700/70 text-slate-300 transition hover:border-brand/60 hover:text-slate-100';
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              data-testid={`sandbox-preset-${preset.id}`}
+                              onClick={() => handleSandboxPresetSelect(preset.id, preset.params)}
+                              className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${buttonClass}`}
+                              aria-pressed={isActive}
+                              title={preset.description}
+                            >
+                              {preset.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-2 text-[11px] text-slate-400">
+                        {selectedSandboxPreset === 'custom'
+                          ? 'Parametreler manuel olarak güncellendi. Yeni varsayılanı kaydetmek için bir hazır ayar seçebilirsiniz.'
+                          : activeSandboxPreset?.description ??
+                            'Bir hazır ayar seçildiğinde açıklaması burada gösterilir.'}
+                      </p>
+                    </div>
                     <div>
                       <label
                         htmlFor="sandbox-coverage"
@@ -1170,43 +1433,71 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
                     {sandboxResult && (
                       <div className="space-y-4" data-testid="risk-sandbox-results">
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
-                            <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Özet</h5>
-                            <ul className="mt-2 space-y-1 text-xs text-slate-300">
-                              <li data-testid="sandbox-average-risk">
-                                Tahmini ortalama risk: %{sandboxResult.averageRisk.toFixed(1)}
-                              </li>
-                              <li data-testid="sandbox-regression-probability">
-                                Regresyon olasılığı: %{sandboxResult.regressionProbability.toFixed(1)}
-                              </li>
-                              <li data-testid="sandbox-expected-failures">
-                                Beklenen başarısız aşama: {sandboxResult.expectedFailures.toFixed(2)} /{' '}
-                                {Math.max(1, stageRisk.forecasts.length)}
-                              </li>
-                            </ul>
-                          </div>
-                          <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
-                            <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Sınıf payları</h5>
-                            <ul className="mt-2 space-y-1 text-xs text-slate-300" data-testid="sandbox-classifications">
-                              {sandboxResult.classifications.map((entry) => (
-                                <li key={entry.classification} className="flex items-center justify-between">
-                                  <span className="capitalize">{entry.classification}</span>
-                                  <span>%{(entry.share * 100).toFixed(1)}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        </div>
-                        <div>
-                          <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Regresyon dağılımı</h5>
-                          <ul className="mt-2 space-y-2" data-testid="sandbox-distribution">
-                            {sandboxResult.distribution.map((bucket) => (
-                              <li key={`distribution-${bucket.failures}`} className="text-xs text-slate-300">
-                                <div className="flex items-center justify-between">
-                                  <span>{bucket.failures} regresyon</span>
-                                  <span>%{(bucket.probability * 100).toFixed(1)}</span>
-                                </div>
-                                <div className="mt-1 h-2 rounded-full bg-slate-800/80">
+                      <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Özet</h5>
+                        <ul
+                          className="mt-2 space-y-1 text-xs text-slate-300"
+                          aria-label="Simülasyon özet metrikleri"
+                        >
+                          <li
+                            data-testid="sandbox-average-risk"
+                            title="Monte Carlo koşularında gözlenen ortalama regresyon skoru"
+                          >
+                            Tahmini ortalama risk: %{sandboxResult.averageRisk.toFixed(1)}
+                          </li>
+                          <li
+                            data-testid="sandbox-regression-probability"
+                            title="En az bir aşamada regresyon oluşma olasılığı"
+                          >
+                            Regresyon olasılığı: %{sandboxResult.regressionProbability.toFixed(1)}
+                          </li>
+                          <li
+                            data-testid="sandbox-expected-failures"
+                            title="Simülasyon başına beklenen başarısız aşama sayısı"
+                          >
+                            Beklenen başarısız aşama: {sandboxResult.expectedFailures.toFixed(2)} /{' '}
+                            {Math.max(1, stageRisk.forecasts.length)}
+                          </li>
+                        </ul>
+                      </div>
+                      <div className="rounded-xl border border-slate-800/60 bg-slate-900/50 p-3">
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Sınıf payları</h5>
+                        <ul
+                          className="mt-2 space-y-1 text-xs text-slate-300"
+                          data-testid="sandbox-classifications"
+                          aria-label="Regresyon sınıf dağılımları"
+                        >
+                          {sandboxResult.classifications.map((entry) => (
+                            <li
+                              key={entry.classification}
+                              className="flex items-center justify-between"
+                              title={`${entry.classification} senaryolarının simülasyondaki payı`}
+                            >
+                              <span className="capitalize">{entry.classification}</span>
+                              <span>%{(entry.share * 100).toFixed(1)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Regresyon dağılımı</h5>
+                      <ul
+                        className="mt-2 space-y-2"
+                        data-testid="sandbox-distribution"
+                        aria-label="Regresyon sayısı olasılıkları"
+                      >
+                        {sandboxResult.distribution.map((bucket) => (
+                          <li
+                            key={`distribution-${bucket.failures}`}
+                            className="text-xs text-slate-300"
+                            title={`Tam ${bucket.failures} regresyon görülme olasılığı %${(bucket.probability * 100).toFixed(1)}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span>{bucket.failures} regresyon</span>
+                              <span>%{(bucket.probability * 100).toFixed(1)}</span>
+                            </div>
+                            <div className="mt-1 h-2 rounded-full bg-slate-800/80">
                                   <div
                                     data-testid="sandbox-distribution-bar"
                                     data-failures={bucket.failures}

@@ -17,6 +17,7 @@ import {
   type TraceSuggestion,
   type TraceGraph,
   type ChangeImpactScore,
+  type StaleEvidenceFinding,
 } from '@soipack/engine';
 import nunjucks from 'nunjucks';
 import type { Browser, Page } from 'playwright';
@@ -73,6 +74,12 @@ export interface TraceMatrixOptions extends BaseReportOptions {
 
 export interface TraceGraphDotOptions {
   graphName?: string;
+}
+
+export interface GsnGraphOptions {
+  graphName?: string;
+  objectivesMetadata?: Objective[];
+  includeLegend?: boolean;
 }
 
 export interface GapReportOptions extends BaseReportOptions {
@@ -457,11 +464,18 @@ export interface ToolUsageMetadata {
   residualRisks?: string[];
 }
 
+export interface ToolQualificationPackComplianceOptions {
+  snapshot: Pick<ComplianceSnapshot, 'objectives' | 'independenceSummary'>;
+  objectivesMetadata?: Objective[];
+  ledgerHashes?: Record<string, string>;
+}
+
 export interface ToolQualificationPackOptions {
   programName?: string;
   level?: string;
   generatedAt?: string;
   author?: string;
+  compliance?: ToolQualificationPackComplianceOptions;
 }
 
 export interface ToolQualificationSummaryItem {
@@ -472,6 +486,8 @@ export interface ToolQualificationSummaryItem {
   tql?: string;
   outputs: string[];
   pendingActivities: number;
+  residualRiskCount: number;
+  residualRiskSummary: string;
 }
 
 export interface ToolQualificationPackResult {
@@ -600,6 +616,18 @@ const statusLabels: Record<ComplianceSnapshot['objectives'][number]['status'], s
   covered: 'Tam Karşılandı',
   partial: 'Kısmen Karşılandı',
   missing: 'Eksik',
+};
+
+const objectiveStatusBadgeClasses: Record<ComplianceSnapshot['objectives'][number]['status'], string> = {
+  covered: 'status-covered',
+  partial: 'status-partial',
+  missing: 'status-missing',
+};
+
+const independenceLevelText: Record<Objective['independence'], string> = {
+  required: 'Zorunlu',
+  recommended: 'Önerilen',
+  none: 'Gerekmiyor',
 };
 
 const testStatusLabels: Record<string, { label: string; className: string }> = {
@@ -746,6 +774,7 @@ const gapLabels: Record<GapCategoryKey, string> = {
   quality: 'Kalite Güvencesi',
   issues: 'Problem Takibi',
   conformity: 'Uygunluk Doğrulamaları',
+  staleEvidence: 'Güncelliğini Yitiren Kanıtlar',
 };
 
 const gapSummaryLabels: Record<GapCategoryKey, string> = {
@@ -760,6 +789,7 @@ const gapSummaryLabels: Record<GapCategoryKey, string> = {
   quality: 'Kalite Boşlukları',
   issues: 'Problem Takibi Boşlukları',
   conformity: 'Uygunluk Boşlukları',
+  staleEvidence: 'Stale Kanıt Boşlukları',
 };
 
 const toolActivityStatusLabels: Record<ToolQualificationActivityStatus, string> = {
@@ -853,8 +883,100 @@ export const renderToolQualificationPack = (
     tarLines.push('', '## Araç Verisi Sağlanmadı', '', 'Kapanacak aktivite yok.');
   }
 
+  const complianceContext = options.compliance;
+  const objectiveCoverageMap = new Map<string, ComplianceSnapshot['objectives'][number]>();
+  const independenceMap = new Map<string, ComplianceSnapshot['independenceSummary']['objectives'][number]>();
+  const objectiveMetadataMap = new Map<string, Objective>();
+  if (complianceContext) {
+    complianceContext.snapshot.objectives.forEach((objective) => {
+      objectiveCoverageMap.set(objective.objectiveId, objective);
+    });
+    complianceContext.snapshot.independenceSummary.objectives.forEach((entry) => {
+      independenceMap.set(entry.objectiveId, entry);
+    });
+    (complianceContext.objectivesMetadata ?? []).forEach((objective) => {
+      objectiveMetadataMap.set(objective.id, objective);
+    });
+  }
+
+  const ledgerHashMap = complianceContext?.ledgerHashes ?? {};
+
+  const formatStatusBadge = (
+    status: ComplianceSnapshot['objectives'][number]['status'],
+  ): string => `${statusLabels[status] ?? status} (${objectiveStatusBadgeClasses[status] ?? status})`;
+
+  const summarizeResidualRisks = (risks: string[] | undefined): { count: number; summary: string } => {
+    if (!risks || risks.length === 0) {
+      return { count: 0, summary: 'Kalıcı Risk Özeti: Risk kaydı bulunmuyor.' };
+    }
+    if (risks.length === 1) {
+      return { count: 1, summary: `Kalıcı Risk Özeti: ${risks[0]}` };
+    }
+    return {
+      count: risks.length,
+      summary: `Kalıcı Risk Özeti (${risks.length} madde): ${risks.join('; ')}`,
+    };
+  };
+
+  const buildObjectiveCrossLinks = (objectiveIds: string[]): string[] => {
+    if (!complianceContext) {
+      return [];
+    }
+    const sortedIds = [...new Set(objectiveIds)].sort((a, b) => a.localeCompare(b));
+    return sortedIds.map((objectiveId) => {
+      const metadata = objectiveMetadataMap.get(objectiveId);
+      const coverage = objectiveCoverageMap.get(objectiveId);
+      const independence = independenceMap.get(objectiveId);
+      const nameSegment = metadata?.name ? ` — ${metadata.name}` : '';
+      const details: string[] = [];
+      if (metadata?.stage) {
+        details.push(`Aşama: ${stageLabels[metadata.stage] ?? metadata.stage}`);
+      }
+      if (coverage) {
+        details.push(`Durum: ${formatStatusBadge(coverage.status)}`);
+      } else {
+        details.push('Durum: Bilinmiyor');
+      }
+      if (independence) {
+        const independenceLabel = independenceLevelText[independence.independence] ?? independence.independence;
+        const independenceBadge = formatStatusBadge(independence.status);
+        const missingSuffix = independence.missingArtifacts.length
+          ? ` – Eksik: ${independence.missingArtifacts
+              .map((artifact) => artifactLabels[artifact] ?? artifact)
+              .join(', ')}`
+          : ' – Eksik yok';
+        details.push(`Bağımsızlık: ${independenceLabel} (${independenceBadge})${missingSuffix}`);
+      } else if (metadata?.independence && metadata.independence !== 'none') {
+        const fallbackLabel = independenceLevelText[metadata.independence] ?? metadata.independence;
+        details.push(`Bağımsızlık: ${fallbackLabel}`);
+      }
+      if (coverage) {
+        const ledgerEntries = Array.from(
+          new Set(
+            coverage.evidenceRefs
+              .map((ref) => {
+                const normalizedRef = ref.includes(':') ? ref.split(':', 2)[1] ?? ref : ref;
+                return ledgerHashMap[normalizedRef] ?? ledgerHashMap[ref];
+              })
+              .filter((hash): hash is string => Boolean(hash)),
+          ),
+        );
+        if (ledgerEntries.length > 0) {
+          details.push(`Ledger Hashleri: ${ledgerEntries.join(', ')}`);
+        }
+      }
+      const suffix = details.length > 0 ? ` • ${details.join(' • ')}` : '';
+      return `- ${objectiveId}${nameSegment}${suffix}`;
+    });
+  };
+
+  const normalizeObjectiveId = (objectiveId: string): string => {
+    return objectiveId.replace(/^DO-178C\s+/i, '').trim();
+  };
+
   const summaryTools: ToolQualificationSummaryItem[] = toolUsage.map((tool) => {
     const pendingActivities = (tool.validation ?? []).filter((activity) => activity.status !== 'passed').length;
+    const residual = summarizeResidualRisks(tool.residualRisks);
     return {
       id: tool.id,
       name: tool.name,
@@ -863,6 +985,8 @@ export const renderToolQualificationPack = (
       tql: tool.tql,
       outputs: tool.outputs.map((output) => output.name),
       pendingActivities,
+      residualRiskCount: residual.count,
+      residualRiskSummary: residual.summary,
     };
   });
 
@@ -886,10 +1010,35 @@ export const renderToolQualificationPack = (
     const validationLines = (tool.validation ?? []).map(describeValidationActivity);
     const combined = [...controlLines, ...validationLines];
     tqpLines.push(formatBulletList(combined, 'Kontrol veya doğrulama adımı tanımlanmadı.'));
+    let nextSectionIndex = 4;
     if (tool.limitations && tool.limitations.length > 0) {
       tqpLines.push('', '### 4. Bilinen Sınırlamalar');
       tqpLines.push(formatBulletList(tool.limitations, 'Sınırlama tanımlanmadı.'));
+      nextSectionIndex = 5;
     }
+
+    const linkedObjectives = new Set<string>();
+    tool.objectives.forEach((objectiveId) => {
+      const normalized = normalizeObjectiveId(objectiveId);
+      if (normalized) {
+        linkedObjectives.add(normalized);
+      }
+    });
+    tool.outputs.forEach((output) => {
+      (output.referencedObjectives ?? []).forEach((objectiveId) => {
+        const normalized = normalizeObjectiveId(objectiveId);
+        if (normalized) {
+          linkedObjectives.add(normalized);
+        }
+      });
+    });
+    const crossLinks = buildObjectiveCrossLinks(Array.from(linkedObjectives));
+    if (crossLinks.length > 0) {
+      tqpLines.push('', `### ${nextSectionIndex}. Uyum Bağlantıları`);
+      tqpLines.push(...crossLinks);
+      nextSectionIndex += 1;
+    }
+    tqpLines.push('', `> ${summaryTools[index].residualRiskSummary}`);
 
     tarLines.push('', heading, '');
     tarLines.push('- Kullanım Özeti:');
@@ -903,10 +1052,15 @@ export const renderToolQualificationPack = (
         'Aktivite kaydı yok.',
       ),
     );
+    if (crossLinks.length > 0) {
+      tarLines.push('', '### Uyum Referansları');
+      tarLines.push(...crossLinks);
+    }
     if (tool.residualRisks && tool.residualRisks.length > 0) {
       tarLines.push('', '### Kalıcı Riskler');
       tarLines.push(formatBulletList(tool.residualRisks, 'Kalıcı risk tanımlanmadı.'));
     }
+    tarLines.push('', `> ${summaryTools[index].residualRiskSummary}`);
     if (summaryTools[index].pendingActivities > 0) {
       tarLines.push('', `> Açık Aktivite Sayısı: ${summaryTools[index].pendingActivities}`);
     }
@@ -1791,6 +1945,7 @@ const toolQualificationTemplate = nunjucks.compile(
             <th>Kategori</th>
             <th>TQL</th>
             <th>Üretilen Çıktılar</th>
+            <th>Kalıcı Risk Özeti</th>
             <th>Açık Aktiviteler</th>
           </tr>
         </thead>
@@ -1813,6 +1968,9 @@ const toolQualificationTemplate = nunjucks.compile(
                 {% else %}
                   <span class="muted">Çıktı kaydı yok</span>
                 {% endif %}
+              </td>
+              <td>
+                <span class="muted">{{ tool.residualRiskSummary }}</span>
               </td>
               <td>
                 {% if tool.pendingActivities > 0 %}
@@ -3431,6 +3589,12 @@ const escapeDotLabel = (value: string): string => {
   return escapeDotId(normalized);
 };
 
+const formatDotAttributes = (attributes: Record<string, string | number | undefined>): string =>
+  Object.entries(attributes)
+    .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+    .map(([key, value]) => `${key}=${typeof value === 'number' ? value : escapeDotLabel(value)}`)
+    .join(' ');
+
 const traceClusterMeta: Array<{
   type: TraceGraph['nodes'][number]['type'];
   id: string;
@@ -3484,6 +3648,488 @@ const formatTraceNodeLabel = (node: TraceGraph['nodes'][number]): string => {
     return `${node.id}\n${node.data.name ?? node.id}`;
   }
   return node.data.path;
+};
+
+export const renderGsnGraphDot = (
+  snapshot: ComplianceSnapshot,
+  options: GsnGraphOptions = {},
+): string => {
+  const graphName = options.graphName ?? 'ComplianceGSN';
+  const objectiveLookup = new Map(options.objectivesMetadata?.map((item) => [item.id, item]));
+  const independenceLookup = new Map(
+    snapshot.independenceSummary.objectives.map((entry) => [entry.objectiveId, entry]),
+  );
+  const objectiveGapDescriptions = new Map<string, Set<string>>();
+
+  const addGapDescription = (objectiveId: string, description: string): void => {
+    if (!description) {
+      return;
+    }
+    if (!objectiveGapDescriptions.has(objectiveId)) {
+      objectiveGapDescriptions.set(objectiveId, new Set());
+    }
+    objectiveGapDescriptions.get(objectiveId)!.add(description);
+  };
+
+  const formatTimestamp = (value?: string): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+    const [isoDate, isoTime] = date.toISOString().split('T');
+    return `${isoDate} ${isoTime.slice(0, 5)} UTC`;
+  };
+
+  const formatStaleFinding = (finding: StaleEvidenceFinding): string => {
+    const labelLines = [`Güncel olmayan ${formatArtifact(finding.artifactType)}`];
+    const metaParts: string[] = [];
+    const formattedTimestamp = formatTimestamp(finding.latestEvidenceTimestamp);
+    if (formattedTimestamp) {
+      metaParts.push(formattedTimestamp);
+    }
+    const reasonLabels = finding.reasons
+      .map((reason) =>
+        reason === 'beforeSnapshot'
+          ? 'Snapshot öncesi'
+          : reason === 'exceedsMaxAge'
+            ? 'Maksimum yaş aşıldı'
+            : reason,
+      )
+      .filter((reason) => reason.length > 0);
+    if (reasonLabels.length > 0) {
+      metaParts.push(reasonLabels.join(' • '));
+    }
+    if (finding.ageDays !== undefined && finding.maxAgeDays !== undefined) {
+      metaParts.push(`${finding.ageDays}g>${finding.maxAgeDays}g`);
+    } else if (finding.ageDays !== undefined) {
+      metaParts.push(`${finding.ageDays}g`);
+    }
+    if (metaParts.length > 0) {
+      labelLines.push(metaParts.join(' • '));
+    }
+    return labelLines.join('\n');
+  };
+
+  (Object.keys(snapshot.gaps) as GapCategoryKey[]).forEach((key) => {
+    if (key === 'staleEvidence') {
+      snapshot.gaps.staleEvidence.forEach((finding) => {
+        addGapDescription(finding.objectiveId, formatStaleFinding(finding));
+      });
+      return;
+    }
+    const categoryLabel = gapLabels[key] ?? key;
+    const gaps = snapshot.gaps[key] as Array<{
+      objectiveId: string;
+      missingArtifacts: Array<ObjectiveArtifactType | 'design'>;
+    }>;
+    gaps.forEach((gap) => {
+      gap.missingArtifacts.forEach((artifact) => {
+        addGapDescription(gap.objectiveId, `Eksik ${formatArtifact(artifact)} (${categoryLabel})`);
+      });
+    });
+  });
+
+  snapshot.independenceSummary.objectives.forEach((entry) => {
+    entry.missingArtifacts.forEach((artifact) => {
+      addGapDescription(entry.objectiveId, `Bağımsız ${formatArtifact(artifact)} eksik`);
+    });
+  });
+
+  const statusFillColors: Record<CoverageStatus, string> = {
+    covered: '#dcfce7',
+    partial: '#fef3c7',
+    missing: '#fee2e2',
+  };
+  const statusBorderColors: Record<CoverageStatus, string> = {
+    covered: '#15803d',
+    partial: '#b45309',
+    missing: '#b91c1c',
+  };
+
+  type ObjectiveNode = {
+    id: string;
+    objectiveId: string;
+    stage?: SoiStage;
+    attrs: Record<string, string | number | undefined>;
+  };
+
+  const objectiveNodes: ObjectiveNode[] = snapshot.objectives
+    .slice()
+    .sort((a, b) => a.objectiveId.localeCompare(b.objectiveId))
+    .map((objective) => {
+      const metadata = objectiveLookup.get(objective.objectiveId);
+      const independenceEntry = independenceLookup.get(objective.objectiveId);
+      const independenceLevel: Objective['independence'] =
+        independenceEntry?.independence ?? metadata?.independence ?? 'none';
+      const independenceStatus: CoverageStatus = independenceEntry?.status ?? 'covered';
+      const independenceMissing = independenceStatus !== 'covered';
+      let borderColor = statusBorderColors[objective.status];
+      if (independenceLevel === 'required') {
+        borderColor = independenceMissing ? '#b91c1c' : '#0f766e';
+      } else if (independenceLevel === 'recommended') {
+        borderColor = independenceMissing ? '#b45309' : '#1d4ed8';
+      }
+      let penwidth = 1.6;
+      if (independenceLevel === 'required') {
+        penwidth = independenceMissing ? 3 : 2.4;
+      } else if (independenceLevel === 'recommended') {
+        penwidth = independenceMissing ? 2.4 : 1.8;
+      }
+      const peripheries = independenceLevel === 'required' ? 2 : 1;
+      const stageLabel = metadata?.stage ? stageLabels[metadata.stage] ?? metadata.stage : undefined;
+      const statusLabel = statusLabels[objective.status] ?? objective.status;
+      const labelLines = [
+        metadata?.table ? `${objective.objectiveId} (${metadata.table})` : objective.objectiveId,
+      ];
+      if (metadata?.name) {
+        labelLines.push(metadata.name);
+      }
+      if (stageLabel) {
+        labelLines.push(`SOI: ${stageLabel}`);
+      }
+      labelLines.push(`Durum: ${statusLabel}`);
+      if (independenceLevel !== 'none' || independenceMissing) {
+        const independenceLabel = independenceLevelLabels[independenceLevel]?.label ?? independenceLevel;
+        const statusMeta = independenceStatusLabels[independenceStatus]?.label ?? independenceStatus;
+        const independenceParts = [independenceLabel];
+        if (independenceMissing) {
+          independenceParts.push(statusMeta);
+        }
+        labelLines.push(`Bağımsızlık: ${independenceParts.join(' • ')}`);
+      }
+
+      const node: ObjectiveNode = {
+        id: `goal:${objective.objectiveId}`,
+        objectiveId: objective.objectiveId,
+        stage: metadata?.stage,
+        attrs: {
+          label: labelLines.join('\n'),
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors[objective.status],
+          color: borderColor,
+          penwidth,
+          peripheries,
+        },
+      };
+      return node;
+    });
+
+  const objectiveNodeIds = new Map(objectiveNodes.map((node) => [node.objectiveId, node.id]));
+
+  type EvidenceNode = {
+    id: string;
+    objectiveId: string;
+    attrs: Record<string, string | number | undefined>;
+  };
+
+  const evidenceNodes: EvidenceNode[] = snapshot.objectives.flatMap((objective) => {
+    const uniqueRefs = Array.from(new Set(objective.evidenceRefs)).sort((a, b) => a.localeCompare(b));
+    return uniqueRefs.map((ref, index) => {
+      const separatorIndex = ref.indexOf(':');
+      const artifactType =
+        separatorIndex >= 0 ? (ref.slice(0, separatorIndex) as ObjectiveArtifactType) : undefined;
+      const artifactLabel = artifactType ? formatArtifact(artifactType) : 'Kanıt';
+      const path = separatorIndex >= 0 ? ref.slice(separatorIndex + 1) : ref;
+      const node: EvidenceNode = {
+        id: `evidence:${objective.objectiveId}:${index}`,
+        objectiveId: objective.objectiveId,
+        attrs: {
+          label: `${artifactLabel}\n${path}`,
+          shape: 'note',
+          style: 'filled',
+          fillcolor: '#e0f2fe',
+          color: '#0c4a6e',
+        },
+      };
+      return node;
+    });
+  });
+
+  type GapNode = {
+    id: string;
+    objectiveId: string;
+    attrs: Record<string, string | number | undefined>;
+  };
+
+  const gapNodes: GapNode[] = Array.from(objectiveGapDescriptions.entries()).flatMap(
+    ([objectiveId, descriptions]) => {
+      const sorted = Array.from(descriptions).sort((a, b) => a.localeCompare(b));
+      return sorted.map((description, index) => {
+        const node: GapNode = {
+          id: `gap:${objectiveId}:${index}`,
+          objectiveId,
+          attrs: {
+            label: description,
+            shape: 'diamond',
+            style: 'filled',
+            fillcolor: '#fee2e2',
+            color: '#b91c1c',
+            fontcolor: '#7f1d1d',
+            penwidth: 1.8,
+          },
+        };
+        return node;
+      });
+    },
+  );
+
+  const renderNodeLine = (
+    id: string,
+    attrs: Record<string, string | number | undefined>,
+    indent = '  ',
+  ): string => {
+    const attrText = formatDotAttributes(attrs);
+    return `${indent}${escapeDotId(id)}${attrText.length > 0 ? ` [${attrText}]` : ''};`;
+  };
+
+  const stageGroupMap = new Map<string, { label: string; lines: string[] }>();
+  const standaloneObjectiveLines: string[] = [];
+
+  objectiveNodes.forEach((node) => {
+    if (node.stage) {
+      const stageKey = node.stage;
+      if (!stageGroupMap.has(stageKey)) {
+        stageGroupMap.set(stageKey, {
+          label: stageLabels[stageKey] ?? stageKey,
+          lines: [],
+        });
+      }
+      stageGroupMap.get(stageKey)!.lines.push(renderNodeLine(node.id, node.attrs, '    '));
+    } else {
+      standaloneObjectiveLines.push(renderNodeLine(node.id, node.attrs));
+    }
+  });
+
+  const stageSections: string[] = [];
+  const orderedStages = [
+    ...soiStages.filter((stage) => stageGroupMap.has(stage)),
+    ...Array.from(stageGroupMap.keys())
+      .filter((stage) => !soiStages.includes(stage as SoiStage))
+      .sort((a, b) => a.localeCompare(b)),
+  ];
+  orderedStages.forEach((stage) => {
+    const group = stageGroupMap.get(stage);
+    if (!group) {
+      return;
+    }
+    stageSections.push(`  subgraph ${escapeDotId(`cluster_${stage}`)} {`);
+    stageSections.push(`    label=${escapeDotLabel(group.label)};`);
+    stageSections.push('    style="rounded";');
+    stageSections.push('    color="#94a3b8";');
+    stageSections.push('    fontname="Inter";');
+    stageSections.push('    node [fontname="Inter"];');
+    group.lines.forEach((line) => stageSections.push(line));
+    stageSections.push('  }');
+  });
+
+  const evidenceLines = [...evidenceNodes]
+    .sort((a, b) =>
+      a.objectiveId === b.objectiveId
+        ? String(a.attrs.label ?? '').localeCompare(String(b.attrs.label ?? ''))
+        : a.objectiveId.localeCompare(b.objectiveId),
+    )
+    .map((node) => renderNodeLine(node.id, node.attrs));
+
+  const gapLines = [...gapNodes]
+    .sort((a, b) =>
+      a.objectiveId === b.objectiveId
+        ? String(a.attrs.label ?? '').localeCompare(String(b.attrs.label ?? ''))
+        : a.objectiveId.localeCompare(b.objectiveId),
+    )
+    .map((node) => renderNodeLine(node.id, node.attrs));
+
+  interface DotEdge {
+    from: string;
+    to: string;
+    attrs?: Record<string, string | number | undefined>;
+  }
+
+  const edges: DotEdge[] = [];
+
+  evidenceNodes.forEach((node) => {
+    const target = objectiveNodeIds.get(node.objectiveId);
+    if (!target) {
+      return;
+    }
+    edges.push({
+      from: node.id,
+      to: target,
+      attrs: { color: '#0284c7', penwidth: 1.4 },
+    });
+  });
+
+  gapNodes.forEach((node) => {
+    const source = objectiveNodeIds.get(node.objectiveId);
+    if (!source) {
+      return;
+    }
+    edges.push({
+      from: source,
+      to: node.id,
+      attrs: { color: '#b91c1c', style: 'dashed', penwidth: 1.4, arrowhead: 'vee' },
+    });
+  });
+
+  const edgeLines = edges
+    .sort((a, b) => {
+      const fromDiff = a.from.localeCompare(b.from);
+      if (fromDiff !== 0) {
+        return fromDiff;
+      }
+      return a.to.localeCompare(b.to);
+    })
+    .map((edge) => {
+      const attrText = formatDotAttributes(edge.attrs ?? {});
+      return `  ${escapeDotId(edge.from)} -> ${escapeDotId(edge.to)}${attrText.length > 0 ? ` [${attrText}]` : ''};`;
+    });
+
+  const legendLines: string[] = [];
+  if (options.includeLegend !== false) {
+    legendLines.push('  subgraph "cluster_legend" {');
+    legendLines.push('    label="Lejant";');
+    legendLines.push('    style="rounded";');
+    legendLines.push('    color="#94a3b8";');
+    legendLines.push('    fontname="Inter";');
+    legendLines.push('    node [fontname="Inter"];');
+    legendLines.push(
+      renderNodeLine(
+        'legend_goal_covered',
+        {
+          label: 'Hedef • Tam Karşılandı',
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors.covered,
+          color: '#15803d',
+          penwidth: 1.6,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_goal_partial',
+        {
+          label: 'Hedef • Kısmen Karşılandı',
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors.partial,
+          color: '#b45309',
+          penwidth: 1.8,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_goal_missing',
+        {
+          label: 'Hedef • Eksik',
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors.missing,
+          color: '#b91c1c',
+          penwidth: 2,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_goal_required',
+        {
+          label: 'Zorunlu Bağımsız Hedef',
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors.covered,
+          color: '#0f766e',
+          penwidth: 2.4,
+          peripheries: 2,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_goal_required_gap',
+        {
+          label: 'Bağımsızlık Eksikliği',
+          shape: 'rect',
+          style: 'rounded,filled',
+          fillcolor: statusFillColors.partial,
+          color: '#b91c1c',
+          penwidth: 3,
+          peripheries: 2,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_evidence',
+        {
+          label: 'Kanıt (Solution)',
+          shape: 'note',
+          style: 'filled',
+          fillcolor: '#e0f2fe',
+          color: '#0c4a6e',
+        },
+        '    ',
+      ),
+    );
+    legendLines.push(
+      renderNodeLine(
+        'legend_gap',
+        {
+          label: 'Boşluk/Kalıntı',
+          shape: 'diamond',
+          style: 'filled',
+          fillcolor: '#fee2e2',
+          color: '#b91c1c',
+          penwidth: 1.8,
+        },
+        '    ',
+      ),
+    );
+    legendLines.push('  }');
+  }
+
+  const lines = [
+    `digraph ${escapeDotId(graphName)} {`,
+    '  rankdir="TB";',
+    '  nodesep="0.6";',
+    '  ranksep="1.0";',
+    '  fontname="Inter";',
+    '  node [fontname="Inter"];',
+    '  edge [fontname="Inter"];',
+  ];
+
+  const appendSection = (section: string[]): void => {
+    if (section.length === 0) {
+      return;
+    }
+    if (lines[lines.length - 1] !== '') {
+      lines.push('');
+    }
+    lines.push(...section);
+  };
+
+  appendSection(stageSections);
+  appendSection(standaloneObjectiveLines);
+  appendSection(evidenceLines);
+  appendSection(gapLines);
+  appendSection(legendLines);
+  appendSection(edgeLines);
+
+  if (lines[lines.length - 1] !== '') {
+    lines.push('');
+  }
+  lines.push('}');
+
+  return `${lines.join('\n')}\n`;
 };
 
 export const renderTraceGraphDot = (
@@ -3561,7 +4207,11 @@ export const renderGaps = (
 ): string => {
   const objectiveLookup = new Map(options.objectivesMetadata?.map((objective) => [objective.id, objective]));
 
-  const categories = (Object.keys(snapshot.gaps) as GapCategoryKey[]).map((key) => {
+  const gapKeys = (Object.keys(snapshot.gaps) as GapCategoryKey[]).filter(
+    (key): key is Exclude<GapCategoryKey, 'staleEvidence'> => key !== 'staleEvidence',
+  );
+
+  const categories = gapKeys.map((key) => {
     const items: GapReportRow[] = snapshot.gaps[key].map((gap) => {
       const metadata = objectiveLookup.get(gap.objectiveId);
       return {
@@ -3580,7 +4230,7 @@ export const renderGaps = (
     };
   });
 
-  const summaryMetrics: LayoutSummaryMetric[] = (Object.keys(snapshot.gaps) as GapCategoryKey[]).map((key) => ({
+  const summaryMetrics: LayoutSummaryMetric[] = gapKeys.map((key) => ({
     label: gapSummaryLabels[key],
     value: snapshot.gaps[key].length.toString(),
   }));

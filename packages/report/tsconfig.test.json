@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["jest", "node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "../../test/shims/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "../../test/shims/**/*.ts", "../../test/shims/**/*.d.ts"]
 }

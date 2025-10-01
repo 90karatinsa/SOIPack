@@ -1,5 +1,6 @@
 import http, { IncomingHttpHeaders } from 'http';
 import https from 'https';
+import { createHash } from 'crypto';
 import { setTimeout as delay } from 'timers/promises';
 
 import {
@@ -20,8 +21,12 @@ export interface PolarionClientOptions {
   requirementsEndpoint?: string;
   testRunsEndpoint?: string;
   buildsEndpoint?: string;
+  attachmentsEndpoint?: string;
   timeoutMs?: number;
   pageSize?: number;
+  attachmentsPageSize?: number;
+  attachmentsConcurrency?: number;
+  maxAttachmentBytes?: number;
 }
 
 export interface PolarionArtifactBundle {
@@ -29,20 +34,41 @@ export interface PolarionArtifactBundle {
   tests: RemoteTestRecord[];
   builds: RemoteBuildRecord[];
   relationships: RemoteTraceLink[];
+  attachments: PolarionAttachmentMetadata[];
+}
+
+export interface PolarionAttachmentMetadata {
+  id?: string;
+  workItemId: string;
+  filename: string;
+  title?: string;
+  description?: string;
+  contentType?: string;
+  size?: number;
+  sha256: string;
+  bytes: number;
+  url?: string;
 }
 
 const defaultEndpoints = {
   requirements: '/polarion/api/v2/projects/:projectId/workitems',
   testRuns: '/polarion/api/v2/projects/:projectId/test-runs',
   builds: '/polarion/api/v2/projects/:projectId/builds',
+  attachments: '/polarion/api/v2/projects/:projectId/workitems/:workItemId/attachments',
 } as const;
 
 const DEFAULT_PAGE_SIZE = 200;
 const MAX_PAGINATION_DEPTH = 500;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 250;
+const DEFAULT_ATTACHMENT_CONCURRENCY = 4;
+const DEFAULT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 
 const pageCache = new Map<string, { etag?: string; payload: unknown }>();
+const attachmentContentCache = new Map<
+  string,
+  { etag?: string; sha256: string; bytes: number; contentType?: string }
+>();
 
 const applyProjectTemplate = (template: string, projectId: string): string => {
   if (!template.includes(':projectId')) {
@@ -66,6 +92,20 @@ const resolveEndpointUrl = (options: PolarionClientOptions, key: keyof typeof de
   }
 
   return url;
+};
+
+const resolveAttachmentCollectionUrl = (options: PolarionClientOptions, workItemId: string): URL => {
+  const template = options.attachmentsEndpoint ?? defaultEndpoints.attachments;
+  let resolved = applyProjectTemplate(template, options.projectId);
+  if (resolved.includes(':workItemId')) {
+    resolved = resolved.replace(/:workItemId/gu, encodeURIComponent(workItemId));
+  } else {
+    const url = new URL(resolved, options.baseUrl);
+    url.searchParams.set('workItemId', workItemId);
+    return url;
+  }
+
+  return new URL(resolved, options.baseUrl);
 };
 
 const buildAuthHeader = (options: PolarionClientOptions): string | undefined => {
@@ -511,6 +551,398 @@ const collectPolarionRelationships = (
   return links;
 };
 
+class AttachmentTooLargeError extends Error {
+  limit: number;
+
+  constructor(limit: number) {
+    super(`Attachment exceeded the maximum allowed size of ${limit} bytes.`);
+    this.name = 'AttachmentTooLargeError';
+    this.limit = limit;
+  }
+}
+
+interface PolarionAttachmentDescriptor {
+  id?: string;
+  filename: string;
+  title?: string;
+  description?: string;
+  url: string;
+  contentType?: string;
+  size?: number;
+}
+
+const toAttachmentDescriptor = (
+  workItemId: string,
+  record: Record<string, unknown>,
+  warnings: string[],
+): PolarionAttachmentDescriptor | undefined => {
+  const id = toStringId(record.id ?? record.attachmentId ?? record.attachment_id ?? record.workItemAttachmentId);
+  const title = typeof record.title === 'string' ? record.title : undefined;
+  const description = typeof record.description === 'string' ? record.description : undefined;
+  const rawFileName =
+    typeof record.fileName === 'string'
+      ? record.fileName
+      : typeof record.filename === 'string'
+        ? record.filename
+        : typeof record.name === 'string'
+          ? record.name
+          : undefined;
+  const filename = rawFileName && rawFileName.trim().length > 0 ? rawFileName.trim() : `${workItemId}-attachment`;
+  const urlValue =
+    typeof record.url === 'string'
+      ? record.url
+      : typeof record.downloadUrl === 'string'
+        ? record.downloadUrl
+        : typeof record.href === 'string'
+          ? record.href
+          : undefined;
+
+  if (!urlValue) {
+    const label = id ?? filename;
+    warnings.push(`Polarion attachment ${label} for work item ${workItemId} skipped due to missing download URL.`);
+    return undefined;
+  }
+
+  const contentType =
+    typeof record.contentType === 'string'
+      ? record.contentType
+      : typeof record.mimeType === 'string'
+        ? record.mimeType
+        : typeof record.mime_type === 'string'
+          ? record.mime_type
+          : undefined;
+
+  const sizeValue = record.size ?? record.length ?? record.fileSize ?? record.bytes;
+  const size = typeof sizeValue === 'number' && Number.isFinite(sizeValue) ? Math.max(0, sizeValue) : undefined;
+
+  return {
+    id,
+    filename,
+    title,
+    description,
+    url: urlValue,
+    contentType,
+    size,
+  };
+};
+
+const createAttachmentCacheKey = (workItemId: string, descriptor: PolarionAttachmentDescriptor): string => {
+  const suffix = descriptor.id ?? descriptor.url ?? descriptor.filename;
+  return `polarion:${workItemId}:${suffix}`;
+};
+
+const downloadPolarionAttachment = async (
+  workItemId: string,
+  descriptor: PolarionAttachmentDescriptor,
+  options: PolarionClientOptions,
+  authHeader: string | undefined,
+  maxAttachmentBytes: number,
+  warnings: string[],
+): Promise<{ sha256: string; bytes: number; contentType?: string } | undefined> => {
+  let downloadUrl: URL;
+  try {
+    downloadUrl = new URL(descriptor.url, options.baseUrl);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    warnings.push(
+      `Polarion attachment ${descriptor.filename} for work item ${workItemId} skipped: invalid URL (${reason}).`,
+    );
+    return undefined;
+  }
+
+  const headers: Record<string, string> = {};
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+
+  const cacheKey = createAttachmentCacheKey(workItemId, descriptor);
+  const cached = attachmentContentCache.get(cacheKey);
+  if (cached?.etag) {
+    headers['If-None-Match'] = cached.etag;
+  }
+
+  return await new Promise((resolve) => {
+    const client = downloadUrl.protocol === 'https:' ? https : http;
+    const request = client.request(
+      downloadUrl,
+      {
+        method: 'GET',
+        headers,
+        timeout: options.timeoutMs ?? 15000,
+      },
+      (response) => {
+        const { statusCode = 0, statusMessage = '' } = response;
+
+        if (statusCode === 304 && cached) {
+          resolve({ sha256: cached.sha256, bytes: cached.bytes, contentType: cached.contentType });
+          response.resume();
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk) => {
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+          });
+          response.on('end', () => {
+            const message = Buffer.concat(chunks).toString('utf8') || undefined;
+            warnings.push(
+              `Polarion attachment ${descriptor.filename} for work item ${workItemId} returned ${statusCode} ${statusMessage}. ${
+                message ?? ''
+              }`.trim(),
+            );
+            resolve(undefined);
+          });
+          return;
+        }
+
+        const etag = getEtagHeader(response.headers);
+        const contentTypeHeader = (() => {
+          const value = response.headers['content-type'];
+          if (Array.isArray(value)) {
+            return value[0];
+          }
+          return typeof value === 'string' ? value : undefined;
+        })();
+
+        const hash = createHash('sha256');
+        let totalBytes = 0;
+        let aborted = false;
+
+        response.on('data', (chunk) => {
+          if (aborted) {
+            return;
+          }
+          const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+          totalBytes += buffer.length;
+          if (totalBytes > maxAttachmentBytes) {
+            aborted = true;
+            response.destroy(new AttachmentTooLargeError(maxAttachmentBytes));
+            return;
+          }
+          hash.update(buffer);
+        });
+
+        response.on('end', () => {
+          if (aborted) {
+            return;
+          }
+          const sha256 = hash.digest('hex');
+          attachmentContentCache.set(cacheKey, { etag, sha256, bytes: totalBytes, contentType: contentTypeHeader });
+          resolve({ sha256, bytes: totalBytes, contentType: contentTypeHeader ?? descriptor.contentType });
+        });
+
+        response.on('error', (error) => {
+          if (error instanceof AttachmentTooLargeError) {
+            warnings.push(
+              `Polarion attachment ${descriptor.filename} for work item ${workItemId} exceeds the ${maxAttachmentBytes} byte limit; download skipped.`,
+            );
+            resolve(undefined);
+            return;
+          }
+          warnings.push(
+            `Polarion attachment ${descriptor.filename} for work item ${workItemId} failed: ${(error as Error).message}`,
+          );
+          resolve(undefined);
+        });
+      },
+    );
+
+    request.on('error', (error) => {
+      warnings.push(
+        `Polarion attachment ${descriptor.filename} for work item ${workItemId} failed: ${(error as Error).message}`,
+      );
+      resolve(undefined);
+    });
+
+    request.end();
+  });
+};
+
+const fetchWorkItemAttachments = async (
+  options: PolarionClientOptions,
+  workItemId: string,
+  authHeader: string | undefined,
+  warnings: string[],
+): Promise<PolarionAttachmentDescriptor[]> => {
+  const descriptors: PolarionAttachmentDescriptor[] = [];
+  const pageSize = options.attachmentsPageSize ?? options.pageSize ?? DEFAULT_PAGE_SIZE;
+  const throttleWarningIssued = { value: false };
+  const ensureThrottleWarning = (): void => {
+    if (!throttleWarningIssued.value) {
+      warnings.push(
+        `Polarion attachments request for work item ${workItemId} was throttled (HTTP 429). Retrying with backoff.`,
+      );
+      throttleWarningIssued.value = true;
+    }
+  };
+
+  let cursor: string | undefined;
+  let pageCount = 0;
+  const baseUrl = resolveAttachmentCollectionUrl(options, workItemId);
+
+  while (pageCount < MAX_PAGINATION_DEPTH) {
+    const pageUrl = new URL(baseUrl.toString());
+    if (cursor) {
+      if (/^https?:\/\//iu.test(cursor)) {
+        pageUrl.href = cursor;
+      } else {
+        pageUrl.searchParams.set('cursor', cursor);
+      }
+    }
+    if (pageSize > 0) {
+      pageUrl.searchParams.set('pageSize', String(pageSize));
+    }
+
+    const cacheKey = `attachments:${workItemId}:${pageUrl.toString()}`;
+
+    try {
+      const result = await fetchPage(pageUrl, authHeader, cacheKey, options.timeoutMs, ensureThrottleWarning);
+      if (!result) {
+        break;
+      }
+      const payload = result.payload;
+      const items = extractList<Record<string, unknown>>(payload);
+      items.forEach((entry) => {
+        const descriptor = toAttachmentDescriptor(workItemId, entry, warnings);
+        if (descriptor) {
+          descriptors.push(descriptor);
+        }
+      });
+
+      const nextCursor = extractCursor(payload);
+      if (!nextCursor) {
+        break;
+      }
+      cursor = nextCursor;
+      pageCount += 1;
+    } catch (error) {
+      if (error instanceof HttpError) {
+        if (error.statusCode === 429) {
+          ensureThrottleWarning();
+        } else {
+          warnings.push(
+            `Polarion attachments request for work item ${workItemId} returned ${error.statusCode} ${error.statusMessage}. ${
+              error.message ?? ''
+            }`.trim(),
+          );
+        }
+      } else {
+        warnings.push(
+          `Polarion attachments request for work item ${workItemId} failed: ${(error as Error).message}`,
+        );
+      }
+      break;
+    }
+  }
+
+  if (pageCount >= MAX_PAGINATION_DEPTH) {
+    warnings.push(
+      `Polarion attachments pagination for work item ${workItemId} aborted after ${MAX_PAGINATION_DEPTH} pages.`,
+    );
+  }
+
+  return descriptors;
+};
+
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  handler: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  if (items.length === 0) {
+    return [];
+  }
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
+    (async () => {
+      while (true) {
+        const currentIndex = index;
+        if (currentIndex >= items.length) {
+          break;
+        }
+        index += 1;
+        results[currentIndex] = await handler(items[currentIndex]);
+      }
+    })(),
+  );
+
+  await Promise.all(workers);
+  return results;
+};
+
+const collectPolarionAttachments = async (
+  options: PolarionClientOptions,
+  workItemIds: Iterable<string>,
+  warnings: string[],
+): Promise<PolarionAttachmentMetadata[]> => {
+  const authHeader = buildAuthHeader(options);
+  const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+  const concurrency = options.attachmentsConcurrency ?? DEFAULT_ATTACHMENT_CONCURRENCY;
+  const descriptors: Array<{ workItemId: string; descriptor: PolarionAttachmentDescriptor }> = [];
+
+  const workItemList = Array.from(new Set(workItemIds)).filter((id) => id.trim().length > 0);
+
+  await runWithConcurrency(workItemList, concurrency, async (workItemId) => {
+    const items = await fetchWorkItemAttachments(options, workItemId, authHeader, warnings);
+    items.forEach((descriptor) => {
+      descriptors.push({ workItemId, descriptor });
+    });
+  });
+
+  const attachments: PolarionAttachmentMetadata[] = [];
+  const seen = new Set<string>();
+
+  await runWithConcurrency(
+    descriptors,
+    concurrency,
+    async ({ workItemId, descriptor }) => {
+      const cacheKey = createAttachmentCacheKey(workItemId, descriptor);
+      if (seen.has(cacheKey)) {
+        return;
+      }
+      if (descriptor.size && descriptor.size > maxAttachmentBytes) {
+        warnings.push(
+          `Polarion attachment ${descriptor.filename} for work item ${workItemId} exceeds the ${maxAttachmentBytes} byte limit; download skipped.`,
+        );
+        seen.add(cacheKey);
+        return;
+      }
+
+      const result = await downloadPolarionAttachment(
+        workItemId,
+        descriptor,
+        options,
+        authHeader,
+        maxAttachmentBytes,
+        warnings,
+      );
+      if (!result) {
+        seen.add(cacheKey);
+        return;
+      }
+
+      seen.add(cacheKey);
+      attachments.push({
+        id: descriptor.id,
+        workItemId,
+        filename: descriptor.filename,
+        title: descriptor.title,
+        description: descriptor.description,
+        contentType: descriptor.contentType ?? result.contentType,
+        size: descriptor.size ?? result.bytes,
+        sha256: result.sha256,
+        bytes: result.bytes,
+        url: descriptor.url,
+      });
+    },
+  );
+
+  return attachments;
+};
+
 export const fetchPolarionArtifacts = async (
   options: PolarionClientOptions,
 ): Promise<ParseResult<PolarionArtifactBundle>> => {
@@ -523,6 +955,18 @@ export const fetchPolarionArtifacts = async (
     requirements as Array<RemoteRequirementRecord & Record<string, unknown>>,
     tests as Array<RemoteTestRecord & Record<string, unknown>>,
   );
+  const workItemIds = new Set<string>();
+  requirements.forEach((requirement) => {
+    if (requirement.id) {
+      workItemIds.add(requirement.id);
+    }
+  });
+  tests.forEach((test) => {
+    if (test.id) {
+      workItemIds.add(test.id);
+    }
+  });
+  const attachments = await collectPolarionAttachments(options, workItemIds, warnings);
 
   return {
     data: {
@@ -530,6 +974,7 @@ export const fetchPolarionArtifacts = async (
       tests,
       builds,
       relationships,
+      attachments,
     },
     warnings,
   };

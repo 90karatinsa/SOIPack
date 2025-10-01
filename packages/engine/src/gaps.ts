@@ -1,3 +1,7 @@
+import type { Objective, ObjectiveArtifactType } from '@soipack/core';
+
+import type { EvidenceIndex } from './index';
+
 export type TraceabilityNodeType = 'requirement' | 'design' | 'code' | 'test';
 
 export interface RequirementTraceRecord {
@@ -455,3 +459,132 @@ export class TraceabilityGapAnalyzer {
     return { requirementGaps, orphans, conflicts, summary };
   }
 }
+
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+export type StaleEvidenceReason = 'beforeSnapshot' | 'exceedsMaxAge';
+
+export interface StaleEvidenceFinding {
+  objectiveId: string;
+  artifactType: ObjectiveArtifactType;
+  latestEvidenceTimestamp: string;
+  reasons: StaleEvidenceReason[];
+  ageDays?: number;
+  maxAgeDays?: number;
+  snapshotTimestamp?: string;
+}
+
+export interface StaleEvidenceOverrides {
+  objectives?: Record<string, number | null>;
+  artifacts?: Partial<Record<ObjectiveArtifactType, number | null>>;
+}
+
+export interface StaleEvidenceOptions {
+  snapshotTimestamp?: string;
+  analysisTimestamp?: string;
+  maxAgeDays?: number | null;
+  overrides?: StaleEvidenceOverrides;
+}
+
+const normalizeThreshold = (value: number | null | undefined): number | undefined =>
+  value === null || value === undefined ? undefined : value;
+
+const resolveAgeThreshold = (
+  objectiveId: string,
+  artifactType: ObjectiveArtifactType,
+  options: StaleEvidenceOptions,
+): number | undefined => {
+  const objectiveOverride = normalizeThreshold(options.overrides?.objectives?.[objectiveId]);
+  if (objectiveOverride !== undefined) {
+    return objectiveOverride;
+  }
+  const artifactOverride = normalizeThreshold(options.overrides?.artifacts?.[artifactType]);
+  if (artifactOverride !== undefined) {
+    return artifactOverride;
+  }
+  return normalizeThreshold(options.maxAgeDays);
+};
+
+const computeAgeDays = (analysisTime: number, timestamp: number): number | undefined => {
+  if (!Number.isFinite(analysisTime)) {
+    return undefined;
+  }
+  const delta = analysisTime - timestamp;
+  if (delta <= 0) {
+    return 0;
+  }
+  return Math.floor(delta / MILLISECONDS_PER_DAY);
+};
+
+const compareFindings = (left: StaleEvidenceFinding, right: StaleEvidenceFinding): number => {
+  const idDiff = left.objectiveId.localeCompare(right.objectiveId);
+  if (idDiff !== 0) {
+    return idDiff;
+  }
+  return left.artifactType.localeCompare(right.artifactType);
+};
+
+export const detectStaleEvidence = (
+  objectives: Objective[],
+  evidenceIndex: EvidenceIndex,
+  options: StaleEvidenceOptions = {},
+): StaleEvidenceFinding[] => {
+  const snapshotTime = options.snapshotTimestamp ? Date.parse(options.snapshotTimestamp) : undefined;
+  const analysisTime = options.analysisTimestamp
+    ? Date.parse(options.analysisTimestamp)
+    : Date.now();
+  const findings: StaleEvidenceFinding[] = [];
+
+  objectives.forEach((objective) => {
+    objective.artifacts.forEach((artifactType) => {
+      const evidenceItems = evidenceIndex[artifactType] ?? [];
+      if (evidenceItems.length === 0) {
+        return;
+      }
+
+      let latestTimestamp = Number.NEGATIVE_INFINITY;
+      evidenceItems.forEach((item) => {
+        const parsed = Date.parse(item.timestamp);
+        if (Number.isFinite(parsed) && parsed > latestTimestamp) {
+          latestTimestamp = parsed;
+        }
+      });
+
+      if (!Number.isFinite(latestTimestamp)) {
+        return;
+      }
+
+      const reasons: StaleEvidenceReason[] = [];
+      if (snapshotTime !== undefined && latestTimestamp < snapshotTime) {
+        reasons.push('beforeSnapshot');
+      }
+
+      const maxAgeDays = resolveAgeThreshold(objective.id, artifactType, options);
+      let ageDays: number | undefined;
+      if (maxAgeDays !== undefined) {
+        ageDays = computeAgeDays(analysisTime, latestTimestamp);
+        if (ageDays !== undefined && ageDays > maxAgeDays) {
+          reasons.push('exceedsMaxAge');
+        }
+      } else if (Number.isFinite(analysisTime)) {
+        ageDays = computeAgeDays(analysisTime, latestTimestamp);
+      }
+
+      if (reasons.length === 0) {
+        return;
+      }
+
+      findings.push({
+        objectiveId: objective.id,
+        artifactType,
+        latestEvidenceTimestamp: new Date(latestTimestamp).toISOString(),
+        reasons,
+        ageDays,
+        maxAgeDays,
+        snapshotTimestamp: options.snapshotTimestamp,
+      });
+    });
+  });
+
+  return findings.sort(compareFindings);
+};

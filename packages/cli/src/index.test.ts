@@ -1,4 +1,4 @@
-import { createHash, X509Certificate } from 'crypto';
+import { createHash, X509Certificate, verify as verifyDetached } from 'crypto';
 import { EventEmitter } from 'events';
 import { promises as fs, readFileSync, createWriteStream } from 'fs';
 import http from 'http';
@@ -29,6 +29,42 @@ import { ZipFile } from 'yazl';
 
 type ManifestWithSbom = Manifest & {
   sbom?: { path: string; algorithm: string; digest: string } | null;
+};
+
+interface ManifestFixtureFile {
+  name: string;
+  contents: string;
+}
+
+const writeManifestFixture = async (
+  root: string,
+  subdir: string,
+  files: ManifestFixtureFile[],
+  timestamp: string,
+): Promise<{ manifestPath: string; manifest: Manifest } & { reportsDir: string }> => {
+  const workDir = path.join(root, subdir);
+  const reportsDir = path.join(workDir, 'reports');
+  await fs.mkdir(reportsDir, { recursive: true });
+
+  await Promise.all(
+    files.map(async (file) => {
+      const targetPath = path.join(reportsDir, file.name);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, file.contents, 'utf8');
+    }),
+  );
+
+  const manifestResult = await buildManifest({
+    reportDir: reportsDir,
+    evidenceDirs: [],
+    toolVersion: 'cli-test',
+    now: new Date(timestamp),
+  });
+
+  const manifestPath = path.join(workDir, 'manifest.json');
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifestResult.manifest, null, 2)}\n`, 'utf8');
+
+  return { manifestPath, manifest: manifestResult.manifest, reportsDir };
 };
 
 import type { LicensePayload } from './license';
@@ -89,6 +125,7 @@ import {
   runVerify,
   runRiskSimulate,
   runManifestDiff,
+  runLedgerReport,
   __internal,
 } from './index';
 import * as cliModule from './index';
@@ -723,6 +760,104 @@ describe('CLI pipeline workflows', () => {
     } finally {
       fetchSpy.mockRestore();
       httpsSpy.mockRestore();
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+      await fs.rm(analysisDir, { recursive: true, force: true });
+      await fs.rm(packageDir, { recursive: true, force: true });
+    }
+  });
+
+  it('packages Polarion attachments into the manifest bundle', async () => {
+    const workspaceDir = path.join(tempRoot, 'polarion-attachments-workspace');
+    const analysisDir = path.join(tempRoot, 'polarion-attachments-analysis');
+    const packageDir = path.join(tempRoot, 'polarion-attachments-package');
+
+    const attachmentBody = Buffer.from('polarion attachment payload');
+    const attachmentHash = createHash('sha256').update(attachmentBody).digest('hex');
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/attachments/REQ-990/design.pdf') {
+        res.writeHead(200, { 'Content-Type': 'application/pdf' });
+        res.end(attachmentBody);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const port = await new Promise<number>((resolve) =>
+      server.listen(0, () => resolve((server.address() as AddressInfo).port)),
+    );
+
+    const fetchSpy = jest.spyOn(adapters, 'fetchPolarionArtifacts');
+    fetchSpy.mockResolvedValue({
+      data: {
+        requirements: [
+          {
+            id: 'REQ-990',
+            title: 'Polarion Requirement',
+            description: 'Imported from Polarion',
+            status: 'approved',
+            type: 'System',
+          },
+        ],
+        tests: [],
+        builds: [],
+        relationships: [],
+        attachments: [
+          {
+            id: 'POL-ATT-9',
+            workItemId: 'REQ-990',
+            filename: 'design.pdf',
+            title: 'Design evidence',
+            contentType: 'application/pdf',
+            bytes: attachmentBody.length,
+            sha256: attachmentHash,
+            url: `http://127.0.0.1:${port}/attachments/REQ-990/design.pdf`,
+          },
+        ],
+      },
+      warnings: [],
+    });
+
+    try {
+      await runImport({
+        output: workspaceDir,
+        polarion: {
+          baseUrl: `http://127.0.0.1:${port}`,
+          projectId: 'AERO',
+          username: 'alice',
+          password: 'secret',
+        },
+      });
+
+      await runAnalyze({
+        input: workspaceDir,
+        output: analysisDir,
+        objectives: objectivesPath,
+      });
+
+      await runReport({
+        input: analysisDir,
+        output: path.join(workspaceDir, 'reports'),
+      });
+
+      const packResult = await runPack({
+        input: workspaceDir,
+        output: packageDir,
+        signingKey: TEST_SIGNING_BUNDLE,
+        packageName: 'polarion-attachments.zip',
+      });
+
+      const manifest = JSON.parse(
+        await fs.readFile(packResult.manifestPath, 'utf8'),
+      ) as ManifestWithSbom;
+      const attachmentEntry = manifest.files.find((entry) =>
+        entry.path.includes('attachments/polarion/REQ-990/design.pdf'),
+      );
+      expect(attachmentEntry).toBeDefined();
+      expect(attachmentEntry?.sha256).toBe(attachmentHash);
+    } finally {
+      fetchSpy.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await fs.rm(workspaceDir, { recursive: true, force: true });
       await fs.rm(analysisDir, { recursive: true, force: true });
       await fs.rm(packageDir, { recursive: true, force: true });
@@ -1615,34 +1750,6 @@ describe('manifest diff command', () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  const writeManifestFixture = async (
-    subdir: string,
-    files: Array<{ name: string; contents: string }>,
-    timestamp: string,
-  ) => {
-    const workDir = path.join(tempRoot, subdir);
-    const reportsDir = path.join(workDir, 'reports');
-    await fs.mkdir(reportsDir, { recursive: true });
-
-    for (const file of files) {
-      const targetPath = path.join(reportsDir, file.name);
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, file.contents, 'utf8');
-    }
-
-    const manifestResult = await buildManifest({
-      reportDir: reportsDir,
-      evidenceDirs: [],
-      toolVersion: 'cli-test',
-      now: new Date(timestamp),
-    });
-
-    const manifestPath = path.join(workDir, 'manifest.json');
-    await fs.writeFile(manifestPath, `${JSON.stringify(manifestResult.manifest, null, 2)}\n`, 'utf8');
-
-    return { manifestPath, manifest: manifestResult.manifest };
-  };
-
   const getSha = (manifest: Manifest, manifestPath: string): string => {
     const entry = manifest.files.find((file) => file.path === manifestPath);
     if (!entry) {
@@ -1653,6 +1760,7 @@ describe('manifest diff command', () => {
 
   it('reports manifest delta and verifies ledger proofs', async () => {
     const base = await writeManifestFixture(
+      tempRoot,
       'base',
       [
         { name: 'summary.txt', contents: 'Base manifest summary' },
@@ -1662,6 +1770,7 @@ describe('manifest diff command', () => {
     );
 
     const target = await writeManifestFixture(
+      tempRoot,
       'target',
       [
         { name: 'metrics.csv', contents: 'pass,fail\n2,0\n' },
@@ -1705,6 +1814,7 @@ describe('manifest diff command', () => {
 
   it('throws when ledger proof verification fails', async () => {
     const base = await writeManifestFixture(
+      tempRoot,
       'tampered-base',
       [
         { name: 'alpha.txt', contents: 'alpha' },
@@ -1713,6 +1823,7 @@ describe('manifest diff command', () => {
     );
 
     const target = await writeManifestFixture(
+      tempRoot,
       'tampered-target',
       [
         { name: 'beta.txt', contents: 'beta' },
@@ -1736,6 +1847,113 @@ describe('manifest diff command', () => {
     await expect(
       runManifestDiff({ baseManifestPath: tamperedPath, targetManifestPath: target.manifestPath }),
     ).rejects.toThrow('Ledger kanıtı doğrulanamadı');
+  });
+});
+
+describe('ledger-report command', () => {
+  let tempRoot: string;
+
+  beforeAll(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-ledger-report-'));
+  });
+
+  afterAll(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  const getFileSha = (manifest: Manifest, manifestPath: string): string => {
+    const entry = manifest.files.find((file) => file.path === manifestPath);
+    if (!entry) {
+      throw new Error(`Manifest entry not found for path ${manifestPath}`);
+    }
+    return entry.sha256.toLowerCase();
+  };
+
+  it('generates PDF ledger report and Ed25519 signature', async () => {
+    const base = await writeManifestFixture(
+      tempRoot,
+      'ledger-base',
+      [
+        { name: 'summary.txt', contents: 'Base manifest summary' },
+        { name: 'metrics.csv', contents: 'pass,fail\n1,0\n' },
+      ],
+      '2024-03-01T00:00:00.000Z',
+    );
+
+    const target = await writeManifestFixture(
+      tempRoot,
+      'ledger-target',
+      [
+        { name: 'metrics.csv', contents: 'pass,fail\n3,0\n' },
+        { name: 'new.log', contents: 'New evidence content' },
+      ],
+      '2024-03-02T00:00:00.000Z',
+    );
+
+    const outputDir = path.join(tempRoot, 'ledger-output');
+    const result = await runLedgerReport({
+      baseManifestPath: base.manifestPath,
+      targetManifestPath: target.manifestPath,
+      outputDir,
+      title: 'Ledger Delta',
+      signingKey: TEST_SIGNING_BUNDLE,
+    });
+
+    expect(result.pdfPath).toBe(path.join(outputDir, 'ledger-report.pdf'));
+    const pdfStats = await fs.stat(result.pdfPath);
+    expect(pdfStats.isFile()).toBe(true);
+
+    const pdfBuffer = await fs.readFile(result.pdfPath);
+    const expectedSha = createHash('sha256').update(pdfBuffer).digest('hex');
+    expect(result.pdfSha256).toBe(expectedSha);
+
+    expect(result.ledgerDiffs).toHaveLength(1);
+    const diffItem = result.ledgerDiffs[0];
+    const newLogSha = getFileSha(target.manifest, 'reports/new.log');
+    const metricsTargetSha = getFileSha(target.manifest, 'reports/metrics.csv');
+    const summarySha = getFileSha(base.manifest, 'reports/summary.txt');
+    const metricsBaseSha = getFileSha(base.manifest, 'reports/metrics.csv');
+
+    expect(diffItem.addedEvidence).toEqual([
+      `reports/new.log (${newLogSha.slice(0, 12)})`,
+      `reports/metrics.csv (${metricsTargetSha.slice(0, 12)})`,
+    ]);
+    expect(diffItem.removedEvidence).toEqual([
+      `reports/summary.txt (${summarySha.slice(0, 12)})`,
+      `reports/metrics.csv (${metricsBaseSha.slice(0, 12)})`,
+    ]);
+
+    expect(result.signaturePath).toBeDefined();
+    expect(result.signature).toBeDefined();
+    const signatureFile = (await fs.readFile(result.signaturePath!, 'utf8')).trim();
+    expect(signatureFile).toBe(result.signature);
+    const signatureBuffer = Buffer.from(signatureFile, 'base64');
+    const verified = verifyDetached(null, pdfBuffer, TEST_SIGNING_PUBLIC_KEY, signatureBuffer);
+    expect(verified).toBe(true);
+  });
+
+  it('throws when Ed25519 signature fails', async () => {
+    const base = await writeManifestFixture(
+      tempRoot,
+      'ledger-invalid-base',
+      [{ name: 'alpha.txt', contents: 'alpha' }],
+      '2024-03-05T00:00:00.000Z',
+    );
+    const target = await writeManifestFixture(
+      tempRoot,
+      'ledger-invalid-target',
+      [{ name: 'beta.txt', contents: 'beta' }],
+      '2024-03-06T00:00:00.000Z',
+    );
+
+    await expect(
+      runLedgerReport({
+        baseManifestPath: base.manifestPath,
+        targetManifestPath: target.manifestPath,
+        outputDir: path.join(tempRoot, 'ledger-invalid-output'),
+        signingKey: 'not-a-valid-ed25519-key',
+      }),
+    ).rejects.toThrow('Ledger raporu Ed25519 imzası oluşturulamadı');
   });
 });
 
@@ -2160,6 +2378,212 @@ describe('doors next importer', () => {
         'https://doors.example.com#Flight Controls',
       );
     } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists attachments, records hashes, and marks independence when configured', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-doors-attachments-'));
+    try {
+      const workDir = path.join(tempDir, 'work');
+      const attachmentBody = 'doors next attachment payload';
+      const expectedHash = createHash('sha256').update(attachmentBody).digest('hex');
+      const fetchSpy = jest
+        .spyOn(adapters, 'fetchDoorsNextArtifacts')
+        .mockImplementation(async (options) => {
+          const attachmentsDir = options.attachmentsDir ?? path.join(workDir, 'attachments', 'doorsNext');
+          const artifactDir = path.join(attachmentsDir, 'REQ-ATT-1');
+          await fs.mkdir(artifactDir, { recursive: true });
+          const attachmentPath = path.join(artifactDir, 'analysis.txt');
+          await fs.writeFile(attachmentPath, attachmentBody, 'utf8');
+
+          return {
+            data: {
+              requirements: [],
+              tests: [],
+              designs: [],
+              relationships: [],
+              attachments: [
+                {
+                  id: 'ATT-1',
+                  artifactId: 'REQ-ATT-1',
+                  title: 'Verification evidence',
+                  filename: 'analysis.txt',
+                  contentType: 'text/plain',
+                  size: Buffer.byteLength(attachmentBody),
+                  path: attachmentPath,
+                  sha256: expectedHash,
+                },
+              ],
+              etagCache: {},
+            },
+            warnings: [],
+          };
+        });
+
+      const result = await runImport({
+        output: workDir,
+        doorsNext: {
+          baseUrl: 'https://doors.example.com',
+          projectArea: 'Evidence',
+        },
+        independentSources: ['doorsNext'],
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachmentsDir: path.join(workDir, 'attachments', 'doorsNext'),
+        }),
+      );
+
+      const attachmentsPath = path.join(workDir, 'attachments', 'doorsNext', 'REQ-ATT-1', 'analysis.txt');
+      const stats = await fs.stat(attachmentsPath);
+      expect(stats.isFile()).toBe(true);
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'doorsNext',
+            path: expect.stringContaining('attachments/doorsNext/REQ-ATT-1/analysis.txt'),
+            hash: expectedHash,
+            independent: true,
+          }),
+        ]),
+      );
+
+      const metadata = result.workspace.metadata.sources?.doorsNext;
+      expect(metadata?.attachments).toEqual(
+        expect.objectContaining({
+          total: 1,
+          totalBytes: Buffer.byteLength(attachmentBody),
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'ATT-1',
+              artifactId: 'REQ-ATT-1',
+              filename: 'analysis.txt',
+              title: 'Verification evidence',
+              contentType: 'text/plain',
+              path: 'attachments/doorsNext/REQ-ATT-1/analysis.txt',
+              sha256: expectedHash,
+              bytes: Buffer.byteLength(attachmentBody),
+            }),
+          ]),
+        }),
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('polarion importer', () => {
+  it('downloads attachments, records hashes, and marks independence', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-polarion-attachments-'));
+    const workDir = path.join(tempDir, 'work');
+    const attachmentBody = Buffer.from('polarion attachment payload');
+    const attachmentHash = createHash('sha256').update(attachmentBody).digest('hex');
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/attachments/REQ-880/analysis.txt') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(attachmentBody);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const port = await new Promise<number>((resolve) =>
+      server.listen(0, () => resolve((server.address() as AddressInfo).port)),
+    );
+
+    const fetchSpy = jest.spyOn(adapters, 'fetchPolarionArtifacts').mockResolvedValue({
+      data: {
+        requirements: [],
+        tests: [],
+        builds: [],
+        relationships: [],
+        attachments: [
+          {
+            id: 'POL-ATT-1',
+            workItemId: 'REQ-880',
+            filename: 'analysis.txt',
+            title: 'Safety evidence',
+            description: 'Hazard analysis notes',
+            contentType: 'text/plain',
+            bytes: attachmentBody.length,
+            sha256: attachmentHash,
+            url: `http://127.0.0.1:${port}/attachments/REQ-880/analysis.txt`,
+          },
+        ],
+      },
+      warnings: [],
+    });
+
+    try {
+      const result = await runImport({
+        output: workDir,
+        polarion: {
+          baseUrl: `http://127.0.0.1:${port}`,
+          projectId: 'AERO',
+          token: 'polarion-token',
+        },
+        independentSources: ['polarion'],
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: `http://127.0.0.1:${port}`,
+          projectId: 'AERO',
+          token: 'polarion-token',
+        }),
+      );
+
+      const attachmentPath = path.join(
+        workDir,
+        'attachments',
+        'polarion',
+        'REQ-880',
+        'analysis.txt',
+      );
+      const stats = await fs.stat(attachmentPath);
+      expect(stats.isFile()).toBe(true);
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'polarion',
+            path: expect.stringContaining('attachments/polarion/REQ-880/analysis.txt'),
+            hash: attachmentHash,
+            independent: true,
+          }),
+        ]),
+      );
+
+      const metadata = result.workspace.metadata.sources?.polarion;
+      expect(metadata?.attachments).toEqual(
+        expect.objectContaining({
+          total: 1,
+          totalBytes: attachmentBody.length,
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'POL-ATT-1',
+              workItemId: 'REQ-880',
+              filename: 'analysis.txt',
+              title: 'Safety evidence',
+              description: 'Hazard analysis notes',
+              contentType: 'text/plain',
+              path: 'attachments/polarion/REQ-880/analysis.txt',
+              sha256: attachmentHash,
+              bytes: attachmentBody.length,
+            }),
+          ]),
+        }),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });

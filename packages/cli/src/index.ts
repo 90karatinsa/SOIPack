@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID, sign as signDetached } from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import http from 'http';
 import https from 'https';
@@ -117,6 +117,7 @@ import {
   planTemplateSections,
   planTemplateTitles,
   printToPDF,
+  type LedgerAttestationDiffItem,
   type PlanTemplateId,
   type PlanOverrideConfig,
   type PlanSectionOverrides,
@@ -457,6 +458,20 @@ const streamConnectorAttachments = async (
   return { results, warnings };
 };
 
+const buildPolarionAuthHeader = (options: PolarionClientOptions | undefined): string | undefined => {
+  if (!options) {
+    return undefined;
+  }
+  if (options.token) {
+    return `Bearer ${options.token}`;
+  }
+  if (options.username && options.password) {
+    const credentials = Buffer.from(`${options.username}:${options.password}`).toString('base64');
+    return `Basic ${credentials}`;
+  }
+  return undefined;
+};
+
 const buildJiraCloudAuthHeader = (options: JiraArtifactsOptions): string | undefined => {
   if (options.email && options.authToken) {
     const credentials = Buffer.from(`${options.email}:${options.authToken}`).toString('base64');
@@ -794,6 +809,21 @@ interface ExternalSourceMetadata {
     tests: number;
     builds: number;
     relationships: number;
+    attachments: {
+      total: number;
+      totalBytes: number;
+      items: Array<{
+        id?: string;
+        workItemId?: string;
+        title?: string;
+        description?: string;
+        filename: string;
+        contentType?: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+      }>;
+    } | null;
   };
   doorsClassic?: {
     modules: number;
@@ -809,6 +839,20 @@ interface ExternalSourceMetadata {
     relationships: number;
     etagCacheSize: number;
     etagCache?: Record<string, string>;
+    attachments: {
+      total: number;
+      totalBytes: number;
+      items: Array<{
+        id?: string;
+        artifactId: string;
+        title?: string;
+        filename: string;
+        contentType?: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+      }>;
+    } | null;
   };
   jama?: {
     baseUrl: string;
@@ -3026,12 +3070,19 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   }
 
   if (options.doorsNext) {
-    const doorsResult = await fetchDoorsNextArtifacts(options.doorsNext);
+    const doorsAttachmentsDir = path.join(outputDir, 'attachments', 'doorsNext');
+    await ensureDirectory(doorsAttachmentsDir);
+
+    const doorsResult = await fetchDoorsNextArtifacts({
+      ...options.doorsNext,
+      attachmentsDir: doorsAttachmentsDir,
+    });
     warnings.push(...doorsResult.warnings);
     const doorsRequirements = doorsResult.data.requirements ?? [];
     const doorsTests = doorsResult.data.tests ?? [];
     const doorsDesigns = doorsResult.data.designs ?? [];
     const doorsRelationships = doorsResult.data.relationships ?? [];
+    const doorsAttachments = doorsResult.data.attachments ?? [];
     const sourceId = `remote:doorsNext:${options.doorsNext.projectArea}`;
 
     if (doorsRequirements.length > 0) {
@@ -3076,6 +3127,47 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       }
     }
 
+    let attachmentSummary: ExternalSourceMetadata['doorsNext']['attachments'] = null;
+    if (doorsAttachments.length > 0) {
+      const attachmentItems: NonNullable<ExternalSourceMetadata['doorsNext']['attachments']>['items'] = [];
+      let totalBytes = 0;
+      for (const attachment of doorsAttachments) {
+        const absolutePath = path.resolve(attachment.path);
+        const workspaceRelativePath = path
+          .relative(outputDir, absolutePath)
+          .split(path.sep)
+          .join('/');
+
+        const summary = `DOORS Next eki ${attachment.artifactId} / ${attachment.filename}`;
+        const { evidence } = await createEvidence(
+          'trace',
+          'doorsNext',
+          absolutePath,
+          summary,
+          independence,
+        );
+        mergeEvidence(evidenceIndex, 'trace', evidence);
+
+        totalBytes += attachment.size ?? 0;
+        attachmentItems.push({
+          id: attachment.id,
+          artifactId: attachment.artifactId,
+          title: attachment.title,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          path: workspaceRelativePath,
+          sha256: attachment.sha256,
+          bytes: attachment.size,
+        });
+      }
+
+      attachmentSummary = {
+        total: doorsAttachments.length,
+        totalBytes,
+        items: attachmentItems,
+      };
+    }
+
     const etagCacheSnapshot = doorsResult.data.etagCache ?? {};
     const etagCacheSize = Object.keys(etagCacheSnapshot).length;
 
@@ -3088,6 +3180,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       relationships: doorsRelationships.length,
       etagCacheSize,
       etagCache: etagCacheSize > 0 ? etagCacheSnapshot : undefined,
+      attachments: attachmentSummary,
     };
   }
 
@@ -3197,6 +3290,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     const polarionTests = polarionResult.data.tests ?? [];
     const polarionBuilds = polarionResult.data.builds ?? [];
     const polarionRelationships = polarionResult.data.relationships ?? [];
+    const polarionAttachments = polarionResult.data.attachments ?? [];
 
     if (polarionRequirements.length > 0) {
       requirements.push(polarionRequirements.map(toRequirementFromPolarion));
@@ -3258,6 +3352,65 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       );
     }
 
+    let polarionAttachmentSummary: ExternalSourceMetadata['polarion']['attachments'] = null;
+    if (polarionAttachments.length > 0) {
+      const polarionAuthHeader = buildPolarionAuthHeader(options.polarion);
+      const { results: attachmentResults, warnings: attachmentWarnings } =
+        await streamConnectorAttachments(
+          outputDir,
+          'polarion',
+          polarionAttachments.map((attachment) => ({
+            issueKey: attachment.workItemId ?? attachment.id ?? 'workItem',
+            filename: attachment.filename,
+            url: attachment.url,
+            authHeader: polarionAuthHeader,
+            expectedSha256: attachment.sha256,
+          })),
+        );
+      warnings.push(...attachmentWarnings);
+
+      const attachmentItems: NonNullable<ExternalSourceMetadata['polarion']['attachments']>['items'] = [];
+      let totalBytes = 0;
+
+      for (let index = 0; index < polarionAttachments.length; index += 1) {
+        const attachment = polarionAttachments[index]!;
+        const download = attachmentResults[index];
+        const workItemLabel = attachment.workItemId ?? attachment.id ?? 'ek';
+        const downloadBytes = download?.bytes ?? attachment.bytes ?? attachment.size ?? 0;
+        totalBytes += downloadBytes;
+
+        if (download?.absolutePath) {
+          const summary = `Polarion eki ${workItemLabel} / ${attachment.filename}`;
+          const { evidence } = await createEvidence(
+            'trace',
+            'polarion',
+            download.absolutePath,
+            summary,
+            independence,
+          );
+          mergeEvidence(evidenceIndex, 'trace', evidence);
+        }
+
+        attachmentItems.push({
+          id: attachment.id,
+          workItemId: attachment.workItemId,
+          title: attachment.title,
+          description: attachment.description,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          path: download?.relativePath,
+          sha256: download?.sha256 ?? attachment.sha256,
+          bytes: downloadBytes,
+        });
+      }
+
+      polarionAttachmentSummary = {
+        total: polarionAttachments.length,
+        totalBytes,
+        items: attachmentItems,
+      };
+    }
+
     sourceMetadata.polarion = {
       baseUrl: options.polarion.baseUrl,
       projectId: options.polarion.projectId,
@@ -3265,6 +3418,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
       tests: polarionTests.length,
       builds: polarionBuilds.length,
       relationships: polarionRelationships.length,
+      attachments: polarionAttachmentSummary,
     };
   }
 
@@ -5599,6 +5753,50 @@ const loadManifestForDiff = async (
   };
 };
 
+const computeManifestDiff = (
+  baseInfo: ManifestForDiff,
+  targetInfo: ManifestForDiff,
+): {
+  added: ManifestDiffEntry[];
+  removed: ManifestDiffEntry[];
+  changed: ManifestDiffChange[];
+} => {
+  const added: ManifestDiffEntry[] = [];
+  const removed: ManifestDiffEntry[] = [];
+  const changed: ManifestDiffChange[] = [];
+
+  baseInfo.files.forEach((baseEntry, filePath) => {
+    const targetEntry = targetInfo.files.get(filePath);
+    if (!targetEntry) {
+      removed.push({ path: filePath, sha256: baseEntry.sha256 });
+      return;
+    }
+
+    if (baseEntry.sha256 !== targetEntry.sha256) {
+      changed.push({
+        path: filePath,
+        baseSha256: baseEntry.sha256,
+        targetSha256: targetEntry.sha256,
+      });
+    }
+  });
+
+  targetInfo.files.forEach((targetEntry, filePath) => {
+    if (!baseInfo.files.has(filePath)) {
+      added.push({ path: filePath, sha256: targetEntry.sha256 });
+    }
+  });
+
+  const sortByPath = <T extends { path: string }>(items: T[]): T[] =>
+    items.sort((a, b) => a.path.localeCompare(b.path));
+
+  sortByPath(added);
+  sortByPath(removed);
+  sortByPath(changed);
+
+  return { added, removed, changed };
+};
+
 interface ZipEntryMetadata {
   compressionMethod: number;
   compressedSize: number;
@@ -5861,34 +6059,7 @@ export const runManifestDiff = async (options: ManifestDiffOptions): Promise<Man
   const baseInfo = await loadManifestForDiff('base', options.baseManifestPath);
   const targetInfo = await loadManifestForDiff('target', options.targetManifestPath);
 
-  const added: ManifestDiffEntry[] = [];
-  const removed: ManifestDiffEntry[] = [];
-  const changed: ManifestDiffChange[] = [];
-
-  baseInfo.files.forEach((baseEntry, filePath) => {
-    const targetEntry = targetInfo.files.get(filePath);
-    if (!targetEntry) {
-      removed.push({ path: filePath, sha256: baseEntry.sha256 });
-      return;
-    }
-
-    if (baseEntry.sha256 !== targetEntry.sha256) {
-      changed.push({ path: filePath, baseSha256: baseEntry.sha256, targetSha256: targetEntry.sha256 });
-    }
-  });
-
-  targetInfo.files.forEach((targetEntry, filePath) => {
-    if (!baseInfo.files.has(filePath)) {
-      added.push({ path: filePath, sha256: targetEntry.sha256 });
-    }
-  });
-
-  const sortByPath = <T extends { path: string }>(items: T[]): T[] =>
-    items.sort((a, b) => a.path.localeCompare(b.path));
-
-  sortByPath(added);
-  sortByPath(removed);
-  sortByPath(changed);
+  const { added, removed, changed } = computeManifestDiff(baseInfo, targetInfo);
 
   return {
     base: {
@@ -5908,6 +6079,421 @@ export const runManifestDiff = async (options: ManifestDiffOptions): Promise<Man
     added,
     removed,
     changed,
+  };
+};
+
+export interface LedgerReportOptions {
+  baseManifestPath: string;
+  targetManifestPath: string;
+  outputDir: string;
+  title?: string;
+  signingKey?: string;
+}
+
+export interface LedgerReportResult {
+  pdfPath: string;
+  pdfSha256: string;
+  ledgerDiffs: LedgerAttestationDiffItem[];
+  signaturePath?: string;
+  signature?: string;
+}
+
+const LEDGER_REPORT_STYLES = `
+  body {
+    background: #f1f5f9;
+    color: #0f172a;
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    margin: 0;
+  }
+
+  header {
+    background: #0f172a;
+    color: #ffffff;
+    padding: 32px 48px;
+  }
+
+  header h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+  }
+
+  header p {
+    margin: 4px 0;
+    color: rgba(226, 232, 240, 0.9);
+  }
+
+  main {
+    padding: 32px 48px 48px;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+
+  .summary-card {
+    background: rgba(15, 23, 42, 0.08);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .summary-card--accent {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+  }
+
+  .summary-card span {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+  }
+
+  .summary-card strong {
+    font-size: 20px;
+  }
+
+  .section {
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+    padding: 24px 28px;
+    margin-bottom: 32px;
+  }
+
+  .section h2 {
+    margin-top: 0;
+    font-size: 20px;
+    color: #1e293b;
+  }
+
+  .section-lead {
+    color: #475569;
+    margin-bottom: 16px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-bottom: 2px solid #e2e8f0;
+    padding: 12px;
+  }
+
+  td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 14px 12px;
+    vertical-align: top;
+  }
+
+  .cell-title {
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .cell-description {
+    color: #475569;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .muted {
+    color: #94a3b8;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+      monospace;
+    font-size: 12px;
+    background: #f8fafc;
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: inline-block;
+    word-break: break-all;
+  }
+
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 16px;
+    border-radius: 12px;
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .proof-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  .proof-card {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 16px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .proof-card .cell-title {
+    color: #f8fafc;
+  }
+
+  .proof-card .cell-description {
+    color: rgba(226, 232, 240, 0.85);
+  }
+`;
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const formatTimestamp = (value: string): string => {
+  if (!value) {
+    return 'Belirtilmedi';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return `${date.toISOString().replace('T', ' ').replace('Z', ' UTC')}`;
+};
+
+const buildManifestSummarySection = (
+  label: string,
+  info: ManifestForDiff,
+): string => {
+  const manifest = info.manifest as LedgerAwareManifest;
+  const ledgerMeta = manifest.ledger ?? null;
+  const merkle = manifest.merkle ?? null;
+
+  const rows: Array<{ key: string; value: string }> = [
+    { key: 'Manifest Özeti', value: info.digest },
+    { key: 'Oluşturulma', value: formatTimestamp(info.createdAt) },
+    { key: 'Snapshot', value: merkle?.snapshotId ?? 'Belirtilmedi' },
+    { key: 'Merkle Kökü', value: merkle?.root ?? 'Belirtilmedi' },
+    { key: 'Ledger Kökü', value: ledgerMeta?.root ?? 'Belirtilmedi' },
+    { key: 'Önceki Ledger Kökü', value: ledgerMeta?.previousRoot ?? 'Belirtilmedi' },
+    {
+      key: 'Doğrulanan Kanıtlar',
+      value: `${info.proofs.verified}/${info.proofs.total}`,
+    },
+  ];
+
+  const rowHtml = rows
+    .map(
+      (row) =>
+        `<tr><th scope="row">${escapeHtml(row.key)}</th><td><div class="cell-title">${escapeHtml(row.value)}</div></td></tr>`,
+    )
+    .join('');
+
+  return `<section class="section">
+    <h2>${escapeHtml(label)}</h2>
+    <table>
+      <tbody>${rowHtml}</tbody>
+    </table>
+  </section>`;
+};
+
+const buildLedgerDiffItems = (
+  baseInfo: ManifestForDiff,
+  targetInfo: ManifestForDiff,
+  diff: ReturnType<typeof computeManifestDiff>,
+): LedgerAttestationDiffItem[] => {
+  const targetManifest = targetInfo.manifest as LedgerAwareManifest;
+  const baseManifest = baseInfo.manifest as LedgerAwareManifest;
+
+  const formatChangedAdded = diff.changed.map(
+    (entry) => `${entry.path} (${entry.targetSha256.slice(0, 12)})`,
+  );
+  const formatChangedRemoved = diff.changed.map(
+    (entry) => `${entry.path} (${entry.baseSha256.slice(0, 12)})`,
+  );
+
+  const addedEvidence = [
+    ...diff.added.map((entry) => `${entry.path} (${entry.sha256.slice(0, 12)})`),
+    ...formatChangedAdded,
+  ];
+  const removedEvidence = [
+    ...diff.removed.map((entry) => `${entry.path} (${entry.sha256.slice(0, 12)})`),
+    ...formatChangedRemoved,
+  ];
+
+  const attestedAt = targetManifest.createdAt ?? targetInfo.createdAt;
+
+  return [
+    {
+      snapshotId: targetManifest.merkle?.snapshotId ?? 'Belirtilmedi',
+      ledgerRoot:
+        targetManifest.ledger?.root ?? targetManifest.merkle?.root ?? targetInfo.digest,
+      previousLedgerRoot:
+        targetManifest.ledger?.previousRoot ?? baseManifest.ledger?.root ?? baseInfo.digest,
+      manifestDigest: targetInfo.digest,
+      attestedAt,
+      addedEvidence: addedEvidence.length > 0 ? addedEvidence : undefined,
+      removedEvidence: removedEvidence.length > 0 ? removedEvidence : undefined,
+    },
+  ];
+};
+
+const buildProofSection = (
+  label: string,
+  info: ManifestForDiff,
+  interestingPaths: Set<string>,
+): string => {
+  const manifest = info.manifest as LedgerAwareManifest;
+  const cards = manifest.files
+    .filter((file) => interestingPaths.has(file.path) && file.proof)
+    .map((file) => {
+      const proof = file.proof!;
+      const header = `<div class="cell-title">${escapeHtml(file.path)}</div>`;
+      const digest = `<div class="cell-description">SHA-256: <code>${escapeHtml(
+        file.sha256,
+      )}</code></div>`;
+      const proofBlock = `<pre>${escapeHtml(proof.proof)}</pre>`;
+      return `<div class="proof-card">${header}${digest}${proofBlock}</div>`;
+    });
+
+  if (cards.length === 0) {
+    return `<section class="section">
+      <h2>${escapeHtml(label)}</h2>
+      <p class="section-lead">Seçilen kanıtlar için ekli ledger kanıtı bulunamadı.</p>
+    </section>`;
+  }
+
+  return `<section class="section">
+    <h2>${escapeHtml(label)}</h2>
+    <p class="section-lead">İlgili kanıt dosyalarının Merkle kanıtları.</p>
+    <div class="proof-grid">${cards.join('')}</div>
+  </section>`;
+};
+
+export const runLedgerReport = async (options: LedgerReportOptions): Promise<LedgerReportResult> => {
+  const baseInfo = await loadManifestForDiff('base', options.baseManifestPath);
+  const targetInfo = await loadManifestForDiff('target', options.targetManifestPath);
+  const diff = computeManifestDiff(baseInfo, targetInfo);
+  const ledgerDiffs = buildLedgerDiffItems(baseInfo, targetInfo, diff);
+
+  const interestingPaths = new Set<string>();
+  diff.added.forEach((entry) => interestingPaths.add(entry.path));
+  diff.removed.forEach((entry) => interestingPaths.add(entry.path));
+  diff.changed.forEach((entry) => interestingPaths.add(entry.path));
+
+  await ensureDirectory(options.outputDir);
+
+  const summaryCards = [
+    { label: 'Eklenen Kanıt', value: diff.added.length.toString(), accent: diff.added.length > 0 },
+    {
+      label: 'Kaldırılan Kanıt',
+      value: diff.removed.length.toString(),
+      accent: diff.removed.length > 0,
+    },
+    {
+      label: 'Güncellenen Kanıt',
+      value: diff.changed.length.toString(),
+      accent: diff.changed.length > 0,
+    },
+    {
+      label: 'Doğrulanan Kanıtlar',
+      value: `${targetInfo.proofs.verified}/${targetInfo.proofs.total}`,
+      accent: targetInfo.proofs.verified !== targetInfo.proofs.total,
+    },
+  ];
+
+  const summaryCardsHtml = summaryCards
+    .map(
+      (card) =>
+        `<div class="summary-card${card.accent ? ' summary-card--accent' : ''}">
+          <span>${escapeHtml(card.label)}</span>
+          <strong>${escapeHtml(card.value)}</strong>
+        </div>`,
+    )
+    .join('');
+
+  const relativeBase = path.relative(process.cwd(), baseInfo.resolvedPath);
+  const relativeTarget = path.relative(process.cwd(), targetInfo.resolvedPath);
+
+  const html = `<!DOCTYPE html>
+  <html lang="tr">
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(options.title ?? 'SOIPack Ledger Raporu')}</title>
+      <style>
+        ${LEDGER_REPORT_STYLES}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>${escapeHtml(options.title ?? 'SOIPack Ledger Raporu')}</h1>
+        <p>Referans manifest: ${escapeHtml(relativeBase)} (${escapeHtml(baseInfo.digest)})</p>
+        <p>Hedef manifest: ${escapeHtml(relativeTarget)} (${escapeHtml(targetInfo.digest)})</p>
+        <p>Rapor tarihi: ${escapeHtml(formatTimestamp(getCurrentTimestamp()))}</p>
+      </header>
+      <main>
+        <section class="section">
+          <h2>Özet</h2>
+          <p class="section-lead">Ledger attestation farkı ve manifest doğrulamaları.</p>
+          <div class="summary-grid">${summaryCardsHtml}</div>
+        </section>
+        ${buildManifestSummarySection('Referans Manifest', baseInfo)}
+        ${buildManifestSummarySection('Hedef Manifest', targetInfo)}
+        ${renderLedgerDiffSection({ diffs: ledgerDiffs })}
+        ${buildProofSection('Referans Manifest Kanıtları', baseInfo, interestingPaths)}
+        ${buildProofSection('Hedef Manifest Kanıtları', targetInfo, interestingPaths)}
+      </main>
+    </body>
+  </html>`;
+
+  const pdfBuffer = await printToPDF(html, {
+    manifestId: targetInfo.digest.slice(0, 12),
+    generatedAt: getCurrentTimestamp(),
+    version: packageInfo.version,
+  });
+
+  const pdfPath = path.join(options.outputDir, 'ledger-report.pdf');
+  await fsPromises.writeFile(pdfPath, pdfBuffer);
+  const pdfSha256 = createHash('sha256').update(pdfBuffer).digest('hex');
+
+  let signaturePath: string | undefined;
+  let signatureBase64: string | undefined;
+  if (options.signingKey) {
+    try {
+      const signature = signDetached(null, pdfBuffer, options.signingKey);
+      signatureBase64 = signature.toString('base64');
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Ledger raporu Ed25519 imzası oluşturulamadı: ${reason}`);
+    }
+
+    signaturePath = path.join(options.outputDir, 'ledger-report.pdf.sig');
+    await fsPromises.writeFile(signaturePath, `${signatureBase64}\n`, 'utf8');
+  }
+
+  return {
+    pdfPath,
+    pdfSha256,
+    ledgerDiffs,
+    ...(signaturePath ? { signaturePath } : {}),
+    ...(signatureBase64 ? { signature: signatureBase64 } : {}),
   };
 };
 
@@ -7684,6 +8270,107 @@ if (require.main === module) {
           logCliError(logger, error, context);
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Manifest karşılaştırması sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'ledger-report',
+      'Manifest ledger farklarını PDF raporu olarak oluşturur.',
+      (y) =>
+        y
+          .option('base', {
+            describe: 'Referans manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('target', {
+            describe: 'Karşılaştırılacak hedef manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'PDF raporunun yazılacağı dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('title', {
+            describe: 'Rapor başlığı.',
+            type: 'string',
+          })
+          .option('signing-key', {
+            describe: 'Ed25519 özel anahtar PEM dosyası (opsiyonel).',
+            type: 'string',
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const licensePath = getLicensePath(argv);
+
+        const baseOption = Array.isArray(argv.base) ? argv.base[0] : argv.base;
+        const targetOption = Array.isArray(argv.target) ? argv.target[0] : argv.target;
+        const outputOption = Array.isArray(argv.output) ? argv.output[0] : argv.output;
+        const titleOption = Array.isArray(argv.title) ? argv.title[0] : argv.title;
+        const signingKeyOption = Array.isArray(argv['signing-key'])
+          ? argv['signing-key'][0]
+          : argv['signing-key'];
+
+        const baseManifestPath = path.resolve(String(baseOption));
+        const targetManifestPath = path.resolve(String(targetOption));
+        const outputDir = path.resolve(String(outputOption));
+
+        const context = {
+          command: 'ledger-report',
+          licensePath,
+          baseManifest: baseManifestPath,
+          targetManifest: targetManifestPath,
+          outputDir,
+          title: titleOption,
+        } as Record<string, unknown>;
+
+        try {
+          const license = await verifyLicenseFile(licensePath);
+          logLicenseValidated(logger, license, context);
+          requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
+
+          let signingKey: string | undefined;
+          if (signingKeyOption) {
+            const signingKeyPath = path.resolve(String(signingKeyOption));
+            context.signingKeyPath = signingKeyPath;
+            signingKey = await fsPromises.readFile(signingKeyPath, 'utf8');
+          }
+
+          const result = await runLedgerReport({
+            baseManifestPath,
+            targetManifestPath,
+            outputDir,
+            title: titleOption ? String(titleOption) : undefined,
+            signingKey,
+          });
+
+          logger.info(
+            {
+              ...context,
+              pdfPath: result.pdfPath,
+              pdfSha256: result.pdfSha256,
+              ledgerDiffs: result.ledgerDiffs.length,
+              signaturePath: result.signaturePath,
+            },
+            'Ledger raporu oluşturuldu.',
+          );
+
+          console.log(`Ledger raporu kaydedildi: ${path.relative(process.cwd(), result.pdfPath)}`);
+          console.log(`PDF SHA-256: ${result.pdfSha256}`);
+          if (result.signaturePath) {
+            console.log(
+              `İmza kaydedildi: ${path.relative(process.cwd(), result.signaturePath)} (base64 ${
+                result.signature?.slice(0, 16) ?? ''
+              }...)`,
+            );
+          }
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
           process.exitCode = exitCodes.error;
         }
       },

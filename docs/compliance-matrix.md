@@ -59,6 +59,30 @@ Fonksiyon her hedef için beklenen artefakt türlerini `EvidenceIndex` ile eşle
 
 Bu özet, bağımsızlık gereksinimleri bulunan hedeflerde kanıt sağlansa bile bağımsız imza atlanmışsa kullanıcıyı bilgilendirir ve kapanmayan bağımsızlık açıklarını hızlıca tespit etmeye yardımcı olur.
 
+## Bayat kanıt denetimi
+
+`buildGapAnalysis` fonksiyonu, eksik artefaktlara ek olarak `staleEvidence` alanında kanıt tazeliğini de raporlar. Bu liste her hedef ve artefakt çifti için şu bilgileri içerir:
+
+- `objectiveId` ve `artifactType`: Etkilenen hedef ve artefakt türü.
+- `latestEvidenceTimestamp`: Kanıt indeksindeki en güncel kaydın zaman damgası.
+- `reasons`: `beforeSnapshot` (kanıt, workspace snapshot zamanından eski) veya `exceedsMaxAge` (kanıt, yapılandırılan gün eşik değerini aşıyor) uyarıları.
+- `ageDays` ve `maxAgeDays`: Kanıtın kaç günlük olduğuna dair yaklaşık değer ile kullanılan eşik.
+
+Varsayılan olarak yaş kontrolü 90 gün ile sınırlandırılır ve çalışma alanındaki snapshot damgası (varsa) referans alınır. `generateComplianceSnapshot` çağrısı sırasında `gapRules.staleEvidence` ayarıyla bu davranış özelleştirilebilir:
+
+```ts
+generateComplianceSnapshot(bundle, {
+  gapRules: {
+    staleEvidence: {
+      maxAgeDays: 45,
+      overrides: { objectives: { 'A-6-02': 120 } },
+    },
+  },
+});
+```
+
+Bu örnek tüm hedeflerde 45 günlük eşik uygular ancak `A-6-02` için limiti 120 güne çıkarır. Parametreye `snapshotTimestamp` veya `analysisTimestamp` verilerek farklı referans zamanları da belirlenebilir. Böylece raporlanan boşluklar sadece eksik kanıtları değil, güncelliğini yitirmiş kanıtları da kapsar.
+
 ## Sunucu uyum özet API'si
 
 SOIPack Server, kiracıların son uyum kayıtlarını hızlıca tüketebilmesi için `GET /v1/compliance/summary` uç noktasını sunar. Yanıt yapısı şu alanları içerir:

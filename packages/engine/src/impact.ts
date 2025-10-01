@@ -10,6 +10,9 @@ type ChangeWeights = {
   coverageWeight: number;
   rippleDecay: number;
   rippleDepth: number;
+  gitRecentCommitWeight: number;
+  gitDiffSizeWeight: number;
+  gitBranchDivergenceWeight: number;
 };
 
 const DEFAULT_WEIGHTS: ChangeWeights = {
@@ -20,7 +23,22 @@ const DEFAULT_WEIGHTS: ChangeWeights = {
   coverageWeight: 10,
   rippleDecay: 0.6,
   rippleDepth: 3,
+  gitRecentCommitWeight: 0.8,
+  gitDiffSizeWeight: 0.04,
+  gitBranchDivergenceWeight: 1.2,
 };
+
+export interface GitChurnMetrics {
+  recentCommits: number;
+  diffSize: number;
+  branchDivergence: number;
+}
+
+type GitMetricsLookup =
+  | undefined
+  | null
+  | Map<string, GitChurnMetrics>
+  | Record<string, GitChurnMetrics>;
 
 interface NodeSnapshot {
   key: string;
@@ -59,7 +77,57 @@ export interface ChangeImpactScore {
 
 interface AnalyzeOptions {
   weights?: Partial<ChangeWeights>;
+  gitMetrics?: GitMetricsLookup;
 }
+
+const resolveGitMetrics = (
+  lookup: GitMetricsLookup,
+  key: string,
+  id: string,
+): GitChurnMetrics | undefined => {
+  if (!lookup) {
+    return undefined;
+  }
+  if (lookup instanceof Map) {
+    return lookup.get(key) ?? lookup.get(id);
+  }
+  return lookup[key] ?? lookup[id];
+};
+
+const applyGitVolatility = (
+  accumulator: ChangeImpactAccumulator,
+  node: NodeSnapshot | undefined,
+  metrics: GitChurnMetrics | undefined,
+  weights: ChangeWeights,
+): void => {
+  if (!node || node.type !== 'code' || !metrics) {
+    return;
+  }
+  const recentCommitContribution = metrics.recentCommits * weights.gitRecentCommitWeight;
+  const diffContribution = Math.log1p(Math.max(0, metrics.diffSize)) * weights.gitDiffSizeWeight;
+  const divergenceContribution = metrics.branchDivergence * weights.gitBranchDivergenceWeight;
+  const volatility = recentCommitContribution + diffContribution + divergenceContribution;
+  if (volatility <= 0) {
+    return;
+  }
+  accumulator.base += volatility;
+  markState(accumulator, 'modified');
+  const parts: string[] = [];
+  if (metrics.recentCommits > 0) {
+    parts.push(`${metrics.recentCommits} son commit`);
+  }
+  if (metrics.diffSize > 0) {
+    parts.push(`${metrics.diffSize} satır değişim`);
+  }
+  if (metrics.branchDivergence > 0) {
+    parts.push(`ana dala göre ${metrics.branchDivergence} commit ayrışma`);
+  }
+  buildReason(
+    `${node.id} kod yolu için Git değişkenliği (${parts.join(', ') || 'ölçüm yok'}) ${volatility
+      .toFixed(2)} ağırlık ekledi.`,
+    accumulator,
+  );
+};
 
 const toSnapshotMap = (graph: TraceGraph): Map<string, NodeSnapshot> => {
   const map = new Map<string, NodeSnapshot>();
@@ -189,6 +257,7 @@ const analyzeDirectChanges = (
   baseline: Map<string, NodeSnapshot>,
   current: Map<string, NodeSnapshot>,
   weights: ChangeWeights,
+  gitMetrics: GitMetricsLookup,
 ): Map<string, ChangeImpactAccumulator> => {
   const scores = new Map<string, ChangeImpactAccumulator>();
   const keys = unionKeys(baseline, current);
@@ -197,11 +266,15 @@ const analyzeDirectChanges = (
     const baselineNode = baseline.get(key);
     const currentNode = current.get(key);
     const accumulator = ensureAccumulator(scores, key, currentNode, baselineNode);
+    const metrics = currentNode
+      ? resolveGitMetrics(gitMetrics, currentNode.key, currentNode.id)
+      : undefined;
 
     if (!baselineNode && currentNode) {
       accumulator.base += weights.added;
       markState(accumulator, 'added');
       buildReason(`${currentNode.id} düğümü yeni eklendi.`, accumulator);
+      applyGitVolatility(accumulator, currentNode, metrics, weights);
       return;
     }
 
@@ -261,6 +334,8 @@ const analyzeDirectChanges = (
         );
       }
     }
+
+    applyGitVolatility(accumulator, currentNode, metrics, weights);
   });
 
   return scores;
@@ -326,7 +401,7 @@ export const analyzeChangeImpact = (
   const currentMap = toSnapshotMap(current);
   const adjacency = combineAdjacency(baselineMap, currentMap);
 
-  const scores = analyzeDirectChanges(baselineMap, currentMap, weights);
+  const scores = analyzeDirectChanges(baselineMap, currentMap, weights, options.gitMetrics);
   applyRipple(scores, adjacency, weights);
 
   const result: ChangeImpactScore[] = [];

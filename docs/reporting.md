@@ -29,6 +29,19 @@ Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden pla
 
 Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen ayrı bir bölüm içerir. Rapordaki “Bağımsızlık Uyarıları” bloğunda toplam etkilenen hedef sayısı, kısmi/eksik durumlar ve hedeflerin zorunlu/önerilen bağımsızlık seviyeleri rozetlerle vurgulanır. Kırmızı (`Zorunlu`) rozetler sertifikasyon için kritik eksiklikleri, sarı (`Önerilen`) rozetler ise bağımsız inceleme bekleyen alanları gösterir. Tablo satırlarında eksik kanıt türleri (ör. `Gözden Geçirme`, `MC/DC Kapsamı`) ayrı rozetler halinde listelenir ve denetçilerin hangi kanıtların bağımsız gözden geçirme gerektirdiğini hızlıca görmesini sağlar. Eğer bağımsızlık eksikliği kalmamışsa bölüm “Bağımsızlık gerektiren hedeflerde eksik bulunamadı.” mesajıyla kapanır.
 
+## GSN Graphviz/DOT dışa aktarımı
+
+Uyumluluk snapshot'ları için DO-178C hedeflerini, referans kanıtlarını ve kalıcı boşlukları özetleyen bir Goal Structuring Notation (GSN) grafiği üretmek amacıyla `renderGsnGraphDot` fonksiyonu kullanılabilir. Fonksiyon Graphviz/DOT biçiminde bir dize döndürür; çıktı içerisinde SOI kümelerine ayrılmış hedef düğümleri, her hedefe bağlı kanıt (solution) düğümleri, eksik artefaktlar veya `staleEvidence` bulguları için kalıntı düğümleri ve bağımsızlık seviyelerini açıklayan bir lejant yer alır. Zorunlu bağımsızlık isteyen hedefler çift kenarlı olarak çizilir, eksikler kırmızı kalın kenarlarla vurgulanır ve legend'da bu kodlama özetlenir.
+
+**Çalışma akışı**
+
+1. `@soipack/engine` ile uyum snapshot'ını ve `Objective` meta verilerini oluşturun (örnek: `createReportFixture()` jest fikstürü).
+2. `renderGsnGraphDot(snapshot, { objectivesMetadata, graphName: 'ComplianceGSN' })` çağrısı ile DOT içeriğini üretin.
+3. Dönen değeri `reports/compliance-gsn.dot` benzeri bir dosyaya yazın ve `dot -Tsvg reports/compliance-gsn.dot -o reports/compliance-gsn.svg` komutu ile görseli üretin.
+4. Grafikteki lejant kanıt/boşluk düğümlerini, bağımsızlık kenar kalınlıklarını ve SOI kümelerini açıklar; böylece denetçiler hangi hedeflerin hangi kanıtlarla desteklendiğini ve hangi artefaktların eksik/stale kaldığını tek bakışta görebilir.
+
+DOT çıktısı varsayılan olarak tüm boşluk kategorilerini (plan/test/coverage vb.) ve `snapshot.gaps.staleEvidence` içindeki yaş aşımı veya snapshot'tan eski kanıt bulgularını kırmızı kalıntı düğümleri olarak gösterir. Bağımsızlık eksikliği bulunan hedefler için ayrıca “Bağımsızlık Eksikliği” lejantı, kalınlaştırılmış kenarlar ve düğüm etiketindeki “Bağımsızlık: …” satırı üretilir. CI pipeline'ı bu çıktıyı golden test ile doğruladığından, yeni hedefler eklendiğinde `UPDATE_GOLDENS=1 npm run test --workspace @soipack/report -- gsn` komutu ile güncel DOT şablonunu yakalayabilirsiniz.
+
 ### Değişiklik etki analizi
 
 Uyum matrisi ve kapsam raporu, snapshot değişiklik etkisi verisi içerdiğinde "Değişiklik Etki Analizi" adlı yeni bir bölüm ekler. Bölüm, uyum tablosunun hemen ardından yer alır ve signoff zaman çizelgesi gibi takip eden panellerden önce gösterilir; böylece denetçiler önce öncelikli değişiklikleri gözden geçirip ardından onay akışına geçebilir.【F:packages/report/src/index.ts†L2915-L3211】
@@ -62,3 +75,9 @@ Rapor şablonları W3C doğrulamasından geçecek şekilde tasarlanmıştır. `r
 ## PDF oluşturma
 
 `printToPDF` yardımıyla Playwright kullanılarak PDF çıktısı oluşturulur. Testler, sayfa içeriğinin başlık ve tarih bilgilerini içerdiğini ve kapsam uyarılarının madde işaretli listede yer aldığını doğrular. `printToPDF` çağrısına sağlanan `version`, `manifestId` ve `generatedAt` değerleri başlık ve altbilgide gösterilir. Böylece hem HTML hem de PDF sürümleri aynı veri kaynağından üretilebilir.
+
+## Ledger raporu CLI komutu
+
+`soipack ledger-report` komutu, iki manifest arasındaki ledger farkını `@soipack/report` şablonlarıyla PDF’e dönüştürür. Komut referans (`--base`) ve hedef (`--target`) manifest yollarını alır, farkı hesaplamak için ledger kanıtlarını doğrular ve çıktı dizinine (`--output`) `ledger-report.pdf` dosyasını yazar. Rapor; manifest özet metriklerini, Merkle/ledger köklerini, değişen kanıtları ve ilgili dosyaların Merkle kanıtlarını tek sayfada sunar.
+
+Opsiyonel `--title` başlığı ile rapor üst bilgisini özelleştirebilir, `--signing-key` bayrağıyla da var olan Ed25519 özel anahtarı kullanarak PDF’i imzalayabilirsiniz. İmza başarıyla üretildiğinde aynı dizine `ledger-report.pdf.sig` dosyası yazılır ve base64 imza gövdesi rapor çıktısında da raporlanır. Böylece denetçiler manifest farkını inceleyen PDF’in hash’ini (`sha256`) ve imzasını dış sistemlerde doğrulayabilir.

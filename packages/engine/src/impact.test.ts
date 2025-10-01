@@ -1,4 +1,4 @@
-import { analyzeChangeImpact, type ChangeImpactScore } from './impact';
+import { analyzeChangeImpact, type ChangeImpactScore, type GitChurnMetrics } from './impact';
 import type { TraceGraph } from './index';
 
 const requirementNode = (id: string, links: string[]): TraceGraph['nodes'][number] => ({
@@ -84,5 +84,33 @@ describe('change impact analyzer', () => {
     const newTest = pick('TEST-3');
     expect(newTest?.state).toBe('added');
     expect(newTest?.severity).toBeGreaterThan(4);
+  });
+
+  it('propagates git churn metrics through the graph', () => {
+    const churnGraph: TraceGraph = {
+      nodes: [
+        requirementNode('REQ-10', ['code:src/high.c']),
+        requirementNode('REQ-11', ['code:src/low.c']),
+        codeNode('src/high.c', ['requirement:REQ-10']),
+        codeNode('src/low.c', ['requirement:REQ-11']),
+      ],
+    };
+
+    const gitMetrics: Record<string, GitChurnMetrics> = {
+      'code:src/high.c': { recentCommits: 8, diffSize: 120, branchDivergence: 3 },
+      'code:src/low.c': { recentCommits: 1, diffSize: 10, branchDivergence: 0 },
+    };
+
+    const scores = analyzeChangeImpact(churnGraph, churnGraph, { gitMetrics });
+
+    const highCode = scores.find((entry) => entry.id === 'src/high.c');
+    const lowCode = scores.find((entry) => entry.id === 'src/low.c');
+    expect(highCode?.base ?? 0).toBeGreaterThan((lowCode?.base ?? 0) * 5);
+    expect(highCode?.reasons.join(' ')).toContain('Git değişkenliği');
+
+    const highRequirement = scores.find((entry) => entry.id === 'REQ-10');
+    const lowRequirement = scores.find((entry) => entry.id === 'REQ-11');
+    expect(highRequirement?.ripple ?? 0).toBeGreaterThan((lowRequirement?.ripple ?? 0) * 5);
+    expect(highRequirement?.severity ?? 0).toBeGreaterThan(5);
   });
 });

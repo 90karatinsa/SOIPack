@@ -10,7 +10,8 @@ module.exports = {
     '^zod$': '<rootDir>/../../test/shims/zod.ts',
     '^yazl$': '<rootDir>/../../test/shims/yazl.ts',
     '^playwright$': '<rootDir>/../../test/shims/playwright.ts',
-    '^html-validator$': '<rootDir>/../../test/shims/html-validator.ts'
+    '^html-validator$': '<rootDir>/../../test/shims/html-validator.ts',
+    '^node-forge$': '<rootDir>/../../test/shims/node-forge.ts'
   },
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]
