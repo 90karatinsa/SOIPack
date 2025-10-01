@@ -24,7 +24,7 @@ export type { PolarionClientOptions } from './polarion';
 export { fetchJamaArtifacts } from './jama';
 export type { JamaClientOptions, JamaImportBundle, JamaTraceLink } from './jama';
 export { fetchJenkinsArtifacts } from './jenkins';
-export type { JenkinsClientOptions } from './jenkins';
+export type { JenkinsClientOptions, JenkinsCoverageArtifactOptions, JenkinsCoverageArtifactMetadata } from './jenkins';
 export { fetchJiraChangeRequests, fetchJiraArtifacts } from './jiraCloud';
 export type {
   JiraCloudClientOptions,

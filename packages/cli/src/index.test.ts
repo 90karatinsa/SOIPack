@@ -91,6 +91,8 @@ import {
   runManifestDiff,
   __internal,
 } from './index';
+import * as cliModule from './index';
+import type { ImportWorkspace } from './index';
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
 const TEST_SIGNING_BUNDLE = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
@@ -306,6 +308,199 @@ describe('CLI pipeline workflows', () => {
     expect(ledgerData.entries[0].manifestDigest).toBe(packResult.manifestDigest);
     expect(ledgerData.entries[0].snapshotId).toBe(snapshotData.version.id);
     expect(packResult.ledger?.root).toBe(ledgerData.root);
+  });
+
+  it('merges Jenkins coverage artefacts into workspace and evidence', async () => {
+    const workDir = path.join(tempRoot, 'jenkins-workspace');
+    const artifactsDir = path.join(tempRoot, 'jenkins-artifacts');
+    const coverageDir = path.join(artifactsDir, 'coverage');
+    await fs.mkdir(coverageDir, { recursive: true });
+    const coveragePath = path.join(coverageDir, 'jenkins.info');
+    await fs.writeFile(
+      coveragePath,
+      ['TN:DemoTest#shouldPass', 'SF:src/demo.ts', 'DA:10,8', 'BRDA:1,0,0,2', 'BRDA:1,0,1,2', 'end_of_record'].join('\n'),
+    );
+    const coverageBuffer = await fs.readFile(coveragePath);
+    const coverageHash = createHash('sha256').update(coverageBuffer).digest('hex');
+
+    const coverageReport: CoverageReport = {
+      totals: {
+        statements: { covered: 8, total: 10, percentage: 80 },
+        branches: { covered: 2, total: 4, percentage: 50 },
+      },
+      files: [
+        {
+          file: 'src/demo.ts',
+          statements: { covered: 8, total: 10, percentage: 80 },
+          branches: { covered: 2, total: 4, percentage: 50 },
+        },
+      ],
+      testMap: { 'DemoTest#shouldPass': ['src/demo.ts'] },
+    };
+
+    const fetchMock = jest.spyOn(adapters, 'fetchJenkinsArtifacts').mockResolvedValue({
+      data: {
+        tests: [
+          {
+            id: 'DemoTest#shouldPass',
+            name: 'shouldPass',
+            className: 'DemoTest',
+            status: 'PASSED',
+            durationMs: 1500,
+            requirementIds: ['REQ-1'],
+          },
+        ],
+        builds: [],
+        coverage: [
+          {
+            type: 'lcov',
+            path: 'coverage/jenkins.info',
+            localPath: coveragePath,
+            sha256: coverageHash,
+            report: coverageReport,
+          },
+        ],
+      },
+      warnings: ['mock warning'],
+    });
+
+    const importResult = await runImport({
+      output: workDir,
+      jenkins: {
+        baseUrl: 'https://ci.example.com/',
+        job: 'demo',
+        coverageArtifacts: [{ type: 'lcov', path: 'coverage/jenkins.info' }],
+        artifactsDir,
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(importResult.warnings).toContain('mock warning');
+
+    const workspace = importResult.workspace;
+    expect(workspace.coverage?.files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ file: 'src/demo.ts' })]),
+    );
+    expect(workspace.coverage?.totals.statements.percentage).toBeCloseTo(80);
+    expect(workspace.coverage?.testMap?.['DemoTest#shouldPass']).toEqual(
+      expect.arrayContaining(['src/demo.ts']),
+    );
+    expect(workspace.testToCodeMap['DemoTest#shouldPass']).toEqual(
+      expect.arrayContaining([expect.stringMatching(/src\/demo\.ts$/)]),
+    );
+    expect(workspace.evidenceIndex.coverage_stmt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'jenkins',
+          summary: expect.stringContaining('Jenkins LCOV kapsam raporu'),
+        }),
+      ]),
+    );
+    expect(workspace.metadata.sources?.jenkins?.coverageArtifacts).toEqual(
+      expect.objectContaining({
+        total: 1,
+        items: expect.arrayContaining([
+          expect.objectContaining({ sha256: coverageHash, path: 'coverage/jenkins.info' }),
+        ]),
+      }),
+    );
+  });
+
+  it('propagates Jenkins coverage into ingest pipeline outputs', async () => {
+    const artifactsDir = path.join(tempRoot, 'jenkins-ingest-artifacts');
+    const coverageDir = path.join(artifactsDir, 'coverage');
+    await fs.mkdir(coverageDir, { recursive: true });
+    const coveragePath = path.join(coverageDir, 'ci.lcov');
+    await fs.writeFile(
+      coveragePath,
+      ['TN:JenkinsTest#ci', 'SF:src/jenkins.ts', 'DA:5,5', 'end_of_record'].join('\n'),
+    );
+    const coverageBuffer = await fs.readFile(coveragePath);
+    const coverageHash = createHash('sha256').update(coverageBuffer).digest('hex');
+
+    const coverageReport: CoverageReport = {
+      totals: {
+        statements: { covered: 5, total: 5, percentage: 100 },
+      },
+      files: [
+        {
+          file: 'src/jenkins.ts',
+          statements: { covered: 5, total: 5, percentage: 100 },
+        },
+      ],
+      testMap: { 'JenkinsTest#ci': ['src/jenkins.ts'] },
+    };
+
+    jest.spyOn(adapters, 'fetchJenkinsArtifacts').mockResolvedValue({
+      data: {
+        tests: [
+          {
+            id: 'JenkinsTest#ci',
+            name: 'ci',
+            className: 'JenkinsTest',
+            status: 'PASSED',
+            durationMs: 500,
+          },
+        ],
+        builds: [],
+        coverage: [
+          {
+            type: 'lcov',
+            path: 'coverage/ci.lcov',
+            localPath: coveragePath,
+            sha256: coverageHash,
+            report: coverageReport,
+          },
+        ],
+      },
+      warnings: [],
+    });
+
+    const originalRunImport = cliModule.runImport;
+    jest.spyOn(cliModule, 'runImport').mockImplementation(async (options) =>
+      originalRunImport({
+        ...options,
+        jenkins: {
+          baseUrl: 'https://ci.example.com/',
+          job: 'demo',
+          coverageArtifacts: [{ type: 'lcov', path: 'coverage/ci.lcov' }],
+          artifactsDir,
+        },
+      }),
+    );
+
+    const ingestOutput = path.join(tempRoot, 'jenkins-ingest-dist');
+    const workingDir = path.join(tempRoot, 'jenkins-ingest-work');
+
+    const result = await runIngestPipeline({
+      inputDir: fixturesDir,
+      outputDir: ingestOutput,
+      workingDir,
+      objectives: objectivesPath,
+      level: 'C',
+      projectName: 'Demo Avionics',
+      projectVersion: '1.0.0',
+    });
+
+    const workspacePath = path.join(result.workspaceDir, 'workspace.json');
+    const workspaceRaw = await fs.readFile(workspacePath, 'utf8');
+    const workspaceData = JSON.parse(workspaceRaw) as ImportWorkspace;
+
+    expect(workspaceData.metadata.sources?.jenkins?.coverageArtifacts).toEqual(
+      expect.objectContaining({
+        total: 1,
+        items: expect.arrayContaining([
+          expect.objectContaining({ sha256: coverageHash, path: 'coverage/ci.lcov' }),
+        ]),
+      }),
+    );
+    expect(workspaceData.evidenceIndex.coverage_stmt).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: 'jenkins' })]),
+    );
+    expect(workspaceData.testToCodeMap['JenkinsTest#ci']).toEqual(
+      expect.arrayContaining([expect.stringMatching(/src\/jenkins\.ts$/)]),
+    );
+    expect(result.coverageSummary.statements).toBeGreaterThan(0);
   });
 
   it('generates compliance and coverage summaries with runIngestPipeline', async () => {

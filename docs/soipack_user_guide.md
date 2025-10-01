@@ -64,6 +64,15 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
   --jenkins-job` bayraklarını (gerekirse temel/Token kimlik bilgileriyle) ekleyin.
   CLI bu kaynaklardan gelen artefaktları çalışma alanına ve kanıt indeksine
   `polarion`/`jenkins` olarak işler.
+  Jenkins kapsam artefaktlarını indirmek için `--jenkins-artifacts-dir`
+  bayrağıyla yerel indirme klasörünü belirtin, her LCOV/Cobertura dosyası
+  için `--jenkins-coverage-artifact type=lcov,path=coverage/lcov.info`
+  (veya `lcov:coverage/lcov.info@5242880` sözdizimiyle) bayrağını tekrarlayın
+  ve varsayılan 10 MiB sınırını özelleştirmek için
+  `--jenkins-coverage-max-bytes` değerini kullanın. CLI, indirilen her
+  artefaktı SHA-256 karmasıyla birlikte kanıt indeksine `source=jenkins`
+  olarak kaydeder ve kapsam/test haritalarını mevcut LCOV/Cobertura akışlarıyla
+  birleştirir.
   Jira Cloud REST API’sinden gereksinim ve test çekmek için `--jira-api-url`,
   `--jira-api-project`, gerekiyorsa `--jira-api-email` ve `--jira-api-token`
   bayraklarını ekleyin; isteğe bağlı olarak `--jira-api-requirements-jql` ve
