@@ -4,7 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 
 import { HttpError } from '../errors';
 
-export type UserRole = 'admin' | 'maintainer' | 'reader';
+export type UserRole = 'admin' | 'maintainer' | 'operator' | 'reader';
 
 export interface ApiPrincipal {
   tokenHash: string;
@@ -43,6 +43,7 @@ const DEFAULT_ROLE: UserRole = 'reader';
 const ROLE_MAP: Record<string, UserRole> = {
   admin: 'admin',
   maintainer: 'maintainer',
+  operator: 'operator',
   reader: 'reader',
 };
 

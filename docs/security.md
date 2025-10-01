@@ -34,18 +34,18 @@ Operasyon ekipleri SBOM'u son kullanıcılara sunarken iki gereksinimi karşıla
 
 ## API Anahtarı Yönetimi
 
-API anahtarları `SOIPACK_API_KEYS` ortam değişkeni üzerinden yapılandırılır. Değer CSV formatındadır ve her giriş `anahtarEtiketi=anahtarDegeri:rol1|rol2` biçimini destekler. Etiket isteğe bağlıdır ve raporlama için kullanılır; roller belirtilmediğinde `reader` rolü atanır.
+API anahtarları `SOIPACK_API_KEYS` ortam değişkeni üzerinden yapılandırılır. Değer CSV formatındadır ve her giriş `anahtarEtiketi=anahtarDegeri:rol1|rol2` biçimini destekler. Etiket isteğe bağlıdır ve raporlama için kullanılır; roller belirtilmediğinde `reader` rolü atanır. Desteklenen roller `admin`, `operator`, `maintainer` ve `reader` değerleridir.
 
 Örnek yapılandırma:
 
 ```
-SOIPACK_API_KEYS="ci=ci-token-123:maintainer,ops=operations-secret:admin|maintainer,partner=partner-demo"
+SOIPACK_API_KEYS="ci=ci-token-123:maintainer,ops=operations-secret:admin|operator,partner=partner-demo"
 ```
 
 Bu tanımda:
 
 - `ci-token-123` anahtarı CI boru hattına aittir ve `maintainer` haklarına sahiptir.
-- `operations-secret` anahtarı operasyon ekibine aittir ve hem `admin` hem `maintainer` rolünde değerlendirilir.
+- `operations-secret` anahtarı operasyon ekibine aittir ve `admin` ile `operator` rollerini taşır; yönetim uç noktalarını görüntüleyebilir ancak yalnızca `admin` kullanıcılar kayıt oluşturup silebilir.
 - `partner-demo` anahtarı herhangi bir rol belirtilmediği için varsayılan olarak `reader` olur.
 
 ## İstek Doğrulama Akışı
@@ -62,6 +62,7 @@ Aşağıdaki roller desteklenir:
 | Rol | Açıklama |
 | --- | --- |
 | `admin` | Tüm yönetim uç noktalarına erişim sağlar; yönetici kapsamı ile birlikte kullanılır. |
+| `operator` | Denetim ve operasyon görevlerini yürütür; RBAC kullanıcılarını ve rollerini görüntüleyebilir, paketleme ve iş kuyruğu operasyonlarını yönetir ancak yönetici onayı gerektiren değişiklikleri yapamaz. |
 | `maintainer` | Paketleme ve kuyruğa iş gönderme gibi değiştirici operasyonlara erişir. |
 | `reader` | Rapor ve kanıt kayıtlarını yalnızca görüntüleyebilir. |
 
