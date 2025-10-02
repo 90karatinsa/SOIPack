@@ -46,6 +46,15 @@ eder.
 bulunur. `manifest.ledger` ile `verifyManifestSignatureDetailed` sonuçlarındaki
 `ledgerRoot`/`previousLedgerRoot` alanlarının eşleşmesi garanti altındadır.
 
+## SPHINCS+ worker temizliği
+
+Paketleyici, yerel ortamda yerleşik SPHINCS+ uygulaması bulunmadığında
+operasyonları bir worker betiği üzerinden yürütür. Betik, çalışma zamanında
+`/tmp/sphincs-worker-*` altında oluşturulan geçici bir dizinde tutulur.
+Süreç sonlandığında bu geçici dizin otomatik olarak silinir. Uzun süreli
+betikler için gerektiğinde `cleanupSphincsWorker()` fonksiyonunu çağırarak
+temizlik işlemi manuel olarak da tetiklenebilir.
+
 ```ts
 import { createSoiDataPack } from '@soipack/packager';
 

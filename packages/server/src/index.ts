@@ -8476,7 +8476,18 @@ export const createServer = (config: ServerConfig): Express => {
       if (retentionSweepPromise) {
         await retentionSweepPromise.catch(() => undefined);
       }
-      await fsPromises.rm(uploadTempDir, { recursive: true, force: true }).catch(() => undefined);
+      try {
+        fs.rmSync(uploadTempDir, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn(
+          {
+            event: 'upload_temp_cleanup_failed',
+            error: error instanceof Error ? error.message : String(error),
+            directory: uploadTempDir,
+          },
+          'Yükleme geçici dizini temizlenemedi.',
+        );
+      }
       events.closeAll();
     },
     runTenantRetention: (tenantId: string) => runTenantRetention(tenantId, 'manual'),

@@ -1,26 +1,86 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+type Refinement<T> = (value: T) => void;
+
+class ZodError extends Error {
+  public issues: { message: string; path?: (string | number)[] }[];
+
+  constructor(issues: { message: string; path?: (string | number)[] }[]) {
+    super('Mock Zod validation error');
+    this.name = 'ZodError';
+    this.issues = issues;
+  }
+}
+
 class MockSchema<T = any> {
   private parser: (value: any) => T;
 
-  constructor(parser?: (value: any) => T) {
+  private refinements: Refinement<T>[];
+
+  constructor(parser?: (value: any) => T, refinements?: Refinement<T>[]) {
     this.parser = parser ?? ((value) => value as T);
+    this.refinements = refinements ? [...refinements] : [];
+  }
+
+  private cloneWith<U>(parser: (value: any) => U, refinements?: Refinement<U>[]): MockSchema<U> {
+    return new MockSchema<U>(parser, refinements);
+  }
+
+  private withRefinement(refinement: Refinement<T>): MockSchema<T> {
+    return new MockSchema<T>(this.parser, [...this.refinements, refinement]);
   }
 
   parse(value: any): T {
-    return this.parser(value);
+    const parsed = this.parser(value);
+    this.refinements.forEach((refinement) => refinement(parsed));
+    return parsed;
   }
 
   optional(): MockSchema<T | undefined> {
-    return this as unknown as MockSchema<T | undefined>;
+    const parser = (value: any) => {
+      if (value === undefined || value === null) {
+        return undefined;
+      }
+      return this.parser(value);
+    };
+    const refinements: Refinement<T | undefined>[] = this.refinements.map(
+      (refinement) => (value: T | undefined) => {
+        if (value !== undefined) {
+          refinement(value as T);
+        }
+      },
+    );
+    return this.cloneWith<T | undefined>(parser, refinements);
   }
 
-  default(): MockSchema<T> {
-    return this;
+  default(defaultValue?: T): MockSchema<T> {
+    const parser = (value: any) => {
+      if (value === undefined) {
+        return defaultValue as T;
+      }
+      return this.parser(value);
+    };
+    return this.cloneWith<T>(parser, [...this.refinements]);
   }
 
-  min(): MockSchema<T> {
-    return this;
+  min(minValue: number, message?: string): MockSchema<T> {
+    const refinement: Refinement<T> = (value) => {
+      if (typeof value === 'number' && value < minValue) {
+        throw new ZodError([
+          { message: message ?? `Value must be greater than or equal to ${minValue}.`, path: [] },
+        ]);
+      }
+      const length =
+        typeof value === 'string' || Array.isArray(value)
+          ? (value as { length: number }).length
+          : undefined;
+      if (typeof length === 'number' && length < minValue) {
+        throw new ZodError([
+          { message: message ?? `Value must contain at least ${minValue} items.`, path: [] },
+        ]);
+      }
+    };
+    return this.withRefinement(refinement);
   }
 
   regex(): MockSchema<T> {
@@ -89,5 +149,5 @@ type RefinementCtx = {
   addIssue: (...args: any[]) => void;
 };
 
-export { MockSchema, z, ZodIssueCode, ZodType, RefinementCtx };
+export { MockSchema, ZodError, z, ZodIssueCode, ZodType, RefinementCtx };
 export default z;
