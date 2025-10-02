@@ -20,6 +20,9 @@ import {
   ImportBundle,
   ObjectiveMapper,
   TraceEngine,
+  computeRemediationPlan,
+  type GapAnalysis,
+  type RemediationAction,
   generateComplianceSnapshot,
 } from './index';
 
@@ -1013,6 +1016,128 @@ describe('TraceSuggestions', () => {
       (suggestion) => suggestion.targetId === 'TC-NOISE',
     );
     expect(unrelatedSuggestion).toBeUndefined();
+  });
+});
+
+describe('computeRemediationPlan', () => {
+  const emptyGaps = (): GapAnalysis => ({
+    plans: [],
+    standards: [],
+    reviews: [],
+    analysis: [],
+    tests: [],
+    coverage: [],
+    trace: [],
+    configuration: [],
+    quality: [],
+    issues: [],
+    conformity: [],
+    staleEvidence: [],
+  });
+
+  const emptyIndependence = () => ({
+    objectives: [],
+    totals: { covered: 0, partial: 0, missing: 0 },
+  });
+
+  it('prioritizes required independence deficiencies ahead of other work', () => {
+    const plan = computeRemediationPlan({
+      gaps: emptyGaps(),
+      independenceSummary: {
+        objectives: [
+          {
+            objectiveId: 'A-5-06',
+            independence: 'required',
+            status: 'missing',
+            missingArtifacts: ['review'],
+          },
+          {
+            objectiveId: 'A-4-01',
+            independence: 'recommended',
+            status: 'missing',
+            missingArtifacts: ['analysis'],
+          },
+        ],
+        totals: { covered: 0, partial: 0, missing: 2 },
+      },
+    });
+
+    expect(plan.actions.map((action) => action.objectiveId)).toEqual(['A-5-06', 'A-4-01']);
+    expect(plan.actions[0]).toMatchObject({
+      objectiveId: 'A-5-06',
+      priority: 'critical',
+      issues: [
+        {
+          type: 'independence',
+          independence: 'required',
+          missingArtifacts: ['review'],
+        },
+      ],
+    } satisfies RemediationAction);
+    expect(plan.actions[1].priority).toBe('high');
+  });
+
+  it('aggregates multiple gap categories for the same objective', () => {
+    const plan = computeRemediationPlan({
+      gaps: {
+        ...emptyGaps(),
+        tests: [{ objectiveId: 'A-5-10', missingArtifacts: ['test'] }],
+        coverage: [{ objectiveId: 'A-5-10', missingArtifacts: ['coverage_dec'] }],
+        plans: [{ objectiveId: 'A-5-10', missingArtifacts: ['plan'] }],
+      },
+      independenceSummary: emptyIndependence(),
+    });
+
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions[0]).toMatchObject({ objectiveId: 'A-5-10', priority: 'high' });
+    expect(plan.actions[0].issues).toEqual([
+      { type: 'gap', category: 'tests', missingArtifacts: ['test'] },
+      { type: 'gap', category: 'coverage', missingArtifacts: ['coverage_dec'] },
+      { type: 'gap', category: 'plans', missingArtifacts: ['plan'] },
+    ]);
+  });
+
+  it('orders higher priority technical gaps ahead of planning tasks', () => {
+    const plan = computeRemediationPlan({
+      gaps: {
+        ...emptyGaps(),
+        plans: [{ objectiveId: 'A-3-01', missingArtifacts: ['plan'] }],
+        coverage: [{ objectiveId: 'A-5-08', missingArtifacts: ['coverage_stmt'] }],
+      },
+      independenceSummary: emptyIndependence(),
+    });
+
+    expect(plan.actions.map((action) => ({ id: action.objectiveId, priority: action.priority }))).toEqual([
+      { id: 'A-5-08', priority: 'high' },
+      { id: 'A-3-01', priority: 'medium' },
+    ]);
+  });
+
+  it('merges independence findings with existing gap work and keeps the highest priority', () => {
+    const plan = computeRemediationPlan({
+      gaps: {
+        ...emptyGaps(),
+        tests: [{ objectiveId: 'A-5-06', missingArtifacts: ['test'] }],
+      },
+      independenceSummary: {
+        objectives: [
+          {
+            objectiveId: 'A-5-06',
+            independence: 'recommended',
+            status: 'missing',
+            missingArtifacts: ['analysis'],
+          },
+        ],
+        totals: { covered: 0, partial: 0, missing: 1 },
+      },
+    });
+
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions[0].priority).toBe('high');
+    expect(plan.actions[0].issues).toEqual([
+      { type: 'independence', independence: 'recommended', missingArtifacts: ['analysis'] },
+      { type: 'gap', category: 'tests', missingArtifacts: ['test'] },
+    ]);
   });
 });
 

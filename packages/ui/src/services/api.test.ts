@@ -499,6 +499,18 @@ describe('API integrations', () => {
       relationshipsEndpoint: '/links',
     } as const;
 
+    const jiraCloudConfig = {
+      baseUrl: 'https://jira.example.com',
+      projectKey: 'SOI',
+      email: 'jira@example.com',
+      token: 'jira-token',
+      requirementsJql: 'project = SOI AND issuetype = Requirement',
+      testsJql: 'project = SOI AND issuetype = Test',
+      pageSize: 50,
+      maxPages: 5,
+      timeoutMs: 45000,
+    } as const;
+
     await importArtifacts({
       token: 'token',
       license: 'license',
@@ -511,6 +523,7 @@ describe('API integrations', () => {
       jenkins: jenkinsConfig,
       doorsNext: doorsNextConfig,
       jama: jamaConfig,
+      jiraCloud: jiraCloudConfig,
     });
 
     const [, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
@@ -524,7 +537,7 @@ describe('API integrations', () => {
     });
     const entryKeys = entries.map(([key]) => key);
     expect(entryKeys).toEqual(
-      expect.arrayContaining(['designCsv', 'polyspace', 'ldra', 'vectorcast', 'qaLogs', 'jiraDefects']),
+      expect.arrayContaining(['designCsv', 'polyspace', 'ldra', 'vectorcast', 'qaLogs', 'jiraDefects', 'jiraCloud']),
     );
 
     const defectEntries = formData.getAll('jiraDefects');
@@ -543,6 +556,7 @@ describe('API integrations', () => {
     expect(formData.get('jenkins')).toBe(JSON.stringify(jenkinsConfig));
     expect(formData.get('doorsNext')).toBe(JSON.stringify(doorsNextConfig));
     expect(formData.get('jama')).toBe(JSON.stringify(jamaConfig));
+    expect(formData.get('jiraCloud')).toBe(JSON.stringify(jiraCloudConfig));
   });
 
   it('sanitizes compliance independence summaries from the API', async () => {
@@ -681,7 +695,7 @@ describe('API integrations', () => {
           fetchedAt: 123456,
           items: [
             {
-              id: 1001,
+              id: '1001',
               key: 'CR-7',
               summary: 'Investigate failing regression',
               status: 'To Do',
@@ -712,7 +726,10 @@ describe('API integrations', () => {
     });
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0] as [string];
-    expect(url).toContain('/v1/change-requests?projectKey=SOI&jql=status%20%3D%20%22To%20Do%22');
+    const parsedUrl = new URL(url);
+    expect(parsedUrl.pathname).toBe('/v1/change-requests');
+    expect(parsedUrl.searchParams.get('projectKey')).toBe('SOI');
+    expect(parsedUrl.searchParams.get('jql')).toBe('status = "To Do"');
     expect(result.items).toHaveLength(1);
     const item = result.items[0];
     expect(item.assignee).toBe('qa-user');
@@ -898,6 +915,7 @@ describe('buildReportAssets', () => {
         complianceHtml: 'reports/demo-tenant/abcd1234ef567890/compliance.html',
         complianceJson: 'reports/demo-tenant/abcd1234ef567890/compliance.json',
         complianceCsv: 'reports/demo-tenant/abcd1234ef567890/compliance.csv',
+        traceCsv: 'reports/demo-tenant/abcd1234ef567890/trace.csv',
         traceHtml: 'reports/demo-tenant/abcd1234ef567890/trace.html',
         gapsHtml: 'reports/demo-tenant/abcd1234ef567890/gaps.html',
         analysis: 'reports/demo-tenant/abcd1234ef567890/analysis.json',
@@ -929,6 +947,7 @@ describe('buildReportAssets', () => {
   it('normalizes compliance CSV and tool qualification asset paths', () => {
     const assets = buildReportAssets(createJob());
     expect(assets.assets.complianceCsv).toBe('compliance.csv');
+    expect(assets.assets.traceCsv).toBe('trace.csv');
     expect(assets.assets.toolQualificationPlan).toBe('tool-qualification/analyzer-plan.md');
     expect(assets.assets.toolQualificationReport).toBe('tool-qualification/analyzer-report.md');
   });

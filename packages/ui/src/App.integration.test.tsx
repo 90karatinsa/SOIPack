@@ -423,6 +423,7 @@ const server = setupServer(
         complianceHtml: 'reports/demo/job-report/compliance.html',
         complianceJson: 'reports/demo/job-report/compliance.json',
         complianceCsv: 'reports/demo/job-report/compliance.csv',
+        traceCsv: 'reports/demo/job-report/trace.csv',
         traceHtml: 'reports/demo/job-report/trace.html',
         gapsHtml: 'reports/demo/job-report/gaps.html',
         analysis: 'reports/demo/job-report/analysis.json',
@@ -564,6 +565,60 @@ const server = setupServer(
       ctx.set('Content-Disposition', 'attachment; filename="manifest.json"'),
       ctx.json({ manifest: 'demo' })
     );
+  }),
+  rest.get('/v1/risk/stage-forecast', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
+
+    return res(
+      ctx.status(200),
+      ctx.json({
+        generatedAt: '2024-04-20T10:00:00Z',
+        forecasts: [
+          {
+            stage: 'SOI-1',
+            probability: 35,
+            classification: 'guarded',
+            horizonDays: 14,
+            credibleInterval: { lower: 20, upper: 55, confidence: 90 },
+            sparkline: [
+              { timestamp: '2024-04-10T00:00:00Z', regressionRatio: 0.2 },
+              { timestamp: '2024-04-15T00:00:00Z', regressionRatio: 0.25 },
+              { timestamp: '2024-04-20T00:00:00Z', regressionRatio: 0.3 },
+            ],
+            updatedAt: '2024-04-20T09:30:00Z',
+          },
+          {
+            stage: 'SOI-2',
+            probability: 52,
+            classification: 'elevated',
+            horizonDays: 21,
+            credibleInterval: { lower: 40, upper: 70, confidence: 85 },
+            sparkline: [
+              { timestamp: '2024-04-10T00:00:00Z', regressionRatio: 0.35 },
+              { timestamp: '2024-04-15T00:00:00Z', regressionRatio: 0.45 },
+              { timestamp: '2024-04-20T00:00:00Z', regressionRatio: 0.5 },
+            ],
+            updatedAt: '2024-04-20T09:45:00Z',
+          },
+          {
+            stage: 'SOI-3',
+            probability: 15,
+            classification: 'nominal',
+            horizonDays: 30,
+            credibleInterval: { lower: 5, upper: 25, confidence: 92 },
+            sparkline: [
+              { timestamp: '2024-04-10T00:00:00Z', regressionRatio: 0.1 },
+              { timestamp: '2024-04-15T00:00:00Z', regressionRatio: 0.08 },
+              { timestamp: '2024-04-20T00:00:00Z', regressionRatio: 0.05 },
+            ],
+            updatedAt: '2024-04-20T09:50:00Z',
+          },
+        ],
+      }),
+    );
   })
 );
 
@@ -581,6 +636,31 @@ describe('App integration', () => {
   it('runs the pipeline and renders report data from the API', async () => {
     const user = userEvent.setup();
     render(<App />);
+
+    const languageSelect = screen.getByLabelText(/Language/i) as HTMLSelectElement;
+    expect(screen.getByRole('heading', { name: 'Compliance & Traceability Dashboard' })).toBeInTheDocument();
+
+    await act(async () => {
+      await user.selectOptions(languageSelect, 'tr');
+    });
+
+    expect(screen.getByRole('heading', { name: 'Uyumluluk & İzlenebilirlik Panosu' })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Geçerli bir REST token ile import, analyze ve report işlerinizin durumunu takip edip oluşan uyum ve izlenebilirlik çıktılarının özetini görüntüleyebilir, rapor artefaktlarını indirebilirsiniz.',
+      ),
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem('soipack.ui.locale')).toBe('tr');
+
+    await act(async () => {
+      await user.selectOptions(languageSelect, 'en');
+    });
+
+    expect(screen.getByRole('heading', { name: 'Compliance & Traceability Dashboard' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Provide REST credentials to orchestrate imports, monitor analysis, and download compliance packages.'),
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem('soipack.ui.locale')).toBe('en');
 
     const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
     await act(async () => {
@@ -897,13 +977,16 @@ describe('App integration', () => {
     const topFactor = await screen.findByText('Kapsam Açığı');
     const heatmapRow = topFactor.closest('li');
     expect(heatmapRow).not.toBeNull();
-    if (heatmapRow) {
-      const scoped = within(heatmapRow);
-      expect(scoped.getByText('0.50')).toBeInTheDocument();
-      expect(scoped.getByText('0.40')).toBeInTheDocument();
-      expect(scoped.getByText('0.20')).toBeInTheDocument();
-      expect(scoped.getByText('%62')).toBeInTheDocument();
-    }
+      if (heatmapRow) {
+        const scoped = within(heatmapRow);
+        const metricList = scoped.getByRole('list', { name: /Kapsam Açığı metrikleri/ });
+        const metrics = within(metricList);
+        expect(metrics.getByText(/Ağırlık\s+0\.50/)).toBeInTheDocument();
+        expect(metrics.getByText(/Katkı\s+0\.40/)).toBeInTheDocument();
+        expect(metrics.getByText(/Etki\s+0\.20/)).toBeInTheDocument();
+        const shareBar = scoped.getByTestId('risk-factor-share-Kapsam Açığı');
+        expect(shareBar).toHaveAttribute('aria-valuenow', '62');
+      }
 
     const summary = screen.getByText('Skor').closest('dl');
     expect(summary).not.toBeNull();

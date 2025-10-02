@@ -1138,6 +1138,7 @@ interface ReportJobMetadata extends BaseJobMetadata {
     complianceJson: string;
     complianceCsv: string;
     traceHtml: string;
+    traceCsv: string;
     gapsHtml: string;
     analysisPath: string;
     snapshotPath: string;
@@ -1207,6 +1208,7 @@ interface ReportJobResult {
     complianceJson: string;
     complianceCsv: string;
     traceHtml: string;
+    traceCsv: string;
     gapsHtml: string;
     analysis: string;
     snapshot: string;
@@ -2241,6 +2243,7 @@ const toReportResult = (
     complianceJson: storage.toRelativePath(metadata.outputs.complianceJson),
     complianceCsv: storage.toRelativePath(metadata.outputs.complianceCsv),
     traceHtml: storage.toRelativePath(metadata.outputs.traceHtml),
+    traceCsv: storage.toRelativePath(metadata.outputs.traceCsv),
     gapsHtml: storage.toRelativePath(metadata.outputs.gapsHtml),
     analysis: storage.toRelativePath(metadata.outputs.analysisPath),
     snapshot: storage.toRelativePath(metadata.outputs.snapshotPath),
@@ -4560,6 +4563,7 @@ export const createServer = (config: ServerConfig): Express => {
             complianceJson: result.complianceJson,
             complianceCsv: result.complianceCsv,
             traceHtml: result.traceHtml,
+            traceCsv: result.traceCsv,
             gapsHtml: result.gapsHtml,
             analysisPath: path.join(payload.reportDir, 'analysis.json'),
             snapshotPath: path.join(payload.reportDir, 'snapshot.json'),

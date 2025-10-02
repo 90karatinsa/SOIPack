@@ -8,8 +8,8 @@ import type {
   DoorsNextConnectorFormState,
   JamaConnectorFormState,
   JenkinsConnectorFormState,
+  JiraCloudConnectorFormState,
   PolarionConnectorFormState,
-  UploadRunPayload,
 } from '../types/connectors';
 
 const baseLogs: PipelineLogEntry[] = [];
@@ -49,12 +49,25 @@ const createJamaState = (): JamaConnectorFormState => ({
   token: '',
 });
 
+const createJiraCloudState = (): JiraCloudConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  projectKey: '',
+  email: '',
+  token: '',
+  requirementsJql: '',
+  testsJql: '',
+  pageSize: '',
+  maxPages: '',
+  timeoutMs: '',
+});
+
 const createProps = (overrides: Partial<ComponentProps<typeof UploadAndRun>> = {}) => ({
   files: [],
   onFilesChange: jest.fn(),
   logs: baseLogs,
   isEnabled: true,
-  onRun: jest.fn<(payload: UploadRunPayload) => void>(),
+  onRun: jest.fn(),
   isRunning: false,
   canRun: true,
   jobStates: [],
@@ -72,12 +85,16 @@ const createProps = (overrides: Partial<ComponentProps<typeof UploadAndRun>> = {
   onDoorsNextChange: jest.fn(),
   jama: createJamaState(),
   onJamaChange: jest.fn(),
+  jiraCloud: createJiraCloudState(),
+  onJiraCloudChange: jest.fn(),
   packJobStatus: null,
   postQuantumSignature: null,
   ...overrides,
 });
 
 describe('UploadAndRun', () => {
+  jest.setTimeout(15000);
+
   it('notifies when independent sources toggles change', async () => {
     const user = userEvent.setup();
     const onIndependentSourcesChange = jest.fn();
@@ -139,6 +156,7 @@ describe('UploadAndRun', () => {
     let jenkins = createJenkinsState();
     let doorsNext = createDoorsNextState();
     let jama = createJamaState();
+    let jiraCloud = createJiraCloudState();
 
     let rerenderComponent = () => {};
 
@@ -166,6 +184,11 @@ describe('UploadAndRun', () => {
           jama = next;
           rerenderComponent();
         },
+        jiraCloud,
+        onJiraCloudChange: (next: JiraCloudConnectorFormState) => {
+          jiraCloud = next;
+          rerenderComponent();
+        },
       });
 
     const { rerender } = render(<UploadAndRun {...buildProps()} />);
@@ -173,9 +196,15 @@ describe('UploadAndRun', () => {
 
     await user.click(screen.getByRole('checkbox', { name: /Polarion ALM/i }));
     await user.type(screen.getByLabelText(/Polarion URL/i), ' https://polarion.example.com ');
-    await user.type(screen.getByLabelText(/Proje kimliği/i), ' AVIONICS ');
-    await user.type(screen.getByLabelText(/^Kullanıcı adı$/i), ' alice ');
-    await user.type(screen.getByLabelText(/^Parola$/i), ' secret ');
+    await user.type(screen.getByLabelText(/Proje kimliği/i, { selector: '#connector-polarion-project' }), ' AVIONICS ');
+    await user.type(
+      screen.getByLabelText(/^Kullanıcı adı$/i, { selector: '#connector-polarion-username' }),
+      ' alice ',
+    );
+    await user.type(
+      screen.getByLabelText(/^Parola$/i, { selector: '#connector-polarion-password' }),
+      ' secret ',
+    );
     await user.type(screen.getByLabelText(/Erişim token/i), ' polarion-token ');
 
     await user.click(screen.getByRole('checkbox', { name: /^Jenkins$/i }));
@@ -184,9 +213,12 @@ describe('UploadAndRun', () => {
     await user.type(screen.getByLabelText(/Build numarası/i), '42');
     await user.type(screen.getByLabelText(/^Kullanıcı adı$/i, { selector: '#connector-jenkins-username' }), ' bob ');
     await user.type(screen.getByLabelText(/^Parola$/i, { selector: '#connector-jenkins-password' }), ' password ');
-    await user.type(screen.getByLabelText(/API token/i), ' jenkins-token ');
+    await user.type(
+      screen.getByLabelText(/API token/i, { selector: '#connector-jenkins-token' }),
+      ' jenkins-token ',
+    );
 
-    await user.click(screen.getByRole('checkbox', { name: /DOORS Next/i }));
+    await user.click(screen.getByLabelText(/^DOORS Next$/i));
     await user.type(screen.getByLabelText(/Sunucu URL/i), 'https://doors.example.com');
     await user.type(screen.getByLabelText(/Project area/i), ' DO-178C ');
     await user.type(screen.getByLabelText(/^Kullanıcı adı$/i, { selector: '#connector-doorsnext-username' }), ' dng ');
@@ -197,6 +229,23 @@ describe('UploadAndRun', () => {
     await user.type(screen.getByLabelText(/Jama URL/i), 'https://jama.example.com');
     await user.type(screen.getByLabelText(/Proje kimliği/i, { selector: '#connector-jama-project' }), '123');
     await user.type(screen.getByLabelText(/REST token/i), ' jama-token ');
+
+    await user.click(screen.getByRole('checkbox', { name: /Jira Cloud/i }));
+    await user.type(screen.getByLabelText(/Site URL/i), ' https://jira.example.com/ ');
+    await user.type(screen.getByLabelText(/Proje anahtarı/i), '  SOI-CTRL  ');
+    await user.type(screen.getByLabelText(/API e-posta/i), ' jira@example.com ');
+    await user.type(screen.getByLabelText(/^API token$/i, { selector: '#connector-jira-cloud-token' }), ' jira-token ');
+    await user.type(screen.getByLabelText(/Gereksinim JQL/i), ' project = SOI ');
+    await user.type(screen.getByLabelText(/Test JQL/i), ' project = SOI AND issuetype = Test ');
+    const pageSizeInput = screen.getByLabelText(/Sayfa boyutu/i) as HTMLInputElement;
+    await user.clear(pageSizeInput);
+    await user.type(pageSizeInput, ' 75 ');
+    const maxPagesInput = screen.getByLabelText(/Maksimum sayfa/i) as HTMLInputElement;
+    await user.clear(maxPagesInput);
+    await user.type(maxPagesInput, ' 9 ');
+    const timeoutInput = screen.getByLabelText(/Zaman aşımı/i) as HTMLInputElement;
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, ' 60000 ');
 
     await user.click(screen.getByRole('button', { name: /Pipeline Başlat/i }));
 
@@ -224,6 +273,17 @@ describe('UploadAndRun', () => {
             "token": "jenkins-token",
             "username": "bob",
           },
+          "jiraCloud": {
+            "baseUrl": "https://jira.example.com/",
+            "email": "jira@example.com",
+            "maxPages": 9,
+            "pageSize": 75,
+            "projectKey": "SOI-CTRL",
+            "requirementsJql": "project = SOI",
+            "testsJql": "project = SOI AND issuetype = Test",
+            "timeoutMs": 60000,
+            "token": "jira-token",
+          },
           "polarion": {
             "baseUrl": "https://polarion.example.com",
             "password": "secret",
@@ -236,6 +296,40 @@ describe('UploadAndRun', () => {
         "independentSources": [],
       }
     `);
+  });
+
+  it('omits Jira Cloud payload when credentials are incomplete', async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn();
+
+    let jiraCloud = createJiraCloudState();
+
+    let rerenderComponent = () => {};
+
+    const buildProps = () =>
+      createProps({
+        files: [new File(['dummy'], 'evidence.json', { type: 'application/json' })],
+        onRun,
+        jiraCloud,
+        onJiraCloudChange: (next: JiraCloudConnectorFormState) => {
+          jiraCloud = next;
+          rerenderComponent();
+        },
+      });
+
+    const { rerender } = render(<UploadAndRun {...buildProps()} />);
+    rerenderComponent = () => rerender(<UploadAndRun {...buildProps()} />);
+
+    await user.click(screen.getByRole('checkbox', { name: /Jira Cloud/i }));
+    await user.type(screen.getByLabelText(/Site URL/i), 'https://jira.example.com');
+    await user.type(screen.getByLabelText(/Proje anahtarı/i), 'SOI');
+
+    await user.click(screen.getByRole('button', { name: /Pipeline Başlat/i }));
+
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const submission = onRun.mock.calls[0]?.[0];
+    expect(submission?.connectors).toBeDefined();
+    expect(submission?.connectors).not.toHaveProperty('jiraCloud');
   });
 
   it('renders post-quantum signature metadata and fallbacks', () => {
