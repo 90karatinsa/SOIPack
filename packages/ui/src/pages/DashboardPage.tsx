@@ -1,5 +1,5 @@
 import { Alert, Badge, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 
 import { useT } from '../providers/I18nProvider';
 import {
@@ -8,10 +8,14 @@ import {
   listReviews,
   fetchComplianceSummary,
   fetchChangeRequests,
+  fetchRemediationPlanSummary,
   type ComplianceSummaryLatest,
   type QueueMetricsResponse,
   type ReviewResource,
   type ChangeRequestItem,
+  type RemediationPlanSummary,
+  type RemediationPlanPriority,
+  type RemediationArtifactSummary,
 } from '../services/api';
 
 type DashboardPageProps = {
@@ -20,6 +24,7 @@ type DashboardPageProps = {
 };
 
 const CHANGE_IMPACT_DISPLAY_LIMIT = 5;
+const REMEDIATION_ACTION_DISPLAY_LIMIT = 4;
 
 interface QueueMetrics {
   total: number;
@@ -64,6 +69,11 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     items: ChangeRequestItem[];
     fetchedAt: string | null;
   }>({ loading: true, error: null, items: [], fetchedAt: null });
+  const [remediationPlanState, setRemediationPlanState] = useState<{
+    loading: boolean;
+    error: string | null;
+    plan: RemediationPlanSummary | null;
+  }>({ loading: true, error: null, plan: null });
   const t = useT();
   const trimmedToken = token.trim();
   const trimmedLicense = license.trim();
@@ -84,6 +94,11 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         items: [],
         fetchedAt: null,
       });
+      setRemediationPlanState({
+        loading: false,
+        error: t('dashboard.credentialsRequired'),
+        plan: null,
+      });
       return;
     }
 
@@ -91,11 +106,13 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     const reviewController = new AbortController();
     const complianceController = new AbortController();
     const changeRequestController = new AbortController();
+    const remediationController = new AbortController();
 
     setQueueState((previous) => ({ ...previous, loading: true, error: null }));
     setReviewState((previous) => ({ ...previous, loading: true, error: null }));
     setComplianceState((previous) => ({ ...previous, loading: true, error: null }));
     setChangeRequestState((previous) => ({ ...previous, loading: true, error: null }));
+    setRemediationPlanState((previous) => ({ ...previous, loading: true, error: null }));
 
     listJobs({
       token: trimmedToken,
@@ -179,11 +196,29 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         setChangeRequestState({ loading: false, error: message, items: [], fetchedAt: null });
       });
 
+    fetchRemediationPlanSummary({
+      token: trimmedToken,
+      license: trimmedLicense,
+      signal: remediationController.signal,
+    })
+      .then((response) => {
+        setRemediationPlanState({ loading: false, error: null, plan: response });
+      })
+      .catch((error) => {
+        if (remediationController.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof ApiError ? error.message : t('dashboard.remediationPlanError');
+        setRemediationPlanState({ loading: false, error: message, plan: null });
+      });
+
     return () => {
       queueController.abort();
       reviewController.abort();
       complianceController.abort();
       changeRequestController.abort();
+      remediationController.abort();
     };
   }, [trimmedToken, trimmedLicense, t]);
 
@@ -348,6 +383,251 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
       'dashboard.changeImpactMoreReasons',
     )})`;
   };
+  const remediationPlan = remediationPlanState.plan;
+  const remediationActions = remediationPlan?.actions ?? [];
+  const remediationGeneratedAt = remediationPlan?.generatedAt ?? null;
+  const formattedRemediationGeneratedAt = remediationGeneratedAt
+    ? new Date(remediationGeneratedAt).toLocaleString()
+    : '—';
+  const remediationTopActions = remediationActions.slice(0, REMEDIATION_ACTION_DISPLAY_LIMIT);
+  const remediationRemaining = Math.max(0, remediationActions.length - remediationTopActions.length);
+  const remediationPriorityLabels = useMemo(
+    () => ({
+      critical: t('dashboard.remediationPriority.critical'),
+      high: t('dashboard.remediationPriority.high'),
+      medium: t('dashboard.remediationPriority.medium'),
+      low: t('dashboard.remediationPriority.low'),
+    }),
+    [t],
+  );
+  const remediationPriorityVariants: Record<
+    RemediationPlanPriority,
+    ComponentProps<typeof Badge>['variant']
+  > = {
+    critical: 'error',
+    high: 'warning',
+    medium: 'info',
+    low: 'neutral',
+  };
+  const remediationCategoryLabels = useMemo(
+    () => ({
+      analysis: t('dashboard.remediationIssue.gap.analysis'),
+      tests: t('dashboard.remediationIssue.gap.tests'),
+      coverage: t('dashboard.remediationIssue.gap.coverage'),
+      trace: t('dashboard.remediationIssue.gap.trace'),
+      reviews: t('dashboard.remediationIssue.gap.reviews'),
+      plans: t('dashboard.remediationIssue.gap.plans'),
+      standards: t('dashboard.remediationIssue.gap.standards'),
+      configuration: t('dashboard.remediationIssue.gap.configuration'),
+      quality: t('dashboard.remediationIssue.gap.quality'),
+      issues: t('dashboard.remediationIssue.gap.issues'),
+      conformity: t('dashboard.remediationIssue.gap.conformity'),
+    }),
+    [t],
+  );
+  const remediationIndependenceLabels = useMemo(
+    () => ({
+      required: t('dashboard.remediationIssue.independence.required'),
+      recommended: t('dashboard.remediationIssue.independence.recommended'),
+      none: t('dashboard.remediationIssue.independence.none'),
+    }),
+    [t],
+  );
+  const remediationArtifactLabels = useMemo(
+    () => ({
+      plan: t('dashboard.remediationArtifact.plan'),
+      standard: t('dashboard.remediationArtifact.standard'),
+      review: t('dashboard.remediationArtifact.review'),
+      analysis: t('dashboard.remediationArtifact.analysis'),
+      test: t('dashboard.remediationArtifact.test'),
+      coverage_stmt: t('dashboard.remediationArtifact.coverage_stmt'),
+      coverage_dec: t('dashboard.remediationArtifact.coverage_dec'),
+      coverage_mcdc: t('dashboard.remediationArtifact.coverage_mcdc'),
+      trace: t('dashboard.remediationArtifact.trace'),
+      cm_record: t('dashboard.remediationArtifact.cm_record'),
+      qa_record: t('dashboard.remediationArtifact.qa_record'),
+      problem_report: t('dashboard.remediationArtifact.problem_report'),
+      conformity: t('dashboard.remediationArtifact.conformity'),
+      design: t('dashboard.remediationArtifact.design'),
+    }),
+    [t],
+  );
+  const resolveRemediationIssueLabel = (
+    issue: RemediationPlanSummary['actions'][number]['issues'][number],
+  ): string => {
+    if (issue.type === 'gap') {
+      return (
+        remediationCategoryLabels[issue.category as keyof typeof remediationCategoryLabels] ?? issue.category
+      );
+    }
+    return (
+      remediationIndependenceLabels[issue.independence as keyof typeof remediationIndependenceLabels] ??
+      issue.independence
+    );
+  };
+  const resolveRemediationArtifactLabel = (artifact: RemediationArtifactSummary): string => {
+    const localized =
+      remediationArtifactLabels[artifact.key as keyof typeof remediationArtifactLabels] ?? artifact.label;
+    return localized ?? artifact.key;
+  };
+  const buildObjectiveLink = (objectiveId: string, objectiveUrl?: string): string => {
+    if (objectiveUrl && objectiveUrl.trim().length > 0) {
+      return objectiveUrl;
+    }
+    return `#/compliance?objective=${encodeURIComponent(objectiveId)}`;
+  };
+  const remediationPlanCard = (
+    <div
+      className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+      data-testid="remediation-plan-card"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white">{t('dashboard.remediationPlanTitle')}</h3>
+          <p className="text-xs text-neutral-400">{t('dashboard.remediationPlanSubtitle')}</p>
+        </div>
+        <span className="text-xs text-neutral-500">
+          {t('dashboard.remediationPlanGeneratedAt')} {formattedRemediationGeneratedAt}
+        </span>
+      </div>
+      <div className="mt-3 space-y-3 text-sm text-neutral-300">
+        {remediationPlanState.loading ? (
+          <div data-testid="remediation-plan-loading" className="space-y-2">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <Skeleton key={index} className="h-16 w-full" />
+            ))}
+          </div>
+        ) : remediationPlanState.error ? (
+          <Alert
+            data-testid="remediation-plan-error"
+            title={t('dashboard.remediationPlanErrorTitle')}
+            description={remediationPlanState.error}
+            variant="error"
+          />
+        ) : remediationActions.length === 0 ? (
+          <p className="text-sm text-neutral-400" data-testid="remediation-plan-empty">
+            {t('dashboard.remediationPlanEmpty')}
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-300">
+              <Badge variant="neutral" data-testid="remediation-plan-total">
+                {t('dashboard.remediationPlanActionsTotal')}: {remediationActions.length}
+              </Badge>
+            </div>
+            <ul className="space-y-3" data-testid="remediation-plan-list">
+              {remediationTopActions.map((action) => {
+                const objectiveHref = buildObjectiveLink(action.objectiveId, action.objectiveUrl);
+                const subtitle: string[] = [];
+                if (action.stage) {
+                  subtitle.push(action.stage);
+                }
+                if (action.table) {
+                  subtitle.push(action.table);
+                }
+                return (
+                  <li
+                    key={action.objectiveId}
+                    className="rounded-lg border border-slate-800/60 bg-slate-900/30 p-3"
+                    data-testid={`remediation-action-${action.objectiveId}`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <a
+                          href={objectiveHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sm font-semibold text-white hover:underline"
+                          data-testid={`remediation-objective-${action.objectiveId}`}
+                        >
+                          {action.objectiveName ?? action.objectiveId}
+                        </a>
+                        {subtitle.length > 0 ? (
+                          <p className="text-xs text-neutral-400">{subtitle.join(' • ')}</p>
+                        ) : null}
+                      </div>
+                      <Badge
+                        variant={remediationPriorityVariants[action.priority]}
+                        data-testid={`remediation-priority-${action.objectiveId}`}
+                      >
+                        {remediationPriorityLabels[action.priority]}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 space-y-2 text-xs text-neutral-300">
+                      {action.issues.map((issue, issueIndex) => (
+                        <div key={`${action.objectiveId}-issue-${issueIndex}`}>
+                          <p className="font-semibold text-neutral-200">
+                            {resolveRemediationIssueLabel(issue)}
+                          </p>
+                          {issue.missingArtifacts.length > 0 ? (
+                            <div
+                              className="mt-1 flex flex-wrap gap-2"
+                              data-testid={`remediation-artifacts-${action.objectiveId}-${issueIndex}`}
+                            >
+                              {issue.missingArtifacts.map((artifact, artifactIndex) => {
+                                const label = resolveRemediationArtifactLabel(artifact);
+                                if (artifact.url) {
+                                  return (
+                                    <a
+                                      key={`${artifact.key}-${artifactIndex}`}
+                                      href={artifact.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-full border border-brand/60 px-2 py-1 text-xs text-brand hover:bg-brand/10"
+                                    >
+                                      {label}
+                                    </a>
+                                  );
+                                }
+                                return (
+                                  <span
+                                    key={`${artifact.key}-${artifactIndex}`}
+                                    className="rounded-full bg-slate-800/70 px-2 py-1 text-xs text-neutral-200"
+                                  >
+                                    {label}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                    {action.links.length > 0 ? (
+                      <div className="mt-3 text-xs text-neutral-300">
+                        <p className="text-xs uppercase tracking-wide text-neutral-500">
+                          {t('dashboard.remediationPlanLinksLabel')}
+                        </p>
+                        <ul className="mt-1 space-y-1">
+                          {action.links.map((link, linkIndex) => (
+                            <li key={`${action.objectiveId}-link-${linkIndex}`}>
+                              <a
+                                href={link.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-brand hover:underline"
+                              >
+                                {link.label}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+            {remediationRemaining > 0 ? (
+              <p className="text-xs text-neutral-400" data-testid="remediation-plan-remaining">
+                +{remediationRemaining} {t('dashboard.remediationPlanMoreActions')}
+              </p>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
   const changeRequests = changeRequestState.items;
   const resolveStatusVariant = (category?: string): 'success' | 'warning' | undefined => {
     if (!category) {
@@ -380,18 +660,24 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
             <Skeleton className="h-24 w-full" />
           </div>
         ) : complianceState.error ? (
-          <Alert
-            data-testid="compliance-error"
-            title={t('dashboard.complianceErrorTitle')}
-            description={complianceState.error}
-            variant="error"
-          />
+          <div className="space-y-4">
+            <Alert
+              data-testid="compliance-error"
+              title={t('dashboard.complianceErrorTitle')}
+              description={complianceState.error}
+              variant="error"
+            />
+            {remediationPlanCard}
+          </div>
         ) : !complianceSummary ? (
-          <EmptyState
-            data-testid="compliance-empty"
-            title={t('dashboard.complianceEmpty')}
-            description=""
-          />
+          <div className="space-y-4">
+            <EmptyState
+              data-testid="compliance-empty"
+              title={t('dashboard.complianceEmpty')}
+              description=""
+            />
+            {remediationPlanCard}
+          </div>
         ) : (
           <div className="space-y-4" data-testid="compliance-summary">
             <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
@@ -428,7 +714,7 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                 description={complianceSummary.summary.missing.toString()}
               />
             </div>
-            <div className="grid gap-4 xl:grid-cols-2">
+            <div className="grid gap-4 xl:grid-cols-3">
               <div
                 className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
                 data-testid="independence-card"
@@ -599,6 +885,7 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                   )}
                 </div>
               </div>
+              {remediationPlanCard}
             </div>
           </div>
         )}

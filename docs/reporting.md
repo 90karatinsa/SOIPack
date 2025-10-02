@@ -81,3 +81,22 @@ Rapor şablonları W3C doğrulamasından geçecek şekilde tasarlanmıştır. `r
 `soipack ledger-report` komutu, iki manifest arasındaki ledger farkını `@soipack/report` şablonlarıyla PDF’e dönüştürür. Komut referans (`--base`) ve hedef (`--target`) manifest yollarını alır, farkı hesaplamak için ledger kanıtlarını doğrular ve çıktı dizinine (`--output`) `ledger-report.pdf` dosyasını yazar. Rapor; manifest özet metriklerini, Merkle/ledger köklerini, değişen kanıtları ve ilgili dosyaların Merkle kanıtlarını tek sayfada sunar.
 
 Opsiyonel `--title` başlığı ile rapor üst bilgisini özelleştirebilir, `--signing-key` bayrağıyla da var olan Ed25519 özel anahtarı kullanarak PDF’i imzalayabilirsiniz. İmza başarıyla üretildiğinde aynı dizine `ledger-report.pdf.sig` dosyası yazılır ve base64 imza gövdesi rapor çıktısında da raporlanır. Böylece denetçiler manifest farkını inceleyen PDF’in hash’ini (`sha256`) ve imzasını dış sistemlerde doğrulayabilir.
+
+## İyileştirme planı CLI komutu
+
+`soipack remediation-plan` komutu, compliance snapshot verisindeki boşluklar ve bağımsızlık özetinden bir iyileştirme planı üretir. Komut, `@soipack/engine` içindeki `computeRemediationPlan` yardımcılarını kullanır ve çıktıyı hem Markdown hem de JSON formatında kaydeder.
+
+Temel kullanım:
+
+```bash
+soipack remediation-plan \
+  --snapshot reports/snapshot.json \
+  --output reports/remediation \
+  --objectives analysis/objectives.json
+```
+
+- `--snapshot`: `run report` çıktısındaki `snapshot.json` dosyası veya aynı yapıda bir uyum snapshot’ı.
+- `--output`: Markdown (`remediation-plan.md`) ve JSON (`remediation-plan.json`) dosyalarının yazılacağı dizin.
+- `--objectives`: (Opsiyonel) `Objective[]` listesi içeren JSON dosyası; sağlanırsa Markdown çıktısı hedef adlarını ve SOI/Tablo meta verilerini etiketler.
+
+Markdown raporu, önceliğe göre sıralanmış aksiyon başlıklarını, SOI ve tablo bilgisini, her aksiyon için eksik kanıt kategorilerini ve bağımsızlık sorunlarını madde işaretleriyle özetler. JSON çıktısı ise aynı `RemediationPlan` yapısını otomasyonlar için erişilebilir biçimde korur. Böylece ekipler compliance boşluklarını CLI üzerinden planlayarak izleyebilir.

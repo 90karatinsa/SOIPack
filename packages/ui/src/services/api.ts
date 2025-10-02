@@ -256,6 +256,60 @@ export interface ComplianceSummaryResponse {
   latest: ComplianceSummaryLatest | null;
 }
 
+export interface RemediationArtifactSummary {
+  key: string;
+  label: string;
+  url?: string;
+}
+
+export type RemediationGapCategory =
+  | 'analysis'
+  | 'tests'
+  | 'coverage'
+  | 'trace'
+  | 'reviews'
+  | 'plans'
+  | 'standards'
+  | 'configuration'
+  | 'quality'
+  | 'issues'
+  | 'conformity';
+
+export type RemediationPlanPriority = 'critical' | 'high' | 'medium' | 'low';
+
+export type RemediationPlanIssue =
+  | {
+      type: 'gap';
+      category: RemediationGapCategory;
+      missingArtifacts: RemediationArtifactSummary[];
+    }
+  | {
+      type: 'independence';
+      independence: 'none' | 'recommended' | 'required';
+      missingArtifacts: RemediationArtifactSummary[];
+    };
+
+export interface RemediationPlanLink {
+  label: string;
+  url: string;
+}
+
+export interface RemediationPlanAction {
+  objectiveId: string;
+  objectiveName?: string;
+  objectiveUrl?: string;
+  stage?: string;
+  table?: string;
+  priority: RemediationPlanPriority;
+  issues: RemediationPlanIssue[];
+  links: RemediationPlanLink[];
+}
+
+export interface RemediationPlanSummary {
+  generatedAt: string | null;
+  actions: RemediationPlanAction[];
+}
+
 export interface StageRiskForecastResponse {
   generatedAt?: string;
   forecasts: StageRiskForecastEntry[];
@@ -647,6 +701,224 @@ const sanitizeComplianceIndependenceSummary = (
     .filter((entry): entry is ComplianceIndependenceObjective => entry !== null);
 
   return { totals, objectives };
+};
+
+const allowedRemediationGapCategories: RemediationGapCategory[] = [
+  'analysis',
+  'tests',
+  'coverage',
+  'trace',
+  'reviews',
+  'plans',
+  'standards',
+  'configuration',
+  'quality',
+  'issues',
+  'conformity',
+];
+
+const sanitizeRemediationPriority = (value: unknown): RemediationPlanPriority => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (
+      normalized === 'critical' ||
+      normalized === 'high' ||
+      normalized === 'medium' ||
+      normalized === 'low'
+    ) {
+      return normalized as RemediationPlanPriority;
+    }
+  }
+  return 'low';
+};
+
+const sanitizeRemediationArtifact = (entry: unknown): RemediationArtifactSummary | null => {
+  if (!entry) {
+    return null;
+  }
+  if (typeof entry === 'string') {
+    const key = entry.trim();
+    if (!key) {
+      return null;
+    }
+    return { key, label: key };
+  }
+  if (typeof entry === 'object') {
+    const record = entry as Record<string, unknown>;
+    const keySource = record.key ?? record.id ?? record.type ?? record.name;
+    const labelSource = record.label ?? record.name ?? record.title ?? record.type ?? record.id;
+    const urlSource = record.url ?? record.href ?? record.link;
+    const keyCandidate =
+      typeof keySource === 'string'
+        ? keySource.trim()
+        : keySource !== undefined
+          ? String(keySource).trim()
+          : '';
+    const labelCandidate =
+      typeof labelSource === 'string'
+        ? labelSource.trim()
+        : labelSource !== undefined
+          ? String(labelSource).trim()
+          : '';
+    const key = keyCandidate || labelCandidate;
+    if (!key) {
+      return null;
+    }
+    const label = labelCandidate || key;
+    const url = typeof urlSource === 'string' && urlSource.trim().length > 0 ? urlSource.trim() : undefined;
+    return { key, label, ...(url ? { url } : {}) };
+  }
+  return null;
+};
+
+const sanitizeRemediationArtifacts = (value: unknown): RemediationArtifactSummary[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => sanitizeRemediationArtifact(entry))
+    .filter((artifact): artifact is RemediationArtifactSummary => artifact !== null)
+    .map((artifact) => ({ ...artifact, label: artifact.label || artifact.key }));
+};
+
+const sanitizeRemediationIssue = (entry: unknown): RemediationPlanIssue | null => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const typeRaw = record.type;
+  if (typeof typeRaw !== 'string') {
+    return null;
+  }
+  const type = typeRaw.trim().toLowerCase();
+  if (type === 'gap') {
+    const categoryRaw = record.category;
+    const categoryCandidate =
+      typeof categoryRaw === 'string'
+        ? categoryRaw.trim().toLowerCase()
+        : categoryRaw !== undefined
+          ? String(categoryRaw).trim().toLowerCase()
+          : '';
+    if (!allowedRemediationGapCategories.includes(categoryCandidate as RemediationGapCategory)) {
+      return null;
+    }
+    const missingArtifacts = sanitizeRemediationArtifacts(record.missingArtifacts);
+    return {
+      type: 'gap',
+      category: categoryCandidate as RemediationGapCategory,
+      missingArtifacts,
+    };
+  }
+  if (type === 'independence') {
+    const independence = normalizeIndependenceLevel(record.independence);
+    const missingArtifacts = sanitizeRemediationArtifacts(record.missingArtifacts);
+    return {
+      type: 'independence',
+      independence,
+      missingArtifacts,
+    };
+  }
+  return null;
+};
+
+const sanitizeRemediationLink = (entry: unknown): RemediationPlanLink | null => {
+  if (!entry) {
+    return null;
+  }
+  if (typeof entry === 'string') {
+    const value = entry.trim();
+    if (!value) {
+      return null;
+    }
+    return { label: value, url: value };
+  }
+  if (typeof entry === 'object') {
+    const record = entry as Record<string, unknown>;
+    const urlSource = record.url ?? record.href ?? record.link;
+    const labelSource = record.label ?? record.title ?? record.name ?? record.id;
+    const url = typeof urlSource === 'string' ? urlSource.trim() : '';
+    const labelCandidate =
+      typeof labelSource === 'string'
+        ? labelSource.trim()
+        : labelSource !== undefined
+          ? String(labelSource).trim()
+          : '';
+    const resolvedUrl = url || labelCandidate;
+    if (!resolvedUrl) {
+      return null;
+    }
+    const label = labelCandidate || resolvedUrl;
+    return { label, url: resolvedUrl };
+  }
+  return null;
+};
+
+const sanitizeRemediationPlanAction = (entry: unknown): RemediationPlanAction | null => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const objectiveIdRaw = record.objectiveId ?? record.id;
+  const objectiveId =
+    typeof objectiveIdRaw === 'string'
+      ? objectiveIdRaw.trim()
+      : objectiveIdRaw !== undefined
+        ? String(objectiveIdRaw).trim()
+        : '';
+  if (!objectiveId) {
+    return null;
+  }
+
+  const priority = sanitizeRemediationPriority(record.priority);
+  const objectiveName =
+    typeof record.objectiveName === 'string' && record.objectiveName.trim().length > 0
+      ? record.objectiveName.trim()
+      : undefined;
+  const objectiveUrl =
+    typeof record.objectiveUrl === 'string' && record.objectiveUrl.trim().length > 0
+      ? record.objectiveUrl.trim()
+      : undefined;
+  const stage =
+    typeof record.stage === 'string' && record.stage.trim().length > 0 ? record.stage.trim() : undefined;
+  const table =
+    typeof record.table === 'string' && record.table.trim().length > 0 ? record.table.trim() : undefined;
+
+  const issuesRaw = Array.isArray(record.issues) ? record.issues : [];
+  const issues = issuesRaw
+    .map((issue) => sanitizeRemediationIssue(issue))
+    .filter((issue): issue is RemediationPlanIssue => issue !== null);
+
+  const linksRaw = Array.isArray(record.links) ? record.links : [];
+  const links = linksRaw
+    .map((link) => sanitizeRemediationLink(link))
+    .filter((link): link is RemediationPlanLink => link !== null);
+
+  return {
+    objectiveId,
+    priority,
+    issues,
+    links,
+    ...(objectiveName ? { objectiveName } : {}),
+    ...(objectiveUrl ? { objectiveUrl } : {}),
+    ...(stage ? { stage } : {}),
+    ...(table ? { table } : {}),
+  };
+};
+
+const sanitizeRemediationPlanSummary = (value: unknown): RemediationPlanSummary => {
+  if (!value || typeof value !== 'object') {
+    return { generatedAt: null, actions: [] };
+  }
+  const record = value as Record<string, unknown>;
+  const generatedAt =
+    typeof record.generatedAt === 'string' && record.generatedAt.trim().length > 0
+      ? record.generatedAt.trim()
+      : null;
+  const actionsRaw = Array.isArray(record.actions) ? record.actions : [];
+  const actions = actionsRaw
+    .map((entry) => sanitizeRemediationPlanAction(entry))
+    .filter((action): action is RemediationPlanAction => action !== null);
+  return { generatedAt, actions };
 };
 
 const sanitizeChangeRequestAttachment = (entry: unknown): ChangeRequestAttachment | null => {
@@ -1218,6 +1490,27 @@ export const fetchComplianceSummary = async ({
   };
 
   return { computedAt: payload.computedAt, latest: normalized };
+};
+
+interface FetchRemediationPlanOptions {
+  token: string;
+  license: string;
+  signal?: AbortSignal;
+}
+
+export const fetchRemediationPlanSummary = async ({
+  token,
+  license,
+  signal,
+}: FetchRemediationPlanOptions): Promise<RemediationPlanSummary> => {
+  const response = await fetch(joinUrl('/v1/compliance/remediation-plan'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  const payload = await readJson<unknown>(response);
+  return sanitizeRemediationPlanSummary(payload);
 };
 
 interface FetchChangeRequestsOptions {
