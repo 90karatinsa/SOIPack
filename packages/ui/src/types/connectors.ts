@@ -2,6 +2,7 @@ import type {
   DoorsNextConnectorConfig,
   JamaConnectorConfig,
   JenkinsConnectorConfig,
+  JiraCloudConnectorConfig,
   PolarionConnectorConfig,
 } from '../services/api';
 
@@ -40,11 +41,25 @@ export interface JamaConnectorFormState {
   token: string;
 }
 
+export interface JiraCloudConnectorFormState {
+  enabled: boolean;
+  baseUrl: string;
+  projectKey: string;
+  email: string;
+  token: string;
+  requirementsJql: string;
+  testsJql: string;
+  pageSize: string;
+  maxPages: string;
+  timeoutMs: string;
+}
+
 export interface RemoteConnectorPayload {
   polarion?: PolarionConnectorConfig;
   jenkins?: JenkinsConnectorConfig;
   doorsNext?: DoorsNextConnectorConfig;
   jama?: JamaConnectorConfig;
+  jiraCloud?: JiraCloudConnectorConfig;
 }
 
 export interface UploadRunPayload {

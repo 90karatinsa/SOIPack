@@ -18,6 +18,7 @@ import type {
   DoorsNextConnectorConfig,
   JamaConnectorConfig,
   JenkinsConnectorConfig,
+  JiraCloudConnectorConfig,
   PolarionConnectorConfig,
 } from '../services/api';
 import { createReportDataset } from '../services/report';
@@ -85,6 +86,7 @@ export interface PipelineRunOptions {
   jenkins?: JenkinsConnectorConfig;
   doorsNext?: DoorsNextConnectorConfig;
   jama?: JamaConnectorConfig;
+  jiraCloud?: JiraCloudConnectorConfig;
 }
 
 export interface UsePipelineResult {
@@ -219,6 +221,7 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
       jenkins,
       doorsNext,
       jama,
+      jiraCloud,
     }: PipelineRunOptions) => {
       const trimmedToken = token.trim();
       const trimmedLicense = license.trim();
@@ -262,6 +265,7 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
           jenkins,
           doorsNext,
           jama,
+          jiraCloud,
         });
         updateJob('import', importInitial, importInitial.reused);
 

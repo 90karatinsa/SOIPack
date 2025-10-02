@@ -166,6 +166,7 @@ components:
             - complianceJson
             - complianceCsv
             - traceHtml
+            - traceCsv
             - gapsHtml
             - analysis
             - snapshot
@@ -180,6 +181,8 @@ components:
             complianceCsv:
               type: string
             traceHtml:
+              type: string
+            traceCsv:
               type: string
             gapsHtml:
               type: string

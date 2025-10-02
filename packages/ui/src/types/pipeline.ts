@@ -56,6 +56,7 @@ export interface ReportJobResult {
     complianceHtml: string;
     complianceJson: string;
     complianceCsv: string;
+    traceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysis: string;
@@ -290,6 +291,7 @@ export interface ReportAssetMap {
     complianceHtml: string;
     complianceJson: string;
     complianceCsv: string;
+    traceCsv: string;
     traceHtml: string;
     gapsHtml: string;
     analysis: string;

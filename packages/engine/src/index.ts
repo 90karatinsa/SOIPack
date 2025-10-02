@@ -923,6 +923,30 @@ export interface BuildGapAnalysisOptions {
   staleEvidence?: StaleEvidenceOptions;
 }
 
+export type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
+
+export type RemediationIssue =
+  | {
+      type: 'gap';
+      category: GapArtifactCategory;
+      missingArtifacts: Array<ObjectiveArtifactType | 'design'>;
+    }
+  | {
+      type: 'independence';
+      independence: Objective['independence'];
+      missingArtifacts: ObjectiveArtifactType[];
+    };
+
+export interface RemediationAction {
+  objectiveId: string;
+  priority: RemediationPriority;
+  issues: RemediationIssue[];
+}
+
+export interface RemediationPlan {
+  actions: RemediationAction[];
+}
+
 export const buildGapAnalysis = (
   objectiveCoverage: ObjectiveCoverage[],
   options: BuildGapAnalysisOptions = {},
@@ -984,6 +1008,123 @@ export const buildGapAnalysis = (
     conformity: toGapItems(categoryBuckets.conformity),
     staleEvidence,
   };
+};
+
+const remediationPriorityRank: Record<RemediationPriority, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+const gapRemediationPriority: Record<GapArtifactCategory, RemediationPriority> = {
+  plans: 'medium',
+  standards: 'medium',
+  reviews: 'medium',
+  analysis: 'high',
+  tests: 'high',
+  coverage: 'high',
+  trace: 'high',
+  configuration: 'medium',
+  quality: 'medium',
+  issues: 'medium',
+  conformity: 'medium',
+};
+
+const resolveIndependencePriority = (level: Objective['independence']): RemediationPriority => {
+  if (level === 'required') {
+    return 'critical';
+  }
+  if (level === 'recommended') {
+    return 'high';
+  }
+  return 'medium';
+};
+
+interface AccumulatedRemediationAction extends RemediationAction {}
+
+const gapCategoriesInPriorityOrder: GapArtifactCategory[] = [
+  'analysis',
+  'tests',
+  'coverage',
+  'trace',
+  'reviews',
+  'plans',
+  'standards',
+  'configuration',
+  'quality',
+  'issues',
+  'conformity',
+];
+
+export const computeRemediationPlan = ({
+  gaps,
+  independenceSummary,
+}: {
+  gaps: GapAnalysis;
+  independenceSummary: ComplianceIndependenceSummary;
+}): RemediationPlan => {
+  const actions = new Map<string, AccumulatedRemediationAction>();
+
+  const ensureAction = (objectiveId: string): AccumulatedRemediationAction => {
+    const existing = actions.get(objectiveId);
+    if (existing) {
+      return existing;
+    }
+    const created: AccumulatedRemediationAction = {
+      objectiveId,
+      priority: 'low',
+      issues: [],
+    };
+    actions.set(objectiveId, created);
+    return created;
+  };
+
+  const applyPriority = (action: AccumulatedRemediationAction, priority: RemediationPriority) => {
+    if (remediationPriorityRank[priority] > remediationPriorityRank[action.priority]) {
+      action.priority = priority;
+    }
+  };
+
+  independenceSummary.objectives.forEach((entry) => {
+    if (!entry.missingArtifacts.length) {
+      return;
+    }
+    const action = ensureAction(entry.objectiveId);
+    action.issues.push({
+      type: 'independence',
+      independence: entry.independence,
+      missingArtifacts: entry.missingArtifacts,
+    });
+    applyPriority(action, resolveIndependencePriority(entry.independence));
+  });
+
+  gapCategoriesInPriorityOrder.forEach((category) => {
+    gaps[category].forEach((gap) => {
+      if (!gap.missingArtifacts.length) {
+        return;
+      }
+      const action = ensureAction(gap.objectiveId);
+      action.issues.push({ type: 'gap', category, missingArtifacts: gap.missingArtifacts });
+      applyPriority(action, gapRemediationPriority[category]);
+    });
+  });
+
+  const actionsList = Array.from(actions.values()).filter((action) => action.issues.length > 0);
+
+  actionsList.sort((a, b) => {
+    const rankDiff = remediationPriorityRank[b.priority] - remediationPriorityRank[a.priority];
+    if (rankDiff !== 0) {
+      return rankDiff;
+    }
+    const issueDiff = b.issues.length - a.issues.length;
+    if (issueDiff !== 0) {
+      return issueDiff;
+    }
+    return a.objectiveId.localeCompare(b.objectiveId);
+  });
+
+  return { actions: actionsList };
 };
 
 export interface ObjectiveStatistics {

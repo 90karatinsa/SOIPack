@@ -4,6 +4,7 @@ import type {
   DoorsNextConnectorFormState,
   JamaConnectorFormState,
   JenkinsConnectorFormState,
+  JiraCloudConnectorFormState,
   PolarionConnectorFormState,
   RemoteConnectorPayload,
   UploadRunPayload,
@@ -45,6 +46,8 @@ interface UploadAndRunProps {
   onDoorsNextChange: (value: DoorsNextConnectorFormState) => void;
   jama: JamaConnectorFormState;
   onJamaChange: (value: JamaConnectorFormState) => void;
+  jiraCloud: JiraCloudConnectorFormState;
+  onJiraCloudChange: (value: JiraCloudConnectorFormState) => void;
   packJobStatus: JobStatus | null;
   postQuantumSignature: PostQuantumSignatureMetadata | null;
 }
@@ -144,6 +147,8 @@ export function UploadAndRun({
   onDoorsNextChange,
   jama,
   onJamaChange,
+  jiraCloud,
+  onJiraCloudChange,
   packJobStatus,
   postQuantumSignature,
 }: UploadAndRunProps) {
@@ -247,6 +252,51 @@ export function UploadAndRun({
       }
     }
 
+    if (jiraCloud.enabled) {
+      const baseUrl = trim(jiraCloud.baseUrl);
+      const projectKey = trim(jiraCloud.projectKey);
+      const email = trim(jiraCloud.email);
+      const token = trim(jiraCloud.token);
+      if (baseUrl && projectKey && email && token) {
+        const payload: RemoteConnectorPayload['jiraCloud'] = {
+          baseUrl,
+          projectKey,
+          email,
+          token,
+        };
+        const requirementsJql = trim(jiraCloud.requirementsJql);
+        if (requirementsJql) {
+          payload.requirementsJql = requirementsJql;
+        }
+        const testsJql = trim(jiraCloud.testsJql);
+        if (testsJql) {
+          payload.testsJql = testsJql;
+        }
+        const pageSizeRaw = trim(jiraCloud.pageSize);
+        if (pageSizeRaw) {
+          const pageSizeValue = Number.parseInt(pageSizeRaw, 10);
+          if (!Number.isNaN(pageSizeValue)) {
+            payload.pageSize = pageSizeValue;
+          }
+        }
+        const maxPagesRaw = trim(jiraCloud.maxPages);
+        if (maxPagesRaw) {
+          const maxPagesValue = Number.parseInt(maxPagesRaw, 10);
+          if (!Number.isNaN(maxPagesValue)) {
+            payload.maxPages = maxPagesValue;
+          }
+        }
+        const timeoutRaw = trim(jiraCloud.timeoutMs);
+        if (timeoutRaw) {
+          const timeoutValue = Number.parseInt(timeoutRaw, 10);
+          if (!Number.isNaN(timeoutValue)) {
+            payload.timeoutMs = timeoutValue;
+          }
+        }
+        connectors.jiraCloud = payload;
+      }
+    }
+
     return connectors;
   };
 
@@ -329,8 +379,8 @@ export function UploadAndRun({
               Uzak bağlayıcılar
             </h3>
             <p className="mt-2 text-xs text-slate-400">
-              Polarion, Jenkins, DOORS Next ve Jama kaynakları için API bağlantı bilgilerini girin. Bağlayıcılar
-              etkinleştirildiğinde yapılandırmalar import isteğine JSON olarak eklenir.
+              Polarion, Jenkins, DOORS Next, Jama ve Jira Cloud kaynakları için API bağlantı bilgilerini girin.
+              Bağlayıcılar etkinleştirildiğinde yapılandırmalar import isteğine JSON olarak eklenir.
             </p>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
@@ -720,6 +770,185 @@ export function UploadAndRun({
                         onJamaChange({
                           ...jama,
                           token: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </section>
+              <section className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="connector-jira-cloud-enabled"
+                    className="flex items-center gap-2 text-sm text-slate-200"
+                  >
+                    <input
+                      id="connector-jira-cloud-enabled"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-brand focus:ring-brand"
+                      checked={jiraCloud.enabled}
+                      disabled={!isEnabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          enabled: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                    <span>Jira Cloud</span>
+                  </label>
+                  <span className="text-xs text-slate-500">REST gereksinim &amp; testleri</span>
+                </div>
+                <div className="mt-4 grid gap-3 text-xs text-slate-300">
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-url">
+                    <span>Site URL</span>
+                    <input
+                      id="connector-jira-cloud-url"
+                      type="url"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="https://your-domain.atlassian.net"
+                      value={jiraCloud.baseUrl}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          baseUrl: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-project">
+                    <span>Proje anahtarı</span>
+                    <input
+                      id="connector-jira-cloud-project"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="SOI"
+                      value={jiraCloud.projectKey}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          projectKey: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-email">
+                    <span>API e-posta</span>
+                    <input
+                      id="connector-jira-cloud-email"
+                      type="email"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="ops@example.com"
+                      value={jiraCloud.email}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          email: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-token">
+                    <span>API token</span>
+                    <input
+                      id="connector-jira-cloud-token"
+                      type="password"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      value={jiraCloud.token}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          token: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-req-jql">
+                    <span>Gereksinim JQL</span>
+                    <textarea
+                      id="connector-jira-cloud-req-jql"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      rows={2}
+                      value={jiraCloud.requirementsJql}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          requirementsJql: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-tests-jql">
+                    <span>Test JQL</span>
+                    <textarea
+                      id="connector-jira-cloud-tests-jql"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      rows={2}
+                      value={jiraCloud.testsJql}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          testsJql: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-page-size">
+                    <span>Sayfa boyutu</span>
+                    <input
+                      id="connector-jira-cloud-page-size"
+                      type="number"
+                      min="1"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="50"
+                      value={jiraCloud.pageSize}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          pageSize: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-max-pages">
+                    <span>Maksimum sayfa</span>
+                    <input
+                      id="connector-jira-cloud-max-pages"
+                      type="number"
+                      min="1"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="5"
+                      value={jiraCloud.maxPages}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          maxPages: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1" htmlFor="connector-jira-cloud-timeout">
+                    <span>Zaman aşımı (ms)</span>
+                    <input
+                      id="connector-jira-cloud-timeout"
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      placeholder="45000"
+                      value={jiraCloud.timeoutMs}
+                      disabled={!isEnabled || !jiraCloud.enabled}
+                      onChange={(event) =>
+                        onJiraCloudChange({
+                          ...jiraCloud,
+                          timeoutMs: event.currentTarget.value,
                         })
                       }
                     />

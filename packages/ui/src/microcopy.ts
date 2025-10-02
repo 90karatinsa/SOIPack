@@ -1,6 +1,116 @@
-export type Locale = 'tr';
+export type Locale = 'en' | 'tr';
 
-const translations: Record<string, string> = {
+const enTranslations: Record<string, string> = {
+  'app.languageLabel': 'Language',
+  'app.heroDescription': 'Provide REST credentials to orchestrate imports, monitor analysis, and download compliance packages.',
+  'dashboard.title': 'Compliance & Traceability Dashboard',
+  'dashboard.description': 'Track job queue metrics and pending reviews in real time.',
+  'dashboard.credentialsRequired': 'REST credentials are required.',
+  'dashboard.queueMetrics': 'Queue Status',
+  'dashboard.queueError': 'Unable to load queue metrics.',
+  'dashboard.queueErrorTitle': 'Queue failed to load',
+  'dashboard.queueTotal': 'Total Jobs',
+  'dashboard.queueQueued': 'Queued',
+  'dashboard.queueRunning': 'Running',
+  'dashboard.queueCompleted': 'Completed',
+  'dashboard.complianceReadiness': 'Compliance Readiness',
+  'dashboard.complianceError': 'Unable to load compliance summary.',
+  'dashboard.complianceErrorTitle': 'Compliance summary failed to load',
+  'dashboard.complianceEmpty': 'No compliance summary available',
+  'dashboard.complianceStatusReady': 'Ready',
+  'dashboard.complianceStatusAttention': 'Action Required',
+  'dashboard.complianceLastComputed': 'Last computed:',
+  'dashboard.complianceOpenObjectivesLabel': 'Open objectives:',
+  'dashboard.complianceCoverage': 'Readiness (%)',
+  'dashboard.complianceCovered': 'Completed objective',
+  'dashboard.compliancePartial': 'Partial objective',
+  'dashboard.complianceMissing': 'Missing objective',
+  'dashboard.changeImpactTitle': 'Change Impact',
+  'dashboard.changeImpactSubtitle': 'Highlighted records compared to the baseline',
+  'dashboard.changeImpactEmpty': 'No change impact data available.',
+  'dashboard.changeImpactTotalLabel': 'Records',
+  'dashboard.changeImpactTopLabel': 'Top critical records',
+  'dashboard.changeImpactListLabel': 'Change impact entries',
+  'dashboard.changeImpactMoreEntries': 'more record',
+  'dashboard.changeImpactNoReason': 'No reason provided.',
+  'dashboard.changeImpactMoreReasons': 'more reason',
+  'dashboard.changeImpactSeverityCritical': 'Critical',
+  'dashboard.changeImpactSeverityHigh': 'High',
+  'dashboard.changeImpactSeverityMedium': 'Medium',
+  'dashboard.changeImpactSeverityLow': 'Low',
+  'dashboard.changeImpactState.added': 'Added',
+  'dashboard.changeImpactState.removed': 'Removed',
+  'dashboard.changeImpactState.modified': 'Updated',
+  'dashboard.changeImpactState.impacted': 'Impacted',
+  'dashboard.changeImpactType.requirement': 'Requirement',
+  'dashboard.changeImpactType.test': 'Test',
+  'dashboard.changeImpactType.code': 'Code',
+  'dashboard.changeImpactType.design': 'Design',
+  'dashboard.independenceTitle': 'Independence Checks',
+  'dashboard.independenceSubtitle': 'Objectives that require independent validation',
+  'dashboard.independenceAllClear': 'All objectives requiring independent validation are complete.',
+  'dashboard.independenceUnavailable': 'Independence summary unavailable.',
+  'dashboard.independenceOpenSummary': 'Open independence objectives',
+  'dashboard.independencePartial': 'Partial',
+  'dashboard.independenceMissing': 'Missing',
+  'dashboard.independenceLinkLabel': 'View objective',
+  'dashboard.pendingReviews': 'Pending Reviews',
+  'dashboard.reviewError': 'Unable to load review list.',
+  'dashboard.reviewErrorTitle': 'Reviews failed to load',
+  'dashboard.noPendingReviews': 'No pending reviews',
+  'dashboard.reviewId': 'Review',
+  'dashboard.reviewTarget': 'Target',
+  'dashboard.reviewApprovers': 'Approvers',
+  'dashboard.reviewUpdatedAt': 'Updated',
+  'dashboard.changeRequests': 'Jira Change Requests',
+  'dashboard.changeRequestsError': 'Unable to load Jira change requests.',
+  'dashboard.changeRequestsErrorTitle': 'Change requests failed to load',
+  'dashboard.changeRequestsEmpty': 'No pending change requests',
+  'dashboard.changeRequestsKey': 'Key',
+  'dashboard.changeRequestsSummary': 'Summary',
+  'dashboard.changeRequestsStatus': 'Status',
+  'dashboard.changeRequestsAssignee': 'Assignee',
+  'dashboard.changeRequestsUpdatedAt': 'Updated',
+  'dashboard.changeRequestsAttachments': 'Attachments',
+  'dashboard.health': 'System Health',
+  'logs.title': 'Audit Logs',
+  'logs.description': 'View and export all audit events.',
+  'logs.exportCsv': 'Export CSV',
+  'logs.empty': 'No entries yet',
+  'logs.error': 'Unable to load audit logs.',
+  'logs.errorTitle': 'Audit logs failed to load',
+  'logs.credentialsRequired': 'REST credentials are required.',
+  'logs.filter.tenant': 'Tenant filter',
+  'logs.filter.actor': 'User filter',
+  'logs.table.timestamp': 'Time',
+  'logs.table.actor': 'User',
+  'logs.table.tenant': 'Tenant',
+  'logs.table.action': 'Action',
+  'logs.table.target': 'Target',
+  'notifications.success': 'Saved successfully',
+  'settings.title': 'Administration Settings',
+  'settings.description': 'Manage security, licensing, and update policies.',
+  'settings.tab.general': 'General',
+  'settings.tab.security': 'Security',
+  'settings.tab.license': 'License',
+  'settings.tab.updates': 'Updates',
+  'settings.environment': 'Environment',
+  'settings.licenseSerial': 'License Serial',
+  'settings.licenseExpiry': 'License Expiry',
+  'settings.features': 'Enabled Features',
+  'settings.updatePolicy': 'Update Policy',
+  'audit.banner': 'Audit logs are captured and retained for 90 days.',
+  'wizard.sign.cta': 'Save Settings',
+  'wizard.deploy.cta': 'Update Policy',
+  'status.up': 'Online',
+  'status.down': 'Offline',
+  'status.degraded': 'Degraded Service',
+  'common.ok': 'OK'
+};
+
+const trTranslations: Record<string, string> = {
+  'app.languageLabel': 'Dil',
+  'app.heroDescription': 'Geçerli bir REST token ile import, analyze ve report işlerinizin durumunu takip edip oluşan uyum ve izlenebilirlik çıktılarının özetini görüntüleyebilir, rapor artefaktlarını indirebilirsiniz.',
   'dashboard.title': 'Uyumluluk & İzlenebilirlik Panosu',
   'dashboard.description': 'İş kuyruğu metriklerini ve bekleyen incelemeleri canlı olarak takip edin.',
   'dashboard.credentialsRequired': 'REST kimlik bilgileri gereklidir.',
@@ -102,9 +212,19 @@ const translations: Record<string, string> = {
   'wizard.deploy.cta': 'Politikayı Güncelle',
   'status.up': 'Çevrimiçi',
   'status.down': 'Kapalı',
-  'status.degraded': 'Kısmi Hizmet',
+  'status.degraded': 'Kısmi Hizmet'
 };
 
-export function translate(_locale: Locale, key: string): string {
-  return translations[key] ?? key;
+const dictionaries: Record<Locale, Record<string, string>> = {
+  en: enTranslations,
+  tr: trTranslations
+};
+
+export const availableLocales: readonly Locale[] = ['en', 'tr'] as const;
+
+export const defaultLocale: Locale = 'en';
+
+export function translate(locale: Locale, key: string): string {
+  const dictionary = dictionaries[locale];
+  return dictionary?.[key] ?? enTranslations[key] ?? key;
 }

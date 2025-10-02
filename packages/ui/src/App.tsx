@@ -1,5 +1,6 @@
 import { Alert } from '@bora/ui-kit';
 import { useEffect, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 
 import { ComplianceMatrix } from './components/ComplianceMatrix';
 import { DownloadPackageButton } from './components/DownloadPackageButton';
@@ -15,10 +16,13 @@ import { RiskCockpitPage } from './pages/RiskCockpitPage';
 import RequirementsEditorPage, { type RequirementRecord } from './pages/RequirementsEditorPage';
 import { RoleGate, useRbac } from './providers/RbacProvider';
 import { ApiError, getWorkspaceDocumentThread, type WorkspaceDocumentThread } from './services/api';
+import { I18nProvider, useI18n } from './providers/I18nProvider';
+import type { Locale } from './microcopy';
 import type {
   DoorsNextConnectorFormState,
   JamaConnectorFormState,
   JenkinsConnectorFormState,
+  JiraCloudConnectorFormState,
   PolarionConnectorFormState,
   UploadRunPayload,
 } from './types/connectors';
@@ -26,6 +30,11 @@ import type { CoverageStatus, StageIdentifier } from './types/pipeline';
 
 const STAGE_STORAGE_KEY = 'soipack:ui:activeStage';
 const VALID_STAGE_IDS: StageIdentifier[] = ['all', 'SOI-1', 'SOI-2', 'SOI-3', 'SOI-4'];
+
+const LOCALE_LABELS: Record<Locale, string> = {
+  en: 'English',
+  tr: 'Türkçe',
+};
 
 const createPolarionFormState = (): PolarionConnectorFormState => ({
   enabled: false,
@@ -62,6 +71,19 @@ const createJamaFormState = (): JamaConnectorFormState => ({
   token: '',
 });
 
+const createJiraCloudFormState = (): JiraCloudConnectorFormState => ({
+  enabled: false,
+  baseUrl: '',
+  projectKey: '',
+  email: '',
+  token: '',
+  requirementsJql: '',
+  testsJql: '',
+  pageSize: '',
+  maxPages: '',
+  timeoutMs: '',
+});
+
 const readStoredStage = (): StageIdentifier => {
   if (typeof window === 'undefined') {
     return 'all';
@@ -73,7 +95,8 @@ const readStoredStage = (): StageIdentifier => {
   return 'all';
 };
 
-export default function App() {
+function AppContent() {
+  const { t, availableLocales, locale, setLocale } = useI18n();
   const { roles } = useRbac();
   const [token, setToken] = useState('');
   const [license, setLicense] = useState('');
@@ -85,6 +108,7 @@ export default function App() {
   const [jenkins, setJenkins] = useState<JenkinsConnectorFormState>(createJenkinsFormState);
   const [doorsNext, setDoorsNext] = useState<DoorsNextConnectorFormState>(createDoorsNextFormState);
   const [jama, setJama] = useState<JamaConnectorFormState>(createJamaFormState);
+  const [jiraCloud, setJiraCloud] = useState<JiraCloudConnectorFormState>(createJiraCloudFormState);
   const [activeStatuses, setActiveStatuses] = useState<CoverageStatus[]>([
     'covered',
     'partial',
@@ -105,6 +129,10 @@ export default function App() {
 
   const canAccessRequirements = roles.has('workspace:write') || roles.has('admin');
   const canAccessAdminUsers = roles.has('admin');
+
+  const handleLocaleChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    setLocale(event.currentTarget.value as Locale);
+  };
 
   const navigationViews = useMemo(() => {
     const baseViews: View[] = ['upload', 'compliance', 'traceability', 'risk', 'timeline'];
@@ -197,6 +225,7 @@ export default function App() {
       jenkins: submission.connectors.jenkins,
       doorsNext: submission.connectors.doorsNext,
       jama: submission.connectors.jama,
+      jiraCloud: submission.connectors.jiraCloud,
     });
   };
 
@@ -251,6 +280,7 @@ export default function App() {
     setJenkins(createJenkinsFormState());
     setDoorsNext(createDoorsNextFormState());
     setJama(createJamaFormState());
+    setJiraCloud(createJiraCloudFormState());
     reset();
   };
 
@@ -263,6 +293,7 @@ export default function App() {
     setJenkins(createJenkinsFormState());
     setDoorsNext(createDoorsNextFormState());
     setJama(createJamaFormState());
+    setJiraCloud(createJiraCloudFormState());
     reset();
   };
 
@@ -274,17 +305,33 @@ export default function App() {
             <span className="inline-flex items-center gap-2 rounded-full bg-brand/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-brand">
               SOIPack Demo
             </span>
-            <h1 className="text-3xl font-bold text-white sm:text-4xl">Uyumluluk & İzlenebilirlik Panosu</h1>
-            <p className="max-w-2xl text-sm text-slate-400">
-              Geçerli bir REST token ile import, analyze ve report işlerinizin durumunu takip edip
-              oluşan uyum ve izlenebilirlik çıktılarının özetini görüntüleyebilir, rapor artefaktlarını indirebilirsiniz.
-            </p>
+            <h1 className="text-3xl font-bold text-white sm:text-4xl">{t('dashboard.title')}</h1>
+            <p className="max-w-2xl text-sm text-slate-400">{t('app.heroDescription')}</p>
           </div>
-          <DownloadPackageButton
-            onDownload={() => downloadArtifacts()}
-            disabled={!isAuthorized || !packageJob || packageJob.status !== 'completed'}
-            isBusy={isDownloading}
-          />
+          <div className="flex flex-col gap-3 self-stretch sm:flex-row sm:items-start sm:justify-end lg:flex-col lg:items-end">
+            <div className="flex items-center gap-2 self-start rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300 shadow-inner shadow-slate-900/40 sm:self-auto lg:self-end">
+              <label htmlFor="app-language-select" className="font-medium text-slate-400">
+                {t('app.languageLabel')}
+              </label>
+              <select
+                id="app-language-select"
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                value={locale}
+                onChange={handleLocaleChange}
+              >
+                {availableLocales.map((candidate) => (
+                  <option key={candidate} value={candidate}>
+                    {LOCALE_LABELS[candidate]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <DownloadPackageButton
+              onDownload={() => downloadArtifacts()}
+              disabled={!isAuthorized || !packageJob || packageJob.status !== 'completed'}
+              isBusy={isDownloading}
+            />
+          </div>
         </header>
 
         <TokenInput token={token} onTokenChange={setToken} onClear={handleTokenClear} />
@@ -340,6 +387,8 @@ export default function App() {
               onDoorsNextChange={setDoorsNext}
               jama={jama}
               onJamaChange={setJama}
+              jiraCloud={jiraCloud}
+              onJiraCloudChange={setJiraCloud}
               packJobStatus={packJobStatus}
               postQuantumSignature={postQuantumSignature}
             />
@@ -406,5 +455,13 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <I18nProvider>
+      <AppContent />
+    </I18nProvider>
   );
 }

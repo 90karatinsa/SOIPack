@@ -3820,7 +3820,7 @@ describe('@soipack/server REST API', () => {
         complianceCsv: path.join(options.output, 'compliance.csv'),
         traceHtml: path.join(options.output, 'trace.html'),
         gapsHtml: path.join(options.output, 'gaps.html'),
-        traceCsv: path.join(options.output, 'traces.csv'),
+        traceCsv: path.join(options.output, 'trace.csv'),
         plans: {} as ReportResult['plans'],
         warnings: [] as ReportResult['warnings'],
         toolQualification: {
@@ -3877,6 +3877,7 @@ describe('@soipack/server REST API', () => {
 
       const toolQualificationOutputs = reportJob.result.outputs.toolQualification;
       expect(toolQualificationOutputs).toBeDefined();
+      expect(reportJob.result.outputs.traceCsv).toMatch(/^reports\//);
       expect(toolQualificationOutputs?.summary).toEqual({
         generatedAt: expect.any(String),
         programName: 'Plan Config Project',
@@ -3911,6 +3912,7 @@ describe('@soipack/server REST API', () => {
       const metadata = JSON.parse(metadataContent) as {
         params: { planConfig?: string | null; planOverrides?: Record<string, unknown> | null };
         outputs: {
+          traceCsv: string;
           toolQualification?: {
             summary: {
               generatedAt: string;
@@ -3927,6 +3929,7 @@ describe('@soipack/server REST API', () => {
 
       expect(metadata.params.planConfig).toBe('plan.json');
       expect(metadata.params.planOverrides).toEqual(overrides);
+      expect(metadata.outputs.traceCsv.replace(/\\/g, '/').endsWith('/trace.csv')).toBe(true);
       expect(metadata.outputs.toolQualification?.tqpHref).toBe(
         'tool-qualification/trace-analyzer-plan.md',
       );
@@ -4568,6 +4571,7 @@ describe('@soipack/server REST API', () => {
     const reportJob = await waitForJobCompletion(app, token, reportQueued.body.id);
     expect(reportJob.result.outputs.complianceHtml).toMatch(/^reports\//);
     expect(reportJob.result.outputs.complianceCsv).toMatch(/^reports\//);
+    expect(reportJob.result.outputs.traceCsv).toMatch(/^reports\//);
 
     const otherTenantToken = await createAccessToken({ tenant: 'tenant-b' });
     const crossTenantJob = await request(app)
@@ -4877,6 +4881,9 @@ describe('@soipack/server REST API', () => {
     );
     expect(reportDetails.body.result.outputs.complianceCsv).toBe(
       reportJob.result.outputs.complianceCsv,
+    );
+    expect(reportDetails.body.result.outputs.traceCsv).toBe(
+      reportJob.result.outputs.traceCsv,
     );
 
     const forbiddenAsset = await request(app)

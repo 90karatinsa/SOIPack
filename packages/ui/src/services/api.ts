@@ -840,6 +840,18 @@ export interface JamaConnectorConfig {
   relationshipsEndpoint?: string;
 }
 
+export interface JiraCloudConnectorConfig {
+  baseUrl: string;
+  projectKey: string;
+  email: string;
+  token: string;
+  requirementsJql?: string;
+  testsJql?: string;
+  pageSize?: number;
+  maxPages?: number;
+  timeoutMs?: number;
+}
+
 interface ImportOptions {
   token: string;
   license: string;
@@ -854,6 +866,7 @@ interface ImportOptions {
   jenkins?: JenkinsConnectorConfig;
   doorsNext?: DoorsNextConnectorConfig;
   jama?: JamaConnectorConfig;
+  jiraCloud?: JiraCloudConnectorConfig;
 }
 
 const inferImportField = (file: File): string | undefined => {
@@ -917,6 +930,7 @@ export const importArtifacts = async ({
   jenkins,
   doorsNext,
   jama,
+  jiraCloud,
 }: ImportOptions): Promise<ApiJob<ImportJobResult>> => {
   const formData = new FormData();
   let appended = 0;
@@ -961,6 +975,10 @@ export const importArtifacts = async ({
 
   if (jama) {
     formData.append('jama', JSON.stringify(jama));
+  }
+
+  if (jiraCloud) {
+    formData.append('jiraCloud', JSON.stringify(jiraCloud));
   }
 
   const response = await fetch(joinUrl('/v1/import'), {
@@ -1974,6 +1992,7 @@ export const buildReportAssets = (job: ApiJob<ReportJobResult>): ReportAssetMap 
       complianceHtml: extractAssetPath(outputs.complianceHtml, job.id),
       complianceJson: extractAssetPath(outputs.complianceJson, job.id),
       complianceCsv: extractAssetPath(outputs.complianceCsv, job.id),
+      traceCsv: extractAssetPath(outputs.traceCsv, job.id),
       traceHtml: extractAssetPath(outputs.traceHtml, job.id),
       gapsHtml: extractAssetPath(outputs.gapsHtml, job.id),
       analysis: extractAssetPath(outputs.analysis, job.id),
