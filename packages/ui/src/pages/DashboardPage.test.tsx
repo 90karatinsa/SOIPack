@@ -3,7 +3,14 @@ import React from 'react';
 
 import { I18nProvider } from '../providers/I18nProvider';
 import DashboardPage from './DashboardPage';
-import { listJobs, listReviews, fetchComplianceSummary, fetchChangeRequests, ApiError } from '../services/api';
+import {
+  listJobs,
+  listReviews,
+  fetchComplianceSummary,
+  fetchChangeRequests,
+  fetchRemediationPlanSummary,
+  ApiError,
+} from '../services/api';
 
 jest.mock('../services/api', () => {
   const actual = jest.requireActual('../services/api');
@@ -13,6 +20,7 @@ jest.mock('../services/api', () => {
     listReviews: jest.fn(),
     fetchComplianceSummary: jest.fn(),
     fetchChangeRequests: jest.fn(),
+    fetchRemediationPlanSummary: jest.fn(),
   };
 });
 
@@ -23,6 +31,8 @@ describe('DashboardPage', () => {
     typeof fetchComplianceSummary
   >;
   const mockFetchChangeRequests = fetchChangeRequests as jest.MockedFunction<typeof fetchChangeRequests>;
+  const mockFetchRemediationPlanSummary =
+    fetchRemediationPlanSummary as jest.MockedFunction<typeof fetchRemediationPlanSummary>;
 
   const renderDashboard = (props?: { token?: string; license?: string }) =>
     render(
@@ -35,6 +45,7 @@ describe('DashboardPage', () => {
     jest.clearAllMocks();
     mockFetchComplianceSummary.mockReset();
     mockFetchChangeRequests.mockReset();
+    mockFetchRemediationPlanSummary.mockReset();
   });
 
   it('renders queue metrics and pending reviews when data resolves', async () => {
@@ -139,6 +150,39 @@ describe('DashboardPage', () => {
         },
       ],
     });
+    mockFetchRemediationPlanSummary.mockResolvedValue({
+      generatedAt: now,
+      actions: [
+        {
+          objectiveId: 'A-1-02',
+          objectiveName: 'Design outputs verified',
+          objectiveUrl: 'https://example.com/objectives/A-1-02',
+          stage: 'Stage A',
+          table: 'Table 1',
+          priority: 'critical',
+          issues: [
+            {
+              type: 'gap',
+              category: 'trace',
+              missingArtifacts: [
+                { key: 'trace', label: 'Trace Matrix', url: 'https://example.com/trace' },
+                { key: 'test', label: 'Test evidence' },
+              ],
+            },
+            {
+              type: 'independence',
+              independence: 'required',
+              missingArtifacts: [{ key: 'review', label: 'Review package' }],
+            },
+          ],
+          links: [{ label: 'Evidence package', url: 'https://example.com/evidence.pdf' }],
+        },
+        { objectiveId: 'B-2-01', priority: 'high', issues: [], links: [] },
+        { objectiveId: 'C-3-01', priority: 'medium', issues: [], links: [] },
+        { objectiveId: 'D-4-01', priority: 'low', issues: [], links: [] },
+        { objectiveId: 'E-5-01', priority: 'low', issues: [], links: [] },
+      ],
+    });
 
     renderDashboard();
 
@@ -156,6 +200,9 @@ describe('DashboardPage', () => {
       expect.objectContaining({ token: 'demo-token', license: 'demo-license' }),
     );
     expect(mockFetchChangeRequests).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'demo-token', license: 'demo-license' }),
+    );
+    expect(mockFetchRemediationPlanSummary).toHaveBeenCalledWith(
       expect.objectContaining({ token: 'demo-token', license: 'demo-license' }),
     );
 
@@ -194,6 +241,28 @@ describe('DashboardPage', () => {
     expect(changeRequestsTable).toHaveTextContent('CR-1');
     expect(changeRequestsTable).toHaveTextContent('Restore qualification evidence');
     expect(screen.getByTestId('change-request-attachments-CR-1')).toHaveTextContent('1');
+
+    const remediationCard = screen.getByTestId('remediation-plan-card');
+    expect(remediationCard).toHaveTextContent('İyileştirme Planı');
+    expect(screen.getByTestId('remediation-plan-total')).toHaveTextContent('Aksiyonlar: 5');
+    expect(screen.getByTestId('remediation-action-A-1-02')).toBeInTheDocument();
+    expect(screen.getByTestId('remediation-objective-A-1-02')).toHaveAttribute(
+      'href',
+      'https://example.com/objectives/A-1-02',
+    );
+    expect(screen.getByTestId('remediation-priority-A-1-02')).toHaveTextContent('Kritik');
+    expect(screen.getByTestId('remediation-artifacts-A-1-02-0')).toHaveTextContent('İzlenebilirlik');
+    expect(screen.getByRole('link', { name: 'İzlenebilirlik' })).toHaveAttribute(
+      'href',
+      'https://example.com/trace',
+    );
+    expect(screen.getByRole('link', { name: 'Evidence package' })).toHaveAttribute(
+      'href',
+      'https://example.com/evidence.pdf',
+    );
+    expect(screen.getByTestId('remediation-plan-remaining')).toHaveTextContent(
+      '+1 ek aksiyon önceliklendirildi',
+    );
   });
 
   it('shows error fallbacks when requests fail', async () => {
@@ -202,6 +271,7 @@ describe('DashboardPage', () => {
     mockListReviews.mockRejectedValue(new ApiError(400, 'Review failed'));
     mockFetchComplianceSummary.mockRejectedValue(new ApiError(503, 'Summary failed'));
     mockFetchChangeRequests.mockRejectedValue(new ApiError(500, 'Change requests failed'));
+    mockFetchRemediationPlanSummary.mockRejectedValue(new ApiError(502, 'Plan failed'));
 
     renderDashboard();
 
@@ -210,6 +280,7 @@ describe('DashboardPage', () => {
       expect(screen.getByText(/Review failed/)).toBeInTheDocument();
       expect(screen.getByText(/Summary failed/)).toBeInTheDocument();
       expect(screen.getByText(/Change requests failed/)).toBeInTheDocument();
+      expect(screen.getByText(/Plan failed/)).toBeInTheDocument();
     });
   });
 
@@ -221,6 +292,7 @@ describe('DashboardPage', () => {
       expect(mockListReviews).not.toHaveBeenCalled();
       expect(mockFetchComplianceSummary).not.toHaveBeenCalled();
       expect(mockFetchChangeRequests).not.toHaveBeenCalled();
+      expect(mockFetchRemediationPlanSummary).not.toHaveBeenCalled();
     });
 
     expect(screen.getAllByText(/kimlik|credential/i).length).toBeGreaterThan(0);
@@ -246,6 +318,7 @@ describe('DashboardPage', () => {
       },
     });
     mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
 
     renderDashboard();
 
@@ -268,6 +341,7 @@ describe('DashboardPage', () => {
     mockListJobs.mockResolvedValue({ jobs: [] });
     mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
     mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
     mockFetchComplianceSummary.mockResolvedValue({
       computedAt: now,
       latest: {

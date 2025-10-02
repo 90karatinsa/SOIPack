@@ -91,6 +91,7 @@ import {
   RequirementTrace,
   TraceEngine,
   generateComplianceSnapshot,
+  computeRemediationPlan,
   simulateComplianceRisk,
   type ChangeImpactScore,
   type ComplianceRiskSimulationResult,
@@ -98,6 +99,8 @@ import {
   type RiskSimulationCoverageSample,
   type RiskSimulationTestSample,
   type TraceGraph,
+  type RemediationPlan,
+  type GapAnalysis,
 } from '@soipack/engine';
 import {
   buildManifest,
@@ -4369,6 +4372,170 @@ export const runGeneratePlans = async (
   };
 };
 
+const remediationPriorityLabels: Record<RemediationPlan['actions'][number]['priority'], string> = {
+  critical: 'Kritik',
+  high: 'Yüksek',
+  medium: 'Orta',
+  low: 'Düşük',
+};
+
+const gapCategoryLabels: Record<Exclude<keyof GapAnalysis, 'staleEvidence'>, string> = {
+  analysis: 'Analiz',
+  tests: 'Test',
+  coverage: 'Kapsam',
+  trace: 'İzlenebilirlik',
+  reviews: 'Gözden geçirme',
+  plans: 'Plan',
+  standards: 'Standart',
+  configuration: 'Konfigürasyon yönetimi',
+  quality: 'Kalite',
+  issues: 'Problem raporları',
+  conformity: 'Uygunluk',
+};
+
+const independenceLevelLabels: Record<Objective['independence'], string> = {
+  none: 'Bağımsızlık gerekmiyor',
+  recommended: 'Önerilen bağımsızlık',
+  required: 'Zorunlu bağımsızlık',
+};
+
+type RemediationArtifactKey = ObjectiveArtifactType | 'design';
+
+const remediationArtifactLabels: Record<RemediationArtifactKey, string> = {
+  plan: 'Plan',
+  standard: 'Standart',
+  review: 'Gözden geçirme',
+  analysis: 'Analiz',
+  test: 'Test',
+  coverage_stmt: 'Statement kapsamı',
+  coverage_dec: 'Decision kapsamı',
+  coverage_mcdc: 'MC/DC kapsamı',
+  trace: 'İzlenebilirlik',
+  cm_record: 'Konfigürasyon kaydı',
+  qa_record: 'Kalite kaydı',
+  problem_report: 'Problem raporu',
+  conformity: 'Uygunluk kaydı',
+  design: 'Tasarım artefaktı',
+};
+
+const formatRemediationArtifacts = (
+  artifacts: readonly (ObjectiveArtifactType | 'design')[],
+): string => {
+  if (!artifacts.length) {
+    return 'Eksik artefakt yok';
+  }
+  return artifacts
+    .map((artifact) => remediationArtifactLabels[artifact as RemediationArtifactKey] ?? artifact)
+    .join(', ');
+};
+
+const renderRemediationPlanMarkdown = (
+  plan: RemediationPlan,
+  options: { snapshot?: ComplianceSnapshot; objectives?: Map<string, Objective> } = {},
+): string => {
+  const lines: string[] = ['# İyileştirme Planı', ''];
+
+  if (options.snapshot) {
+    lines.push(`- Snapshot sürümü: \`${options.snapshot.version.id}\``);
+    lines.push(`- Snapshot tarihi: ${options.snapshot.generatedAt}`);
+    lines.push('');
+  }
+
+  lines.push(`Toplam aksiyon: **${plan.actions.length}**`);
+  lines.push('');
+
+  if (plan.actions.length === 0) {
+    lines.push('Eksik kanıt veya bağımsızlık eksikliği bulunamadı.');
+    return lines.join('\n');
+  }
+
+  plan.actions.forEach((action, index) => {
+    const objective = options.objectives?.get(action.objectiveId);
+    const headingLabel = objective
+      ? `${objective.id} – ${objective.name}`
+      : action.objectiveId;
+
+    lines.push(`## ${index + 1}. ${headingLabel}`);
+
+    const metadataLines: string[] = [`- Öncelik: **${remediationPriorityLabels[action.priority]}**`];
+    if (objective) {
+      metadataLines.push(`- SOI aşaması: ${objective.stage}`);
+      metadataLines.push(`- Tablo: ${objective.table}`);
+    }
+    lines.push(...metadataLines);
+    lines.push('- Eksik alanlar:');
+
+    action.issues.forEach((issue) => {
+      if (issue.type === 'gap') {
+        const categoryLabel = gapCategoryLabels[issue.category] ?? issue.category;
+        lines.push(
+          `  - ${categoryLabel}: ${formatRemediationArtifacts(issue.missingArtifacts)}`,
+        );
+      } else {
+        const independenceLabel = independenceLevelLabels[issue.independence] ?? issue.independence;
+        lines.push(
+          `  - ${independenceLabel}: ${formatRemediationArtifacts(issue.missingArtifacts)}`,
+        );
+      }
+    });
+
+    lines.push('');
+  });
+
+  return lines.join('\n');
+};
+
+export interface RemediationPlanOptions {
+  snapshot: string;
+  output: string;
+  objectives?: string;
+}
+
+export interface RemediationPlanResult {
+  markdownPath: string;
+  jsonPath: string;
+  actions: number;
+}
+
+export const runRemediationPlan = async (
+  options: RemediationPlanOptions,
+): Promise<RemediationPlanResult> => {
+  const snapshotPath = path.resolve(options.snapshot);
+  const outputDir = path.resolve(options.output);
+  const objectivesPath = options.objectives ? path.resolve(options.objectives) : undefined;
+
+  const snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
+
+  let objectiveMap: Map<string, Objective> | undefined;
+  if (objectivesPath) {
+    const objectiveList = await readJsonFile<Objective[]>(objectivesPath);
+    objectiveMap = new Map(objectiveList.map((objective) => [objective.id, objective]));
+  }
+
+  const plan = computeRemediationPlan({
+    gaps: snapshot.gaps,
+    independenceSummary: snapshot.independenceSummary,
+  });
+
+  await ensureDirectory(outputDir);
+
+  const markdownContent = `${renderRemediationPlanMarkdown(plan, {
+    snapshot,
+    objectives: objectiveMap,
+  })}\n`;
+  const markdownPath = path.join(outputDir, 'remediation-plan.md');
+  const jsonPath = path.join(outputDir, 'remediation-plan.json');
+
+  await fsPromises.writeFile(markdownPath, markdownContent, 'utf8');
+  await writeJsonFile(jsonPath, plan);
+
+  return {
+    markdownPath,
+    jsonPath,
+    actions: plan.actions.length,
+  };
+};
+
 export const runReport = async (options: ReportOptions): Promise<ReportResult> => {
   const inputDir = path.resolve(options.input);
   const analysisPath = path.join(inputDir, 'analysis.json');
@@ -8533,6 +8700,79 @@ if (require.main === module) {
           logCliError(logger, error, context);
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Plan üretimi sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'remediation-plan',
+      'Uyum snapshot verisinden iyileştirme planını Markdown ve JSON olarak dışa aktarır.',
+      (y) =>
+        y
+          .option('snapshot', {
+            alias: 's',
+            describe: 'Uyum snapshot JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('output', {
+            alias: 'o',
+            describe: 'İyileştirme planı çıktılarının yazılacağı dizin.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('objectives', {
+            alias: 'j',
+            describe: 'Hedef meta verilerini içeren Objective listesi JSON dosyası (opsiyonel).',
+            type: 'string',
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const snapshotOption = Array.isArray(argv.snapshot) ? argv.snapshot[0] : argv.snapshot;
+        const outputOption = Array.isArray(argv.output) ? argv.output[0] : argv.output;
+        const objectivesOption = Array.isArray(argv.objectives)
+          ? argv.objectives[0]
+          : argv.objectives;
+
+        const snapshotPath = path.resolve(String(snapshotOption));
+        const outputDir = path.resolve(String(outputOption));
+        const objectivesPath = objectivesOption ? path.resolve(String(objectivesOption)) : undefined;
+
+        const context = {
+          command: 'remediation-plan',
+          snapshotPath,
+          outputDir,
+          ...(objectivesPath ? { objectivesPath } : {}),
+        };
+
+        try {
+          const result = await runRemediationPlan({
+            snapshot: snapshotPath,
+            output: outputDir,
+            objectives: objectivesPath,
+          });
+
+          logger.info(
+            {
+              ...context,
+              actionCount: result.actions,
+              markdownPath: result.markdownPath,
+              jsonPath: result.jsonPath,
+            },
+            'İyileştirme planı çıkarıldı.',
+          );
+
+          console.log(
+            `İyileştirme planı Markdown çıktısı ${path.relative(process.cwd(), result.markdownPath)} dosyasına yazıldı.`,
+          );
+          console.log(
+            `İyileştirme planı JSON çıktısı ${path.relative(process.cwd(), result.jsonPath)} dosyasına yazıldı.`,
+          );
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`İyileştirme planı oluşturulurken hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
       },

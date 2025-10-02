@@ -10,8 +10,12 @@ export function Alert({ title, description, children }: { title: ReactNode; desc
   );
 }
 
-export function Badge({ children }: { variant?: string; children?: ReactNode }) {
-  return <span>{children}</span>;
+export function Badge({ children, ...props }: { variant?: string; children?: ReactNode } & HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span {...props}>
+      {children}
+    </span>
+  );
 }
 
 export function Button({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
@@ -38,9 +42,13 @@ export function DateTimePicker({ value, onChange }: { value: unknown; onChange: 
   );
 }
 
-export function EmptyState({ title, description }: { title: ReactNode; description?: ReactNode }) {
+export function EmptyState({
+  title,
+  description,
+  ...props
+}: { title: ReactNode; description?: ReactNode } & HTMLAttributes<HTMLDivElement>) {
   return (
-    <div>
+    <div {...props}>
       <h3>{title}</h3>
       {description && <p>{description}</p>}
     </div>

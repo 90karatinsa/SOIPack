@@ -4,6 +4,16 @@ if (!process.env.VITE_API_BASE_URL) {
   process.env.VITE_API_BASE_URL = 'http://localhost';
 }
 
+Object.defineProperty(window.navigator, 'language', {
+  configurable: true,
+  value: 'tr-TR',
+});
+
+Object.defineProperty(window.navigator, 'languages', {
+  configurable: true,
+  value: ['tr-TR', 'tr'],
+});
+
 import { ReadableStream, TransformStream, WritableStream } from 'stream/web';
 import { TextDecoder, TextEncoder } from 'util';
 

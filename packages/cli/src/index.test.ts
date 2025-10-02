@@ -15,7 +15,7 @@ jest.setTimeout(1200000);
 import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
-import { ImportBundle, TraceEngine } from '@soipack/engine';
+import { ImportBundle, TraceEngine, computeRemediationPlan } from '@soipack/engine';
 import {
   buildManifest,
   signManifestBundle,
@@ -116,6 +116,7 @@ import {
   runAnalyze,
   runObjectivesList,
   runGeneratePlans,
+  runRemediationPlan,
   runFreeze,
   runImport,
   runPack,
@@ -938,6 +939,40 @@ describe('CLI pipeline workflows', () => {
         }
       });
     });
+  });
+
+  it('exports remediation plan markdown and json from snapshot data', async () => {
+    const fixture = createReportFixture();
+    const workDir = path.join(tempRoot, 'remediation-plan');
+    await fs.mkdir(workDir, { recursive: true });
+
+    const snapshotPath = path.join(workDir, 'snapshot.json');
+    await fs.writeFile(snapshotPath, JSON.stringify(fixture.snapshot, null, 2));
+    const objectivesPathLocal = path.join(workDir, 'objectives.json');
+    await fs.writeFile(objectivesPathLocal, JSON.stringify(fixture.objectives, null, 2));
+
+    const outputDir = path.join(workDir, 'outputs');
+
+    const result = await runRemediationPlan({
+      snapshot: snapshotPath,
+      output: outputDir,
+      objectives: objectivesPathLocal,
+    });
+
+    const expectedPlan = computeRemediationPlan({
+      gaps: fixture.snapshot.gaps,
+      independenceSummary: fixture.snapshot.independenceSummary,
+    });
+
+    const jsonPlan = JSON.parse(await fs.readFile(result.jsonPath, 'utf8'));
+    expect(jsonPlan).toEqual(expectedPlan);
+
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    expect(markdown).toContain('# İyileştirme Planı');
+    expect(markdown).toContain(fixture.objectives[0].name);
+    expect(markdown).toContain('Öncelik:');
+
+    expect(result.actions).toBe(expectedPlan.actions.length);
   });
 
   it('fails manifest verification when archive data is tampered', async () => {
