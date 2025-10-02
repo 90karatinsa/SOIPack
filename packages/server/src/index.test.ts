@@ -6139,6 +6139,44 @@ describe('@soipack/server REST API', () => {
     await lifecycle.shutdown();
   });
 
+  it('cleans up temporary upload directories on shutdown', async () => {
+    const createdTempDirs: string[] = [];
+    const originalMkdtempSync = fs.mkdtempSync;
+    const mkdtempSpy = jest
+      .spyOn(fs, 'mkdtempSync')
+      .mockImplementation(((...args: Parameters<typeof fs.mkdtempSync>) => {
+        const dir = originalMkdtempSync.apply(fs, args);
+        createdTempDirs.push(dir);
+        return dir;
+      }) as typeof fs.mkdtempSync);
+
+    const cleanupApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+    const lifecycle = getServerLifecycle(cleanupApp);
+
+    expect(createdTempDirs).not.toHaveLength(0);
+
+    try {
+      for (const dir of createdTempDirs) {
+        const markerPath = path.join(dir, 'marker.txt');
+        fs.writeFileSync(markerPath, 'marker');
+        expect(fs.existsSync(markerPath)).toBe(true);
+      }
+
+      await lifecycle.shutdown();
+
+      for (const dir of createdTempDirs) {
+        expect(fs.existsSync(dir)).toBe(false);
+      }
+    } finally {
+      mkdtempSpy.mockRestore();
+      for (const dir of createdTempDirs) {
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+
   it('refreshes risk profiles with Jira backlog contributions and caches results', async () => {
     jest.useFakeTimers();
 

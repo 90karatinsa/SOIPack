@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -73,7 +73,9 @@ const signerKeyByAlgorithm: Record<SphincsPlusAlgorithm, SphincsSignerName> = {
 const requirePostQuantum = createRequire(__filename);
 let cachedModule: SphincsModule | undefined;
 let useWorkerFallback = false;
+let workerScriptDir: string | undefined;
 let workerScriptPath: string | undefined;
+let workerCleanupRegistered = false;
 const LOCAL_NODE_MODULES = path.resolve(__dirname, '../../node_modules');
 const ROOT_NODE_MODULES = path.resolve(__dirname, '../../../../node_modules');
 
@@ -172,10 +174,37 @@ const main = async () => {
 await main();
 `;
 
+export const cleanupSphincsWorker = (): void => {
+  if (!workerScriptDir) {
+    return;
+  }
+
+  try {
+    rmSync(workerScriptDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup. Ignore errors to avoid crashing the process during exit.
+  }
+
+  workerScriptDir = undefined;
+  workerScriptPath = undefined;
+};
+
+const registerWorkerCleanup = (): void => {
+  if (workerCleanupRegistered) {
+    return;
+  }
+
+  workerCleanupRegistered = true;
+  process.once('exit', () => {
+    cleanupSphincsWorker();
+  });
+};
+
 const ensureWorkerScriptPath = (): string => {
   if (!workerScriptPath) {
-    const dir = mkdtempSync(path.join(tmpdir(), 'sphincs-worker-'));
-    workerScriptPath = path.join(dir, 'worker.mjs');
+    workerScriptDir = mkdtempSync(path.join(tmpdir(), 'sphincs-worker-'));
+    workerScriptPath = path.join(workerScriptDir, 'worker.mjs');
+    registerWorkerCleanup();
   }
   writeFileSync(workerScriptPath, WORKER_SCRIPT, 'utf8');
   return workerScriptPath;

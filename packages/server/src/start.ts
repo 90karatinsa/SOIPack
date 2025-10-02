@@ -686,8 +686,8 @@ export const start = async (): Promise<void> => {
       throw error;
     });
 
-    const cleanupPromise = lifecycle
-      .shutdown()
+    const cleanupPromise = Promise.resolve()
+      .then(() => lifecycle.shutdown())
       .catch(async (error) => {
         lifecycle.logger.error(
           {

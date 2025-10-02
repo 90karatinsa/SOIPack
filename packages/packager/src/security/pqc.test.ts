@@ -115,3 +115,43 @@ describe('signManifestWithSecuritySigner integration', () => {
     });
   });
 });
+
+describe('SPHINCS+ worker lifecycle', () => {
+  afterEach(() => {
+    jest.resetModules();
+    jest.dontMock('@noble/post-quantum/slh-dsa.js');
+  });
+
+  it('cleans up the temporary worker directory after invocation', () => {
+    const actualFs = jest.requireActual('node:fs') as typeof import('node:fs');
+    let tempDir: string | undefined;
+
+    jest.doMock('@noble/post-quantum/slh-dsa.js', () => {
+      throw new Error('force worker fallback');
+    });
+
+    jest.isolateModules(() => {
+      const fs = require('node:fs') as typeof import('node:fs');
+      const originalMkdtemp = fs.mkdtempSync.bind(fs);
+      const mkdtempSpy = jest
+        .spyOn(fs, 'mkdtempSync')
+        .mockImplementation((...mkdtempArgs: Parameters<typeof originalMkdtemp>) => {
+          const dir = originalMkdtemp(...mkdtempArgs);
+          tempDir = dir;
+          return dir;
+        });
+
+      const { generateSphincsPlusKeyPair: isolatedKeygen, cleanupSphincsWorker } = require('./pqc') as typeof import('./pqc');
+
+      expect(() => isolatedKeygen()).not.toThrow();
+      expect(tempDir).toBeDefined();
+      expect(actualFs.existsSync(tempDir!)).toBe(true);
+
+      cleanupSphincsWorker();
+
+      expect(actualFs.existsSync(tempDir!)).toBe(false);
+
+      mkdtempSpy.mockRestore();
+    });
+  });
+});
