@@ -3,6 +3,52 @@ import type { Server as HttpsServer } from 'https';
 import os from 'os';
 import path from 'path';
 
+jest.mock(
+  'dotenv',
+  () => ({
+    config: jest.fn(),
+  }),
+  { virtual: true },
+);
+
+jest.mock(
+  './index',
+  () => {
+    const lifecycle = {
+      waitForIdle: jest.fn().mockResolvedValue(undefined),
+      shutdown: jest.fn().mockResolvedValue(undefined),
+      runTenantRetention: jest.fn(),
+      runAllTenantRetention: jest.fn(),
+      logger: {
+        info: jest.fn(),
+        error: jest.fn(),
+        warn: jest.fn(),
+      },
+    };
+    return {
+      __esModule: true,
+      JwtAuthConfig: {} as never,
+      LicenseCacheConfig: {} as never,
+      LicenseLimitsConfig: {} as never,
+      RateLimitConfig: {} as never,
+      RetentionConfig: {} as never,
+      RetentionSchedulerConfig: {} as never,
+      createServer: jest.fn(() => ({})),
+      createHttpsServer: jest.fn(() => ({
+        listen: jest.fn(),
+        close: jest.fn((callback?: (error?: Error | null) => void) => {
+          callback?.();
+        }),
+        requestTimeout: 0,
+        headersTimeout: 0,
+        keepAliveTimeout: 0,
+      })),
+      getServerLifecycle: jest.fn(() => lifecycle),
+    };
+  },
+  { virtual: true },
+);
+
 const stubProcessExit = () => {
   const originalExit = process.exit;
   const exitMock = jest.fn((code?: number) => {
@@ -130,7 +176,7 @@ describe('start', () => {
     process.env.PORT = '3443';
     process.env.SOIPACK_DATABASE_URL = 'postgres://postgres:secret@localhost:5432/soipack';
 
-    return { tmpDir, tlsKeyPath, tlsCertPath };
+    return { tmpDir, tlsKeyPath, tlsCertPath, licenseKeyPath };
   };
 
   const setupDatabaseMock = (
@@ -204,6 +250,89 @@ describe('start', () => {
     await expect(start()).rejects.toThrow('process.exit: 1');
     expect(exitMock).toHaveBeenCalledWith(1);
     expect(errorSpy).toHaveBeenCalledWith('SOIPACK_TLS_KEY_PATH ortam değişkeni tanımlanmalıdır.');
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
+
+  it('exits when license public key is unreadable', async () => {
+    const { tmpDir, licenseKeyPath } = await prepareBaseEnv();
+    await fs.promises.rm(licenseKeyPath);
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    setupDatabaseMock();
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(exitMock).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      `SOIPACK_LICENSE_PUBLIC_KEY_PATH ile belirtilen dosyaya erişilemiyor: ${path.resolve(licenseKeyPath)}`,
+    );
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
+
+  it('exits when positive integer env contains a suffix', async () => {
+    const { tmpDir } = await prepareBaseEnv();
+    process.env.SOIPACK_MAX_JSON_BODY_BYTES = '42ms';
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    setupDatabaseMock();
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(exitMock).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith('SOIPACK_MAX_JSON_BODY_BYTES pozitif bir tam sayı olmalıdır.');
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
+
+  it.each([
+    ['SOIPACK_RETENTION_UPLOADS_DAYS'],
+    ['SOIPACK_RETENTION_ANALYSES_DAYS'],
+    ['SOIPACK_RETENTION_REPORTS_DAYS'],
+    ['SOIPACK_RETENTION_PACKAGES_DAYS'],
+  ])('exits when %s contains an invalid suffix', async (variable) => {
+    const { tmpDir } = await prepareBaseEnv();
+    process.env[variable as keyof NodeJS.ProcessEnv] = '7days';
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    setupDatabaseMock();
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(exitMock).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      `${variable} değeri sıfır veya pozitif bir sayı olmalıdır.`,
+    );
+
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    restore();
+  });
+
+  it('exits when non-negative integer env contains decimals', async () => {
+    const { tmpDir } = await prepareBaseEnv();
+    process.env.SOIPACK_LICENSE_CACHE_MAX_AGE_MS = '1.5';
+
+    const { exitMock, restore } = stubProcessExit();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    setupDatabaseMock();
+    const { start } = await import('./start');
+
+    await expect(start()).rejects.toThrow('process.exit: 1');
+    expect(exitMock).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      'SOIPACK_LICENSE_CACHE_MAX_AGE_MS negatif olmayan bir tam sayı olmalıdır.',
+    );
 
     await fs.promises.rm(tmpDir, { recursive: true, force: true });
     restore();

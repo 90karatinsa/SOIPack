@@ -24,6 +24,7 @@ COPY packages/engine/package.json packages/engine/package.json
 COPY packages/packager/package.json packages/packager/package.json
 COPY packages/report/package.json packages/report/package.json
 COPY packages/server/package.json packages/server/package.json
+COPY scripts scripts
 
 RUN npm ci --omit=dev \
   && npm cache clean --force

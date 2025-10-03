@@ -2940,6 +2940,55 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('restores global fetch after concurrent JWKS requests', async () => {
+    const originalFetch = globalThis.fetch;
+    if (!originalFetch) {
+      throw new Error('Global fetch API is not available for testing.');
+    }
+
+    const jwksServer = https.createServer({ key: TEST_SERVER_KEY, cert: TEST_SERVER_CERT }, (_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(jwks));
+      }, 50);
+    });
+
+    const originalTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+    await new Promise<void>((resolve) => jwksServer.listen(0, resolve));
+
+    try {
+      const { port } = jwksServer.address() as AddressInfo;
+      const remoteConfig: ServerConfig = {
+        ...baseConfig,
+        auth: {
+          ...baseConfig.auth,
+          jwks: undefined,
+          jwksUri: `https://localhost:${port}/jwks.json`,
+          remoteJwks: { timeoutMs: 500, maxRetries: 0, backoffMs: 50 },
+        },
+        metricsRegistry: new Registry(),
+      };
+
+      const remoteApp = createServer(remoteConfig);
+
+      await Promise.all([
+        request(remoteApp).get('/v1/jobs').set('Authorization', `Bearer ${token}`).expect(200),
+        request(remoteApp).get('/v1/jobs').set('Authorization', `Bearer ${token}`).expect(200),
+      ]);
+
+      expect(globalThis.fetch).toBe(originalFetch);
+    } finally {
+      await new Promise<void>((resolve) => jwksServer.close(() => resolve()));
+      if (originalTlsSetting === undefined) {
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      } else {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalTlsSetting;
+      }
+    }
+  });
+
   it('requires a license token for import requests', async () => {
     const response = await request(app)
       .post('/v1/import')

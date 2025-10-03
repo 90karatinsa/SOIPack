@@ -46,6 +46,7 @@ interface StreamInstance {
 const streamInstances: StreamInstance[] = [];
 
 beforeEach(() => {
+  window.localStorage.clear();
   streamInstances.length = 0;
   createStreamMock.mockImplementation((options: ComplianceStreamOptions) => {
     const close = jest.fn();
@@ -635,6 +636,7 @@ afterAll(() => server.close());
 describe('App integration', () => {
   it('runs the pipeline and renders report data from the API', async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem('soipack.ui.locale', 'en');
     render(<App />);
 
     const languageSelect = screen.getByLabelText(/Language/i) as HTMLSelectElement;
