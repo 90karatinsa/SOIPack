@@ -53,7 +53,13 @@ const parseRetentionDays = (value: string | undefined, label: string): number | 
   if (!value) {
     return undefined;
   }
-  const parsed = Number.parseFloat(value);
+  const normalized = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    // eslint-disable-next-line no-console
+    console.error(`${label} değeri sıfır veya pozitif bir sayı olmalıdır.`);
+    process.exit(1);
+  }
+  const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed < 0) {
     // eslint-disable-next-line no-console
     console.error(`${label} değeri sıfır veya pozitif bir sayı olmalıdır.`);
@@ -63,8 +69,9 @@ const parseRetentionDays = (value: string | undefined, label: string): number | 
 };
 
 const parsePositiveInteger = (value: string, label: string): number => {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  const normalized = value.trim();
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
     // eslint-disable-next-line no-console
     console.error(`${label} pozitif bir tam sayı olmalıdır.`);
     process.exit(1);
@@ -73,8 +80,9 @@ const parsePositiveInteger = (value: string, label: string): number => {
 };
 
 const parseNonNegativeInteger = (value: string, label: string): number => {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  const normalized = value.trim();
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
     // eslint-disable-next-line no-console
     console.error(`${label} negatif olmayan bir tam sayı olmalıdır.`);
     process.exit(1);
@@ -253,11 +261,21 @@ export const start = async (): Promise<void> => {
     process.exit(1);
   }
   const licensePublicKeyPath = path.resolve(licensePublicKeyPathSource);
+  try {
+    await fs.promises.access(licensePublicKeyPath, fs.constants.R_OK);
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error(
+      `SOIPACK_LICENSE_PUBLIC_KEY_PATH ile belirtilen dosyaya erişilemiyor: ${licensePublicKeyPath}`,
+    );
+    process.exit(1);
+  }
 
   const portSource = process.env.PORT ?? '3000';
-  const port = Number.parseInt(portSource, 10);
+  const normalizedPort = portSource.trim();
+  const port = Number(normalizedPort);
 
-  if (Number.isNaN(port) || port <= 0) {
+  if (!Number.isFinite(port) || !Number.isInteger(port) || port <= 0) {
     // eslint-disable-next-line no-console
     console.error('Geçerli bir PORT değeri belirtilmelidir.');
     process.exit(1);

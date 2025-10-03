@@ -1042,12 +1042,11 @@ const createRemoteJwkSetWithBounds = (config: JwtAuthConfig): ReturnType<typeof 
     cooldownDuration: cooldownMs,
     cacheMaxAge: cacheMaxAgeMs,
     timeoutDuration: timeoutMs,
+    fetcher: boundedFetch as typeof fetch,
   });
 
   return (async (protectedHeader, token) => {
-    const previousFetch = globalThis.fetch;
     try {
-      (globalThis as typeof globalThis & { fetch: typeof fetch }).fetch = boundedFetch as typeof fetch;
       return await remote(protectedHeader, token);
     } catch (error) {
       const jwksError = findJwksFetchError(error);
@@ -1055,8 +1054,6 @@ const createRemoteJwkSetWithBounds = (config: JwtAuthConfig): ReturnType<typeof 
         throw jwksError;
       }
       throw error;
-    } finally {
-      (globalThis as typeof globalThis & { fetch: typeof fetch }).fetch = previousFetch;
     }
   }) as ReturnType<typeof createRemoteJWKSet>;
 };

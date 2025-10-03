@@ -21,7 +21,7 @@ services:
       SOIPACK_TLS_CERT_PATH: /run/secrets/soipack-tls.crt
       SOIPACK_TLS_CLIENT_CA_PATH: ${SOIPACK_TLS_CLIENT_CA_PATH:-}
       SOIPACK_HEALTHCHECK_TOKEN: ${SOIPACK_HEALTHCHECK_TOKEN:?SOIPACK_HEALTHCHECK_TOKEN tanımlanmalıdır}
-      SOIPACK_HEALTHCHECK_CA_PATH: ${SOIPACK_HEALTHCHECK_CA_PATH:-/run/secrets/soipack-ca.crt}
+      SOIPACK_HEALTHCHECK_CA_PATH: ${SOIPACK_HEALTHCHECK_CA_PATH:-}
       SOIPACK_MAX_JSON_BODY_BYTES: ${SOIPACK_MAX_JSON_BODY_BYTES:-2097152}
       SOIPACK_RATE_LIMIT_IP_WINDOW_MS: ${SOIPACK_RATE_LIMIT_IP_WINDOW_MS:-60000}
       SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS: ${SOIPACK_RATE_LIMIT_IP_MAX_REQUESTS:-300}
@@ -40,21 +40,9 @@ services:
     restart: unless-stopped
     healthcheck:
       test:
-        - CMD-SHELL
-        - >-
-          node -e "
-          const fs = require('fs');
-          const token = process.env.SOIPACK_HEALTHCHECK_TOKEN;
-          const caPath = process.env.SOIPACK_HEALTHCHECK_CA_PATH || '/run/secrets/soipack-ca.crt';
-          if (!token) { process.exit(1); }
-          if (!fs.existsSync(caPath)) { process.exit(1); }
-          process.env.NODE_EXTRA_CA_CERTS = caPath;
-          fetch('https://localhost:3443/health', {
-            headers: { Authorization: 'Bearer ' + token }
-          }).then((res) => {
-            if (!res.ok) { process.exit(1); }
-          }).catch(() => process.exit(1));
-          "
+        - CMD
+        - node
+        - scripts/verify-healthcheck.js
       interval: 30s
       timeout: 10s
       retries: 5

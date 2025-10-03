@@ -7,6 +7,7 @@ module.exports = {
     '<rootDir>/packages/report/jest.config.cjs',
     '<rootDir>/packages/cli/jest.config.cjs',
     '<rootDir>/packages/server/jest.config.cjs',
-    '<rootDir>/packages/ui/jest.config.cjs'
+    '<rootDir>/packages/ui/jest.config.cjs',
+    '<rootDir>/scripts/jest.config.cjs'
   ]
 };
