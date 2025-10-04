@@ -53,6 +53,17 @@ class MockSchema<T = any> {
     return this.cloneWith<T | undefined>(parser, refinements);
   }
 
+  trim(): MockSchema<T> {
+    const parser = (value: any) => {
+      const parsed = this.parser(value);
+      if (typeof parsed === 'string') {
+        return parsed.trim() as T;
+      }
+      return parsed;
+    };
+    return this.cloneWith<T>(parser, [...this.refinements]);
+  }
+
   default(defaultValue?: T): MockSchema<T> {
     const parser = (value: any) => {
       if (value === undefined) {
