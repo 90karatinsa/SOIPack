@@ -11,6 +11,7 @@
     "@soipack/core": "workspace:*",
     "@soipack/engine": "workspace:*",
     "@soipack/report": "workspace:*",
+    "@aws-sdk/client-s3": "^3.621.0",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -30,7 +31,8 @@
     "@types/eventsource": "^1.1.10",
     "@types/pg": "^8.11.6",
     "eventsource": "^2.0.2",
-    "pg-mem": "^3.0.5"
+    "pg-mem": "^3.0.5",
+    "aws-sdk-client-mock": "^3.0.1"
   },
   "scripts": {
     "build": "tsc --build tsconfig.build.json",

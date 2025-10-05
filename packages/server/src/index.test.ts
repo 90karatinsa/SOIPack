@@ -6,7 +6,7 @@ import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
 import { EventEmitter } from 'events';
-import { Writable } from 'stream';
+import { Readable, Writable } from 'stream';
 import tls from 'tls';
 
 import * as cli from '@soipack/cli';
@@ -29,11 +29,72 @@ import { Agent, setGlobalDispatcher } from 'undici';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
+jest.mock(
+  '@aws-sdk/client-s3',
+  () => {
+    class BaseCommand {
+      public readonly input: Record<string, unknown>;
+
+      constructor(input: Record<string, unknown> = {}) {
+        this.input = input;
+      }
+    }
+
+    class PutObjectCommand extends BaseCommand {}
+    class GetObjectCommand extends BaseCommand {}
+    class HeadObjectCommand extends BaseCommand {}
+    class ListObjectsV2Command extends BaseCommand {}
+    class DeleteObjectsCommand extends BaseCommand {}
+
+    let handler: (command: BaseCommand) => Promise<unknown> = async () => {
+      throw new Error('S3 client handler not configured.');
+    };
+
+    class S3Client {
+      // eslint-disable-next-line class-methods-use-this
+      public async send(command: BaseCommand): Promise<unknown> {
+        return handler(command);
+      }
+    }
+
+    const __setS3ClientHandler = (fn: (command: BaseCommand) => Promise<unknown>): void => {
+      handler = fn;
+    };
+
+    return {
+      S3Client,
+      PutObjectCommand,
+      GetObjectCommand,
+      HeadObjectCommand,
+      ListObjectsV2Command,
+      DeleteObjectsCommand,
+      __setS3ClientHandler,
+    };
+  },
+);
+
+const {
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  DeleteObjectsCommand,
+  __setS3ClientHandler,
+} = jest.requireMock('@aws-sdk/client-s3') as {
+  GetObjectCommand: new (input?: Record<string, unknown>) => { input: Record<string, unknown> };
+  HeadObjectCommand: new (input?: Record<string, unknown>) => { input: Record<string, unknown> };
+  ListObjectsV2Command: new (input?: Record<string, unknown>) => { input: Record<string, unknown> };
+  PutObjectCommand: new (input?: Record<string, unknown>) => { input: Record<string, unknown> };
+  DeleteObjectsCommand: new (input?: Record<string, unknown>) => { input: Record<string, unknown> };
+  __setS3ClientHandler: (handler: (command: { input: Record<string, unknown> }) => Promise<unknown>) => void;
+};
+
 
 import type { DatabaseManager } from './database';
 import type { JobKind, JobStatus } from './queue';
 import type { FileScanner } from './scanner';
 import type { UserRole } from './middleware/auth';
+import type { PipelineDirectories, StorageProvider } from './storage';
 
 import {
   createHttpsServer,
@@ -43,6 +104,8 @@ import {
   __clearComplianceSummaryCacheForTesting,
   __clearRiskProfileCacheForTesting,
   __clearBacklogSeverityCacheForTesting,
+  __clearStageRiskForecastCacheForTesting,
+  __getStorageProviderForTesting,
   type ServerConfig,
 } from './index';
 import type { AppendAuditLogInput, AuditLogQueryOptions } from './audit';
@@ -984,6 +1047,33 @@ describe('@soipack/server REST API', () => {
     seedDefaults: () => void;
     ensureUser: (tenantId: string, userId: string, roles?: UserRole[], options?: { email?: string }) => void;
     failNext: (error: Error) => void;
+  };
+
+  const STORAGE_ENV_KEYS = [
+    'SOIPACK_STORAGE_BACKEND',
+    'SOIPACK_STORAGE_S3_BUCKET',
+    'SOIPACK_STORAGE_S3_REGION',
+    'SOIPACK_STORAGE_S3_PREFIX',
+    'SOIPACK_STORAGE_S3_KMS_KEY_ID',
+  ] as const;
+
+  const snapshotStorageEnv = (): Record<string, string | undefined> => {
+    const snapshot: Record<string, string | undefined> = {};
+    STORAGE_ENV_KEYS.forEach((key) => {
+      snapshot[key] = process.env[key];
+    });
+    return snapshot;
+  };
+
+  const restoreStorageEnv = (snapshot: Record<string, string | undefined>): void => {
+    STORAGE_ENV_KEYS.forEach((key) => {
+      const value = snapshot[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    });
   };
 
   const parseJson = (value: unknown): unknown => {
@@ -2084,6 +2174,7 @@ describe('@soipack/server REST API', () => {
     __clearComplianceSummaryCacheForTesting();
     __clearRiskProfileCacheForTesting();
     __clearBacklogSeverityCacheForTesting();
+    __clearStageRiskForecastCacheForTesting();
   });
 
   beforeAll(async () => {
@@ -3287,6 +3378,212 @@ describe('@soipack/server REST API', () => {
       provider: 'FileSystemStorage',
       reason: 'db down',
       databaseLatencyMs: expect.any(Number),
+    });
+  });
+
+  describe('storage backend configuration', () => {
+    it('uses filesystem storage by default when backend not specified', async () => {
+      const snapshot = snapshotStorageEnv();
+      try {
+        STORAGE_ENV_KEYS.forEach((key) => {
+          delete process.env[key];
+        });
+
+        const fsApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+        const response = await request(fsApp)
+          .get('/v1/admin/storage/health')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+
+        expect(response.body.provider).toBe('FileSystemStorage');
+        await getServerLifecycle(fsApp).shutdown();
+      } finally {
+        restoreStorageEnv(snapshot);
+      }
+    });
+
+    it('throws when S3 backend is missing required configuration', () => {
+      const snapshot = snapshotStorageEnv();
+      try {
+        process.env.SOIPACK_STORAGE_BACKEND = 's3';
+        process.env.SOIPACK_STORAGE_S3_BUCKET = 'unit-test-bucket';
+        delete process.env.SOIPACK_STORAGE_S3_REGION;
+
+        expect(() => createServer({ ...baseConfig, metricsRegistry: new Registry() })).toThrow(
+          'SOIPACK_STORAGE_S3_REGION must be defined when using the s3 storage backend.',
+        );
+      } finally {
+        restoreStorageEnv(snapshot);
+      }
+    });
+
+    it('streams report assets from S3 storage', async () => {
+      const snapshot = snapshotStorageEnv();
+      const s3Objects = new Map<string, Buffer>();
+
+      const toBuffer = async (body: unknown): Promise<Buffer> => {
+        if (!body) {
+          return Buffer.alloc(0);
+        }
+        if (Buffer.isBuffer(body)) {
+          return body;
+        }
+        if (body instanceof Uint8Array) {
+          return Buffer.from(body);
+        }
+        if (typeof body === 'string') {
+          return Buffer.from(body, 'utf8');
+        }
+        if (body instanceof Readable) {
+          const chunks: Buffer[] = [];
+          for await (const chunk of body) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          return Buffer.concat(chunks);
+        }
+        return Buffer.from(String(body));
+      };
+
+      __setS3ClientHandler(async (command) => {
+        if (command instanceof PutObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (!key) {
+            return {};
+          }
+          const data = await toBuffer(command.input.Body);
+          s3Objects.set(key, data);
+          return {};
+        }
+        if (command instanceof GetObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (!key) {
+            const error = new Error('NotFound');
+            (error as { name: string }).name = 'NotFound';
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+            throw error;
+          }
+          const data = s3Objects.get(key);
+          if (!data) {
+            const error = new Error('NotFound');
+            (error as { name: string }).name = 'NotFound';
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+            throw error;
+          }
+          return { Body: Readable.from([data]) };
+        }
+        if (command instanceof HeadObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (!key) {
+            const error = new Error('NotFound');
+            (error as { name: string }).name = 'NotFound';
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+            throw error;
+          }
+          const data = s3Objects.get(key);
+          if (!data) {
+            const error = new Error('NotFound');
+            (error as { name: string }).name = 'NotFound';
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+            throw error;
+          }
+          return { ContentLength: data.byteLength };
+        }
+        if (command instanceof ListObjectsV2Command) {
+          const prefix = (command.input.Prefix as string) ?? '';
+          const keys = Array.from(s3Objects.keys()).filter((key) => key.startsWith(prefix));
+          const delimiter = command.input.Delimiter as string | undefined;
+          if (delimiter) {
+            const prefixes = new Set<string>();
+            keys.forEach((key) => {
+              const remainder = key.slice(prefix.length);
+              const segment = remainder.split(delimiter)[0];
+              if (segment) {
+                prefixes.add(`${prefix}${segment}${delimiter}`);
+              }
+            });
+            return {
+              CommonPrefixes: Array.from(prefixes).map((value) => ({ Prefix: value })),
+              IsTruncated: false,
+            };
+          }
+          const maxKeys = command.input.MaxKeys as number | undefined;
+          const contents = keys.slice(0, maxKeys ?? keys.length).map((key) => ({ Key: key }));
+          return { Contents: contents, IsTruncated: false };
+        }
+        if (command instanceof DeleteObjectsCommand) {
+          const objects = (command.input.Delete?.Objects ?? []) as Array<{ Key?: string }>;
+          objects.forEach((entry) => {
+            if (entry.Key) {
+              s3Objects.delete(entry.Key);
+            }
+          });
+          return {};
+        }
+        throw new Error(`Unhandled S3 command: ${command.constructor?.name ?? 'unknown'}`);
+      });
+
+      try {
+        process.env.SOIPACK_STORAGE_BACKEND = 's3';
+        process.env.SOIPACK_STORAGE_S3_BUCKET = 'unit-test-bucket';
+        process.env.SOIPACK_STORAGE_S3_REGION = 'us-east-1';
+        process.env.SOIPACK_STORAGE_S3_PREFIX = 'integration-test';
+
+        const s3App = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+        const storage = __getStorageProviderForTesting(s3App);
+        const directories = storage.directories;
+        const reportId = 'abcd1234abcd1234';
+        const reportDir = path.join(directories.reports, tenantId, reportId);
+        const now = new Date().toISOString();
+
+        const metadata = {
+          tenantId,
+          id: reportId,
+          hash: 'report-hash',
+          kind: 'report',
+          createdAt: now,
+          directory: reportDir,
+          params: {},
+          license: {
+            hash: 'license-hash',
+            licenseId: 'test-license',
+            issuedTo: 'Unit Tests',
+            issuedAt: now,
+            expiresAt: null,
+          },
+          outputs: {
+            directory: reportDir,
+            complianceHtml: path.join(reportDir, 'compliance.html'),
+            complianceJson: path.join(reportDir, 'compliance.json'),
+            complianceCsv: path.join(reportDir, 'compliance.csv'),
+            traceHtml: path.join(reportDir, 'trace.html'),
+            traceCsv: path.join(reportDir, 'trace.csv'),
+            gapsHtml: path.join(reportDir, 'gaps.html'),
+            analysisPath: path.join(reportDir, 'analysis.json'),
+            snapshotPath: path.join(reportDir, 'snapshot.json'),
+            tracesPath: path.join(reportDir, 'traces.json'),
+          },
+        };
+
+        await storage.writeJson(path.join(reportDir, 'job.json'), metadata);
+        const htmlPath = path.join(reportDir, 'compliance.html');
+        s3Objects.set(htmlPath, Buffer.from('<html><body>S3 Report</body></html>', 'utf8'));
+
+        const s3Token = await createAccessToken();
+        const response = await request(s3App)
+          .get(`/v1/reports/${reportId}/compliance.html`)
+          .set('Authorization', `Bearer ${s3Token}`)
+          .expect('Content-Type', /html/)
+          .expect(200);
+
+        expect(response.text).toContain('S3 Report');
+
+        await getServerLifecycle(s3App).shutdown();
+      } finally {
+        restoreStorageEnv(snapshot);
+        __setS3ClientHandler(async () => {
+          throw new Error('S3 client handler not configured.');
+        });
+      }
     });
   });
 
@@ -6343,6 +6640,364 @@ describe('@soipack/server REST API', () => {
     });
   });
 
+  describe('GET /v1/compliance/remediation-plan', () => {
+    class MemoryStorage implements StorageProvider {
+      public readonly directories: PipelineDirectories;
+
+      private readonly files = new Map<string, Buffer>();
+
+      private readonly directoriesSet = new Set<string>();
+
+      public constructor(baseDir = path.resolve('/memory-storage')) {
+        const normalizedBase = path.resolve(baseDir);
+        this.directories = {
+          base: normalizedBase,
+          uploads: path.join(normalizedBase, 'uploads'),
+          workspaces: path.join(normalizedBase, 'workspaces'),
+          analyses: path.join(normalizedBase, 'analyses'),
+          reports: path.join(normalizedBase, 'reports'),
+          packages: path.join(normalizedBase, 'packages'),
+          ledgers: path.join(normalizedBase, 'ledgers'),
+        } satisfies PipelineDirectories;
+        Object.values(this.directories).forEach((directory) => {
+          this.ensureDirHierarchy(directory);
+        });
+      }
+
+      private normalize(target: string): string {
+        return path.resolve(target);
+      }
+
+      private ensureDirHierarchy(target: string): void {
+        const normalized = this.normalize(target);
+        if (this.directoriesSet.has(normalized)) {
+          return;
+        }
+        const parent = path.dirname(normalized);
+        if (parent !== normalized) {
+          this.ensureDirHierarchy(parent);
+        }
+        this.directoriesSet.add(normalized);
+      }
+
+      private isWithin(candidate: string, container: string): boolean {
+        if (candidate === container) {
+          return true;
+        }
+        const relative = path.relative(container, candidate);
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+          return false;
+        }
+        return true;
+      }
+
+      public async persistUploads(): Promise<Record<string, string[]>> {
+        return {};
+      }
+
+      public async ensureDirectory(target: string): Promise<void> {
+        this.ensureDirHierarchy(target);
+      }
+
+      public async removeDirectory(target: string): Promise<void> {
+        const normalized = this.normalize(target);
+        for (const key of Array.from(this.files.keys())) {
+          if (this.isWithin(key, normalized)) {
+            this.files.delete(key);
+          }
+        }
+        for (const directory of Array.from(this.directoriesSet)) {
+          if (this.isWithin(directory, normalized)) {
+            this.directoriesSet.delete(directory);
+          }
+        }
+      }
+
+      public async fileExists(target: string): Promise<boolean> {
+        const normalized = this.normalize(target);
+        return this.files.has(normalized) || this.directoriesSet.has(normalized);
+      }
+
+      public async openReadStream(target: string): Promise<NodeJS.ReadableStream> {
+        const normalized = this.normalize(target);
+        const content = this.files.get(normalized);
+        if (!content) {
+          const error = new Error('File not found') as NodeJS.ErrnoException;
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return Readable.from([content]);
+      }
+
+      public async getFileInfo(target: string): Promise<{ size?: number } | undefined> {
+        const normalized = this.normalize(target);
+        const content = this.files.get(normalized);
+        if (!content) {
+          return undefined;
+        }
+        return { size: content.byteLength };
+      }
+
+      public async readJson<T>(filePath: string): Promise<T> {
+        const normalized = this.normalize(filePath);
+        const content = this.files.get(normalized);
+        if (!content) {
+          const error = new Error('File not found') as NodeJS.ErrnoException;
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return JSON.parse(content.toString('utf8')) as T;
+      }
+
+      public async writeJson(filePath: string, data: unknown): Promise<void> {
+        const normalized = this.normalize(filePath);
+        const directory = path.dirname(normalized);
+        this.ensureDirHierarchy(directory);
+        const serialized = `${JSON.stringify(data, null, 2)}\n`;
+        this.files.set(normalized, Buffer.from(serialized, 'utf8'));
+      }
+
+      public async listSubdirectories(directory: string): Promise<string[]> {
+        const normalized = this.normalize(directory);
+        const children = new Set<string>();
+        for (const entry of this.directoriesSet) {
+          if (entry === normalized) {
+            continue;
+          }
+          if (!this.isWithin(entry, normalized)) {
+            continue;
+          }
+          const relative = path.relative(normalized, entry);
+          if (!relative) {
+            continue;
+          }
+          const [segment] = relative.split(path.sep);
+          if (segment) {
+            children.add(segment);
+          }
+        }
+        return Array.from(children);
+      }
+
+      public toRelativePath(target: string): string {
+        const normalized = this.normalize(target);
+        return path.relative(this.directories.base, normalized);
+      }
+    }
+
+    let storage!: MemoryStorage;
+    let remediationApp: ReturnType<typeof createServer> | undefined;
+
+    const tenantId = 'remediation-demo';
+    const analysisId = 'aaaaaaaaaaaaaaaa';
+
+    const snapshotTemplate = {
+      version: {
+        id: 'snapshot-remediation',
+        fingerprint: 'b'.repeat(64),
+        createdAt: '2024-09-21T12:00:00Z',
+      },
+      objectives: [
+        {
+          objectiveId: 'A-5-06',
+          status: 'missing',
+          evidenceRefs: ['test:/evidence/system-test.md'],
+          satisfiedArtifacts: [],
+          missingArtifacts: ['test', 'review'],
+        },
+        {
+          objectiveId: 'A-3-01',
+          status: 'missing',
+          evidenceRefs: ['plan:/plans/system-plan.md'],
+          satisfiedArtifacts: [],
+          missingArtifacts: ['plan', 'analysis'],
+        },
+      ],
+      independenceSummary: {
+        totals: { total: 2, covered: 0, partial: 0, missing: 2 },
+        objectives: [
+          {
+            objectiveId: 'A-5-06',
+            independence: 'required',
+            status: 'missing',
+            missingArtifacts: ['review'],
+          },
+          {
+            objectiveId: 'A-3-01',
+            independence: 'recommended',
+            status: 'missing',
+            missingArtifacts: ['analysis'],
+          },
+        ],
+      },
+      gaps: {
+        plans: [{ objectiveId: 'A-3-01', missingArtifacts: ['plan'] }],
+        standards: [],
+        reviews: [],
+        analysis: [],
+        tests: [{ objectiveId: 'A-5-06', missingArtifacts: ['test'] }],
+        coverage: [],
+        trace: [],
+        configuration: [],
+        quality: [],
+        issues: [],
+        conformity: [],
+        staleEvidence: [],
+      },
+    } as const;
+
+    const analysisTemplate = {
+      metadata: {
+        generatedAt: '2024-09-21T12:00:00Z',
+      },
+      gaps: snapshotTemplate.gaps,
+      objectiveCoverage: [
+        {
+          objectiveId: 'A-5-06',
+          status: 'missing',
+          evidenceRefs: ['test:/evidence/system-test.md'],
+          satisfiedArtifacts: [],
+          missingArtifacts: ['test'],
+        },
+        {
+          objectiveId: 'A-3-01',
+          status: 'missing',
+          evidenceRefs: ['plan:/plans/system-plan.md'],
+          satisfiedArtifacts: [],
+          missingArtifacts: ['plan', 'analysis'],
+        },
+      ],
+    } as const;
+
+    const analysisDir = (): string => path.join(storage.directories.analyses, tenantId, analysisId);
+
+    const writeAnalysisArtifacts = async (options?: {
+      omitSnapshotFile?: boolean;
+      omitAnalysisFile?: boolean;
+      omitSnapshotPath?: boolean;
+      omitAnalysisPath?: boolean;
+    }): Promise<void> => {
+      await storage.ensureDirectory(analysisDir());
+      const snapshotPath = path.join(analysisDir(), 'snapshot.json');
+      const analysisPath = path.join(analysisDir(), 'analysis.json');
+      const tracePath = path.join(analysisDir(), 'traces.json');
+
+      if (!options?.omitSnapshotFile) {
+        await storage.writeJson(snapshotPath, snapshotTemplate);
+      }
+      if (!options?.omitAnalysisFile) {
+        await storage.writeJson(analysisPath, analysisTemplate);
+      }
+      await storage.writeJson(tracePath, []);
+
+      const metadata = {
+        tenantId,
+        id: analysisId,
+        hash: 'hash-remediation',
+        kind: 'analyze' as const,
+        createdAt: new Date().toISOString(),
+        directory: analysisDir(),
+        params: {},
+        license: {
+          hash: 'license-hash',
+          licenseId: 'license-remediation',
+          issuedTo: tenantId,
+          issuedAt: '2024-09-20T10:00:00Z',
+          expiresAt: null,
+          features: [],
+        },
+        exitCode: 0,
+        outputs: {
+          tracePath,
+          ...(options?.omitSnapshotPath ? {} : { snapshotPath }),
+          ...(options?.omitAnalysisPath ? {} : { analysisPath }),
+        },
+      };
+
+      await storage.writeJson(path.join(analysisDir(), 'job.json'), metadata);
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-09-21T12:00:00Z'));
+      storage = new MemoryStorage();
+      remediationApp = createServer({
+        ...baseConfig,
+        storageProvider: storage,
+        metricsRegistry: new Registry(),
+      });
+    });
+
+    afterEach(async () => {
+      jest.useRealTimers();
+      if (remediationApp) {
+        await getServerLifecycle(remediationApp).shutdown();
+        remediationApp = undefined;
+      }
+    });
+
+    it('returns remediation plan details with sorted priorities', async () => {
+      await writeAnalysisArtifacts();
+
+      const response = await request(remediationApp!)
+        .get('/v1/compliance/remediation-plan')
+        .query({ analysisId })
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body.generatedAt).toBe(analysisTemplate.metadata.generatedAt);
+      expect(response.body.actions.map((action: { priority: string }) => action.priority)).toEqual([
+        'critical',
+        'high',
+      ]);
+      expect(response.body.actions[0]).toMatchObject({
+        objectiveId: 'A-5-06',
+        missingArtifacts: expect.arrayContaining(['review', 'test']),
+        links: ['test:/evidence/system-test.md'],
+      });
+      expect(response.body.actions[1]).toMatchObject({
+        objectiveId: 'A-3-01',
+        links: ['plan:/plans/system-plan.md'],
+      });
+    });
+
+    it('returns 409 when analysis outputs are incomplete', async () => {
+      await writeAnalysisArtifacts({ omitAnalysisPath: true });
+
+      const response = await request(remediationApp!)
+        .get('/v1/compliance/remediation-plan')
+        .query({ analysisId })
+        .set('Authorization', `Bearer ${token}`)
+        .expect(409);
+
+      expect(response.body.error.code).toBe('ANALYSIS_INCOMPLETE');
+    });
+
+    it('returns 404 when analysis artifacts are missing', async () => {
+      await writeAnalysisArtifacts({ omitSnapshotFile: true });
+
+      const response = await request(remediationApp!)
+        .get('/v1/compliance/remediation-plan')
+        .query({ analysisId })
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      expect(response.body.error.code).toBe('ANALYSIS_STALE');
+    });
+
+    it('rejects callers without the required role', async () => {
+      await writeAnalysisArtifacts();
+      const limitedToken = await createAccessToken({ roles: [] });
+
+      const response = await request(remediationApp!)
+        .get('/v1/compliance/remediation-plan')
+        .query({ analysisId })
+        .set('Authorization', `Bearer ${limitedToken}`)
+        .expect(403);
+
+      expect(response.body.error.code).toBe('FORBIDDEN_ROLE');
+    });
+  });
+
   it('runs retention sweeps on a schedule', async () => {
     const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-retention-'));
     let retentionApp: ReturnType<typeof createServer> | undefined;
@@ -7324,6 +7979,654 @@ describe('@soipack/server REST API', () => {
       publishSpy.mockRestore();
       mockedFetchJiraChangeRequests.mockReset();
     }
+  });
+
+  describe('GET /v1/risk/stage-forecast', () => {
+    const originalEnv = {
+      baseUrl: process.env.JIRA_BASE_URL,
+      token: process.env.JIRA_TOKEN,
+      project: process.env.JIRA_PROJECT_KEY,
+      jql: process.env.JIRA_BACKLOG_JQL,
+    };
+
+    const backlogItems: JiraChangeRequest[] = [
+      {
+        id: 'RISK-11',
+        key: 'RISK-11',
+        summary: 'Stage blockers',
+        status: 'In Progress',
+        statusCategory: 'In Progress',
+        assignee: 'qa',
+        updatedAt: '2024-09-18T07:30:00Z',
+        priority: 'High',
+        issueType: 'Bug',
+        url: 'https://example.atlassian.net/browse/RISK-11',
+        transitions: [],
+        attachments: [],
+      },
+      {
+        id: 'RISK-12',
+        key: 'RISK-12',
+        summary: 'Awaiting analysis',
+        status: 'Waiting',
+        statusCategory: 'To Do',
+        assignee: null,
+        updatedAt: '2024-09-16T11:00:00Z',
+        priority: 'Medium',
+        issueType: 'Task',
+        url: 'https://example.atlassian.net/browse/RISK-12',
+        transitions: [],
+        attachments: [],
+      },
+    ];
+
+    const submitComplianceRecord = async (
+      appInstance: ReturnType<typeof createServer>,
+      options: {
+        at: string;
+        requirements: ComplianceRequirementInput[];
+        coverage: number;
+        metadata?: Record<string, unknown>;
+      },
+    ) => {
+      jest.setSystemTime(new Date(options.at));
+      const matrix = {
+        project: 'Stage Forecast Demo',
+        level: 'B',
+        generatedAt: new Date(options.at).toISOString(),
+        requirements: options.requirements,
+        summary: {
+          total: options.requirements.length,
+          covered: options.requirements.filter((item) => item.status === 'covered').length,
+          partial: options.requirements.filter((item) => item.status === 'partial').length,
+          missing: options.requirements.filter((item) => item.status === 'missing').length,
+        },
+      };
+      const coverage = { lines: options.coverage };
+      const metadata = options.metadata;
+      const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
+      const complianceHash = createHash('sha256')
+        .update(JSON.stringify(canonicalPayload))
+        .digest('hex');
+      await request(appInstance)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sha256: complianceHash, matrix, coverage, metadata })
+        .expect(201);
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      process.env.JIRA_BASE_URL = 'https://example.atlassian.net';
+      process.env.JIRA_TOKEN = 'stage-token';
+      process.env.JIRA_PROJECT_KEY = 'RISK';
+      process.env.JIRA_BACKLOG_JQL = 'statusCategory != Done';
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+      process.env.JIRA_BASE_URL = originalEnv.baseUrl;
+      process.env.JIRA_TOKEN = originalEnv.token;
+      process.env.JIRA_PROJECT_KEY = originalEnv.project;
+      process.env.JIRA_BACKLOG_JQL = originalEnv.jql;
+      mockedFetchJiraChangeRequests.mockReset();
+    });
+
+    it('returns stage forecasts with percentiles and sparklines', async () => {
+      mockedFetchJiraChangeRequests.mockResolvedValue(backlogItems);
+      const stageApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+      const lifecycle = getServerLifecycle(stageApp);
+
+      try {
+        await submitComplianceRecord(stageApp, {
+          at: '2024-09-18T08:00:00Z',
+          coverage: 62,
+          requirements: [
+            { id: 'A-3-01', status: 'partial', evidenceIds: [] },
+            { id: 'A-4-02', status: 'missing', evidenceIds: [] },
+            { id: 'A-5-06', status: 'missing', evidenceIds: [] },
+            { id: 'A-7-01', status: 'covered', evidenceIds: [] },
+          ],
+          metadata: {
+            testHistory: [
+              { timestamp: '2024-09-10T00:00:00Z', passed: 40, failed: 5 },
+              { timestamp: '2024-09-15T00:00:00Z', passed: 45, failed: 4 },
+            ],
+          },
+        });
+
+        await submitComplianceRecord(stageApp, {
+          at: '2024-09-19T09:30:00Z',
+          coverage: 68,
+          requirements: [
+            { id: 'A-3-01', status: 'covered', evidenceIds: [] },
+            { id: 'A-4-02', status: 'partial', evidenceIds: [] },
+            { id: 'A-5-06', status: 'partial', evidenceIds: [] },
+            { id: 'A-7-01', status: 'covered', evidenceIds: [] },
+          ],
+        });
+
+        await submitComplianceRecord(stageApp, {
+          at: '2024-09-20T11:45:00Z',
+          coverage: 74,
+          requirements: [
+            { id: 'A-3-01', status: 'covered', evidenceIds: [] },
+            { id: 'A-4-02', status: 'covered', evidenceIds: [] },
+            { id: 'A-5-06', status: 'partial', evidenceIds: [] },
+            { id: 'A-7-01', status: 'covered', evidenceIds: [] },
+          ],
+        });
+
+        const response = await request(stageApp)
+          .get('/v1/risk/stage-forecast')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+
+        expect(typeof response.body.generatedAt).toBe('string');
+        expect(Array.isArray(response.body.stages)).toBe(true);
+        expect(response.body.stages).toHaveLength(4);
+
+        const soi1 = response.body.stages.find((entry: { stage: string }) => entry.stage === 'SOI-1');
+        expect(soi1).toBeDefined();
+        const soi1Stage = soi1 as {
+          sparkline: Array<{ regressionRatio: number }>;
+          percentiles: Record<string, number>;
+          statistics: Record<string, number>;
+          baseline: Record<string, number>;
+        };
+        expect(soi1Stage.sparkline).toHaveLength(3);
+        expect(soi1Stage.percentiles).toEqual(
+          expect.objectContaining({ p50: expect.any(Number), p90: expect.any(Number) }),
+        );
+        expect(soi1Stage.statistics).toEqual(
+          expect.objectContaining({ mean: expect.any(Number), stddev: expect.any(Number) }),
+        );
+        expect(soi1Stage.baseline).toEqual(
+          expect.objectContaining({ coverage: expect.any(Number), failureRate: expect.any(Number) }),
+        );
+      } finally {
+        await lifecycle.shutdown();
+      }
+    });
+
+    it('caches forecasts and reuses cached backlog samples on failure', async () => {
+      mockedFetchJiraChangeRequests.mockResolvedValue(backlogItems);
+      const stageApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+      const lifecycle = getServerLifecycle(stageApp);
+
+      try {
+        await submitComplianceRecord(stageApp, {
+          at: '2024-09-20T08:00:00Z',
+          coverage: 70,
+          requirements: [
+            { id: 'A-3-01', status: 'partial', evidenceIds: [] },
+            { id: 'A-4-02', status: 'partial', evidenceIds: [] },
+            { id: 'A-5-06', status: 'missing', evidenceIds: [] },
+            { id: 'A-7-01', status: 'covered', evidenceIds: [] },
+          ],
+          metadata: {
+            testHistory: [{ timestamp: '2024-09-19T00:00:00Z', passed: 30, failed: 6 }],
+          },
+        });
+
+        await request(stageApp)
+          .get('/v1/risk/stage-forecast')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(mockedFetchJiraChangeRequests).toHaveBeenCalledTimes(1);
+
+        mockedFetchJiraChangeRequests.mockClear();
+
+        await request(stageApp)
+          .get('/v1/risk/stage-forecast')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(mockedFetchJiraChangeRequests).not.toHaveBeenCalled();
+
+        mockedFetchJiraChangeRequests.mockRejectedValue(new Error('jira unavailable'));
+        jest.advanceTimersByTime(60_001);
+
+        await request(stageApp)
+          .get('/v1/risk/stage-forecast')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(mockedFetchJiraChangeRequests).toHaveBeenCalledTimes(1);
+      } finally {
+        await lifecycle.shutdown();
+      }
+    });
+
+    it('returns 404 when no compliance history exists', async () => {
+      const stageApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+      const lifecycle = getServerLifecycle(stageApp);
+
+      try {
+        const response = await request(stageApp)
+          .get('/v1/risk/stage-forecast')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(404);
+
+        expect(response.body.error.code).toBe('COMPLIANCE_HISTORY_MISSING');
+      } finally {
+        await lifecycle.shutdown();
+      }
+    });
+  });
+
+  describe('ingest pipeline endpoint', () => {
+    it('runs ingestion pipeline and returns aggregated metadata', async () => {
+      const storageDirOverride = await fsPromises.mkdtemp(
+        path.join(os.tmpdir(), 'soipack-ingest-success-'),
+      );
+      const runImportMock = jest.fn();
+      const runAnalyzeMock = jest.fn();
+      const runReportMock = jest.fn();
+      const runPackMock = jest.fn();
+
+      try {
+        await jest.isolateModulesAsync(async () => {
+          jest.doMock('@soipack/cli', () => {
+            const actual = jest.requireActual('@soipack/cli');
+            return {
+              ...actual,
+              runImport: runImportMock,
+              runAnalyze: runAnalyzeMock,
+              runReport: runReportMock,
+              runPack: runPackMock,
+            };
+          });
+
+          const { createServer: createServerWithMocks } = await import('./index');
+          const ingestApp = createServerWithMocks({
+            ...baseConfig,
+            storageDir: storageDirOverride,
+            cmsSigning: undefined,
+            metricsRegistry: new Registry(),
+          });
+
+          runImportMock.mockImplementation(async (options: cli.ImportOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            await fsPromises.writeFile(
+              path.join(options.output, 'workspace.json'),
+              JSON.stringify({
+                metadata: {
+                  targetLevel: 'B',
+                  project: { name: 'Ingest Project', version: '2.0.0' },
+                  objectivesPath: 'data/objectives/do178c_objectives.min.json',
+                },
+              }),
+            );
+            return { warnings: ['stub-import'] };
+          });
+
+          runAnalyzeMock.mockImplementation(async (options: cli.AnalyzeOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            await fsPromises.writeFile(
+              path.join(options.output, 'analysis.json'),
+              JSON.stringify({ generatedAt: '2024-01-01T00:00:00Z' }),
+            );
+            await fsPromises.writeFile(
+              path.join(options.output, 'snapshot.json'),
+              JSON.stringify({ independenceSummary: { overall: 'low' } }),
+            );
+            await fsPromises.writeFile(
+              path.join(options.output, 'traces.json'),
+              JSON.stringify({}),
+            );
+            return { exitCode: 0 };
+          });
+
+          runReportMock.mockImplementation(async (options: cli.ReportOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            const complianceHtml = path.join(options.output, 'compliance.html');
+            const complianceJson = path.join(options.output, 'compliance.json');
+            const complianceCsv = path.join(options.output, 'compliance.csv');
+            const traceHtml = path.join(options.output, 'trace.html');
+            const traceCsv = path.join(options.output, 'trace.csv');
+            const gapsHtml = path.join(options.output, 'gaps.html');
+            await Promise.all([
+              fsPromises.writeFile(path.join(options.output, 'analysis.json'), JSON.stringify({})),
+              fsPromises.writeFile(
+                path.join(options.output, 'snapshot.json'),
+                JSON.stringify({ independenceSummary: { overall: 'low' } }),
+              ),
+              fsPromises.writeFile(path.join(options.output, 'traces.json'), JSON.stringify({})),
+              fsPromises.writeFile(complianceHtml, '<html />'),
+              fsPromises.writeFile(complianceJson, JSON.stringify({})),
+              fsPromises.writeFile(complianceCsv, 'id,status'),
+              fsPromises.writeFile(traceHtml, '<html />'),
+              fsPromises.writeFile(traceCsv, 'id,status'),
+              fsPromises.writeFile(gapsHtml, '<html />'),
+            ]);
+            return {
+              complianceHtml,
+              complianceJson,
+              complianceCsv,
+              traceHtml,
+              traceCsv,
+              gapsHtml,
+            };
+          });
+
+          runPackMock.mockImplementation(async (options: cli.PackOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            const manifestPath = path.join(options.output, 'manifest.json');
+            const manifest = {
+              files: [
+                {
+                  path: 'reports/compliance.html',
+                  sha256: createHash('sha256').update('compliance').digest('hex'),
+                },
+              ],
+              createdAt: '2024-01-01T00:00:00Z',
+              toolVersion: 'test',
+            } satisfies Manifest;
+            await fsPromises.writeFile(manifestPath, JSON.stringify(manifest));
+            const archivePath = path.join(options.output, 'package.zip');
+            await fsPromises.writeFile(archivePath, 'archive');
+            return {
+              manifestPath,
+              archivePath,
+              manifestId: 'ingestpkg001',
+              manifestDigest: createHash('sha256').update('ingestpkg001').digest('hex'),
+            };
+          });
+
+          const response = await request(ingestApp)
+            .post('/v1/ingest')
+            .set('Authorization', `Bearer ${token}`)
+            .set('X-SOIPACK-License', licenseHeader)
+            .attach('reqif', minimalExample('spec.reqif'))
+            .attach('junit', minimalExample('results.xml'))
+            .attach('lcov', minimalExample('lcov.info'))
+            .attach('planConfig', Buffer.from('steps: []'), {
+              filename: 'plan.yaml',
+              contentType: 'application/x-yaml',
+            })
+            .field('projectName', 'Ingest Project')
+            .field('projectVersion', '2.0.0')
+            .field('level', 'B')
+            .field('soiStage', 'SOI-2')
+            .field('packageName', 'ingest-package')
+            .field('planOverrides', JSON.stringify({ owner: 'qa' }))
+            .field('postQuantum', JSON.stringify({ algorithm: 'SPHINCS+' }))
+            .expect(201);
+
+          expect(response.body.status).toBe('completed');
+          expect(response.body.reused).toBe(false);
+          expect(response.body.manifestId).toBe('ingestpkg001');
+          expect(response.body.import.workspace).toMatch(/^workspaces\//);
+          expect(response.body.analyze.snapshot).toMatch(/^analyses\//);
+          expect(response.body.report.complianceJson).toMatch(/^reports\//);
+          expect(response.body.package.manifest).toMatch(/^packages\//);
+          expect(runImportMock).toHaveBeenCalledTimes(1);
+          expect(runAnalyzeMock).toHaveBeenCalledTimes(1);
+          expect(runReportMock).toHaveBeenCalledTimes(1);
+          expect(runPackMock).toHaveBeenCalledTimes(1);
+        });
+      } finally {
+        jest.resetModules();
+        jest.dontMock('@soipack/cli');
+        await fsPromises.rm(storageDirOverride, { recursive: true, force: true });
+      }
+    });
+
+    it('reuses previous ingestion results for duplicate payloads', async () => {
+      const storageDirOverride = await fsPromises.mkdtemp(
+        path.join(os.tmpdir(), 'soipack-ingest-reuse-'),
+      );
+      const runImportMock = jest.fn();
+      const runAnalyzeMock = jest.fn();
+      const runReportMock = jest.fn();
+      const runPackMock = jest.fn();
+
+      try {
+        await jest.isolateModulesAsync(async () => {
+          jest.doMock('@soipack/cli', () => {
+            const actual = jest.requireActual('@soipack/cli');
+            return {
+              ...actual,
+              runImport: runImportMock,
+              runAnalyze: runAnalyzeMock,
+              runReport: runReportMock,
+              runPack: runPackMock,
+            };
+          });
+
+          const { createServer: createServerWithMocks } = await import('./index');
+          const ingestApp = createServerWithMocks({
+            ...baseConfig,
+            storageDir: storageDirOverride,
+            cmsSigning: undefined,
+            metricsRegistry: new Registry(),
+          });
+
+          const configureMocks = () => {
+            runImportMock.mockImplementation(async (options: cli.ImportOptions) => {
+              await fsPromises.mkdir(options.output, { recursive: true });
+              await fsPromises.writeFile(
+                path.join(options.output, 'workspace.json'),
+                JSON.stringify({
+                  metadata: {
+                    targetLevel: 'B',
+                    project: { name: 'Reuse Project', version: '1.2.3' },
+                    objectivesPath: 'data/objectives/do178c_objectives.min.json',
+                  },
+                }),
+              );
+              return { warnings: [] };
+            });
+
+            runAnalyzeMock.mockImplementation(async (options: cli.AnalyzeOptions) => {
+              await fsPromises.mkdir(options.output, { recursive: true });
+              await fsPromises.writeFile(
+                path.join(options.output, 'analysis.json'),
+                JSON.stringify({ generatedAt: '2024-02-02T00:00:00Z' }),
+              );
+              await fsPromises.writeFile(
+                path.join(options.output, 'snapshot.json'),
+                JSON.stringify({ independenceSummary: { overall: 'medium' } }),
+              );
+              await fsPromises.writeFile(
+                path.join(options.output, 'traces.json'),
+                JSON.stringify({}),
+              );
+              return { exitCode: 0 };
+            });
+
+            runReportMock.mockImplementation(async (options: cli.ReportOptions) => {
+              await fsPromises.mkdir(options.output, { recursive: true });
+              const complianceJson = path.join(options.output, 'compliance.json');
+              await Promise.all([
+                fsPromises.writeFile(path.join(options.output, 'analysis.json'), JSON.stringify({})),
+                fsPromises.writeFile(
+                  path.join(options.output, 'snapshot.json'),
+                  JSON.stringify({ independenceSummary: { overall: 'medium' } }),
+                ),
+                fsPromises.writeFile(path.join(options.output, 'traces.json'), JSON.stringify({})),
+                fsPromises.writeFile(path.join(options.output, 'compliance.html'), '<html />'),
+                fsPromises.writeFile(complianceJson, JSON.stringify({})),
+                fsPromises.writeFile(path.join(options.output, 'compliance.csv'), 'a,b'),
+                fsPromises.writeFile(path.join(options.output, 'trace.html'), '<html />'),
+                fsPromises.writeFile(path.join(options.output, 'trace.csv'), 'a,b'),
+                fsPromises.writeFile(path.join(options.output, 'gaps.html'), '<html />'),
+              ]);
+              return {
+                complianceHtml: path.join(options.output, 'compliance.html'),
+                complianceJson,
+                complianceCsv: path.join(options.output, 'compliance.csv'),
+                traceHtml: path.join(options.output, 'trace.html'),
+                traceCsv: path.join(options.output, 'trace.csv'),
+                gapsHtml: path.join(options.output, 'gaps.html'),
+              };
+            });
+
+            runPackMock.mockImplementation(async (options: cli.PackOptions) => {
+              await fsPromises.mkdir(options.output, { recursive: true });
+              const manifestPath = path.join(options.output, 'manifest.json');
+              await fsPromises.writeFile(
+                manifestPath,
+                JSON.stringify({
+                  files: [
+                    {
+                      path: 'reports/compliance.json',
+                      sha256: createHash('sha256').update('reuse').digest('hex'),
+                    },
+                  ],
+                  createdAt: '2024-02-02T00:00:00Z',
+                  toolVersion: 'test',
+                } satisfies Manifest),
+              );
+              const archivePath = path.join(options.output, 'package.zip');
+              await fsPromises.writeFile(archivePath, 'archive');
+              return {
+                manifestPath,
+                archivePath,
+                manifestId: 'reusepkg001',
+                manifestDigest: createHash('sha256').update('reusepkg001').digest('hex'),
+              };
+            });
+          };
+
+          configureMocks();
+
+          const makeRequest = () =>
+            request(ingestApp)
+              .post('/v1/ingest')
+              .set('Authorization', `Bearer ${token}`)
+              .set('X-SOIPACK-License', licenseHeader)
+              .attach('reqif', minimalExample('spec.reqif'))
+              .attach('junit', minimalExample('results.xml'))
+              .attach('lcov', minimalExample('lcov.info'))
+              .field('projectName', 'Reuse Project')
+              .field('projectVersion', '1.2.3')
+              .field('level', 'C')
+              .field('soiStage', 'SOI-3')
+              .field('packageName', 'reuse-package');
+
+          const firstResponse = await makeRequest().expect(201);
+          expect(firstResponse.body.reused).toBe(false);
+
+          const secondResponse = await makeRequest().expect(200);
+          expect(secondResponse.body.reused).toBe(true);
+          expect(secondResponse.body.manifestId).toBe('reusepkg001');
+          expect(secondResponse.body.package.manifest).toMatch(/^packages\//);
+          expect(runImportMock).toHaveBeenCalledTimes(1);
+          expect(runAnalyzeMock).toHaveBeenCalledTimes(1);
+          expect(runReportMock).toHaveBeenCalledTimes(1);
+          expect(runPackMock).toHaveBeenCalledTimes(1);
+        });
+      } finally {
+        jest.resetModules();
+        jest.dontMock('@soipack/cli');
+        await fsPromises.rm(storageDirOverride, { recursive: true, force: true });
+      }
+    });
+
+    it('cleans up partial outputs when ingestion fails mid-pipeline', async () => {
+      const storageDirOverride = await fsPromises.mkdtemp(
+        path.join(os.tmpdir(), 'soipack-ingest-failure-'),
+      );
+      const runImportMock = jest.fn();
+      const runAnalyzeMock = jest.fn();
+      const runReportMock = jest.fn();
+      const runPackMock = jest.fn();
+
+      try {
+        await jest.isolateModulesAsync(async () => {
+          jest.doMock('@soipack/cli', () => {
+            const actual = jest.requireActual('@soipack/cli');
+            return {
+              ...actual,
+              runImport: runImportMock,
+              runAnalyze: runAnalyzeMock,
+              runReport: runReportMock,
+              runPack: runPackMock,
+            };
+          });
+
+          const { createServer: createServerWithMocks } = await import('./index');
+          const ingestApp = createServerWithMocks({
+            ...baseConfig,
+            storageDir: storageDirOverride,
+            cmsSigning: undefined,
+            metricsRegistry: new Registry(),
+          });
+
+          runImportMock.mockImplementation(async (options: cli.ImportOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            await fsPromises.writeFile(
+              path.join(options.output, 'workspace.json'),
+              JSON.stringify({
+                metadata: {
+                  targetLevel: 'B',
+                  project: { name: 'Broken Project', version: '0.1.0' },
+                  objectivesPath: 'data/objectives/do178c_objectives.min.json',
+                },
+              }),
+            );
+            return { warnings: [] };
+          });
+
+          runAnalyzeMock.mockImplementation(async (options: cli.AnalyzeOptions) => {
+            await fsPromises.mkdir(options.output, { recursive: true });
+            await Promise.all([
+              fsPromises.writeFile(path.join(options.output, 'analysis.json'), JSON.stringify({})),
+              fsPromises.writeFile(
+                path.join(options.output, 'snapshot.json'),
+                JSON.stringify({ independenceSummary: { overall: 'high' } }),
+              ),
+              fsPromises.writeFile(path.join(options.output, 'traces.json'), JSON.stringify({})),
+            ]);
+            return { exitCode: 0 };
+          });
+
+          runReportMock.mockImplementation(async () => {
+            throw new Error('report pipeline failure');
+          });
+
+          const response = await request(ingestApp)
+            .post('/v1/ingest')
+            .set('Authorization', `Bearer ${token}`)
+            .set('X-SOIPACK-License', licenseHeader)
+            .attach('reqif', minimalExample('spec.reqif'))
+            .attach('junit', minimalExample('results.xml'))
+            .attach('lcov', minimalExample('lcov.info'))
+            .field('projectName', 'Broken Project')
+            .field('projectVersion', '0.1.0')
+            .field('level', 'B')
+            .expect(500);
+
+          expect(response.body.error.code).toBe('PIPELINE_ERROR');
+          expect(runPackMock).not.toHaveBeenCalled();
+
+          const listDir = async (target: string): Promise<string[]> => {
+            try {
+              return await fsPromises.readdir(target);
+            } catch {
+              return [];
+            }
+          };
+
+          expect(
+            await listDir(path.join(storageDirOverride, 'workspaces', tenantId)),
+          ).toHaveLength(0);
+          expect(
+            await listDir(path.join(storageDirOverride, 'analyses', tenantId)),
+          ).toHaveLength(0);
+          expect(
+            await listDir(path.join(storageDirOverride, 'reports', tenantId)),
+          ).toHaveLength(0);
+          expect(
+            await listDir(path.join(storageDirOverride, 'packages', tenantId)),
+          ).toHaveLength(0);
+        });
+      } finally {
+        jest.resetModules();
+        jest.dontMock('@soipack/cli');
+        await fsPromises.rm(storageDirOverride, { recursive: true, force: true });
+      }
+    });
   });
 
   it('uses database counts to update queue metrics', async () => {

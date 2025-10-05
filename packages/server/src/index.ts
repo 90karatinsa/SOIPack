@@ -6,6 +6,8 @@ import path from 'path';
 import { pipeline as streamPipeline } from 'stream/promises';
 import { TLSSocket } from 'tls';
 
+import { S3Client } from '@aws-sdk/client-s3';
+
 import {
   AnalyzeOptions,
   ImportOptions,
@@ -36,6 +38,7 @@ import {
   ManifestFileEntry,
   ManifestMerkleSummary,
   Objective,
+  objectiveCatalogById,
   SnapshotVersion,
   SoiStage,
   createSnapshotIdentifier,
@@ -49,15 +52,21 @@ import {
   verifyLedgerProof,
 } from '@soipack/core';
 import {
+  computeRemediationPlan,
   computeRiskProfile,
+  computeStageRiskForecast,
   simulateComplianceRisk,
   type ChangeImpactScore,
   type ComplianceRiskFactorContributions,
+  type ComplianceRiskSimulationResult,
+  type GapAnalysis,
   type RiskInput,
   type RiskProfile,
   type RiskSimulationBacklogSample,
   type RiskSimulationCoverageSample,
   type RiskSimulationTestSample,
+  type StageComplianceTrendPoint,
+  type StageRiskForecast,
 } from '@soipack/engine';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
@@ -91,6 +100,7 @@ import {
   StorageProvider,
   UploadedFileMap,
 } from './storage';
+import { S3StorageProvider } from './storage/s3';
 import { RbacStore, type RbacApiKey, type RbacRole, type RbacUser } from './rbac';
 import {
   ReviewStore,
@@ -187,7 +197,13 @@ export const writePersistedJson = async (
   tenantDir: string,
   fileName: string,
   data: unknown,
+  storage?: StorageProvider,
 ): Promise<void> => {
+  if (storage && !(storage instanceof FileSystemStorage)) {
+    await storage.writeJson(path.join(tenantDir, fileName), data);
+    return;
+  }
+
   await fsPromises.mkdir(tenantDir, { recursive: true });
   const targetPath = path.join(tenantDir, fileName);
   const serialized = `${JSON.stringify(data, null, 2)}\n`;
@@ -306,8 +322,34 @@ interface BacklogSeverityCacheEntry {
   expiresAt: number;
 }
 
+interface StageRiskForecastPayload {
+  stage: SoiStage;
+  probability: number;
+  classification: StageRiskForecast['classification'];
+  horizonDays: number;
+  credibleInterval: StageRiskForecast['credibleInterval'];
+  posterior: StageRiskForecast['posterior'];
+  baseline: ComplianceRiskSimulationResult['baseline'];
+  percentiles: ComplianceRiskSimulationResult['percentiles'];
+  statistics: Pick<ComplianceRiskSimulationResult, 'mean' | 'stddev' | 'min' | 'max'>;
+  sparkline: StageRiskForecast['sparkline'];
+  updatedAt?: string;
+}
+
+interface StageRiskForecastResponsePayload {
+  generatedAt: string;
+  stages: StageRiskForecastPayload[];
+}
+
+interface StageRiskForecastCacheEntry {
+  signature: string;
+  payload: StageRiskForecastResponsePayload;
+  expiresAt: number;
+}
+
 const riskProfileCacheRegistry = new Set<Map<string, RiskProfileCacheEntry>>();
 const backlogSeverityCacheRegistry = new Set<Map<string, BacklogSeverityCacheEntry>>();
+const stageRiskForecastCacheRegistry = new Set<Map<string, StageRiskForecastCacheEntry>>();
 
 export const __clearRiskProfileCacheForTesting = (): void => {
   riskProfileCacheRegistry.forEach((cache) => cache.clear());
@@ -315,6 +357,10 @@ export const __clearRiskProfileCacheForTesting = (): void => {
 
 export const __clearBacklogSeverityCacheForTesting = (): void => {
   backlogSeverityCacheRegistry.forEach((cache) => cache.clear());
+};
+
+export const __clearStageRiskForecastCacheForTesting = (): void => {
+  stageRiskForecastCacheRegistry.forEach((cache) => cache.clear());
 };
 
 type CoverageSummaryPayload = Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>;
@@ -415,6 +461,7 @@ interface RequestContext {
 const REQUEST_LOCALE_SYMBOL = Symbol('soipack:locale');
 
 const SERVER_CONTEXT_SYMBOL = Symbol('soipack:server');
+const STORAGE_CONTEXT_SYMBOL = Symbol('soipack:storage');
 
 export interface ServerLifecycle {
   waitForIdle: () => Promise<void>;
@@ -451,6 +498,14 @@ export const getServerLifecycle = (app: Express): ServerLifecycle => {
     throw new Error('Sunucu yaşam döngüsü bağlamı henüz yapılandırılmadı.');
   }
   return context;
+};
+
+export const __getStorageProviderForTesting = (app: Express): StorageProvider => {
+  const storage = Reflect.get(app, STORAGE_CONTEXT_SYMBOL) as StorageProvider | undefined;
+  if (!storage) {
+    throw new Error('Storage provider context is not available.');
+  }
+  return storage;
 };
 
 const getRouteLabel = (req: Request): string => {
@@ -1717,6 +1772,46 @@ const parsePackPostQuantumOptions = (
   }
 
   return options;
+};
+
+const parsePostQuantumField = (
+  value: unknown,
+): PackPostQuantumOptions | false | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return undefined;
+    }
+    if (value.length === 1) {
+      return parsePostQuantumField(value[0]);
+    }
+    throw new HttpError(400, 'INVALID_REQUEST', 'postQuantum alanı için tek bir değer bekleniyor.');
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    if (trimmed.toLowerCase() === 'false') {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsePackPostQuantumOptions(parsed);
+    } catch {
+      throw new HttpError(400, 'INVALID_REQUEST', 'postQuantum alanı geçerli JSON içermelidir.');
+    }
+  }
+
+  if (value === false) {
+    return false;
+  }
+
+  return parsePackPostQuantumOptions(value);
 };
 
 const parseJsonObjectField = (
@@ -3283,8 +3378,37 @@ const createAuthMiddleware = (
 };
 
 export const createServer = (config: ServerConfig): Express => {
-  const storage = config.storageProvider ?? new FileSystemStorage(path.resolve(config.storageDir));
+  const storage = (() => {
+    if (config.storageProvider) {
+      return config.storageProvider;
+    }
+
+    const backend = (process.env.SOIPACK_STORAGE_BACKEND ?? 'filesystem').toLowerCase();
+    const bucketEnv = process.env.SOIPACK_STORAGE_S3_BUCKET;
+    const shouldUseS3 = backend === 's3' || Boolean(bucketEnv);
+
+    if (!shouldUseS3) {
+      return new FileSystemStorage(path.resolve(config.storageDir));
+    }
+
+    const bucket = bucketEnv;
+    if (!bucket) {
+      throw new Error('SOIPACK_STORAGE_S3_BUCKET must be defined when using the s3 storage backend.');
+    }
+
+    const region = process.env.SOIPACK_STORAGE_S3_REGION;
+    if (!region) {
+      throw new Error('SOIPACK_STORAGE_S3_REGION must be defined when using the s3 storage backend.');
+    }
+
+    const prefix = process.env.SOIPACK_STORAGE_S3_PREFIX;
+    const kmsKeyId = process.env.SOIPACK_STORAGE_S3_KMS_KEY_ID;
+    const client = new S3Client({ region });
+
+    return new S3StorageProvider({ bucket, prefix, kmsKeyId, client });
+  })();
   const directories = storage.directories;
+  const isFileSystemStorage = storage instanceof FileSystemStorage;
   const signingKeyPath = path.resolve(config.signingKeyPath);
   const licensePublicKeyPath = path.resolve(config.licensePublicKeyPath);
   const queueDirectory = path.join(directories.base, '.queue');
@@ -3672,6 +3796,8 @@ export const createServer = (config: ServerConfig): Express => {
   riskProfileCacheRegistry.add(riskProfileCache);
   const backlogSeverityCache = new Map<string, BacklogSeverityCacheEntry>();
   backlogSeverityCacheRegistry.add(backlogSeverityCache);
+  const stageRiskForecastCache = new Map<string, StageRiskForecastCacheEntry>();
+  stageRiskForecastCacheRegistry.add(stageRiskForecastCache);
   const tenantSnapshotVersions = new Map<string, SnapshotVersion>();
   const tenantDataRoot = path.join(directories.base, 'tenants');
   const TENANT_EVIDENCE_FILE = 'evidence.json';
@@ -3813,6 +3939,9 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const readPersistedJson = <T>(filePath: string): T | undefined => {
+    if (!isFileSystemStorage) {
+      return undefined;
+    }
     try {
       if (!fs.existsSync(filePath)) {
         return undefined;
@@ -3825,13 +3954,59 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
 
+  const readPersistedJsonAsync = async <T>(filePath: string): Promise<T | undefined> => {
+    try {
+      if (!(await storage.fileExists(filePath))) {
+        return undefined;
+      }
+    } catch (error) {
+      logger.warn({ err: error, filePath }, 'Persisted tenant data existence check failed.');
+      return undefined;
+    }
+    try {
+      return await storage.readJson<T>(filePath);
+    } catch (error) {
+      logger.warn({ err: error, filePath }, 'Persisted tenant data could not be read.');
+      return undefined;
+    }
+  };
+
+  const waitForPromise = <T>(promise: Promise<T>): T => {
+    const signal = new Int32Array(new SharedArrayBuffer(4));
+    let result: T | undefined;
+    let error: unknown;
+    promise
+      .then((value) => {
+        result = value;
+        Atomics.store(signal, 0, 1);
+        Atomics.notify(signal, 0);
+      })
+      .catch((err) => {
+        error = err;
+        Atomics.store(signal, 0, 2);
+        Atomics.notify(signal, 0);
+      });
+
+    while (true) {
+      const state = Atomics.load(signal, 0);
+      if (state === 0) {
+        Atomics.wait(signal, 0, 0);
+        continue;
+      }
+      if (state === 1) {
+        return result as T;
+      }
+      throw error;
+    }
+  };
+
   const writeTenantJson = async (
     tenantId: string,
     fileName: string,
     data: unknown,
   ): Promise<void> => {
     const tenantDir = path.join(tenantDataRoot, tenantId);
-    await writePersistedJson(tenantDir, fileName, data);
+    await writePersistedJson(tenantDir, fileName, data, storage);
   };
 
   const persistTenantEvidence = async (tenantId: string): Promise<void> => {
@@ -3913,72 +4088,139 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const loadPersistedTenantData = (): void => {
-    try {
-      fs.mkdirSync(tenantDataRoot, { recursive: true });
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to ensure tenant data directory.');
-      throw error;
+    if (isFileSystemStorage) {
+      try {
+        fs.mkdirSync(tenantDataRoot, { recursive: true });
+      } catch (error) {
+        logger.error({ err: error }, 'Failed to ensure tenant data directory.');
+        throw error;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(tenantDataRoot, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return;
+        }
+        throw error;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const tenantId = entry.name;
+        const tenantDir = path.join(tenantDataRoot, tenantId);
+        try {
+          const evidenceRecords =
+            readPersistedJson<EvidenceRecord[]>(path.join(tenantDir, TENANT_EVIDENCE_FILE)) ?? [];
+          if (evidenceRecords.length > 0) {
+            const store = new Map<string, EvidenceRecord>();
+            const hashIndex = new Map<string, string>();
+            evidenceRecords.forEach((record) => {
+              store.set(record.id, record);
+              hashIndex.set(record.sha256, record.id);
+            });
+            evidenceStore.set(tenantId, store);
+            evidenceHashIndex.set(tenantId, hashIndex);
+          }
+
+          const complianceRecords =
+            readPersistedJson<ComplianceRecord[]>(path.join(tenantDir, TENANT_COMPLIANCE_FILE)) ?? [];
+          if (complianceRecords.length > 0) {
+            const store = new Map<string, ComplianceRecord>();
+            complianceRecords.forEach((record) => {
+              store.set(record.id, record);
+            });
+            complianceStore.set(tenantId, store);
+          }
+
+          const persistedVersion = readPersistedJson<SnapshotVersion>(
+            path.join(tenantDir, TENANT_SNAPSHOT_FILE),
+          );
+          if (persistedVersion) {
+            tenantSnapshotVersions.set(tenantId, persistedVersion);
+          } else if (evidenceRecords.length > 0) {
+            const fingerprint = deriveFingerprint(evidenceRecords.map((record) => record.sha256));
+            const fallbackVersion = createSnapshotVersion(fingerprint, { createdAt: new Date().toISOString() });
+            tenantSnapshotVersions.set(tenantId, fallbackVersion);
+            void persistTenantSnapshotVersion(tenantId, fallbackVersion).catch((error) => {
+              logger.error({ err: error, tenantId }, 'Failed to persist fallback snapshot version.');
+            });
+          }
+
+          knownTenants.add(tenantId);
+        } catch (error) {
+          logger.error({ err: error, tenantId }, 'Failed to load persisted tenant data.');
+        }
+      }
+      return;
     }
 
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(tenantDataRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    const loadFromStorage = async (): Promise<void> => {
+      let tenantIds: string[] = [];
+      try {
+        tenantIds = await storage.listSubdirectories(tenantDataRoot);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.error({ err: error }, 'Failed to enumerate tenant data from storage.');
+        }
         return;
       }
-      throw error;
-    }
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
+      for (const tenantId of tenantIds) {
+        const tenantDir = path.join(tenantDataRoot, tenantId);
+        try {
+          const evidenceRecords =
+            (await readPersistedJsonAsync<EvidenceRecord[]>(
+              path.join(tenantDir, TENANT_EVIDENCE_FILE),
+            )) ?? [];
+          if (evidenceRecords.length > 0) {
+            const store = new Map<string, EvidenceRecord>();
+            const hashIndex = new Map<string, string>();
+            evidenceRecords.forEach((record) => {
+              store.set(record.id, record);
+              hashIndex.set(record.sha256, record.id);
+            });
+            evidenceStore.set(tenantId, store);
+            evidenceHashIndex.set(tenantId, hashIndex);
+          }
+
+          const complianceRecords =
+            (await readPersistedJsonAsync<ComplianceRecord[]>(
+              path.join(tenantDir, TENANT_COMPLIANCE_FILE),
+            )) ?? [];
+          if (complianceRecords.length > 0) {
+            const store = new Map<string, ComplianceRecord>();
+            complianceRecords.forEach((record) => {
+              store.set(record.id, record);
+            });
+            complianceStore.set(tenantId, store);
+          }
+
+          const persistedVersion = await readPersistedJsonAsync<SnapshotVersion>(
+            path.join(tenantDir, TENANT_SNAPSHOT_FILE),
+          );
+          if (persistedVersion) {
+            tenantSnapshotVersions.set(tenantId, persistedVersion);
+          } else if (evidenceRecords.length > 0) {
+            const fingerprint = deriveFingerprint(evidenceRecords.map((record) => record.sha256));
+            const fallbackVersion = createSnapshotVersion(fingerprint, { createdAt: new Date().toISOString() });
+            tenantSnapshotVersions.set(tenantId, fallbackVersion);
+            await persistTenantSnapshotVersion(tenantId, fallbackVersion).catch((error) => {
+              logger.error({ err: error, tenantId }, 'Failed to persist fallback snapshot version.');
+            });
+          }
+
+          knownTenants.add(tenantId);
+        } catch (error) {
+          logger.error({ err: error, tenantId }, 'Failed to load persisted tenant data.');
+        }
       }
-      const tenantId = entry.name;
-      const tenantDir = path.join(tenantDataRoot, tenantId);
-      try {
-        const evidenceRecords =
-          readPersistedJson<EvidenceRecord[]>(path.join(tenantDir, TENANT_EVIDENCE_FILE)) ?? [];
-        if (evidenceRecords.length > 0) {
-          const store = new Map<string, EvidenceRecord>();
-          const hashIndex = new Map<string, string>();
-          evidenceRecords.forEach((record) => {
-            store.set(record.id, record);
-            hashIndex.set(record.sha256, record.id);
-          });
-          evidenceStore.set(tenantId, store);
-          evidenceHashIndex.set(tenantId, hashIndex);
-        }
+    };
 
-        const complianceRecords =
-          readPersistedJson<ComplianceRecord[]>(path.join(tenantDir, TENANT_COMPLIANCE_FILE)) ?? [];
-        if (complianceRecords.length > 0) {
-          const store = new Map<string, ComplianceRecord>();
-          complianceRecords.forEach((record) => {
-            store.set(record.id, record);
-          });
-          complianceStore.set(tenantId, store);
-        }
-
-        const persistedVersion = readPersistedJson<SnapshotVersion>(
-          path.join(tenantDir, TENANT_SNAPSHOT_FILE),
-        );
-        if (persistedVersion) {
-          tenantSnapshotVersions.set(tenantId, persistedVersion);
-        } else if (evidenceRecords.length > 0) {
-          const fingerprint = deriveFingerprint(evidenceRecords.map((record) => record.sha256));
-          const fallbackVersion = createSnapshotVersion(fingerprint, { createdAt: new Date().toISOString() });
-          tenantSnapshotVersions.set(tenantId, fallbackVersion);
-          void persistTenantSnapshotVersion(tenantId, fallbackVersion).catch((error) => {
-            logger.error({ err: error, tenantId }, 'Failed to persist fallback snapshot version.');
-          });
-        }
-
-        knownTenants.add(tenantId);
-      } catch (error) {
-        logger.error({ err: error, tenantId }, 'Failed to load persisted tenant data.');
-      }
-    }
+    waitForPromise(loadFromStorage());
   };
 
   loadPersistedTenantData();
@@ -4265,6 +4507,7 @@ export const createServer = (config: ServerConfig): Express => {
 
   const RISK_PROFILE_CACHE_TTL_MS = 180_000;
   const BACKLOG_SEVERITY_CACHE_TTL_MS = 120_000;
+  const STAGE_RISK_FORECAST_CACHE_TTL_MS = 60_000;
 
   const toCoverageHistory = (
     records: ComplianceRecord[],
@@ -4329,6 +4572,102 @@ export const createServer = (config: ServerConfig): Express => {
     return Array.from(map.values()).sort(
       (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
     );
+  };
+
+  const computeComplianceHistorySignature = (records: ComplianceRecord[]): string =>
+    records
+      .map((record) => `${record.id}:${record.createdAt}:${record.sha256}`)
+      .sort()
+      .join('|');
+
+  const buildStageHistories = (
+    records: ComplianceRecord[],
+  ): {
+    coverageByStage: Map<SoiStage, RiskSimulationCoverageSample[]>;
+    trendByStage: Map<SoiStage, StageComplianceTrendPoint[]>;
+  } => {
+    const coverageByStage = new Map<SoiStage, RiskSimulationCoverageSample[]>();
+    const trendByStage = new Map<SoiStage, StageComplianceTrendPoint[]>();
+    soiStages.forEach((stage) => {
+      coverageByStage.set(stage, []);
+      trendByStage.set(stage, []);
+    });
+
+    const sortedRecords = [...records].sort(
+      (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
+    );
+
+    sortedRecords.forEach((record) => {
+      const timestamp =
+        typeof record.createdAt === 'string' && record.createdAt
+          ? new Date(record.createdAt).toISOString()
+          : new Date().toISOString();
+      const stageCounters = new Map<
+        SoiStage,
+        { total: number; covered: number; partial: number; missing: number }
+      >();
+      soiStages.forEach((stage) => {
+        stageCounters.set(stage, { total: 0, covered: 0, partial: 0, missing: 0 });
+      });
+
+      record.matrix.requirements.forEach((requirement) => {
+        const objective = objectiveCatalogById.get(requirement.id);
+        if (!objective) {
+          return;
+        }
+        const counters = stageCounters.get(objective.stage);
+        if (!counters) {
+          return;
+        }
+        counters.total += 1;
+        if (requirement.status === 'covered') {
+          counters.covered += 1;
+        } else if (requirement.status === 'partial') {
+          counters.partial += 1;
+        } else {
+          counters.missing += 1;
+        }
+      });
+
+      stageCounters.forEach((counts, stage) => {
+        if (counts.total <= 0) {
+          return;
+        }
+        const coverageHistory = coverageByStage.get(stage);
+        const trendHistory = trendByStage.get(stage);
+        if (!coverageHistory || !trendHistory) {
+          return;
+        }
+        const blendedCovered = Math.min(
+          counts.total,
+          counts.covered + Math.round(counts.partial * 0.5),
+        );
+        coverageHistory.push({
+          timestamp,
+          covered: blendedCovered,
+          total: counts.total,
+        });
+        trendHistory.push({
+          stage,
+          timestamp,
+          regressions: counts.partial + counts.missing,
+          total: counts.total,
+        });
+      });
+    });
+
+    soiStages.forEach((stage) => {
+      const coverageHistory = coverageByStage.get(stage);
+      const trendHistory = trendByStage.get(stage);
+      if (coverageHistory) {
+        coverageHistory.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+      }
+      if (trendHistory) {
+        trendHistory.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+      }
+    });
+
+    return { coverageByStage, trendByStage };
   };
 
   const isBlockedStatus = (status?: string, category?: string): boolean => {
@@ -6829,6 +7168,233 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
+    '/v1/risk/stage-forecast',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+
+      const records = Array.from(getTenantComplianceMap(tenantId).values());
+      if (records.length === 0) {
+        throw new HttpError(404, 'COMPLIANCE_HISTORY_MISSING', 'Uyum geçmişi bulunamadı.');
+      }
+
+      const signature = computeComplianceHistorySignature(records);
+      const nowMs = Date.now();
+      const ttlSeconds = Math.floor(STAGE_RISK_FORECAST_CACHE_TTL_MS / 1000);
+      const cached = stageRiskForecastCache.get(tenantId);
+      if (cached && cached.signature === signature && cached.expiresAt > nowMs) {
+        res
+          .status(200)
+          .set('Cache-Control', `private, max-age=${ttlSeconds}`)
+          .json(cached.payload);
+        return;
+      }
+
+      const { coverageByStage, trendByStage } = buildStageHistories(records);
+      const testHistory = collectTestHistory(records);
+      const backlogHistory = await fetchBacklogHistory(tenantId);
+      const generatedAt = new Date().toISOString();
+
+      const stages: StageRiskForecastPayload[] = [];
+      soiStages.forEach((stage) => {
+        const coverageHistory = coverageByStage.get(stage) ?? [];
+        const trendHistory = trendByStage.get(stage) ?? [];
+        if (coverageHistory.length === 0 && trendHistory.length === 0) {
+          return;
+        }
+
+        const simulation = simulateComplianceRisk({
+          coverageHistory,
+          testHistory,
+          backlogHistory,
+        });
+        const monteCarloSamples = [
+          simulation.mean,
+          simulation.percentiles.p50,
+          simulation.percentiles.p90,
+          simulation.percentiles.p95,
+          simulation.percentiles.p99,
+          simulation.min,
+          simulation.max,
+        ]
+          .map((value) => value / 100)
+          .filter((value) => Number.isFinite(value));
+
+        const forecast = computeStageRiskForecast({
+          stage,
+          trend: trendHistory,
+          monteCarloProbabilities: monteCarloSamples,
+        });
+
+        stages.push({
+          stage,
+          probability: forecast.probability,
+          classification: forecast.classification,
+          horizonDays: forecast.horizonDays,
+          credibleInterval: forecast.credibleInterval,
+          posterior: forecast.posterior,
+          baseline: simulation.baseline,
+          percentiles: simulation.percentiles,
+          statistics: {
+            mean: simulation.mean,
+            stddev: simulation.stddev,
+            min: simulation.min,
+            max: simulation.max,
+          },
+          sparkline: forecast.sparkline,
+          updatedAt: forecast.updatedAt,
+        });
+      });
+
+      if (stages.length === 0) {
+        throw new HttpError(404, 'STAGE_FORECAST_UNAVAILABLE', 'SOI aşaması verisi bulunamadı.');
+      }
+
+      stages.sort((a, b) => soiStages.indexOf(a.stage) - soiStages.indexOf(b.stage));
+
+      const payload: StageRiskForecastResponsePayload = {
+        generatedAt,
+        stages,
+      };
+
+      stageRiskForecastCache.set(tenantId, {
+        signature,
+        payload,
+        expiresAt: nowMs + STAGE_RISK_FORECAST_CACHE_TTL_MS,
+      });
+
+      res
+        .status(200)
+        .set('Cache-Control', `private, max-age=${ttlSeconds}`)
+        .json(payload);
+    }),
+  );
+
+  app.get(
+    '/v1/compliance/remediation-plan',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+
+      const { analysisId, soiStage } = req.query as {
+        analysisId?: string;
+        soiStage?: string;
+      };
+
+      if (!analysisId) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'analysisId parametresi zorunludur.');
+      }
+      assertJobId(analysisId);
+
+      const requestedStage = parseSoiStage(soiStage);
+      const analysisDir = await findStageAwareJobDirectory(
+        storage,
+        directories.analyses,
+        tenantId,
+        analysisId,
+        requestedStage,
+      );
+      if (!analysisDir) {
+        throw new HttpError(404, 'ANALYSIS_NOT_FOUND', 'İstenen analiz bulunamadı.');
+      }
+
+      const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+      if (metadata.kind !== 'analyze') {
+        throw new HttpError(409, 'ANALYSIS_INCOMPLETE', 'Analiz çıktıları bulunamadı.');
+      }
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen analiz bu kiracıya ait değil.');
+      }
+      hydrateJobLicense(metadata, tenantId);
+
+      const snapshotPath = metadata.outputs?.snapshotPath;
+      const analysisPath = metadata.outputs?.analysisPath;
+      if (typeof snapshotPath !== 'string' || typeof analysisPath !== 'string') {
+        throw new HttpError(409, 'ANALYSIS_INCOMPLETE', 'Analiz çıktıları eksik.');
+      }
+
+      const loadJson = async <T>(filePath: string, description: string): Promise<T> => {
+        try {
+          return await storage.readJson<T>(filePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+            throw new HttpError(
+              404,
+              'ANALYSIS_STALE',
+              `${description} bulunamadı veya artık mevcut değil.`,
+            );
+          }
+          throw error;
+        }
+      };
+
+      type AnalysisSummaryFile = {
+        metadata?: { generatedAt?: string | null } | null;
+        gaps?: GapAnalysis | null;
+        objectiveCoverage?: Array<{
+          objectiveId: string;
+          evidenceRefs?: string[];
+        }>;
+      };
+
+      const [analysisData, snapshot] = await Promise.all([
+        loadJson<AnalysisSummaryFile>(analysisPath, 'Analiz metaverisi'),
+        loadJson<ComplianceSnapshot>(snapshotPath, 'Analiz snapshot çıktısı'),
+      ]);
+
+      const gaps = snapshot.gaps ?? analysisData.gaps ?? undefined;
+      if (!gaps) {
+        throw new HttpError(409, 'ANALYSIS_INCOMPLETE', 'Analiz boşluk verileri eksik.');
+      }
+      const independenceSummary = snapshot.independenceSummary;
+      if (!independenceSummary) {
+        throw new HttpError(409, 'ANALYSIS_INCOMPLETE', 'Bağımsızlık özeti bulunamadı.');
+      }
+
+      const plan = computeRemediationPlan({ gaps, independenceSummary });
+      const generatedAt =
+        typeof analysisData.metadata?.generatedAt === 'string'
+          ? analysisData.metadata.generatedAt
+          : metadata.createdAt;
+
+      const coverageEntries = Array.isArray(analysisData.objectiveCoverage)
+        ? analysisData.objectiveCoverage
+        : [];
+      const coverageByObjective = new Map(
+        coverageEntries.map((entry) => [entry.objectiveId, entry]),
+      );
+      const snapshotObjectives = Array.isArray(snapshot.objectives) ? snapshot.objectives : [];
+
+      const actions = plan.actions.map((action) => {
+        const coverage = coverageByObjective.get(action.objectiveId);
+        const snapshotObjective = snapshotObjectives.find(
+          (entry) => entry.objectiveId === action.objectiveId,
+        );
+        const evidenceRefs = coverage?.evidenceRefs ?? snapshotObjective?.evidenceRefs ?? [];
+        const uniqueEvidenceRefs = Array.from(new Set(evidenceRefs));
+        const missingArtifacts = Array.from(
+          new Set(action.issues.flatMap((issue) => issue.missingArtifacts ?? [])),
+        );
+
+        return {
+          objectiveId: action.objectiveId,
+          priority: action.priority,
+          issues: action.issues,
+          missingArtifacts,
+          links: uniqueEvidenceRefs,
+        };
+      });
+
+      res.json({
+        generatedAt,
+        actions,
+      });
+    }),
+  );
+
+  app.get(
     '/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
@@ -8134,6 +8700,581 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'planConfig', maxCount: 1 },
   ]);
 
+  const ingestFields = upload.fields([
+    { name: LICENSE_FILE_FIELD, maxCount: 1 },
+    { name: 'jira', maxCount: 1 },
+    { name: 'reqif', maxCount: 1 },
+    { name: 'junit', maxCount: 1 },
+    { name: 'lcov', maxCount: 1 },
+    { name: 'cobertura', maxCount: 1 },
+    { name: 'git', maxCount: 1 },
+    { name: 'objectives', maxCount: 1 },
+    { name: 'traceLinksCsv', maxCount: 1 },
+    { name: 'traceLinksJson', maxCount: 1 },
+    { name: 'designCsv', maxCount: 1 },
+    { name: 'jiraDefects', maxCount: 25 },
+    { name: 'polyspace', maxCount: 1 },
+    { name: 'ldra', maxCount: 1 },
+    { name: 'vectorcast', maxCount: 1 },
+    { name: 'qaLogs', maxCount: 25 },
+    { name: 'planConfig', maxCount: 1 },
+  ]);
+
+  app.post(
+    '/v1/ingest',
+    requireAuth,
+    ingestFields,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const fileMap = (req.files as FileMap) ?? {};
+      let cleaned = false;
+      const ensureCleanup = async () => {
+        if (!cleaned) {
+          cleaned = true;
+          await cleanupUploadedFiles(fileMap);
+        }
+      };
+
+      try {
+        Object.entries(fileMap).forEach(([field, files]) => {
+          const policy = uploadPolicies[field] ?? {
+            maxSizeBytes: maxUploadSize,
+            allowedMimeTypes: ['*'],
+          };
+          files.forEach((file) => ensureFileWithinPolicy(field, file, policy));
+        });
+
+        await scanUploadedFiles(scanner, fileMap);
+
+        const license = await requireLicenseToken(req, fileMap);
+        requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.import);
+        requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.analyze);
+        requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.report);
+        requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.pack);
+
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const connector = Object.prototype.hasOwnProperty.call(body, 'connector')
+          ? parseConnectorPayload(body.connector)
+          : undefined;
+
+        const stringFields: Record<string, string> = {};
+        ['projectName', 'projectVersion', 'level'].forEach((field) => {
+          const value = getFieldValue(body[field]);
+          if (value !== undefined) {
+            stringFields[field] = value;
+          }
+        });
+
+        const independentSources = parseStringArrayField(
+          body.independentSources,
+          'independentSources',
+        );
+        const independentArtifacts = parseStringArrayField(
+          body.independentArtifacts,
+          'independentArtifacts',
+        );
+
+        const importFileCount = Object.entries(fileMap).reduce(
+          (total, [field, files]) => (field === 'planConfig' ? total : total + files.length),
+          0,
+        );
+
+        if (importFileCount === 0) {
+          if (!connector) {
+            const isJsonRequest = Boolean(
+              req.is('application/json') || req.is('application/*+json'),
+            );
+            if (isJsonRequest) {
+              throw new HttpError(
+                400,
+                'INVALID_CONNECTOR_REQUEST',
+                'connector alanı zorunludur.',
+              );
+            }
+            throw new HttpError(400, 'NO_INPUT_FILES', 'En az bir veri dosyası yüklenmelidir.');
+          }
+
+          switch (connector.type) {
+            case 'polarion':
+            case 'jenkins':
+            case 'doorsNext':
+            case 'jama':
+            case 'jiraCloud':
+              throw new HttpError(
+                501,
+                'CONNECTOR_IMPORT_NOT_IMPLEMENTED',
+                `${connector.type} bağlayıcı importları henüz desteklenmiyor.`,
+              );
+            default:
+              throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'Desteklenmeyen bağlayıcı türü.');
+          }
+        }
+
+        const requestedStage = parseSoiStage(getFieldValue(body.soiStage));
+        const planOverrides = parseJsonObjectField(body.planOverrides, 'planOverrides');
+        const manifestId = getFieldValue(body.manifestId);
+
+        const packageNameRaw = getFieldValue(body.packageName);
+        let packageName: string | undefined;
+        if (packageNameRaw !== undefined) {
+          try {
+            packageName = normalizePackageName(packageNameRaw);
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : 'packageName değeri geçersiz.';
+            throw new HttpError(400, 'INVALID_REQUEST', message);
+          }
+        }
+
+        const postQuantumOptions = parsePostQuantumField(body.postQuantum);
+
+        const importHashEntries: HashEntry[] = [];
+        if (connector) {
+          importHashEntries.push({ key: 'connector:type', value: connector.type });
+          importHashEntries.push({ key: 'connector:fingerprint', value: connector.fingerprint });
+        }
+        Object.entries(stringFields).forEach(([key, value]) => {
+          importHashEntries.push({ key: `field:${key}`, value });
+        });
+        for (const [field, files] of Object.entries(fileMap)) {
+          if (field === 'planConfig') {
+            continue;
+          }
+          for (const [index, file] of files.entries()) {
+            const fileHash = await hashFileAtPath(file.path);
+            importHashEntries.push({ key: `file:${field}:${index}`, value: fileHash });
+          }
+        }
+
+        if (independentSources) {
+          importHashEntries.push({
+            key: 'field:independentSources',
+            value: JSON.stringify(independentSources),
+          });
+        }
+        if (independentArtifacts) {
+          importHashEntries.push({
+            key: 'field:independentArtifacts',
+            value: JSON.stringify(independentArtifacts),
+          });
+        }
+
+        const importHash = computeHash(importHashEntries);
+        const importId = createJobId(importHash);
+        const workspaceDir = path.join(directories.workspaces, tenantId, importId);
+        const importMetadataPath = path.join(workspaceDir, METADATA_FILE);
+
+        const cleanupTargets = new Set<string>();
+        const scheduleCleanup = (directory: string) => {
+          cleanupTargets.add(directory);
+        };
+
+        let importMetadata: ImportJobMetadata | undefined;
+        if (await storage.fileExists(importMetadataPath)) {
+          importMetadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
+          hydrateJobLicense(importMetadata, tenantId);
+          ensureJobLicense(tenantId, importId, license);
+        }
+
+        const level = asCertificationLevel(stringFields.level);
+
+        if (!importMetadata) {
+          scheduleCleanup(workspaceDir);
+          const importFileMap: FileMap = {};
+          Object.entries(fileMap).forEach(([field, files]) => {
+            if (field !== 'planConfig') {
+              importFileMap[field] = files;
+            }
+          });
+
+          const uploadedFiles = convertFileMap(importFileMap);
+          let persistedUploads: Record<string, string[]>;
+          try {
+            persistedUploads = await storage.persistUploads(
+              path.join(tenantId, importId),
+              uploadedFiles,
+            );
+          } catch (error) {
+            await ensureCleanup();
+            throw error;
+          }
+
+          const payload: ImportJobPayload = {
+            workspaceDir,
+            uploads: persistedUploads,
+            level: level ?? null,
+            projectName: stringFields.projectName ?? null,
+            projectVersion: stringFields.projectVersion ?? null,
+            independentSources: independentSources ?? null,
+            independentArtifacts: independentArtifacts ?? null,
+            license: toLicenseMetadata(license),
+            ...(connector ? { connector } : {}),
+          };
+
+          await jobHandlers.import({
+            tenantId,
+            id: importId,
+            kind: 'import',
+            hash: importHash,
+            payload,
+          });
+
+          importMetadata = await readJobMetadata<ImportJobMetadata>(storage, workspaceDir);
+          registerJobLicense(tenantId, importId, license);
+        }
+
+        if (!importMetadata) {
+          throw new HttpError(500, 'IMPORT_METADATA_MISSING', 'Import çıktıları bulunamadı.');
+        }
+
+        const workspace = await storage.readJson<ImportWorkspace>(
+          path.join(workspaceDir, 'workspace.json'),
+        );
+
+        const effectiveLevel = level ?? workspace.metadata.targetLevel ?? 'C';
+        const effectiveProjectName = stringFields.projectName ?? workspace.metadata.project?.name;
+        const effectiveProjectVersion =
+          stringFields.projectVersion ?? workspace.metadata.project?.version;
+
+        const fallbackObjectivesPath = path.resolve(
+          __dirname,
+          '../../../data/objectives/do178c_objectives.min.json',
+        );
+        const repositoryRoot = path.resolve(__dirname, '../../../');
+        const objectivesPathRaw = workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
+        let objectivesPath = path.isAbsolute(objectivesPathRaw)
+          ? objectivesPathRaw
+          : path.resolve(repositoryRoot, objectivesPathRaw);
+        try {
+          await fsPromises.access(objectivesPath, fs.constants.R_OK);
+        } catch {
+          objectivesPath = fallbackObjectivesPath;
+        }
+
+        const analyzeHashEntries = [
+          { key: 'importId', value: importId },
+          { key: 'level', value: effectiveLevel },
+          { key: 'projectName', value: effectiveProjectName ?? '' },
+          { key: 'projectVersion', value: effectiveProjectVersion ?? '' },
+          { key: 'objectives', value: objectivesPath },
+        ].filter((entry) => entry.value !== undefined) as HashEntry[];
+
+        const analyzeHash = computeHash(analyzeHashEntries);
+        const analyzeId = createJobId(analyzeHash);
+        const analysisDir = path.join(directories.analyses, tenantId, analyzeId);
+        const analyzeMetadataPath = path.join(analysisDir, METADATA_FILE);
+
+        let analyzeMetadata: AnalyzeJobMetadata | undefined;
+        if (await storage.fileExists(analyzeMetadataPath)) {
+          analyzeMetadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+          hydrateJobLicense(analyzeMetadata, tenantId);
+          ensureJobLicense(tenantId, analyzeId, license);
+        }
+
+        if (!analyzeMetadata) {
+          scheduleCleanup(analysisDir);
+          const analyzeOptions: AnalyzeOptions = {
+            input: workspaceDir,
+            output: analysisDir,
+            level: effectiveLevel,
+            objectives: objectivesPath,
+            projectName: effectiveProjectName,
+            projectVersion: effectiveProjectVersion,
+          };
+
+          const payload: AnalyzeJobPayload = {
+            workspaceDir,
+            analysisDir,
+            analyzeOptions,
+            importId,
+            license: toLicenseMetadata(license),
+          };
+
+          await jobHandlers.analyze({
+            tenantId,
+            id: analyzeId,
+            kind: 'analyze',
+            hash: analyzeHash,
+            payload,
+          });
+
+          analyzeMetadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+          registerJobLicense(tenantId, analyzeId, license);
+        }
+
+        if (!analyzeMetadata) {
+          throw new HttpError(500, 'ANALYSIS_METADATA_MISSING', 'Analiz çıktıları bulunamadı.');
+        }
+
+        const reportHashEntries: HashEntry[] = [
+          { key: 'analysisId', value: analyzeId },
+          { key: 'soiStage', value: requestedStage ?? '' },
+        ];
+        if (manifestId) {
+          reportHashEntries.push({ key: 'manifestId', value: manifestId });
+        }
+        if (planOverrides) {
+          reportHashEntries.push({ key: 'planOverrides', value: toStableJson(planOverrides) });
+        }
+
+        const reportHash = computeHash(reportHashEntries);
+        const reportId = createJobId(reportHash);
+        const reportDir = buildStageScopedDirectory(
+          directories.reports,
+          tenantId,
+          reportId,
+          requestedStage,
+        );
+        const reportMetadataPath = path.join(reportDir, METADATA_FILE);
+
+        let reportMetadata: ReportJobMetadata | undefined;
+        if (await storage.fileExists(reportMetadataPath)) {
+          reportMetadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
+          hydrateJobLicense(reportMetadata, tenantId);
+          ensureJobLicense(tenantId, reportId, license);
+        }
+
+        const derivedStage = (() => {
+          const tenantBase = path.join(directories.reports, tenantId);
+          const relative = path.relative(tenantBase, reportDir);
+          const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+          if (segments.length === 2) {
+            const [candidate] = segments;
+            if (candidate && isSoiStage(candidate)) {
+              return candidate;
+            }
+          }
+          return null;
+        })();
+
+        const metadataStage = (() => {
+          if (!reportMetadata) {
+            return derivedStage;
+          }
+          const stageValue = reportMetadata.params?.soiStage;
+          return typeof stageValue === 'string' && isSoiStage(stageValue) ? stageValue : derivedStage;
+        })();
+
+        const effectiveStage = requestedStage ?? metadataStage ?? null;
+
+        const packHashEntries: HashEntry[] = [
+          { key: 'reportId', value: reportId },
+          { key: 'packageName', value: packageName ?? '' },
+          { key: 'soiStage', value: effectiveStage ?? '' },
+        ];
+
+        if (postQuantumOptions !== undefined) {
+          if (postQuantumOptions === false) {
+            packHashEntries.push({ key: 'postQuantum', value: 'false' });
+          } else {
+            const fingerprint = toStableJson({
+              algorithm: postQuantumOptions.algorithm ?? null,
+              privateKey:
+                postQuantumOptions.privateKey !== undefined
+                  ? createHash('sha256').update(postQuantumOptions.privateKey).digest('hex')
+                  : undefined,
+              privateKeyPath: postQuantumOptions.privateKeyPath ?? null,
+              publicKey:
+                postQuantumOptions.publicKey !== undefined
+                  ? createHash('sha256').update(postQuantumOptions.publicKey).digest('hex')
+                  : undefined,
+              publicKeyPath: postQuantumOptions.publicKeyPath ?? null,
+            });
+            packHashEntries.push({ key: 'postQuantum', value: fingerprint });
+          }
+        }
+
+        const packHash = computeHash(packHashEntries);
+        const packId = createJobId(packHash);
+        const packageDir = buildStageScopedDirectory(
+          directories.packages,
+          tenantId,
+          packId,
+          effectiveStage ?? undefined,
+        );
+        const packMetadataPath = path.join(packageDir, METADATA_FILE);
+
+        let packMetadata: PackJobMetadata | undefined;
+        if (await storage.fileExists(packMetadataPath)) {
+          packMetadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
+          hydrateJobLicense(packMetadata, tenantId);
+          ensureJobLicense(tenantId, packId, license);
+        }
+
+        const respondWithMetadata = (reused: boolean) => {
+          if (!importMetadata || !analyzeMetadata || !reportMetadata || !packMetadata) {
+            throw new HttpError(500, 'PIPELINE_METADATA_INCOMPLETE', 'Pipeline çıktıları eksik.');
+          }
+
+          const statusCode = reused ? 200 : 201;
+          const cmsSignature = packMetadata.outputs.cmsSignature
+            ? {
+                ...packMetadata.outputs.cmsSignature,
+                path: storage.toRelativePath(packMetadata.outputs.cmsSignature.path),
+              }
+            : undefined;
+
+          res.status(statusCode).json({
+            status: 'completed',
+            reused,
+            id: packId,
+            manifestId: packMetadata.outputs.manifestId,
+            manifestDigest: packMetadata.outputs.manifestDigest,
+            import: {
+              id: importId,
+              hash: importHash,
+              createdAt: importMetadata.createdAt,
+              directory: storage.toRelativePath(importMetadata.directory),
+              workspace: storage.toRelativePath(importMetadata.outputs.workspacePath),
+              warnings: importMetadata.warnings,
+            },
+            analyze: {
+              id: analyzeId,
+              hash: analyzeHash,
+              createdAt: analyzeMetadata.createdAt,
+              directory: storage.toRelativePath(analyzeMetadata.directory),
+              snapshot: storage.toRelativePath(analyzeMetadata.outputs.snapshotPath),
+              analysis: storage.toRelativePath(analyzeMetadata.outputs.analysisPath),
+              traces: storage.toRelativePath(analyzeMetadata.outputs.tracePath),
+            },
+            report: {
+              id: reportId,
+              hash: reportHash,
+              createdAt: reportMetadata.createdAt,
+              directory: storage.toRelativePath(reportMetadata.directory),
+              complianceHtml: storage.toRelativePath(reportMetadata.outputs.complianceHtml),
+              complianceJson: storage.toRelativePath(reportMetadata.outputs.complianceJson),
+              complianceCsv: storage.toRelativePath(reportMetadata.outputs.complianceCsv),
+              traceHtml: storage.toRelativePath(reportMetadata.outputs.traceHtml),
+              traceCsv: storage.toRelativePath(reportMetadata.outputs.traceCsv),
+              gapsHtml: storage.toRelativePath(reportMetadata.outputs.gapsHtml),
+              analysis: storage.toRelativePath(reportMetadata.outputs.analysisPath),
+              snapshot: storage.toRelativePath(reportMetadata.outputs.snapshotPath),
+              traces: storage.toRelativePath(reportMetadata.outputs.tracesPath),
+            },
+            package: {
+              id: packId,
+              hash: packHash,
+              createdAt: packMetadata.createdAt,
+              directory: storage.toRelativePath(packMetadata.directory),
+              manifest: storage.toRelativePath(packMetadata.outputs.manifestPath),
+              archive: storage.toRelativePath(packMetadata.outputs.archivePath),
+              ledger: packMetadata.outputs.ledgerPath
+                ? storage.toRelativePath(packMetadata.outputs.ledgerPath)
+                : undefined,
+              ledgerRoot: packMetadata.outputs.ledgerRoot ?? null,
+              previousLedgerRoot: packMetadata.outputs.previousLedgerRoot ?? null,
+              cmsSignature,
+              postQuantumSignature: packMetadata.outputs.postQuantumSignature ?? undefined,
+            },
+          });
+        };
+
+        if (packMetadata) {
+          respondWithMetadata(true);
+          return;
+        }
+
+        const planConfigUploads = fileMap.planConfig ?? [];
+        let planConfigPath: string | undefined;
+
+        if (!reportMetadata) {
+          scheduleCleanup(reportDir);
+          if (planConfigUploads.length > 0) {
+            const persistedPlanConfig = await storage.persistUploads(
+              path.join(tenantId, reportId),
+              convertFileMap({ planConfig: planConfigUploads }),
+            );
+            planConfigPath = persistedPlanConfig.planConfig?.[0];
+          }
+
+          const reportOptions: StageAwareReportOptions = {
+            input: analysisDir,
+            output: reportDir,
+            manifestId,
+            ...(requestedStage ? { soiStage: requestedStage } : {}),
+          };
+          if (planConfigPath) {
+            reportOptions.planConfig = planConfigPath;
+          }
+          if (planOverrides) {
+            reportOptions.planOverrides = planOverrides;
+          }
+
+          const payload: ReportJobPayload = {
+            analysisDir,
+            reportDir,
+            reportOptions,
+            analysisId: analyzeId,
+            manifestId: manifestId ?? null,
+            soiStage: requestedStage ?? null,
+            planConfigPath: planConfigPath ?? null,
+            planOverrides: planOverrides ?? null,
+            license: toLicenseMetadata(license),
+          };
+
+          try {
+            await jobHandlers.report({
+              tenantId,
+              id: reportId,
+              kind: 'report',
+              hash: reportHash,
+              payload,
+            });
+          } catch (error) {
+            if (planConfigPath) {
+              await storage
+                .removeDirectory(path.join(directories.uploads, tenantId, reportId))
+                .catch(() => undefined);
+            }
+            throw error;
+          }
+
+          reportMetadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
+          registerJobLicense(tenantId, reportId, license);
+        }
+
+        if (!reportMetadata) {
+          throw new HttpError(500, 'REPORT_METADATA_MISSING', 'Rapor çıktıları bulunamadı.');
+        }
+
+        scheduleCleanup(packageDir);
+        const packPayload: PackJobPayload = {
+          reportDir,
+          packageDir,
+          packageName,
+          signingKeyPath,
+          reportId,
+          soiStage: effectiveStage,
+          ...(postQuantumOptions !== undefined ? { postQuantum: postQuantumOptions } : {}),
+          license: toLicenseMetadata(license),
+        };
+
+        await jobHandlers.pack({
+          tenantId,
+          id: packId,
+          kind: 'pack',
+          hash: packHash,
+          payload: packPayload,
+        });
+
+        packMetadata = await readJobMetadata<PackJobMetadata>(storage, packageDir);
+        registerJobLicense(tenantId, packId, license);
+
+        respondWithMetadata(false);
+      } catch (error) {
+        await Promise.all(
+          [...cleanupTargets].map((directory) =>
+            storage.removeDirectory(directory).catch(() => undefined),
+          ),
+        );
+        throw error;
+      } finally {
+        await ensureCleanup();
+      }
+    }),
+  );
+
   app.post(
     '/v1/import',
     requireAuth,
@@ -8867,25 +10008,49 @@ export const createServer = (config: ServerConfig): Express => {
       }
 
       const safeAsset = asset.replace(/^\/+/, '');
-      const targetPath = path.resolve(reportDir, safeAsset);
-      const relative = path.relative(reportDir, targetPath);
+      const targetPath = path.join(reportDir, safeAsset);
+      const normalizedPath = path.normalize(targetPath);
+      const relative = path.relative(reportDir, normalizedPath);
       if (relative.startsWith('..') || path.isAbsolute(relative)) {
         throw new HttpError(400, 'INVALID_PATH', 'İstenen dosya yolu izin verilen dizin dışında.');
       }
 
-      if (!(await storage.fileExists(targetPath))) {
+      if (!(await storage.fileExists(normalizedPath))) {
         throw new HttpError(404, 'NOT_FOUND', 'Rapor dosyası bulunamadı.');
       }
 
-      await new Promise<void>((resolve, reject) => {
-        res.sendFile(targetPath, (error) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
+      if (isFileSystemStorage) {
+        const absolutePath = path.resolve(normalizedPath);
+        await new Promise<void>((resolve, reject) => {
+          res.sendFile(absolutePath, (error) => {
+            if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
         });
+        return;
+      }
+
+      const typedResponse = res.type(safeAsset);
+      const inferredType = typedResponse.get('Content-Type') ?? 'application/octet-stream';
+      res.setHeader('Content-Type', inferredType);
+      res.setHeader('Cache-Control', 'private, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      const info = await storage.getFileInfo(normalizedPath).catch(() => undefined);
+      if (info?.size !== undefined) {
+        res.setHeader('Content-Length', info.size.toString());
+      }
+
+      const stream = await storage.openReadStream(normalizedPath);
+      stream.once('error', (error) => {
+        if (!res.headersSent) {
+          res.removeHeader('Content-Length');
+        }
+        res.destroy(error);
       });
+      await streamPipeline(stream, res);
     }),
   );
 
@@ -8984,6 +10149,7 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   Reflect.set(app, SERVER_CONTEXT_SYMBOL, lifecycle);
+  Reflect.set(app, STORAGE_CONTEXT_SYMBOL, storage);
 
   return app;
 };

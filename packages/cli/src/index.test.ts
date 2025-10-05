@@ -6,6 +6,7 @@ import https from 'https';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
+import * as childProcess from 'child_process';
 import type { AddressInfo } from 'net';
 import type { ArgumentsCamelCase } from 'yargs';
 import yargsFactory from 'yargs/yargs';
@@ -1581,6 +1582,140 @@ describe('CLI pipeline workflows', () => {
     expect(analysisData.warnings).toEqual(
       expect.arrayContaining([
         expect.stringContaining('iz grafiği içermiyor; değişiklik etkisi hesaplanamadı'),
+      ]),
+    );
+  });
+
+  it('loads change impact insights from a git baseline reference', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
+    const inputDir = path.join(tempRoot, 'change-impact-git-input');
+    const analysisDir = path.join(tempRoot, 'change-impact-git-analysis');
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    const baselineSnapshot = await fs.readFile(
+      path.join(fixtureDir, 'baseline-snapshot.json'),
+      'utf8',
+    );
+
+    jest
+      .spyOn(childProcess, 'execFile')
+      .mockImplementation(
+        ((command: string, args: ReadonlyArray<string>, options: childProcess.ExecFileOptions, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
+          const error = new Error('stdout maxBuffer exceeded') as NodeJS.ErrnoException;
+          error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          callback(error, '', '');
+          return {} as childProcess.ChildProcess;
+        }) as unknown as typeof childProcess.execFile,
+      );
+
+    const spawnMock = jest
+      .spyOn(childProcess, 'spawn')
+      .mockImplementation(
+        ((command: string, args: ReadonlyArray<string>, options?: childProcess.SpawnOptions) => {
+          expect(command).toBe('git');
+          expect(args).toEqual(['show', 'main:.soipack/out/snapshot.json']);
+
+          const child = new EventEmitter() as childProcess.ChildProcess;
+          const stdout = new PassThrough();
+          const stderr = new PassThrough();
+          stdout.setEncoding('utf8');
+          stderr.setEncoding('utf8');
+          Object.assign(child, { stdout, stderr });
+
+          process.nextTick(() => {
+            stdout.emit('data', baselineSnapshot);
+            child.emit('close', 0);
+          });
+
+          return child;
+        }) as unknown as typeof childProcess.spawn,
+      );
+
+    const analysisResult = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+      baselineGitRef: 'main',
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'snapshot.json'), 'utf8'),
+    ) as { changeImpact?: unknown };
+    expect(snapshot.changeImpact).toBeDefined();
+    expect(spawnMock).toHaveBeenCalled();
+  });
+
+  it('prefers explicit baseline snapshot over git ref when both are provided', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
+    const inputDir = path.join(tempRoot, 'change-impact-prefers-file-input');
+    const analysisDir = path.join(tempRoot, 'change-impact-prefers-file-analysis');
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    const execMock = jest.spyOn(childProcess, 'execFile');
+
+    const analysisResult = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+      baselineSnapshot: path.join(fixtureDir, 'baseline-snapshot.json'),
+      baselineGitRef: 'feature/test',
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+    expect(execMock).not.toHaveBeenCalled();
+
+    const snapshot = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'snapshot.json'), 'utf8'),
+    ) as { changeImpact?: unknown };
+    expect(snapshot.changeImpact).toBeDefined();
+  });
+
+  it('records a warning when the git baseline reference cannot be resolved', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
+    const inputDir = path.join(tempRoot, 'change-impact-git-failure-input');
+    const analysisDir = path.join(tempRoot, 'change-impact-git-failure-analysis');
+    await fs.mkdir(inputDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(inputDir, 'workspace.json'));
+
+    jest
+      .spyOn(childProcess, 'execFile')
+      .mockImplementation(
+        ((command: string, args: ReadonlyArray<string>, options: childProcess.ExecFileOptions, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
+          const error = new Error('fatal: bad revision') as NodeJS.ErrnoException;
+          error.code = '128';
+          callback(error, '', 'fatal: bad revision');
+          return {} as childProcess.ChildProcess;
+        }) as unknown as typeof childProcess.execFile,
+      );
+
+    const spawnMock = jest.spyOn(childProcess, 'spawn');
+
+    const analysisResult = await runAnalyze({
+      input: inputDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+      baselineGitRef: 'missing/ref',
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    const analysisData = JSON.parse(
+      await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+    ) as { warnings: string[]; metadata: { changeImpact?: unknown } };
+    expect(analysisData.metadata.changeImpact).toBeUndefined();
+    expect(analysisData.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'Git referansı missing/ref için baseline snapshot okunamadı (.soipack/out/snapshot.json): fatal: bad revision',
+        ),
       ]),
     );
   });
