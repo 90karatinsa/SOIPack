@@ -489,6 +489,194 @@ components:
             postQuantumSignature:
               $ref: '#/components/schemas/PostQuantumSignatureMetadata'
               nullable: true
+    IngestPipelineResponse:
+      type: object
+      required:
+        - status
+        - reused
+        - id
+        - manifestId
+        - manifestDigest
+        - import
+        - analyze
+        - report
+        - package
+      properties:
+        status:
+          type: string
+          enum: [completed]
+          description: İşlem hattının yürütülme durumu.
+        reused:
+          type: boolean
+          description: İşlem hattının daha önce üretilmiş sonuçları kullandığını belirtir.
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+          description: Paketleme işinin hash tabanlı kimliği.
+        manifestId:
+          type: string
+          description: Üretilen manifestin kısa kimliği.
+        manifestDigest:
+          type: string
+          description: Manifestin SHA-256 özeti.
+        import:
+          $ref: '#/components/schemas/IngestPipelineImportSummary'
+        analyze:
+          $ref: '#/components/schemas/IngestPipelineAnalyzeSummary'
+        report:
+          $ref: '#/components/schemas/IngestPipelineReportSummary'
+        package:
+          $ref: '#/components/schemas/IngestPipelinePackageSummary'
+    IngestPipelineImportSummary:
+      type: object
+      required:
+        - id
+        - hash
+        - createdAt
+        - directory
+        - workspace
+        - warnings
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        hash:
+          type: string
+          description: Import işini belirleyen içerik karması.
+        createdAt:
+          type: string
+          format: date-time
+        directory:
+          type: string
+          description: Depolama sağlayıcısındaki import çalışma dizini.
+        workspace:
+          type: string
+          description: workspace.json dosyasının göreli yolu.
+        warnings:
+          type: array
+          items:
+            type: string
+    IngestPipelineAnalyzeSummary:
+      type: object
+      required:
+        - id
+        - hash
+        - createdAt
+        - directory
+        - snapshot
+        - analysis
+        - traces
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        hash:
+          type: string
+          description: Analiz işinin içerik karması.
+        createdAt:
+          type: string
+          format: date-time
+        directory:
+          type: string
+        snapshot:
+          type: string
+          description: Compliance snapshot JSON dosyasının göreli yolu.
+        analysis:
+          type: string
+          description: Analiz özeti JSON dosyasının göreli yolu.
+        traces:
+          type: string
+          description: İzlenebilirlik çıktılarının göreli yolu.
+    IngestPipelineReportSummary:
+      type: object
+      required:
+        - id
+        - hash
+        - createdAt
+        - directory
+        - complianceHtml
+        - complianceJson
+        - complianceCsv
+        - traceHtml
+        - traceCsv
+        - gapsHtml
+        - analysis
+        - snapshot
+        - traces
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        hash:
+          type: string
+          description: Rapor işinin içerik karması.
+        createdAt:
+          type: string
+          format: date-time
+        directory:
+          type: string
+        complianceHtml:
+          type: string
+        complianceJson:
+          type: string
+        complianceCsv:
+          type: string
+        traceHtml:
+          type: string
+        traceCsv:
+          type: string
+        gapsHtml:
+          type: string
+        analysis:
+          type: string
+          description: Analiz özeti JSON dosyasının göreli yolu.
+        snapshot:
+          type: string
+          description: Compliance snapshot JSON dosyasının göreli yolu.
+        traces:
+          type: string
+          description: İzlenebilirlik çıktılarının göreli yolu.
+    IngestPipelinePackageSummary:
+      type: object
+      required:
+        - id
+        - hash
+        - createdAt
+        - directory
+        - manifest
+        - archive
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{16}$'
+        hash:
+          type: string
+          description: Paketleme işinin içerik karması.
+        createdAt:
+          type: string
+          format: date-time
+        directory:
+          type: string
+        manifest:
+          type: string
+        archive:
+          type: string
+        ledger:
+          type: string
+          nullable: true
+          description: Paketlenen ledger arşivinin göreli yolu.
+        ledgerRoot:
+          type: string
+          nullable: true
+        previousLedgerRoot:
+          type: string
+          nullable: true
+        cmsSignature:
+          $ref: '#/components/schemas/CmsSignatureMetadata'
+          nullable: true
+        postQuantumSignature:
+          $ref: '#/components/schemas/PostQuantumSignatureMetadata'
+          nullable: true
     ReviewTarget:
       type: object
       required:
@@ -897,6 +1085,147 @@ components:
           type: array
           items:
             type: string
+    RemediationPlanResponse:
+      type: object
+      required:
+        - generatedAt
+        - actions
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+          description: Remediation planının üretildiği zaman damgası.
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemediationPlanAction'
+          description: Uyumluluk boşluklarını kapatmak için önerilen eylemler.
+    RemediationPlanAction:
+      type: object
+      required:
+        - objectiveId
+        - priority
+        - issues
+        - missingArtifacts
+        - links
+      properties:
+        objectiveId:
+          type: string
+          description: Uyumluluk hedefinin benzersiz kimliği.
+        priority:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Eylemin öncelik derecesi.
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemediationPlanIssue'
+          description: Bu hedef için giderilmesi gereken eksiklikler.
+        missingArtifacts:
+          type: array
+          items:
+            type: string
+            enum:
+              - plan
+              - standard
+              - review
+              - analysis
+              - test
+              - coverage_stmt
+              - coverage_dec
+              - coverage_mcdc
+              - trace
+              - cm_record
+              - qa_record
+              - problem_report
+              - conformity
+              - design
+          description: Eksik olduğu belirlenen artefakt türlerinin benzersiz listesi.
+        links:
+          type: array
+          description: İlgili kanıt veya çıktı dosyalarına referanslar.
+          items:
+            type: string
+    RemediationPlanIssue:
+      oneOf:
+        - $ref: '#/components/schemas/RemediationGapIssue'
+        - $ref: '#/components/schemas/RemediationIndependenceIssue'
+    RemediationGapIssue:
+      type: object
+      required:
+        - type
+        - category
+        - missingArtifacts
+      properties:
+        type:
+          type: string
+          enum: [gap]
+        category:
+          type: string
+          enum:
+            - plans
+            - standards
+            - reviews
+            - analysis
+            - tests
+            - coverage
+            - trace
+            - configuration
+            - quality
+            - issues
+            - conformity
+          description: Eksikliğin ait olduğu kanıt kategorisi.
+        missingArtifacts:
+          type: array
+          items:
+            type: string
+            enum:
+              - plan
+              - standard
+              - review
+              - analysis
+              - test
+              - coverage_stmt
+              - coverage_dec
+              - coverage_mcdc
+              - trace
+              - cm_record
+              - qa_record
+              - problem_report
+              - conformity
+              - design
+    RemediationIndependenceIssue:
+      type: object
+      required:
+        - type
+        - independence
+        - missingArtifacts
+      properties:
+        type:
+          type: string
+          enum: [independence]
+        independence:
+          type: string
+          enum: [none, recommended, required]
+          description: Bağımsızlık kapsamı ihtiyacı.
+        missingArtifacts:
+          type: array
+          items:
+            type: string
+            enum:
+              - plan
+              - standard
+              - review
+              - analysis
+              - test
+              - coverage_stmt
+              - coverage_dec
+              - coverage_mcdc
+              - trace
+              - cm_record
+              - qa_record
+              - problem_report
+              - conformity
     ComplianceRiskBreakdownEntry:
       type: object
       required: [factor, contribution, weight, details]
@@ -933,6 +1262,166 @@ components:
           items:
             type: string
             enum: [coverage, testing, analysis, audit]
+    StageRiskForecastResponse:
+      type: object
+      required:
+        - generatedAt
+        - stages
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+          description: Risk simülasyonunun oluşturulduğu zaman damgası.
+        stages:
+          type: array
+          description: Her SOI aşaması için tahmin edilen risk dağılımları.
+          items:
+            $ref: '#/components/schemas/StageRiskForecastEntry'
+    StageRiskForecastEntry:
+      type: object
+      required:
+        - stage
+        - probability
+        - classification
+        - horizonDays
+        - credibleInterval
+        - posterior
+        - baseline
+        - percentiles
+        - statistics
+        - sparkline
+      properties:
+        stage:
+          type: string
+          enum: [SOI-1, SOI-2, SOI-3, SOI-4]
+        probability:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          description: Belirlenen ufuk boyunca uyum regresyonu olasılığı (yüzde).
+        classification:
+          type: string
+          enum: [nominal, guarded, elevated, critical]
+        horizonDays:
+          type: integer
+          minimum: 1
+          description: Simülasyonun öngördüğü ufuk uzunluğu (gün cinsinden).
+        credibleInterval:
+          $ref: '#/components/schemas/StageRiskCredibleInterval'
+        posterior:
+          $ref: '#/components/schemas/StageRiskPosteriorSummary'
+        baseline:
+          type: object
+          required:
+            - coverage
+            - failureRate
+            - backlogSeverity
+          properties:
+            coverage:
+              type: number
+              format: double
+              description: Tarihsel kapsam puanı yüzdesi.
+            failureRate:
+              type: number
+              format: double
+              description: Test başarısızlık oranı yüzdesi.
+            backlogSeverity:
+              type: number
+              format: double
+              description: Kuyruktaki açık işlerin ağırlıklı şiddeti.
+        percentiles:
+          type: object
+          required:
+            - p50
+            - p90
+            - p95
+            - p99
+          properties:
+            p50:
+              type: number
+              format: double
+            p90:
+              type: number
+              format: double
+            p95:
+              type: number
+              format: double
+            p99:
+              type: number
+              format: double
+        statistics:
+          type: object
+          required:
+            - mean
+            - stddev
+            - min
+            - max
+          properties:
+            mean:
+              type: number
+              format: double
+            stddev:
+              type: number
+              format: double
+            min:
+              type: number
+              format: double
+            max:
+              type: number
+              format: double
+        sparkline:
+          type: array
+          items:
+            $ref: '#/components/schemas/StageRiskSparklinePoint'
+        updatedAt:
+          type: string
+          format: date-time
+          description: İlgili uyum trend verisinin son güncelleme zamanı.
+    StageRiskCredibleInterval:
+      type: object
+      required: [lower, upper, confidence]
+      properties:
+        lower:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        upper:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+    StageRiskPosteriorSummary:
+      type: object
+      required: [alpha, beta, sampleSize]
+      properties:
+        alpha:
+          type: number
+          format: double
+        beta:
+          type: number
+          format: double
+        sampleSize:
+          type: integer
+          minimum: 0
+    StageRiskSparklinePoint:
+      type: object
+      required: [timestamp, regressionRatio]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        regressionRatio:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
     ComplianceLedgerEvidenceLink:
       type: object
       required: [snapshotId, hash]
@@ -1805,6 +2294,191 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Yetki yetersiz.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/ingest:
+    post:
+      operationId: runIngestPipeline
+      summary: Import → analyze → report → pack zincirini tek istekte çalıştırır.
+      description: |
+        Dosya yüklerini ve isteğe bağlı bağlayıcı yapılandırmasını kullanarak import,
+        analyze, report ve pack işlemlerini sıralı biçimde yürütür. Aynı dosya ve
+        seçenek kombinasyonları tekrar gönderildiğinde önceki çalışma yeniden
+        kullanılır. İşlem hattının yürütülmesi için lisansın `import`, `analyze`,
+        `report` ve `pack` özelliklerini etkinleştirmiş olması gerekir.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LicenseHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                license:
+                  type: string
+                  format: binary
+                  description: Lisans anahtarı dosyası (başlıkla gönderilirse opsiyoneldir).
+                jira:
+                  type: string
+                  format: binary
+                  description: Jira gereksinim CSV dışa aktarımı.
+                jiraDefects:
+                  type: array
+                  description: Jira hata CSV dışa aktarımları; alan çoklu dosya kabul eder.
+                  items:
+                    type: string
+                    format: binary
+                reqif:
+                  type: string
+                  format: binary
+                  description: ReqIF gereksinim paketi.
+                junit:
+                  type: string
+                  format: binary
+                  description: JUnit XML test sonuçları.
+                lcov:
+                  type: string
+                  format: binary
+                  description: LCOV kapsam raporu.
+                cobertura:
+                  type: string
+                  format: binary
+                  description: Cobertura kapsam raporu.
+                git:
+                  type: string
+                  format: binary
+                  description: Kaynak kodu veya yapı artefaktları arşivi.
+                objectives:
+                  type: string
+                  format: binary
+                  description: Uyumluluk hedefleri JSON dosyası.
+                traceLinksCsv:
+                  type: string
+                  format: binary
+                  description: CSV formatında izlenebilirlik matrisi.
+                traceLinksJson:
+                  type: string
+                  format: binary
+                  description: JSON formatında izlenebilirlik matrisi.
+                designCsv:
+                  type: string
+                  format: binary
+                  description: Tasarım izlenebilirlik CSV dışa aktarımı.
+                polyspace:
+                  type: string
+                  format: binary
+                  description: Polyspace analiz çıktısı (örn. ZIP arşivi).
+                ldra:
+                  type: string
+                  format: binary
+                  description: LDRA kapsam veya test arşivi.
+                vectorcast:
+                  type: string
+                  format: binary
+                  description: VectorCAST kapsam/test arşivi.
+                qaLogs:
+                  type: array
+                  description: QA denetim günlükleri; birden fazla dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
+                connector:
+                  $ref: '#/components/schemas/ImportConnectorPayload'
+                  description: >-
+                    Polarion, Jenkins, DOORS Next, Jama veya Jira Cloud bağlayıcılarından kanıt
+                    toplamak için kullanılan yapılandırma. Değer multipart gövde içinde JSON
+                    olarak gönderilmelidir.
+                independentSources:
+                  type: array
+                  description: Bağımsız kaynak kanıt kimlikleri listesi.
+                  items:
+                    type: string
+                independentArtifacts:
+                  type: array
+                  description: Bağımsız artefakt kanıt kimlikleri listesi.
+                  items:
+                    type: string
+                projectName:
+                  type: string
+                projectVersion:
+                  type: string
+                level:
+                  type: string
+                  description: Sertifikasyon seviyesi (A-E).
+                soiStage:
+                  type: string
+                  enum: [SOI-1, SOI-2, SOI-3, SOI-4]
+                  description: Rapor ve paket çıktılarının ilişkilendirileceği SOI aşaması.
+                manifestId:
+                  type: string
+                  description: Paket çıktılarının ilişkilendirileceği manifest kimliği.
+                packageName:
+                  type: string
+                  description: Üretilecek paket arşivinin adı.
+                planConfig:
+                  type: string
+                  format: binary
+                  description: Test planı yapılandırma dosyası.
+                planOverrides:
+                  type: string
+                  description: JSON olarak kodlanmış rapor planı ayarları.
+                postQuantum:
+                  type: string
+                  description: >-
+                    JSON kodlu SPHINCS+ imzalama seçenekleri veya `false` değeri hibrit imzayı
+                    devre dışı bırakmak için kullanılabilir.
+              additionalProperties: false
+            encoding:
+              connector:
+                contentType: application/json
+              planOverrides:
+                contentType: application/json
+              postQuantum:
+                contentType: application/json
+      responses:
+        '201':
+          description: İşlem hattı başarıyla tamamlandı ve yeni çıktılar üretildi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestPipelineResponse'
+        '200':
+          description: Aynı girdiler için daha önce üretilmiş sonuçlar döndürüldü.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestPipelineResponse'
+        '400':
+          description: Geçersiz istek veya eksik giriş verisi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Lisans gerekli özellikleri içermiyor veya kiracı eşleşmiyor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: İstek oranı sınırı aşıldı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: İstenen uzaktan bağlayıcı henüz desteklenmiyor.
           content:
             application/json:
               schema:
@@ -2694,6 +3368,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/compliance/remediation-plan:
+    get:
+      operationId: getRemediationPlan
+      summary: Analiz sonuçlarından iyileştirme planı üretir.
+      description: |
+        Belirtilen analiz çıktılarındaki boşluk ve bağımsızlık özetlerini kullanarak
+        önceliklendirilmiş iyileştirme eylemleri listesini döndürür. İstek, analiz
+        kimliğinin ve isteğe bağlı SOI aşamasının sorgu parametresi olarak
+        sağlanmasını gerektirir.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: analysisId
+          required: true
+          description: İyileştirme planının üretileceği analiz işinin kimliği.
+          schema:
+            type: string
+        - in: query
+          name: soiStage
+          required: false
+          description: Aşamaya özgü analiz çıktıları kullanmak için SOI kimliği.
+          schema:
+            type: string
+            enum: [SOI-1, SOI-2, SOI-3, SOI-4]
+      responses:
+        '200':
+          description: İyileştirme planı başarıyla oluşturuldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemediationPlanResponse'
+        '400':
+          description: Geçersiz sorgu parametresi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: İstenen analiz veya çıktı dizinleri bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Analiz çıktıları eksik veya tamamlanmamış.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: İstek oranı sınırı aşıldı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/compliance/summary:
     get:
       operationId: getComplianceSummary
@@ -2726,6 +3470,54 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/risk/stage-forecast:
+    get:
+      operationId: getStageRiskForecast
+      summary: SOI aşamalarına göre uyum riski tahminlerini döner.
+      description: |
+        Tarihsel uyum kayıtlarını, test geçmişini ve değişiklik kuyruğu verilerini
+        kullanarak her SOI aşaması için Monte Carlo simülasyonları ve Bayesian
+        tahminler üretir. Sonuçlar kısa süreli bir önbellekten sunulur.
+      tags:
+        - Risk
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Aşama bazlı risk tahminleri başarıyla oluşturuldu.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Tahmin yanıtı için önbellek yönergesi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageRiskForecastResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Yeterli uyum geçmişi bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: İstek oranı sınırı aşıldı.
           content:
             application/json:
               schema:

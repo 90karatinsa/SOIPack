@@ -7,6 +7,9 @@ import path from 'path';
 import process from 'process';
 import { pipeline as streamPipeline } from 'stream/promises';
 import { inflateRawSync } from 'zlib';
+import { execFile, spawn } from 'child_process';
+import type { ExecFileOptionsWithStringEncoding } from 'child_process';
+import { promisify } from 'util';
 
 import {
   importCobertura,
@@ -159,6 +162,15 @@ const getCurrentDate = (): Date =>
   hasFixedTimestamp ? new Date(parsedFixedTimestamp!.getTime()) : new Date();
 
 const getCurrentTimestamp = (): string => getCurrentDate().toISOString();
+
+const execFileAsync = promisify(execFile) as (
+  file: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+) => Promise<{ stdout: string; stderr: string }>;
+
+const DEFAULT_BASELINE_GIT_SNAPSHOT_PATH = '.soipack/out/snapshot.json';
+const DEFAULT_GIT_SHOW_MAX_BUFFER = 10 * 1024 * 1024;
 
 interface ImportPaths {
   jira?: string;
@@ -3731,6 +3743,7 @@ export interface AnalyzeOptions {
   projectVersion?: string;
   stage?: SoiStage;
   baselineSnapshot?: string;
+  baselineGitRef?: string;
 }
 
 export interface AnalyzeResult {
@@ -3833,6 +3846,24 @@ const normalizeBaselineSnapshotOption = (value: unknown): string | undefined => 
   }
 
   return resolvedPath;
+};
+
+const normalizeBaselineGitRefOption = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+
+  if (typeof candidate !== 'string') {
+    throw new Error("'--baseline-git-ref' seçeneği için geçerli bir git referansı belirtilmelidir.");
+  }
+
+  const trimmed = candidate.trim();
+  return trimmed || undefined;
 };
 
 const sortObjectives = (objectives: Objective[]): Objective[] => {
@@ -3984,6 +4015,124 @@ const formatObjectivesTable = (objectives: Objective[]): string => {
   return lines.join('\n');
 };
 
+const parseBaselineTraceGraph = (
+  raw: string,
+  label: string,
+  warnings: string[],
+): TraceGraph | undefined => {
+  try {
+    const parsed = JSON.parse(raw) as { traceGraph?: TraceGraph } | null;
+    const candidate = parsed?.traceGraph;
+    if (candidate && Array.isArray(candidate.nodes)) {
+      return candidate;
+    }
+    warnings.push(
+      `Baseline snapshot ${label} iz grafiği içermiyor; değişiklik etkisi hesaplanamadı.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    warnings.push(`Baseline snapshot ${label} okunamadı: ${message}.`);
+  }
+  return undefined;
+};
+
+const readBaselineSnapshotFromGit = async (
+  ref: string,
+  snapshotPath: string,
+  cwd?: string,
+): Promise<string> => {
+  try {
+    const { stdout } = await execFileAsync('git', ['show', `${ref}:${snapshotPath}`], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: DEFAULT_GIT_SHOW_MAX_BUFFER,
+    });
+    return stdout;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      return await new Promise<string>((resolve, reject) => {
+        const child = spawn('git', ['show', `${ref}:${snapshotPath}`], {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout?.setEncoding('utf8');
+        child.stdout?.on('data', (chunk: string) => {
+          stdout += chunk;
+        });
+        child.stderr?.setEncoding('utf8');
+        child.stderr?.on('data', (chunk: string) => {
+          stderr += chunk;
+        });
+        child.on('error', reject);
+        child.on('close', (code) => {
+          if (code === 0) {
+            resolve(stdout);
+          } else {
+            const message = stderr.trim() || `git show exited with code ${code}`;
+            reject(new Error(message));
+          }
+        });
+      });
+    }
+    throw error;
+  }
+};
+
+const loadBaselineTraceGraph = async (options: {
+  baselineSnapshot?: string;
+  baselineGitRef?: string;
+  gitSnapshotPath?: string;
+  cwd?: string;
+}): Promise<{ traceGraph?: TraceGraph; warnings: string[] }> => {
+  const warnings: string[] = [];
+  if (options.baselineSnapshot) {
+    const baselinePath = path.resolve(options.baselineSnapshot);
+    try {
+      const raw = await fsPromises.readFile(baselinePath, 'utf8');
+      const label = path.relative(process.cwd(), baselinePath) || baselinePath;
+      return {
+        traceGraph: parseBaselineTraceGraph(raw, label, warnings),
+        warnings,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const label = path.relative(process.cwd(), baselinePath) || baselinePath;
+      warnings.push(`Baseline snapshot ${label} okunamadı: ${message}.`);
+      return { warnings };
+    }
+  }
+
+  if (options.baselineGitRef) {
+    const snapshotPath = options.gitSnapshotPath ?? DEFAULT_BASELINE_GIT_SNAPSHOT_PATH;
+    const normalizedSnapshotPath = snapshotPath.split(path.sep).join('/');
+    try {
+      const raw = await readBaselineSnapshotFromGit(
+        options.baselineGitRef,
+        normalizedSnapshotPath,
+        options.cwd,
+      );
+      return {
+        traceGraph: parseBaselineTraceGraph(
+          raw,
+          `${options.baselineGitRef}:${normalizedSnapshotPath}`,
+          warnings,
+        ),
+        warnings,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(
+        `Git referansı ${options.baselineGitRef} için baseline snapshot okunamadı (${normalizedSnapshotPath}): ${message}.`,
+      );
+      return { warnings };
+    }
+  }
+
+  return { warnings };
+};
+
 const buildImportBundle = (
   workspace: ImportWorkspace,
   objectives: Objective[],
@@ -4028,30 +4177,11 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   );
 
   const bundle = buildImportBundle(workspace, filteredObjectives, level);
-  let baselineTraceGraph: TraceGraph | undefined;
-  const baselineWarnings: string[] = [];
-  if (options.baselineSnapshot) {
-    const baselinePath = path.resolve(options.baselineSnapshot);
-    try {
-      const raw = await fsPromises.readFile(baselinePath, 'utf8');
-      const parsed = JSON.parse(raw) as { traceGraph?: TraceGraph } | null;
-      const candidate = parsed?.traceGraph;
-      if (candidate && Array.isArray(candidate.nodes)) {
-        baselineTraceGraph = candidate;
-      } else {
-        const label = path.relative(process.cwd(), baselinePath) || baselinePath;
-        baselineWarnings.push(
-          `Baseline snapshot ${label} iz grafiği içermiyor; değişiklik etkisi hesaplanamadı.`,
-        );
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const label = path.relative(process.cwd(), baselinePath) || baselinePath;
-      baselineWarnings.push(
-        `Baseline snapshot ${label} okunamadı: ${message}.`,
-      );
-    }
-  }
+  const { traceGraph: baselineTraceGraph, warnings: baselineWarnings } =
+    await loadBaselineTraceGraph({
+      baselineSnapshot: options.baselineSnapshot,
+      baselineGitRef: options.baselineGitRef,
+    });
 
   const snapshot = generateComplianceSnapshot(
     bundle,
@@ -5619,6 +5749,7 @@ export interface IngestPipelineOptions {
   projectVersion?: string;
   stage?: SoiStage;
   baselineSnapshot?: string;
+  baselineGitRef?: string;
 }
 
 export interface IngestPipelineResult {
@@ -5732,6 +5863,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     projectVersion: options.projectVersion,
     stage: options.stage,
     baselineSnapshot: options.baselineSnapshot,
+    baselineGitRef: options.baselineGitRef,
   });
 
   const reportResult = await runReport({
@@ -6755,6 +6887,7 @@ interface RunConfig {
   inputs?: ImportPaths;
   analysis?: {
     baselineSnapshot?: string;
+    baselineGitRef?: string;
   };
   output?: {
     work?: string;
@@ -6829,6 +6962,7 @@ export const runPipeline = async (
   const baselineSnapshotFromConfig = config.analysis?.baselineSnapshot
     ? path.resolve(baseDir, config.analysis.baselineSnapshot)
     : undefined;
+  const baselineGitRefFromConfig = config.analysis?.baselineGitRef;
   const analyzeResult = await runAnalyze({
     input: workDir,
     output: analysisDir,
@@ -6837,6 +6971,7 @@ export const runPipeline = async (
     projectName: config.project?.name,
     projectVersion: config.project?.version,
     baselineSnapshot: baselineSnapshotFromConfig,
+    baselineGitRef: baselineGitRefFromConfig,
   });
 
   const planConfigFromConfig = config.report?.planConfig
@@ -7621,6 +7756,18 @@ if (require.main === module) {
             describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
             type: 'string',
             coerce: normalizeBaselineSnapshotOption,
+          })
+          .option('baseline-git-ref', {
+            describe:
+              'Git deposundan referans uyum snapshot\'ını okumak için kullanılacak referans (örn. main).',
+            type: 'string',
+            coerce: normalizeBaselineGitRefOption,
+          })
+          .option('baseline-git-ref', {
+            describe:
+              'Git deposundan referans uyum snapshot\'ını okumak için kullanılacak referans (örn. main).',
+            type: 'string',
+            coerce: normalizeBaselineGitRefOption,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -7651,6 +7798,7 @@ if (require.main === module) {
             projectVersion: argv.projectVersion as string | undefined,
             stage,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
+            baselineGitRef: argv.baselineGitRef as string | undefined,
           });
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
@@ -7877,6 +8025,12 @@ if (require.main === module) {
             describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
             type: 'string',
             coerce: normalizeBaselineSnapshotOption,
+          })
+          .option('baseline-git-ref', {
+            describe:
+              'Git deposundan referans uyum snapshot\'ını okumak için kullanılacak referans (örn. main).',
+            type: 'string',
+            coerce: normalizeBaselineGitRefOption,
           }),
       async (argv) => {
         const logger = getLogger(argv);
@@ -7915,6 +8069,7 @@ if (require.main === module) {
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
+            baselineGitRef: argv.baselineGitRef as string | undefined,
           });
 
           logger.info(
@@ -8365,6 +8520,7 @@ if (require.main === module) {
             projectName: argv.projectName as string | undefined,
             projectVersion: argv.projectVersion as string | undefined,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
+            baselineGitRef: argv.baselineGitRef as string | undefined,
             signingKey,
             packageName,
             ledger: ledgerOptions,

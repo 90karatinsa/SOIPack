@@ -135,7 +135,47 @@ dosya okunamazsa aynı çalıştırmanın `analysis.json` çıktısına bir uyar
 ve değişiklik etkisi hesaplanmadan devam edilir. Başarılı durumlarda baseline
 grafiği `generateComplianceSnapshot` çağrısına aktarılır, böylece güncel iz
 grafiği ile kıyaslanarak değişiklik puanlaması yapılır ve sonuçlar hem
-`snapshot.json` hem de `analysis.json` metaverisine yazılır.【F:packages/cli/src/index.ts†L3249-L3294】【F:packages/cli/src/index.test.ts†L828-L902】
+`snapshot.json` hem de `analysis.json` metaverisine yazılır.【F:packages/cli/src/index.ts†L4083-L4189】【F:packages/cli/src/index.test.ts†L1488-L1556】
+
+##### Git referansından baseline yüklemek
+
+Yerel dosya belirtmek yerine `--baseline-git-ref <etiket|dal|commit>` bayrağı
+ile repodaki başka bir revizyondan snapshot okumak mümkündür. CLI, referansın
+altındaki varsayılan `.soipack/out/snapshot.json` yolunu `git show <ref>:.soipack/out/snapshot.json`
+komutuyla akış olarak çeker; özel bir yol gerekiyorsa her zaman
+`--baseline-snapshot` bayrağı önceliklidir. Seçeneklerin tamamı için
+[Kullanım](#kullanım) bölümündeki `analyze` komutu örneğini inceleyebilirsiniz.
+Pipeline aynı girdilerle çalıştırıldığında kimliklendirilmiş revizyonları
+`git tag -a soipack/baseline-<tarih>` gibi açıklamalı etiketlerle işaretlemek,
+gelecekteki `--baseline-git-ref` çağrılarında tutarlı snapshot'lara dönmenizi
+kolaylaştırır.【F:packages/cli/src/index.ts†L4107-L4184】【F:packages/cli/src/index.test.ts†L1589-L1718】
+
+CLI, baseline kaynaklarını aşağıdaki sırayla değerlendirir:
+
+1. `--baseline-snapshot` ile belirtilen yerel dosya.
+2. `--baseline-git-ref` ile getirilen git snapshot'ı.
+3. Önceki çıktılara erişilemezse baseline olmadan devam edilir.
+
+Bu mekanizma, air-gapped ortamlarda `.soipack/out/snapshot.json` varsayılan
+yolunun tar-ball veya paket arşivleriyle birlikte transfer edilmesini;
+geliştirme kollarında ise `git fetch --tags` ile etiketlerin senkronize
+edilmesini gerektirir.
+
+###### Sık karşılaşılan git kaynaklı sorunlar
+
+- **Detached HEAD üzerinde çalışmak:** CI sistemleri `HEAD` detached durumda
+  olabilir; `--baseline-git-ref` için açıklamalı etiket veya doğrudan commit
+  karması kullanın. `git show` referansı çözemediğinde CLI uyarı yazar ve
+  baseline olmadan devam eder.
+- **Sparse checkout kullanımı:** Depoda `git sparse-checkout` etkinse
+  `.soipack/out/snapshot.json` yolunun sparse listesinde olduğundan emin olun;
+  aksi halde `git show` boş içerik döndürebilir. Geçici olarak
+  `git sparse-checkout add .soipack/out/snapshot.json` komutuyla erişimi
+  genişletin.
+- **Büyük snapshot dosyaları:** On binlerce düğüm içeren snapshot'lar git
+  transferini yavaşlatabilir. Bu durumda baseline'ı yerelde saklayıp
+  `--baseline-snapshot` ile paylaşın veya eski revizyonlarda yalnızca gerekli
+  modülleri içeren hafifletilmiş snapshot'lar üretin.
 
 Değişiklik etkisi skorları; düğümdeki doğrudan değişiklikler, gereksinim/test
 kapsamı ve bağlantı ripple etkilerinin ağırlıklı toplamıyla (`base + coverage +

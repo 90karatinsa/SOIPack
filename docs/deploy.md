@@ -225,16 +225,84 @@ Sunucu `SIGTERM` veya `SIGINT` aldığında yeni bağlantıları durdurur, bekle
 
 Sunucu sağlıklı dönerse çıktı `{"status":"ok"}` olacaktır; yanlış veya eksik bearer başlığı `401 UNAUTHORIZED` sonucu verir. Tüm iş çıktıları (yüklemeler, analizler, raporlar ve paketler) varsayılan olarak `data/` dizininde saklanır ve konteyner yeniden başlatıldığında korunur. Aynı dizin altında oluşturulan `.queue/` klasörü, durdurulup yeniden başlatılan örneklerin kuyruk durumunu (bekleyen, çalışan veya tamamlanan işler) kalıcı olarak saklar; bu sayede bekleyen işler yeniden kuyruğa alınmadan devam eder. Dosya tabanlı depolama yerine PostgreSQL/S3 gibi alternatifleri tercih ediyorsanız `packages/server/src/storage.ts` altında tanımlı `StorageProvider` arayüzünü uygulayarak `createServer` fonksiyonuna özel bir sağlayıcı enjekte edebilirsiniz.
 
+#### S3 tabanlı depolama yapılandırması
+
+`SOIPACK_STORAGE_BACKEND=s3` olarak ayarlandığında veya `SOIPACK_STORAGE_S3_BUCKET` değeri tanımlandığında sunucu, kalıcı depolama için Amazon S3'ü kullanır. Bu mod etkinleştiğinde aşağıdaki ortam değişkenleri doğrulanır:
+
+- `SOIPACK_STORAGE_S3_BUCKET`: İçeriklerin yazılacağı bucket adı (zorunlu).
+- `SOIPACK_STORAGE_S3_REGION`: S3 istemcisinin bağlanacağı bölge (zorunlu).
+- `SOIPACK_STORAGE_S3_PREFIX`: Tüm yolların önüne eklenecek isteğe bağlı dizin benzeri önek (ör. `prod/tenants`).
+- `SOIPACK_STORAGE_S3_KMS_KEY_ID`: Sunucu tarafı şifreleme için kullanılacak KMS anahtarı kimliği (isteğe bağlı).
+
+Ortam değişkenlerinden yalnızca bucket veya bölge eksikse başlatma sırasında hata alınır; değişkenler hiç tanımlanmadıysa sunucu otomatik olarak yerel dosya sistemine geri döner. Aynı davranış, bucket değişkeni boş bırakılıp `SOIPACK_STORAGE_BACKEND` değeri ayarlanmamışsa da geçerlidir; bu sayede air-gapped dağıtımlar varsayılan olarak `data/` dizinini kullanmaya devam eder.
+
+S3 depolamasına erişen servis hesabının en az ayrıcalıkla yetkilendirilmesi gerekir. Aşağıdaki IAM politikası, yalnızca belirli bucket/prefix altına yazma, listeleme ve silme yetkilerini verir; kendi bucket ve önek değerlerinize uyarlayın:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::example-soipack-bucket/prod/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::example-soipack-bucket",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "prod/*"
+        }
+      }
+    }
+  ]
+}
+```
+
+`SOIPACK_STORAGE_S3_KMS_KEY_ID` tanımlandığında yukarıdaki izne `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey` ve `kms:DescribeKey` çağrılarını içeren ek bir IAM politikası da ekleyin. Bu anahtar yalnızca SOIPack tarafından yönetilen nesneleri şifrelemek için kullanılmalıdır; KMS üzerinde otomatik rotasyon etkinleştirmeniz önerilir.
+
+S3 arka ucu etkin olduğunda indirme uç noktaları (`/v1/reports/:id/:asset`, `/v1/packages/:id/archive` vb.) nesneleri doğrudan S3'ten akış olarak sunar; bu sayede büyük raporlar veya paketler de disk üzerinde ekstra kopya oluşturmadan kullanıcıya iletilir.
+
 Kanıt yüklemeleri, uyum kayıtları ve dondurulmuş konfigürasyon sürümleri de aynı kalıcı dizinde `tenants/<tenantId>/` altındaki JSON dosyalarına yazılır. Sunucunun yeniden başlatılması durumunda aynı `SOIPACK_STORAGE_DIR` yolu yeniden bağlanırsa REST API bu dosyaları okuyarak önceki kanıtları, uyum raporlarını ve dondurulmuş snapshot sürümlerini otomatik olarak geri yükler. Kalıcı depolama ayrılmadığında veya dizin temizlendiğinde bu veriler kaybolur; bu nedenle üretim ortamlarında depolamanın dışarıya (örneğin bir volume ya da ağ paylaşımı) kalıcı şekilde bağlandığından emin olun.
 
 ## 3. Örnek Pipeline Çağrısı
 
-Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak uçtan uca PDF raporu oluşturur. Komutları çalıştırmadan önce geçerli bir JWT üretip `TOKEN` değişkenini ayarlayın:
+Air-gapped pipeline senaryolarında hem tek isteklik ingest hattını hem de ayrık uç noktaları kullanabilirsiniz. Komutları çalıştırmadan önce geçerli bir JWT üretip `TOKEN` değişkenini ayarlayın:
 
 ```bash
 TOKEN=$(./jwt-olustur.sh)
 BASE_URL=https://localhost:3443
 ```
+
+### /v1/ingest ile tek seferde pipeline
+
+Air-gapped ortamlarda HTTP yuvalarını en aza indirmek için `POST /v1/ingest` uç noktası, yükleme aşamalarını tek istekte birleştirir. İstemci aynı `multipart/form-data` form alanlarını (ör. `reqif`, `junit`, `lcov`, `objectives`) gönderir ve isteğe bağlı olarak bağlayıcı yapılandırmasını (`connectorConfig`) JSON olarak ekleyebilir. Sunucu geçerli lisansın `import`, `analyze`, `report` ve `pack` özelliklerini içerdiğini doğruladıktan sonra şu adımları tek işlemde yürütür:
+
+1. Dosyaları kalıcı depolamaya aktarır ve iş parametrelerine göre benzersiz bir iş dizini oluşturur.
+2. Analiz ve rapor süreçlerini sıralı olarak tetikler; her adımın çıktıları aynı iş kimliğiyle ilişkilendirilir.
+3. Paketleme aşamasını çalıştırarak `manifest.json` ve `manifest.sig` dosyalarını üretir.
+
+Yanıt yapısı aşağıdaki üst düzey alanları içerir:
+
+- `workspaceId`: Yüklenen kaynakların saklandığı dizin kimliği.
+- `analysisId`: Analiz çıktılarının yazıldığı iş kimliği.
+- `reportId`: PDF/HTML raporlarının bulunduğu dizin kimliği.
+- `packageId`: Oluşturulan arşiv/manifest paketinin kimliği.
+- `snapshot`: Analiz sırasında oluşturulan `analysis.json`/`snapshot.json` çiftini özetleyen metadata.
+
+Aynı dosya karmaları ve iş parametreleriyle tekrar eden istekler, önceki işin meta verilerini döndürerek 200 yanıtıyla sonuçlanır; böylece ağ üzerinden ikinci bir yükleme yapılmaz. Tek isteklik bu akış, air-gapped hatlarında TLS el sıkışması ve kimlik doğrulaması için gereken round-trip sayısını azaltır, upload penceresini kısa tutar ve kuyruğa alınan iş sayısını tahmin etmeyi kolaylaştırır.
+
+### Ayrık uç noktalarla manuel yürütme
+
+Aşağıdaki örnek, `examples/minimal/` dizinindeki demo verilerini kullanarak uçtan uca PDF raporu oluşturur:
 
 1. Gereken demo dosyalarını içeren bir import isteği gönderin:
    ```bash
