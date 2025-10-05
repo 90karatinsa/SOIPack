@@ -63,6 +63,7 @@ beforeEach(() => {
   window.localStorage.clear();
   streamInstances.length = 0;
   mockGraphvizLayout.mockClear();
+  capturedImports.length = 0;
   createStreamMock.mockImplementation((options: ComplianceStreamOptions) => {
     const close = jest.fn();
     streamInstances.push({ options, close });
@@ -335,6 +336,7 @@ const jobStore = new Map<string, JobState<unknown>>();
 const licensePayload = { tenant: 'demo', expiresAt: '2025-12-31T00:00:00Z' };
 const expectedLicenseHeader = Buffer.from(JSON.stringify(licensePayload)).toString('base64');
 const capturedLicenses: string[] = [];
+const capturedImports: Array<Record<string, string[]>> = [];
 
 type LicenseResponse = ReturnType<ResponseComposition<DefaultBodyType>>;
 
@@ -372,6 +374,18 @@ const server = setupServer(
     if (authError) {
       return authError;
     }
+    const formData = await _req.formData();
+    const entries: Record<string, string[]> = {};
+    formData.forEach((value, key) => {
+      const bucket = entries[key] ?? [];
+      if (typeof value === 'string') {
+        bucket.push(value);
+      } else {
+        bucket.push(value.name);
+      }
+      entries[key] = bucket;
+    });
+    capturedImports.push(entries);
     const jobId = 'job-import';
     const result: ImportJobResult = {
       warnings: ['REQ-2 testleri eksik'],
@@ -701,15 +715,24 @@ describe('App integration', () => {
     await screen.findByText('Kaynak: Panodan yapıştırıldı');
 
     const file = new File(['reqif'], 'requirements.reqif', { type: 'application/xml' });
+    const planFile = new File(['plan'], 'PSAC.pdf', { type: 'application/pdf' });
+    const qaFile = new File(['qa'], 'qa-record.csv', { type: 'text/csv' });
+    const simulinkFile = new File(['coverage'], 'simulink-coverage.json', { type: 'application/json' });
     const fileInput = screen.getByLabelText(/Dosyaları sürükleyip bırakın ya da seçin/i, { selector: 'input' });
     await act(async () => {
-      await user.upload(fileInput, file);
+      await user.upload(fileInput, [file, planFile, qaFile, simulinkFile]);
     });
 
     const runButton = screen.getByRole('button', { name: 'Pipeline Başlat' });
     await act(async () => {
       await user.click(runButton);
     });
+
+    await waitFor(() => expect(capturedImports).toHaveLength(1));
+    expect(capturedImports[0].plan).toEqual(['PSAC.pdf']);
+    expect(capturedImports[0].qa_record).toEqual(['qa-record.csv']);
+    expect(capturedImports[0].simulink).toEqual(['simulink-coverage.json']);
+    expect(capturedImports[0].reqif).toEqual(['requirements.reqif']);
 
     const downloadButton = screen.getByRole('button', { name: 'Rapor paketini indir' });
     await waitFor(() => expect(downloadButton).toBeEnabled(), { timeout: 10000 });

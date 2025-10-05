@@ -11,6 +11,8 @@ import {
   type StageIdentifier,
   type CoverageStatus,
 } from '../types/pipeline';
+import { MANUAL_ARTIFACT_TYPES } from '../types/connectors';
+import type { ManualArtifactType, ManualArtifactsSelection } from '../types/connectors';
 
 export interface AuditLogEntry {
   id: string;
@@ -1134,6 +1136,7 @@ interface ImportOptions {
   signal?: AbortSignal;
   independentSources?: string[];
   independentArtifacts?: string[];
+  manualArtifacts?: ManualArtifactsSelection;
   polarion?: PolarionConnectorConfig;
   jenkins?: JenkinsConnectorConfig;
   doorsNext?: DoorsNextConnectorConfig;
@@ -1141,8 +1144,61 @@ interface ImportOptions {
   jiraCloud?: JiraCloudConnectorConfig;
 }
 
+const isManualArtifactType = (value: string): value is ManualArtifactType =>
+  MANUAL_ARTIFACT_TYPES.includes(value as ManualArtifactType);
+
+const createManualArtifactBuckets = (
+  manualArtifacts?: ManualArtifactsSelection,
+): Map<string, ManualArtifactType[]> => {
+  const buckets = new Map<string, ManualArtifactType[]>();
+  if (!manualArtifacts) {
+    return buckets;
+  }
+  for (const [typeKey, names] of Object.entries(manualArtifacts)) {
+    if (!isManualArtifactType(typeKey) || !Array.isArray(names)) {
+      continue;
+    }
+    names
+      .map((name) => (typeof name === 'string' ? name.trim() : ''))
+      .filter((name): name is string => name.length > 0)
+      .forEach((name) => {
+        const normalized = name.toLowerCase();
+        const existing = buckets.get(normalized) ?? [];
+        if (!existing.includes(typeKey)) {
+          existing.push(typeKey);
+        }
+        buckets.set(normalized, existing);
+      });
+  }
+  return buckets;
+};
+
+const takeManualArtifactForFile = (
+  fileName: string,
+  buckets: Map<string, ManualArtifactType[]>,
+): ManualArtifactType | undefined => {
+  const normalized = fileName.trim().toLowerCase();
+  const existing = buckets.get(normalized);
+  if (!existing || existing.length === 0) {
+    return undefined;
+  }
+  const [next, ...rest] = existing;
+  if (rest.length > 0) {
+    buckets.set(normalized, rest);
+  } else {
+    buckets.delete(normalized);
+  }
+  return next;
+};
+
 const inferImportField = (file: File): string | undefined => {
   const name = file.name.toLowerCase();
+  if (
+    (name.endsWith('.json') || name.endsWith('.zip') || name.endsWith('.mldatx')) &&
+    (name.includes('simulink') || name.includes('modelcov') || name.includes('model-cov') || name.includes('slcov'))
+  ) {
+    return 'simulink';
+  }
   if (name.includes('polyspace')) {
     return 'polyspace';
   }
@@ -1198,6 +1254,7 @@ export const importArtifacts = async ({
   signal,
   independentSources,
   independentArtifacts,
+  manualArtifacts,
   polarion,
   jenkins,
   doorsNext,
@@ -1207,8 +1264,11 @@ export const importArtifacts = async ({
   const formData = new FormData();
   let appended = 0;
 
+  const manualArtifactBuckets = createManualArtifactBuckets(manualArtifacts);
+
   files.forEach((file) => {
-    const field = inferImportField(file) ?? 'objectives';
+    const manualField = takeManualArtifactForFile(file.name, manualArtifactBuckets);
+    const field = manualField ?? inferImportField(file) ?? 'objectives';
     formData.append(field, file);
     appended += 1;
   });

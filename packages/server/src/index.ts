@@ -38,6 +38,8 @@ import {
   ManifestFileEntry,
   ManifestMerkleSummary,
   Objective,
+  ObjectiveArtifactType,
+  objectiveArtifactTypes,
   objectiveCatalogById,
   SnapshotVersion,
   SoiStage,
@@ -1144,6 +1146,12 @@ interface BaseJobMetadata {
 
 interface ImportJobMetadata extends BaseJobMetadata {
   kind: 'import';
+  params: BaseJobMetadata['params'] & {
+    manualArtifacts?: ManualArtifactUploads | null;
+    files?: Record<string, string[]>;
+    independentSources?: string[] | null;
+    independentArtifacts?: string[] | null;
+  };
   warnings: string[];
   outputs: {
     workspacePath: string;
@@ -2091,6 +2099,14 @@ const listStageAwareJobEntries = async (
   return results;
 };
 
+type ManualArtifactUploads = Partial<Record<ObjectiveArtifactType, string[]>>;
+
+const manualArtifactTypes = new Set<ObjectiveArtifactType>(objectiveArtifactTypes);
+const manualArtifactFieldDescriptors = objectiveArtifactTypes.map((name) => ({
+  name,
+  maxCount: 25,
+}));
+
 const convertFileMap = (fileMap: FileMap): UploadedFileMap => {
   const result: UploadedFileMap = {};
   Object.entries(fileMap).forEach(([field, files]) => {
@@ -2124,6 +2140,15 @@ const matchesMimeType = (value: string, pattern: string): boolean => {
   }
   return normalizedValue === normalizedPattern;
 };
+
+const manualArtifactMimeTypes = [
+  'application/pdf',
+  'application/json',
+  'text/*',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/octet-stream',
+];
 
 const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => ({
   [LICENSE_FILE_FIELD]: {
@@ -2244,6 +2269,26 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
       'application/octet-stream',
     ],
   },
+  simulink: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+      'application/json',
+      'application/xml',
+      'text/*',
+    ],
+  },
+  ...Object.fromEntries(
+    objectiveArtifactTypes.map((artifact) => [
+      artifact,
+      {
+        maxSizeBytes: maxUploadSize,
+        allowedMimeTypes: manualArtifactMimeTypes,
+      },
+    ]),
+  ),
 });
 
 const mergeUploadPolicies = (
@@ -2742,6 +2787,7 @@ interface ImportJobPayload {
   projectVersion?: string | null;
   independentSources?: string[] | null;
   independentArtifacts?: string[] | null;
+  manualArtifacts?: ManualArtifactUploads | null;
   license: JobLicenseMetadata;
   connector?: ConnectorConfig | null;
 }
@@ -5100,6 +5146,15 @@ export const createServer = (config: ServerConfig): Express => {
       try {
         const qaLogUploads = payload.uploads.qaLogs ?? [];
         const jiraDefectUploads = payload.uploads.jiraDefects ?? [];
+        const simulinkUpload = payload.uploads.simulink?.[0];
+        const manualArtifacts = payload.manualArtifacts
+          ? Object.entries(payload.manualArtifacts).reduce<ManualArtifactUploads>((acc, [key, values]) => {
+              if (values && values.length > 0) {
+                acc[key as ObjectiveArtifactType] = [...values];
+              }
+              return acc;
+            }, {})
+          : undefined;
         const importOptions: ImportOptions = {
           output: payload.workspaceDir,
           jira: payload.uploads.jira?.[0],
@@ -5115,6 +5170,7 @@ export const createServer = (config: ServerConfig): Express => {
           polyspace: payload.uploads.polyspace?.[0],
           ldra: payload.uploads.ldra?.[0],
           vectorcast: payload.uploads.vectorcast?.[0],
+          simulink: simulinkUpload,
           qaLogs: qaLogUploads.length > 0 ? [...qaLogUploads] : undefined,
           objectives: payload.uploads.objectives?.[0],
           level: payload.level ?? undefined,
@@ -5133,6 +5189,10 @@ export const createServer = (config: ServerConfig): Express => {
                 ? undefined
                 : payload.independentArtifacts,
         };
+
+        if (manualArtifacts && Object.keys(manualArtifacts).length > 0) {
+          importOptions.manualArtifacts = manualArtifacts;
+        }
 
         if (payload.connector) {
           switch (payload.connector.type) {
@@ -5170,6 +5230,15 @@ export const createServer = (config: ServerConfig): Express => {
             projectVersion: payload.projectVersion ?? null,
             independentSources: payload.independentSources ?? null,
             independentArtifacts: payload.independentArtifacts ?? null,
+            manualArtifacts:
+              manualArtifacts && Object.keys(manualArtifacts).length > 0
+                ? Object.fromEntries(
+                    Object.entries(manualArtifacts).map(([key, values]) => [
+                      key,
+                      values.map((value) => path.basename(value)),
+                    ]),
+                  )
+                : null,
             files: Object.fromEntries(
               Object.entries(payload.uploads).map(([key, values]) => [
                 key,
@@ -8771,6 +8840,8 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'ldra', maxCount: 1 },
     { name: 'vectorcast', maxCount: 1 },
     { name: 'qaLogs', maxCount: 25 },
+    { name: 'simulink', maxCount: 1 },
+    ...manualArtifactFieldDescriptors,
   ]);
 
   const reportFields = upload.fields([
@@ -8796,6 +8867,8 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'vectorcast', maxCount: 1 },
     { name: 'qaLogs', maxCount: 25 },
     { name: 'planConfig', maxCount: 1 },
+    { name: 'simulink', maxCount: 1 },
+    ...manualArtifactFieldDescriptors,
   ]);
 
   app.post(
@@ -9541,6 +9614,16 @@ export const createServer = (config: ServerConfig): Express => {
           throw error;
         }
 
+        const manualArtifactUploads = Object.entries(persistedUploads).reduce<ManualArtifactUploads>((acc, [field, values]) => {
+          if (manualArtifactTypes.has(field as ObjectiveArtifactType) && values.length > 0) {
+            acc[field as ObjectiveArtifactType] = [...values];
+          }
+          return acc;
+        }, {});
+
+        const manualArtifactsPayload =
+          Object.keys(manualArtifactUploads).length > 0 ? manualArtifactUploads : null;
+
         try {
           const job = await enqueueObservedJob<ImportJobResult, ImportJobPayload>({
             tenantId,
@@ -9556,6 +9639,7 @@ export const createServer = (config: ServerConfig): Express => {
               projectVersion: stringFields.projectVersion ?? null,
               independentSources: independentSources ?? null,
               independentArtifacts: independentArtifacts ?? null,
+              manualArtifacts: manualArtifactsPayload,
               license: toLicenseMetadata(license),
               ...(connector ? { connector } : {}),
             },

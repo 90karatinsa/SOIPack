@@ -6,6 +6,26 @@ import type {
   PolarionConnectorConfig,
 } from '../services/api';
 
+export const MANUAL_ARTIFACT_TYPES = [
+  'plan',
+  'standard',
+  'review',
+  'analysis',
+  'test',
+  'coverage_stmt',
+  'coverage_dec',
+  'coverage_mcdc',
+  'trace',
+  'cm_record',
+  'qa_record',
+  'problem_report',
+  'conformity',
+] as const;
+
+export type ManualArtifactType = (typeof MANUAL_ARTIFACT_TYPES)[number];
+
+export type ManualArtifactsSelection = Partial<Record<ManualArtifactType, string[]>>;
+
 export interface PolarionConnectorFormState {
   enabled: boolean;
   baseUrl: string;
@@ -66,5 +86,6 @@ export interface UploadRunPayload {
   independentSources: string[];
   independentArtifacts: string[];
   connectors: RemoteConnectorPayload;
+  manualArtifacts: ManualArtifactsSelection;
 }
 

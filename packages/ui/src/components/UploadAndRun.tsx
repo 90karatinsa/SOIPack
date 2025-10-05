@@ -1,10 +1,13 @@
-import { useMemo, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 
+import { MANUAL_ARTIFACT_TYPES } from '../types/connectors';
 import type {
   DoorsNextConnectorFormState,
   JamaConnectorFormState,
   JenkinsConnectorFormState,
   JiraCloudConnectorFormState,
+  ManualArtifactType,
+  ManualArtifactsSelection,
   PolarionConnectorFormState,
   RemoteConnectorPayload,
   UploadRunPayload,
@@ -86,6 +89,143 @@ const INDEPENDENT_ARTIFACT_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'conformity', label: 'Uygunluk bildirimi' },
 ];
 
+type ManualSelection = ManualArtifactType | 'auto' | 'unassigned';
+
+const MANUAL_ARTIFACT_LABELS: Record<ManualArtifactType, string> = {
+  plan: 'Plan dokümanları',
+  standard: 'Standart / politika kayıtları',
+  review: 'Gözden geçirme kayıtları',
+  analysis: 'Analiz artefaktları',
+  test: 'Test kanıtları',
+  coverage_stmt: 'Statement coverage',
+  coverage_dec: 'Decision coverage',
+  coverage_mcdc: 'MC/DC coverage',
+  trace: 'İzlenebilirlik kayıtları',
+  cm_record: 'Yapılandırma yönetimi kayıtları',
+  qa_record: 'QA denetim kayıtları',
+  problem_report: 'Problem raporları',
+  conformity: 'Uygunluk bildirimi',
+};
+
+const manualBadgeManualClass = 'border border-brand/40 bg-brand/10 text-brand';
+
+const MANUAL_SELECTION_LABELS: Record<ManualSelection, string> = {
+  auto: 'Otomatik seçim',
+  unassigned: 'Seçim gerekli',
+  plan: MANUAL_ARTIFACT_LABELS.plan,
+  standard: MANUAL_ARTIFACT_LABELS.standard,
+  review: MANUAL_ARTIFACT_LABELS.review,
+  analysis: MANUAL_ARTIFACT_LABELS.analysis,
+  test: MANUAL_ARTIFACT_LABELS.test,
+  coverage_stmt: MANUAL_ARTIFACT_LABELS.coverage_stmt,
+  coverage_dec: MANUAL_ARTIFACT_LABELS.coverage_dec,
+  coverage_mcdc: MANUAL_ARTIFACT_LABELS.coverage_mcdc,
+  trace: MANUAL_ARTIFACT_LABELS.trace,
+  cm_record: MANUAL_ARTIFACT_LABELS.cm_record,
+  qa_record: MANUAL_ARTIFACT_LABELS.qa_record,
+  problem_report: MANUAL_ARTIFACT_LABELS.problem_report,
+  conformity: MANUAL_ARTIFACT_LABELS.conformity,
+};
+
+const MANUAL_SELECTION_BADGE_STYLES: Record<ManualSelection, string> = {
+  auto: 'border border-slate-700/70 bg-slate-900/60 text-slate-200',
+  unassigned: 'border border-amber-500/40 bg-amber-500/10 text-amber-200',
+  plan: manualBadgeManualClass,
+  standard: manualBadgeManualClass,
+  review: manualBadgeManualClass,
+  analysis: manualBadgeManualClass,
+  test: manualBadgeManualClass,
+  coverage_stmt: manualBadgeManualClass,
+  coverage_dec: manualBadgeManualClass,
+  coverage_mcdc: manualBadgeManualClass,
+  trace: manualBadgeManualClass,
+  cm_record: manualBadgeManualClass,
+  qa_record: manualBadgeManualClass,
+  problem_report: manualBadgeManualClass,
+  conformity: manualBadgeManualClass,
+};
+
+const MANUAL_ARTIFACT_OPTIONS: Array<{ value: ManualSelection; label: string; disabled?: boolean }>
+  = [
+    { value: 'unassigned', label: 'Artefakt seçiniz...', disabled: true },
+    { value: 'auto', label: 'Otomatik (sunucuya bırak)' },
+    ...MANUAL_ARTIFACT_TYPES.map((value) => ({ value, label: MANUAL_ARTIFACT_LABELS[value] })),
+  ];
+
+const formatFileSize = (size: number): string => {
+  if (size > 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (size > 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${size} B`;
+};
+
+const getFileKey = (file: File): string => `${file.name}:${file.lastModified}:${file.size}`;
+
+const isManualArtifactTypeValue = (value: string): value is ManualArtifactType =>
+  MANUAL_ARTIFACT_TYPES.includes(value as ManualArtifactType);
+
+const isManualSelectionValue = (value: string): value is ManualSelection =>
+  value === 'auto' || value === 'unassigned' || isManualArtifactTypeValue(value);
+
+const isManualArtifactSelection = (value: ManualSelection): value is ManualArtifactType =>
+  value !== 'auto' && value !== 'unassigned';
+
+const inferManualSelection = (file: File): ManualSelection => {
+  const name = file.name.toLowerCase();
+  if (/(psac|phac|plan)/i.test(name)) {
+    return 'plan';
+  }
+  if (/(stdp|standard|policy)/i.test(name)) {
+    return 'standard';
+  }
+  if (/(peer[-_]?review|review|svr|pvr|cvr)/i.test(name)) {
+    return 'review';
+  }
+  if (/(analysis|assessment|hazard|safety)/i.test(name)) {
+    return 'analysis';
+  }
+  if (/(test|procedure|result)/i.test(name) && !name.includes('contest')) {
+    return 'test';
+  }
+  if (/mcdc/i.test(name)) {
+    return 'coverage_mcdc';
+  }
+  if (/(decision|dcov)/i.test(name)) {
+    return 'coverage_dec';
+  }
+  if (/(statement|stmt)/i.test(name)) {
+    return 'coverage_stmt';
+  }
+  if (/(trace|matrix)/i.test(name)) {
+    return 'trace';
+  }
+  if (/(cm[-_]?record|configuration[-_]?management)/i.test(name)) {
+    return 'cm_record';
+  }
+  if (/(qa|quality|audit)/i.test(name)) {
+    return 'qa_record';
+  }
+  if (/(problem|issue|defect|bug|pr[-_]?)/i.test(name)) {
+    return 'problem_report';
+  }
+  if (/conform/i.test(name) || /compliance/i.test(name)) {
+    return 'conformity';
+  }
+
+  if (
+    ['.reqif', '.xml', '.json', '.zip', '.tar', '.tgz', '.gz', '.info', '.csv', '.xlsx', '.xls'].some((ext) =>
+      name.endsWith(ext),
+    )
+  ) {
+    return 'auto';
+  }
+
+  return 'unassigned';
+};
+
 const toggleSelection = (values: string[], value: string): string[] =>
   values.includes(value) ? values.filter((entry) => entry !== value) : [...values, value];
 
@@ -152,6 +292,9 @@ export function UploadAndRun({
   packJobStatus,
   postQuantumSignature,
 }: UploadAndRunProps) {
+  const [manualSelections, setManualSelections] = useState<Record<string, ManualSelection>>({});
+  const [manualSelectionError, setManualSelectionError] = useState<string | null>(null);
+
   const totalSize = useMemo(() => {
     if (!files.length) return '0 B';
     const size = files.reduce((acc, file) => acc + file.size, 0);
@@ -164,7 +307,44 @@ export function UploadAndRun({
     return `${size} B`;
   }, [files]);
 
+  useEffect(() => {
+    setManualSelections((previous) => {
+      const next: Record<string, ManualSelection> = {};
+      files.forEach((file) => {
+        const key = getFileKey(file);
+        next[key] = previous[key] ?? inferManualSelection(file);
+      });
+      return next;
+    });
+    if (files.length === 0) {
+      setManualSelectionError(null);
+    }
+  }, [files]);
+
+  useEffect(() => {
+    if (files.length === 0) {
+      return;
+    }
+    const hasMissingSelection = files.some((file) => {
+      const selection = manualSelections[getFileKey(file)] ?? 'unassigned';
+      return selection === 'unassigned';
+    });
+    if (!hasMissingSelection) {
+      setManualSelectionError(null);
+    }
+  }, [files, manualSelections]);
+
   const trim = (value: string): string => value.trim();
+
+  const handleManualSelectionChange = (fileKey: string, value: string) => {
+    if (!isManualSelectionValue(value)) {
+      return;
+    }
+    setManualSelections((previous) => ({
+      ...previous,
+      [fileKey]: value,
+    }));
+  };
 
   const buildConnectorPayload = (): RemoteConnectorPayload => {
     const connectors: RemoteConnectorPayload = {};
@@ -301,10 +481,34 @@ export function UploadAndRun({
   };
 
   const handleRunClick = () => {
+    if (!isEnabled || isRunning || !canRun) {
+      return;
+    }
+
+    const hasMissingSelection = files.some((file) => {
+      const selection = manualSelections[getFileKey(file)] ?? 'unassigned';
+      return selection === 'unassigned';
+    });
+
+    if (hasMissingSelection) {
+      setManualSelectionError('Lütfen tüm dosyalar için DO-178C artefakt türü seçin.');
+      return;
+    }
+
+    const manualArtifacts: ManualArtifactsSelection = {};
+    files.forEach((file) => {
+      const selection = manualSelections[getFileKey(file)];
+      if (selection && isManualArtifactSelection(selection)) {
+        const existing = manualArtifacts[selection] ?? [];
+        manualArtifacts[selection] = [...existing, file.name];
+      }
+    });
+
     onRun({
       independentSources,
       independentArtifacts,
       connectors: buildConnectorPayload(),
+      manualArtifacts,
     });
   };
 
@@ -369,6 +573,80 @@ export function UploadAndRun({
               </div>
             </div>
           </label>
+          {files.length > 0 && (
+            <div
+              className="space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/40 p-4"
+              data-testid="manual-artifact-list"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Yüklenen dosyalar
+                </h3>
+                <span className="text-[11px] text-slate-500">
+                  DO-178C artefakt sınıflandırmasını seçin
+                </span>
+              </div>
+              <ul className="space-y-3">
+                {files.map((file, index) => {
+                  const fileKey = getFileKey(file);
+                  const selection = manualSelections[fileKey] ?? 'unassigned';
+                  const selectId = `manual-artifact-${index}`;
+                  const badgeClass = MANUAL_SELECTION_BADGE_STYLES[selection];
+                  const badgeLabel = MANUAL_SELECTION_LABELS[selection];
+                  return (
+                    <li
+                      key={fileKey}
+                      className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-4"
+                      data-testid={`manual-artifact-item-${index}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-100">{file.name}</p>
+                          <p className="text-xs text-slate-500">{formatFileSize(file.size)}</p>
+                        </div>
+                        <span
+                          data-testid={`manual-artifact-badge-${index}`}
+                          className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-medium ${badgeClass}`}
+                        >
+                          {badgeLabel}
+                        </span>
+                      </div>
+                      <label
+                        className="mt-3 block text-xs font-medium text-slate-400"
+                        htmlFor={selectId}
+                      >
+                        DO-178C artefaktı
+                      </label>
+                      <select
+                        id={selectId}
+                        name={selectId}
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                        value={selection}
+                        aria-invalid={selection === 'unassigned'}
+                        required
+                        disabled={!isEnabled}
+                        onChange={(event) => handleManualSelectionChange(fileKey, event.currentTarget.value)}
+                      >
+                        {MANUAL_ARTIFACT_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value} disabled={option.disabled}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </li>
+                  );
+                })}
+              </ul>
+              {manualSelectionError && (
+                <div
+                  className="rounded-lg border border-amber-500/40 bg-amber-950/40 px-3 py-2 text-xs text-amber-200"
+                  role="alert"
+                >
+                  {manualSelectionError}
+                </div>
+              )}
+            </div>
+          )}
           {error && (
             <div className="rounded-xl border border-rose-700/40 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
               {error}

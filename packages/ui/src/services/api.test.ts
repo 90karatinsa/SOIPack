@@ -192,6 +192,49 @@ describe('API integrations', () => {
     });
   });
 
+  it('posts manual artefacts under dedicated fields and infers Simulink uploads', async () => {
+    const files = [
+      new File(['plan'], 'PSAC.PDF', { type: 'application/pdf' }),
+      new File(['qa'], 'QA-RECORD.csv', { type: 'text/csv' }),
+      new File(['json'], 'Simulink-Coverage.JSON', { type: 'application/json' }),
+      new File(['zip'], 'model-coverage.zip', { type: 'application/zip' }),
+      new File(['objectives'], 'objectives.json', { type: 'application/json' }),
+    ];
+
+    (global.fetch as jest.Mock).mockResolvedValue(createResponse({ body: { id: 'job-import' } }));
+
+    await importArtifacts({
+      token: 'token',
+      license: 'license',
+      files,
+      manualArtifacts: {
+        plan: ['psac.pdf', '  PSAC.PDF  '],
+        qa_record: [' qa-record.csv '],
+      },
+    });
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    const formData = options.body as FormData;
+
+    const planEntries = formData.getAll('plan');
+    expect(planEntries).toHaveLength(1);
+    expect(planEntries[0]).toBeInstanceOf(File);
+    expect((planEntries[0] as File).name).toBe('PSAC.PDF');
+
+    const qaEntries = formData.getAll('qa_record');
+    expect(qaEntries).toHaveLength(1);
+    expect((qaEntries[0] as File).name).toBe('QA-RECORD.csv');
+
+    const simulinkEntries = formData.getAll('simulink');
+    expect(simulinkEntries).toHaveLength(2);
+    expect(simulinkEntries.map((entry) => (entry as File).name)).toEqual(
+      expect.arrayContaining(['Simulink-Coverage.JSON', 'model-coverage.zip']),
+    );
+
+    const objectiveEntries = formData.getAll('objectives');
+    expect(objectiveEntries.some((entry) => (entry as File).name === 'objectives.json')).toBe(true);
+  });
+
   it('throws ApiError for failed audit log responses', async () => {
     (global.fetch as jest.Mock).mockResolvedValue(
       createResponse({ ok: false, status: 403, body: { error: { message: 'Denied' } } }),
