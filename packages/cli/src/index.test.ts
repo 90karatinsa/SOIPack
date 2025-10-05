@@ -110,6 +110,36 @@ jest.mock(
   { virtual: true },
 );
 
+jest.mock('./logging', () => {
+  const actual = jest.requireActual('./logging');
+
+  const createMockLogger = (): Logger => {
+    const logger: Partial<Logger> = {};
+    const mock = logger as Logger;
+
+    mock.info = jest.fn();
+    mock.error = jest.fn();
+    mock.warn = jest.fn();
+    mock.debug = jest.fn();
+    mock.trace = jest.fn();
+    mock.fatal = jest.fn();
+    mock.child = jest.fn(() => mock);
+    mock.bindings = jest.fn(() => ({}));
+    mock.flush = jest.fn();
+    mock.isLevelEnabled = jest.fn(() => true);
+    mock.silent = jest.fn();
+    mock.level = 'info';
+    mock.levels = { values: {}, labels: {} } as Logger['levels'];
+
+    return mock;
+  };
+
+  return {
+    ...actual,
+    createLogger: jest.fn(() => createMockLogger()),
+  };
+});
+
 import {
   downloadPackageArtifacts,
   exitCodes,
@@ -157,6 +187,270 @@ const TEST_SIGNING_PUBLIC_KEY = new X509Certificate(TEST_SIGNING_CERTIFICATE)
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+describe('render-gsn command', () => {
+  class ProcessExitError extends Error {
+    code: number;
+
+    constructor(code: number) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-render-gsn-'));
+    process.exitCode = undefined;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  interface CliRunResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }
+
+  const runRenderGsn = async (args: string[]): Promise<CliRunResult> => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let exitCode = 0;
+
+    const logSpy = jest.spyOn(console, 'log').mockImplementation((...messages: unknown[]) => {
+      stdout.push(messages.join(' '));
+    });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation((...messages: unknown[]) => {
+      stderr.push(messages.join(' '));
+    });
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitError(code ?? 0);
+    }) as never);
+
+    let failureMessage: string | undefined;
+
+    const parser = yargsFactory(args)
+      .command(cliModule.renderGsnCommand)
+      .exitProcess(false)
+      .showHelpOnFail(false)
+      .fail((msg, err) => {
+        if (msg) {
+          console.error(msg);
+          failureMessage = msg;
+        }
+        if (err) {
+          throw err;
+        }
+        throw new ProcessExitError(1);
+      });
+
+    try {
+      await parser.parseAsync();
+      exitCode = typeof process.exitCode === 'number' ? process.exitCode : 0;
+    } catch (error) {
+      if (error instanceof ProcessExitError) {
+        exitCode = error.code;
+      } else {
+        throw error;
+      }
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+      process.exitCode = undefined;
+    }
+
+    if (failureMessage && !stderr.includes(failureMessage)) {
+      stderr.push(failureMessage);
+    }
+
+    return {
+      exitCode,
+      stdout: stdout.join('\n'),
+      stderr: stderr.join('\n'),
+    };
+  };
+
+  const writeJsonFile = async (filePath: string, value: unknown): Promise<void> => {
+    await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  };
+
+  it('writes Graphviz output when only snapshot is provided', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const outputPath = path.join(tempDir, 'graph.dot');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+
+    const renderSpy = jest.spyOn(cliModule, 'renderGsnGraphDot').mockResolvedValue('digraph {}');
+
+    const result = await runRenderGsn(['render-gsn', '--snapshot', snapshotPath, '--output', outputPath]);
+
+    expect(result.exitCode).toBe(0);
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(renderSpy).toHaveBeenCalledWith({
+      snapshot: expect.objectContaining({ metadata: expect.any(Object) }),
+      objectives: undefined,
+    });
+    await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
+  });
+
+  it('writes Graphviz output when only objectives are provided', async () => {
+    const fixture = createReportFixture();
+    const objectivesPath = path.join(tempDir, 'objectives.json');
+    const outputPath = path.join(tempDir, 'objectives.dot');
+    await writeJsonFile(objectivesPath, fixture.objectives);
+
+    const renderSpy = jest.spyOn(cliModule, 'renderGsnGraphDot').mockResolvedValue('digraph {}');
+
+    const result = await runRenderGsn(['render-gsn', '--objectives', objectivesPath, '--output', outputPath]);
+
+    expect(result.exitCode).toBe(0);
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(renderSpy).toHaveBeenCalledWith({
+      snapshot: undefined,
+      objectives: expect.arrayContaining([
+        expect.objectContaining({ id: fixture.objectives[0]?.id }),
+      ]),
+    });
+    await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
+  });
+
+  it('passes both snapshot and objectives to the renderer when provided', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const objectivesPath = path.join(tempDir, 'objectives.json');
+    const outputPath = path.join(tempDir, 'combined.dot');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+    await writeJsonFile(objectivesPath, fixture.objectives);
+
+    const renderSpy = jest.spyOn(cliModule, 'renderGsnGraphDot').mockResolvedValue('digraph {}');
+
+    const result = await runRenderGsn([
+      'render-gsn',
+      '--snapshot',
+      snapshotPath,
+      '--objectives',
+      objectivesPath,
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(renderSpy).toHaveBeenCalledWith({
+      snapshot: expect.objectContaining({ metadata: expect.any(Object) }),
+      objectives: expect.arrayContaining([
+        expect.objectContaining({ id: fixture.objectives[0]?.id }),
+      ]),
+    });
+    await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
+  });
+
+  it('exits with an error when the snapshot path is unreadable', async () => {
+    const outputPath = path.join(tempDir, 'graph.dot');
+
+    const result = await runRenderGsn([
+      'render-gsn',
+      '--snapshot',
+      path.join(tempDir, 'missing.json'),
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Snapshot dosyası');
+    await expect(fs.access(outputPath)).rejects.toBeDefined();
+  });
+
+  it('exits with an error when the objectives path is unreadable', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const outputPath = path.join(tempDir, 'graph.dot');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+
+    const result = await runRenderGsn([
+      'render-gsn',
+      '--snapshot',
+      snapshotPath,
+      '--objectives',
+      path.join(tempDir, 'missing-objectives.json'),
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Objectives dosyası');
+    await expect(fs.access(outputPath)).rejects.toBeDefined();
+  });
+
+  it('fails when the output directory is not writable', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+
+    const parentFile = path.join(tempDir, 'not-a-directory.txt');
+    await fs.writeFile(parentFile, 'content', 'utf8');
+    const outputPath = path.join(parentFile, 'graph.dot');
+
+    const result = await runRenderGsn([
+      'render-gsn',
+      '--snapshot',
+      snapshotPath,
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Çıktı dizini');
+  });
+
+  it('requires the output path argument', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+
+    const result = await runRenderGsn(['render-gsn', '--snapshot', snapshotPath]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Missing required argument: output');
+  });
+
+  it('requires at least one input flag', async () => {
+    const outputPath = path.join(tempDir, 'graph.dot');
+
+    const result = await runRenderGsn(['render-gsn', '--output', outputPath]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('En azından --snapshot veya --objectives seçeneğinden biri belirtilmelidir.');
+  });
+
+  it('writes the full DOT graph using the bundled fixture', async () => {
+    const fixture = createReportFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const objectivesPath = path.join(tempDir, 'objectives.json');
+    const outputPath = path.join(tempDir, 'fixture.dot');
+    await writeJsonFile(snapshotPath, fixture.snapshot);
+    await writeJsonFile(objectivesPath, fixture.objectives);
+
+    const result = await runRenderGsn([
+      'render-gsn',
+      '--snapshot',
+      snapshotPath,
+      '--objectives',
+      objectivesPath,
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const dot = await fs.readFile(outputPath, 'utf8');
+    expect(dot).toMatchSnapshot();
+  });
 });
 
 describe('CLI pipeline workflows', () => {

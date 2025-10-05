@@ -117,6 +117,7 @@ import {
   renderPlanDocument,
   renderPlanPdf,
   renderToolQualificationPack,
+  renderGsnGraphDot as renderGsnGraphDotReport,
   planTemplateSections,
   planTemplateTitles,
   printToPDF,
@@ -129,7 +130,7 @@ import {
   type ToolUsageMetadata,
 } from '@soipack/report';
 import YAML from 'yaml';
-import yargs from 'yargs';
+import yargs, { type CommandModule } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { ZipFile } from 'yazl';
 import { ZodError } from 'zod';
@@ -253,6 +254,84 @@ const writeJsonFile = async (filePath: string, data: unknown): Promise<void> => 
 const readJsonFile = async <T>(filePath: string): Promise<T> => {
   const content = await fsPromises.readFile(filePath, 'utf8');
   return JSON.parse(content) as T;
+};
+
+const ensureReadableFile = async (filePath: string, label: string): Promise<void> => {
+  try {
+    await fsPromises.access(filePath, fs.constants.R_OK);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const displayPath = path.relative(process.cwd(), filePath) || filePath;
+    console.error(`${label} (${displayPath}) okunamadı: ${message}`);
+    process.exit(1);
+  }
+};
+
+const ensureWritableParentDirectory = async (filePath: string): Promise<void> => {
+  const directory = path.dirname(filePath);
+  const displayDirectory = path.relative(process.cwd(), directory) || directory;
+
+  try {
+    const stats = await fsPromises.stat(directory);
+    if (!stats.isDirectory()) {
+      console.error(`Çıktı dizini (${displayDirectory}) bir dizin değil.`);
+      process.exit(1);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      console.error(`Çıktı dizini (${displayDirectory}) bulunamadı.`);
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Çıktı dizini (${displayDirectory}) doğrulanamadı: ${message}`);
+    }
+    process.exit(1);
+  }
+
+  try {
+    await fsPromises.access(directory, fs.constants.W_OK);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Çıktı dizinine yazılamıyor (${displayDirectory}): ${message}`);
+    process.exit(1);
+  }
+};
+
+export interface RenderGsnGraphInput {
+  snapshot?: ComplianceSnapshot;
+  objectives?: Objective[];
+}
+
+const renderObjectivesOnlyGraph = (objectives: Objective[]): string => {
+  const lines = ['digraph ComplianceObjectives {', '  rankdir=LR;'];
+
+  objectives.forEach((objective) => {
+    const summaryParts = [objective.name, objective.desc].filter(Boolean);
+    const label = summaryParts.length > 0 ? `${objective.id}\\n${summaryParts.join(' — ')}` : objective.id;
+    lines.push(`  "${objective.id}" [shape=box, label=${JSON.stringify(label)}];`);
+  });
+
+  lines.push('}');
+  return lines.join('\n');
+};
+
+export const renderGsnGraphDot = async ({
+  snapshot,
+  objectives,
+}: RenderGsnGraphInput): Promise<string> => {
+  if (snapshot) {
+    return Promise.resolve(
+      renderGsnGraphDotReport(snapshot, {
+        objectivesMetadata: objectives,
+      }),
+    );
+  }
+
+  if (!objectives || objectives.length === 0) {
+    throw new Error('GSN grafiği üretmek için snapshot veya objectives verisi gerekli.');
+  }
+
+  return renderObjectivesOnlyGraph(objectives);
 };
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -6904,6 +6983,117 @@ const PIPELINE_LICENSE_FEATURES = {
   stage: 'soiStages',
 } as const;
 
+interface RenderGsnCommandOptions extends GlobalArguments {
+  snapshot?: string | string[];
+  objectives?: string | string[];
+  output: string | string[];
+}
+
+const normalizeSingleOption = (value: string | string[] | undefined): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    const [first] = value;
+    return first === undefined ? undefined : String(first);
+  }
+  return String(value);
+};
+
+export const renderGsnCommand: CommandModule<GlobalArguments, RenderGsnCommandOptions> = {
+  command: 'render-gsn',
+  describe: 'Uyum snapshot ve hedef metaverileriyle GSN grafiğini Graphviz DOT olarak dışa aktarır.',
+  builder: (yargsCommand) =>
+    yargsCommand
+      .option('snapshot', {
+        alias: 's',
+        describe: 'Uyum snapshot JSON dosyası.',
+        type: 'string',
+      })
+      .option('objectives', {
+        alias: 'j',
+        describe: 'Hedef meta verilerini içeren Objective listesi JSON dosyası.',
+        type: 'string',
+      })
+      .option('output', {
+        alias: 'o',
+        describe: 'Üretilen Graphviz DOT çıktısının yazılacağı dosya.',
+        type: 'string',
+        demandOption: true,
+      })
+      .check((argv) => {
+        if (!argv.snapshot && !argv.objectives) {
+          throw new Error('En azından --snapshot veya --objectives seçeneğinden biri belirtilmelidir.');
+        }
+        return true;
+      }),
+  handler: async (argv) => {
+    const logger = getLogger(argv);
+    const snapshotOption = normalizeSingleOption(argv.snapshot);
+    const objectivesOption = normalizeSingleOption(argv.objectives);
+    const outputOption = normalizeSingleOption(argv.output);
+
+    if (!outputOption) {
+      console.error('GSN grafiği için --output dosyası belirtilmelidir.');
+      process.exit(1);
+    }
+
+    const snapshotPath = snapshotOption ? path.resolve(snapshotOption) : undefined;
+    const objectivesPath = objectivesOption ? path.resolve(objectivesOption) : undefined;
+    const outputPath = path.resolve(outputOption);
+
+    const context = {
+      command: 'render-gsn',
+      outputPath,
+      ...(snapshotPath ? { snapshotPath } : {}),
+      ...(objectivesPath ? { objectivesPath } : {}),
+    } as const;
+
+    try {
+      let snapshot: ComplianceSnapshot | undefined;
+      if (snapshotPath) {
+        await ensureReadableFile(snapshotPath, 'Snapshot dosyası');
+        snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
+      }
+
+      let objectives: Objective[] | undefined;
+      if (objectivesPath) {
+        await ensureReadableFile(objectivesPath, 'Objectives dosyası');
+        const parsedObjectives = await readJsonFile<unknown>(objectivesPath);
+        if (!Array.isArray(parsedObjectives)) {
+          console.error('Objectives dosyası geçerli bir JSON dizisi içermelidir.');
+          process.exit(1);
+        }
+        objectives = parsedObjectives as Objective[];
+      }
+
+      await ensureWritableParentDirectory(outputPath);
+
+      const dot = await renderGsnGraphDot({ snapshot, objectives });
+
+      await fsPromises.writeFile(outputPath, dot, 'utf8');
+
+      console.log(
+        `GSN grafiği Graphviz DOT çıktısı ${path.relative(process.cwd(), outputPath) || '.'} dosyasına yazıldı.`,
+      );
+
+      logger.info(
+        {
+          ...context,
+          objectives: objectives?.length ?? 0,
+          hasSnapshot: Boolean(snapshot),
+          bytesWritten: Buffer.byteLength(dot, 'utf8'),
+        },
+        'GSN grafiği DOT olarak dışa aktarıldı.',
+      );
+      process.exitCode = exitCodes.success;
+    } catch (error) {
+      logCliError(logger, error, context);
+      process.exitCode = exitCodes.error;
+    }
+  },
+};
+
 const requireLicenseFeature = (license: LicensePayload, feature: string): void => {
   const features = Array.isArray(license.features) ? license.features : [];
   if (!features.includes(feature)) {
@@ -6948,7 +7138,7 @@ if (require.main === module) {
       setCliLocale(value);
     }, true)
     .version('version', 'Sürüm bilgisini gösterir.', formatVersion())
-    .alias('version', 'V')
+    .alias('version', ['v', 'V'])
     .command(
       'objectives list',
       'DO-178C hedef kataloğunu listeler.',
@@ -8777,6 +8967,7 @@ if (require.main === module) {
         }
       },
     )
+    .command(renderGsnCommand)
     .command(
       'run',
       'YAML konfigürasyonu ile uçtan uca içe aktarım → analiz → rapor → paket akışını çalıştırır.',
@@ -8825,6 +9016,7 @@ if (require.main === module) {
     .demandCommand(1, 'Bir komut seçmelisiniz.')
     .strict()
     .help()
+    .alias('help', 'h')
     .wrap(100);
 
   cli.parse();
