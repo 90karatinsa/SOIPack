@@ -29,11 +29,13 @@ import {
 } from '@soipack/adapters';
 import {
   CertificationLevel,
+  ComplianceSnapshot,
   DEFAULT_LOCALE,
   LedgerProofError,
   Manifest,
   ManifestFileEntry,
   ManifestMerkleSummary,
+  Objective,
   SnapshotVersion,
   SoiStage,
   createSnapshotIdentifier,
@@ -66,6 +68,8 @@ import multer from 'multer';
 import pino, { type Logger } from 'pino';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import { parse as parseYaml } from 'yaml';
+import { z, ZodError } from 'zod';
+import { renderGsnGraphDot } from '@soipack/report';
 
 import { AuditLogStore, type AppendAuditLogInput, type AuditLogQueryOptions } from './audit';
 import type { DatabaseManager } from './database';
@@ -1089,6 +1093,7 @@ interface ImportJobMetadata extends BaseJobMetadata {
   outputs: {
     workspacePath: string;
   };
+  connector?: ConnectorMetadata | null;
 }
 
 interface AnalyzeJobMetadata extends BaseJobMetadata {
@@ -1242,6 +1247,350 @@ const LICENSE_HEADER = 'x-soipack-license';
 const LICENSE_FILE_FIELD = 'license';
 
 const DEFAULT_METRICS_MARK = Symbol('soipack:defaultMetricsRegistered');
+
+const SECRET_REDACTION_KEYS = new Set(
+  ['password', 'token', 'apiToken', 'clientSecret', 'authorization', 'secret', 'privateKey'].map((key) =>
+    key.toLowerCase(),
+  ),
+);
+
+const redactSecrets = <T>(input: T): T => {
+  if (Array.isArray(input)) {
+    return input.map((entry) => redactSecrets(entry)) as unknown as T;
+  }
+
+  if (!input || typeof input !== 'object') {
+    return input;
+  }
+
+  if (input instanceof Date || input instanceof RegExp || input instanceof URL) {
+    return input;
+  }
+
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (SECRET_REDACTION_KEYS.has(key.toLowerCase())) {
+      result[key] = 'REDACTED';
+      continue;
+    }
+    result[key] = redactSecrets(value);
+  }
+
+  return result as unknown as T;
+};
+
+const stripSecrets = <T>(input: T): T => {
+  if (Array.isArray(input)) {
+    return input.map((entry) => stripSecrets(entry)) as unknown as T;
+  }
+
+  if (!input || typeof input !== 'object') {
+    return input;
+  }
+
+  if (input instanceof Date || input instanceof RegExp || input instanceof URL) {
+    return input;
+  }
+
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (SECRET_REDACTION_KEYS.has(key.toLowerCase())) {
+      continue;
+    }
+    result[key] = stripSecrets(value);
+  }
+
+  return result as unknown as T;
+};
+
+const toStableJson = (value: unknown): string => {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) {
+      return input.map((item) => normalize(item));
+    }
+    if (input && typeof input === 'object') {
+      return Object.keys(input as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = normalize((input as Record<string, unknown>)[key]);
+          return acc;
+        }, {});
+    }
+    return input;
+  };
+
+  return JSON.stringify(normalize(value));
+};
+
+const createRequiredString = (field: string): z.ZodString =>
+  z
+    .string({ required_error: `${field} alanı zorunludur.` })
+    .trim()
+    .min(1, `${field} alanı zorunludur.`);
+
+const createOptionalString = (field: string): z.ZodString =>
+  z
+    .string()
+    .trim()
+    .min(1, `${field} alanı boş bırakılamaz.`);
+
+const isValidUrl = (value: string): boolean => {
+  try {
+    // eslint-disable-next-line no-new
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const normalizeUrlString = (value: string): string => {
+  const url = new URL(value);
+  url.hash = '';
+  url.searchParams.sort();
+  return url.toString();
+};
+
+const createRequiredUrlString = (field: string): z.ZodEffects<z.ZodString, string, string> =>
+  createRequiredString(field)
+    .refine((value) => isValidUrl(value), `${field} alanı geçerli bir URL olmalıdır.`)
+    .transform((value) => normalizeUrlString(value));
+
+const createOptionalUrlString = (field: string): z.ZodEffects<z.ZodString, string, string> =>
+  createOptionalString(field)
+    .refine((value) => isValidUrl(value), `${field} alanı geçerli bir URL olmalıdır.`)
+    .transform((value) => normalizeUrlString(value));
+
+const polarionConnectorOptionsSchema = z.object({
+    baseUrl: createRequiredUrlString('baseUrl'),
+    projectId: createOptionalString('projectId').optional(),
+    project: createOptionalString('project').optional(),
+    username: createRequiredString('username'),
+    password: createOptionalString('password').optional(),
+    token: createOptionalString('token').optional(),
+  }).superRefine((value, ctx) => {
+    if (!value.projectId && !value.project) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'projectId veya project alanı zorunludur.',
+        path: ['projectId'],
+      });
+    }
+    if (!value.password && !value.token) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'password veya token alanlarından biri sağlanmalıdır.',
+        path: ['password'],
+      });
+    }
+  });
+
+const jenkinsConnectorOptionsSchema = z.object({
+    baseUrl: createRequiredUrlString('baseUrl'),
+    job: createRequiredString('job'),
+    username: createRequiredString('username'),
+    apiToken: createOptionalString('apiToken').optional(),
+    token: createOptionalString('token').optional(),
+    password: createOptionalString('password').optional(),
+  }).superRefine((value, ctx) => {
+    if (!value.apiToken && !value.token) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'apiToken veya token alanı sağlanmalıdır.',
+        path: ['apiToken'],
+      });
+    }
+  });
+
+const doorsNextOAuthSchema = z.object({
+    tokenUrl: createRequiredUrlString('oauth.tokenUrl'),
+    clientId: createRequiredString('oauth.clientId'),
+    clientSecret: createRequiredString('oauth.clientSecret'),
+    scope: createOptionalString('oauth.scope').optional(),
+  });
+
+const doorsNextConnectorOptionsSchema = z.object({
+    baseUrl: createRequiredUrlString('baseUrl'),
+    project: createOptionalString('project').optional(),
+    projectArea: createOptionalString('projectArea').optional(),
+    username: createOptionalString('username').optional(),
+    password: createOptionalString('password').optional(),
+    accessToken: createOptionalString('accessToken').optional(),
+    oauth: doorsNextOAuthSchema.optional(),
+  }).superRefine((value, ctx) => {
+    if (!value.project && !value.projectArea) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'project veya projectArea alanı zorunludur.',
+        path: ['project'],
+      });
+    }
+
+    const hasUsername = Boolean(value.username);
+    const hasPassword = Boolean(value.password);
+    if (hasUsername !== hasPassword) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'username ve password alanları birlikte sağlanmalıdır.',
+        path: hasUsername ? ['password'] : ['username'],
+      });
+    }
+
+    const hasAccessToken = Boolean(value.accessToken);
+    const hasOauth = Boolean(value.oauth);
+    const hasBasicAuth = hasUsername && hasPassword;
+
+    if (!hasBasicAuth && !hasAccessToken && !hasOauth) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'username/password, accessToken veya oauth bilgileri sağlanmalıdır.',
+        path: ['username'],
+      });
+    }
+  });
+
+const jamaConnectorOptionsSchema = z.object({
+    baseUrl: createRequiredUrlString('baseUrl'),
+    project: createOptionalString('project').optional(),
+    projectId: createOptionalString('projectId').optional(),
+    clientId: createOptionalString('clientId').optional(),
+    clientSecret: createOptionalString('clientSecret').optional(),
+    apiToken: createOptionalString('apiToken').optional(),
+  }).superRefine((value, ctx) => {
+    const hasClientId = Boolean(value.clientId);
+    const hasClientSecret = Boolean(value.clientSecret);
+    if (hasClientId !== hasClientSecret) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'clientId ve clientSecret alanları birlikte sağlanmalıdır.',
+        path: hasClientId ? ['clientSecret'] : ['clientId'],
+      });
+    }
+
+    const hasToken = Boolean(value.apiToken);
+    const hasClientCredentials = hasClientId && hasClientSecret;
+
+    if (!hasToken && !hasClientCredentials) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'apiToken ya da clientId/clientSecret bilgileri sağlanmalıdır.',
+        path: ['apiToken'],
+      });
+    }
+  });
+
+const jiraCloudConnectorOptionsSchema = z.object({
+    site: createRequiredString('site'),
+    email: createRequiredString('email'),
+    apiToken: createRequiredString('apiToken'),
+    projectKey: createRequiredString('projectKey'),
+    baseUrl: createOptionalUrlString('baseUrl').optional(),
+  });
+
+const connectorOptionSchemas = {
+  polarion: polarionConnectorOptionsSchema,
+  jenkins: jenkinsConnectorOptionsSchema,
+  doorsNext: doorsNextConnectorOptionsSchema,
+  jama: jamaConnectorOptionsSchema,
+  jiraCloud: jiraCloudConnectorOptionsSchema,
+} as const;
+
+type ConnectorType = keyof typeof connectorOptionSchemas;
+
+type ConnectorOptionsMap = {
+  [K in ConnectorType]: z.infer<(typeof connectorOptionSchemas)[K]>;
+};
+
+type ConnectorConfig = {
+  [K in ConnectorType]: { type: K; options: ConnectorOptionsMap[K]; fingerprint: string };
+}[ConnectorType];
+
+type ConnectorMetadata = {
+  [K in ConnectorType]: { type: K; metadata: ConnectorOptionsMap[K] };
+}[ConnectorType];
+
+function computeConnectorFingerprint<K extends ConnectorType>(
+  options: ConnectorOptionsMap[K],
+): string {
+  const normalized = toStableJson(stripSecrets(options));
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
+const normalizeConnectorValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'connector alanı boş olamaz.');
+    }
+    return normalizeConnectorValue(value[0]);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'connector alanı boş olamaz.');
+    }
+    try {
+      return JSON.parse(trimmed);
+    } catch (error) {
+      throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'connector alanı geçerli JSON içermelidir.');
+    }
+  }
+
+  if (!value || typeof value !== 'object') {
+    throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'connector alanı geçerli JSON içermelidir.');
+  }
+
+  return value;
+};
+
+const parseConnectorPayload = (value: unknown): ConnectorConfig => {
+  const normalized = normalizeConnectorValue(value);
+  const container = normalized as Record<string, unknown>;
+
+  const rawType = container.type;
+  if (typeof rawType !== 'string') {
+    throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'type alanı zorunludur.');
+  }
+
+  const normalizedType = rawType.trim();
+  if (normalizedType.length === 0) {
+    throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'type alanı zorunludur.');
+  }
+
+  const type = normalizedType as ConnectorType;
+  const schema = connectorOptionSchemas[type];
+  if (!schema) {
+    throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'Desteklenmeyen bağlayıcı türü.');
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(container, 'options')) {
+    throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'options alanı zorunludur.');
+  }
+
+  try {
+    const options = schema.parse(container.options) as ConnectorOptionsMap[typeof type];
+    const fingerprint = computeConnectorFingerprint(options);
+    return { type, options, fingerprint } as ConnectorConfig;
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new HttpError(
+        400,
+        'INVALID_CONNECTOR_REQUEST',
+        'Bağlayıcı yapılandırması doğrulanamadı.',
+        { issues: error.issues },
+      );
+    }
+    throw error;
+  }
+};
 
 const getFieldValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -1405,25 +1754,6 @@ const parseJsonObjectField = (
   }
 
   return raw as Record<string, unknown>;
-};
-
-const toStableJson = (value: unknown): string => {
-  const normalize = (input: unknown): unknown => {
-    if (Array.isArray(input)) {
-      return input.map((item) => normalize(item));
-    }
-    if (input && typeof input === 'object') {
-      return Object.keys(input as Record<string, unknown>)
-        .sort()
-        .reduce<Record<string, unknown>>((acc, key) => {
-          acc[key] = normalize((input as Record<string, unknown>)[key]);
-          return acc;
-        }, {});
-    }
-    return input;
-  };
-
-  return JSON.stringify(normalize(value));
 };
 
 const computeHash = (entries: HashEntry[]): string => {
@@ -2302,6 +2632,7 @@ interface ImportJobPayload {
   independentSources?: string[] | null;
   independentArtifacts?: string[] | null;
   license: JobLicenseMetadata;
+  connector?: ConnectorConfig | null;
 }
 
 interface AnalyzeJobPayload {
@@ -4448,6 +4779,28 @@ export const createServer = (config: ServerConfig): Express => {
                 : payload.independentArtifacts,
         };
 
+        if (payload.connector) {
+          switch (payload.connector.type) {
+            case 'polarion':
+              importOptions.polarion = payload.connector.options;
+              break;
+            case 'jenkins':
+              importOptions.jenkins = payload.connector.options;
+              break;
+            case 'doorsNext':
+              importOptions.doorsNext = payload.connector.options;
+              break;
+            case 'jama':
+              importOptions.jama = payload.connector.options;
+              break;
+            case 'jiraCloud':
+              importOptions.jiraCloud = payload.connector.options;
+              break;
+            default:
+              break;
+          }
+        }
+
         const result = await runImport(importOptions);
         const metadata: ImportJobMetadata = {
           tenantId: context.tenantId,
@@ -4474,6 +4827,14 @@ export const createServer = (config: ServerConfig): Express => {
           outputs: {
             workspacePath: path.join(payload.workspaceDir, 'workspace.json'),
           },
+          ...(payload.connector
+            ? {
+                connector: {
+                  type: payload.connector.type,
+                  metadata: redactSecrets(payload.connector.options),
+                },
+              }
+            : {}),
         };
 
         await writeJobMetadata(storage, payload.workspaceDir, metadata);
@@ -7385,6 +7746,74 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
+    '/v1/analyses/:id/gsn.dot',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'analysisId parametresi zorunludur.');
+      }
+      assertJobId(id);
+
+      const analysisDir = await findStageAwareJobDirectory(
+        storage,
+        directories.analyses,
+        tenantId,
+        id,
+      );
+      if (!analysisDir) {
+        throw new HttpError(404, 'ANALYSIS_NOT_FOUND', 'İstenen analiz bulunamadı.');
+      }
+
+      const metadata = await readJobMetadata<AnalyzeJobMetadata>(storage, analysisDir);
+      if (metadata.kind !== 'analyze') {
+        throw new HttpError(400, 'ANALYSIS_INCOMPLETE', 'Analiz çıktıları bulunamadı.');
+      }
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen analiz bu kiracıya ait değil.');
+      }
+
+      const snapshotPath = metadata.outputs?.snapshotPath;
+      const analysisPath = metadata.outputs?.analysisPath;
+      if (typeof snapshotPath !== 'string' || typeof analysisPath !== 'string') {
+        throw new HttpError(400, 'ANALYSIS_INCOMPLETE', 'Analiz çıktıları eksik.');
+      }
+
+      const loadJson = async <T>(filePath: string, description: string): Promise<T> => {
+        try {
+          return await storage.readJson<T>(filePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+            throw new HttpError(
+              404,
+              'ANALYSIS_STALE',
+              `${description} bulunamadı veya artık mevcut değil.`,
+            );
+          }
+          throw error;
+        }
+      };
+
+      const snapshot = await loadJson<ComplianceSnapshot>(
+        snapshotPath,
+        'Analiz snapshot çıktısı',
+      );
+      const analysisData = await loadJson<{ objectives?: Objective[] }>(
+        analysisPath,
+        'Analiz metaverisi',
+      );
+      const objectives = Array.isArray(analysisData.objectives)
+        ? analysisData.objectives
+        : [];
+      const dot = renderGsnGraphDot(snapshot, { objectivesMetadata: objectives });
+
+      res.status(200).set('Content-Type', 'text/vnd.graphviz; charset=utf-8').send(dot);
+    }),
+  );
+
+  app.get(
     '/v1/manifests/:manifestId',
     requireAuth,
     createAsyncHandler(async (req, res) => {
@@ -7733,11 +8162,53 @@ export const createServer = (config: ServerConfig): Express => {
 
         const license = await requireLicenseToken(req, fileMap);
         requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.import);
-        const body = req.body as Record<string, unknown>;
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const connector = Object.prototype.hasOwnProperty.call(body, 'connector')
+          ? parseConnectorPayload(body.connector)
+          : undefined;
 
         const availableFiles = Object.values(fileMap).reduce((sum, files) => sum + files.length, 0);
         if (availableFiles === 0) {
-          throw new HttpError(400, 'NO_INPUT_FILES', 'En az bir veri dosyası yüklenmelidir.');
+          if (!connector) {
+            const isJsonRequest = Boolean(
+              req.is('application/json') || req.is('application/*+json'),
+            );
+            if (isJsonRequest) {
+              throw new HttpError(
+                400,
+                'INVALID_CONNECTOR_REQUEST',
+                'connector alanı zorunludur.',
+              );
+            }
+            throw new HttpError(400, 'NO_INPUT_FILES', 'En az bir veri dosyası yüklenmelidir.');
+          }
+
+          logger.info(
+            {
+              tenantId,
+              connector: {
+                type: connector.type,
+                metadata: redactSecrets(connector.options),
+                fingerprint: connector.fingerprint,
+              },
+            },
+            'Uzaktan bağlayıcı import isteği alındı.',
+          );
+
+          switch (connector.type) {
+            case 'polarion':
+            case 'jenkins':
+            case 'doorsNext':
+            case 'jama':
+            case 'jiraCloud':
+              throw new HttpError(
+                501,
+                'CONNECTOR_IMPORT_NOT_IMPLEMENTED',
+                `${connector.type} bağlayıcı importları henüz desteklenmiyor.`,
+              );
+            default:
+              throw new HttpError(400, 'INVALID_CONNECTOR_REQUEST', 'Desteklenmeyen bağlayıcı türü.');
+          }
         }
 
         const stringFields: Record<string, string> = {};
@@ -7758,6 +8229,10 @@ export const createServer = (config: ServerConfig): Express => {
         );
 
         const hashEntries: HashEntry[] = [];
+        if (connector) {
+          hashEntries.push({ key: 'connector:type', value: connector.type });
+          hashEntries.push({ key: 'connector:fingerprint', value: connector.fingerprint });
+        }
         Object.entries(stringFields).forEach(([key, value]) => {
           hashEntries.push({ key: `field:${key}`, value });
         });
@@ -7855,8 +8330,22 @@ export const createServer = (config: ServerConfig): Express => {
               independentSources: independentSources ?? null,
               independentArtifacts: independentArtifacts ?? null,
               license: toLicenseMetadata(license),
+              ...(connector ? { connector } : {}),
             },
           });
+
+          if (connector) {
+            logger.info({
+              event: 'import_connector_enqueued',
+              tenantId,
+              jobId: importId,
+              connector: {
+                type: connector.type,
+                metadata: redactSecrets(connector.options),
+                fingerprint: connector.fingerprint,
+              },
+            });
+          }
 
           registerJobLicense(tenantId, importId, license);
           await appendAuditLog({

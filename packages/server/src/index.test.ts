@@ -91,13 +91,413 @@ setGlobalDispatcher(
   }),
 );
 
-jest.mock('@soipack/adapters', () => {
-  const actual = jest.requireActual<typeof import('@soipack/adapters')>('@soipack/adapters');
-  return {
-    ...actual,
-    fetchJiraChangeRequests: jest.fn(),
-  };
-});
+jest.mock('@soipack/adapters', () => ({
+  fetchJiraChangeRequests: jest.fn(),
+}));
+
+jest.mock(
+  'jose',
+  () => {
+    const crypto = require('crypto');
+
+    const base64urlEncode = (input) =>
+      Buffer.from(input)
+        .toString('base64')
+        .replace(/=/g, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+    const base64urlDecodeBuffer = (input) => {
+      const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+      const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+      return Buffer.from(normalized + padding, 'base64');
+    };
+    const parseDurationSeconds = (value) => {
+      if (typeof value === 'number') {
+        return value;
+      }
+      if (value instanceof Date) {
+        return Math.floor(value.getTime() / 1000);
+      }
+      if (typeof value === 'string') {
+        const match = value.match(/^(\d+)([smhd])$/i);
+        if (match) {
+          const amount = Number.parseInt(match[1], 10);
+          const unit = match[2].toLowerCase();
+          const factor = unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : 86400;
+          return Math.floor(Date.now() / 1000) + amount * factor;
+        }
+      }
+      return Math.floor(Date.now() / 1000);
+    };
+
+    const importJwk = (jwk) => crypto.createPublicKey({ format: 'jwk', key: jwk });
+
+    const generateKeyPair = async (alg) => {
+      if (alg !== 'RS256') {
+        throw new Error(`Unsupported algorithm: ${alg}`);
+      }
+      return crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    };
+
+    class SignJWT {
+      constructor(payload) {
+        this.payload = { ...payload };
+        this.header = { alg: 'RS256', typ: 'JWT' };
+      }
+      setProtectedHeader(header) {
+        this.header = { ...this.header, ...header };
+        return this;
+      }
+      setIssuer(iss) {
+        this.payload.iss = iss;
+        return this;
+      }
+      setAudience(aud) {
+        this.payload.aud = aud;
+        return this;
+      }
+      setSubject(sub) {
+        this.payload.sub = sub;
+        return this;
+      }
+      setIssuedAt(time = Math.floor(Date.now() / 1000)) {
+        this.payload.iat = typeof time === 'number' ? time : Math.floor(time / 1000);
+        return this;
+      }
+      setExpirationTime(value) {
+        this.payload.exp = parseDurationSeconds(value);
+        return this;
+      }
+      async sign(privateKey) {
+        const headerJson = JSON.stringify(this.header);
+        const payloadJson = JSON.stringify(this.payload);
+        const encodedHeader = base64urlEncode(headerJson);
+        const encodedPayload = base64urlEncode(payloadJson);
+        const signer = crypto.createSign('RSA-SHA256');
+        signer.update(`${encodedHeader}.${encodedPayload}`);
+        signer.end();
+        const signature = signer.sign(privateKey);
+        const encodedSignature = base64urlEncode(signature);
+        return `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
+      }
+    }
+
+    const exportJWK = async (key) => key.export({ format: 'jwk' });
+
+    const createLocalJWKSet = (jwks) => {
+      const entries = (jwks?.keys ?? []).map((jwk) => ({
+        kid: jwk.kid,
+        alg: jwk.alg,
+        key: importJwk(jwk),
+      }));
+      return async (protectedHeader) => {
+        const { kid } = protectedHeader ?? {};
+        const match = kid ? entries.find((entry) => entry.kid === kid) : entries[0];
+        if (!match) {
+          throw new Error('JWK_NOT_FOUND');
+        }
+        return match.key;
+      };
+    };
+
+    const createRemoteJWKSet = (url, options = {}) => {
+      let cached;
+      const fetcher = options.fetcher ?? globalThis.fetch;
+      if (!fetcher) {
+        throw new Error('Fetch API unavailable');
+      }
+      return async (protectedHeader) => {
+        if (!cached) {
+          const response = await fetcher(url, { method: 'GET' });
+          if (!response.ok) {
+            throw new Error(`Failed to download JWKS: ${response.status}`);
+          }
+          cached = await response.json();
+        }
+        const local = createLocalJWKSet(cached);
+        return local(protectedHeader);
+      };
+    };
+
+    const ensureAudience = (payloadAud, expected) => {
+      if (!expected) {
+        return true;
+      }
+      const audiences = Array.isArray(payloadAud) ? payloadAud : [payloadAud];
+      const expectedList = Array.isArray(expected) ? expected : [expected];
+      return expectedList.some((candidate) => audiences.includes(candidate));
+    };
+
+    const jwtVerify = async (token, keyResolver, options = {}) => {
+      const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
+      if (!encodedHeader || !encodedPayload || !encodedSignature) {
+        throw new Error('JWT_MALFORMED');
+      }
+      const header = JSON.parse(base64urlDecodeBuffer(encodedHeader).toString('utf8'));
+      const payloadBuffer = base64urlDecodeBuffer(encodedPayload);
+      const payload = JSON.parse(payloadBuffer.toString('utf8'));
+
+      const key = await keyResolver(header);
+      const verifier = crypto.createVerify('RSA-SHA256');
+      verifier.update(`${encodedHeader}.${encodedPayload}`);
+      verifier.end();
+      const signature = base64urlDecodeBuffer(encodedSignature);
+      if (!verifier.verify(key, signature)) {
+        throw new Error('JWT_SIGNATURE_INVALID');
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      const tolerance = options.clockTolerance ?? 0;
+      if (payload.exp !== undefined && now - tolerance >= payload.exp) {
+        throw new Error('JWT_EXPIRED');
+      }
+      if (payload.nbf !== undefined && now + tolerance < payload.nbf) {
+        throw new Error('JWT_NOT_ACTIVE');
+      }
+      if (options.issuer) {
+        const issuers = Array.isArray(options.issuer) ? options.issuer : [options.issuer];
+        if (!payload.iss || !issuers.includes(payload.iss)) {
+          throw new Error('JWT_INVALID_ISSUER');
+        }
+      }
+      if (!ensureAudience(payload.aud, options.audience)) {
+        throw new Error('JWT_INVALID_AUDIENCE');
+      }
+      if (options.subject && payload.sub !== options.subject) {
+        throw new Error('JWT_INVALID_SUBJECT');
+      }
+
+      return { payload, protectedHeader: header };
+    };
+
+    return {
+      generateKeyPair,
+      SignJWT,
+      exportJWK,
+      createLocalJWKSet,
+      createRemoteJWKSet,
+      jwtVerify,
+      JWTPayload: class {},
+    };
+  },
+  { virtual: true },
+);
+
+jest.mock('@soipack/packager', () => ({
+  verifyManifestSignature: jest.fn(() => true),
+}));
+
+jest.mock(
+  'nunjucks',
+  () => {
+    const compile = jest.fn((template: string) => ({
+      render: jest.fn((context?: Record<string, unknown>) =>
+        JSON.stringify({ template, context: context ?? {} }),
+      ),
+    }));
+    class Environment {
+      public addFilter = jest.fn();
+      public getFilter = jest.fn(() => jest.fn());
+      public addExtension = jest.fn();
+    }
+    return {
+      Environment,
+      FileSystemLoader: jest.fn(),
+      configure: jest.fn(),
+      compile,
+      render: jest.fn(),
+      runtime: { SafeString: jest.fn((value: string) => value) },
+    };
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'docx',
+  () => {
+    class Document {
+      constructor(public options?: unknown) {}
+      public addSection = jest.fn();
+    }
+    class Paragraph {
+      constructor(public options?: unknown) {}
+    }
+    class Table {
+      constructor(public options?: unknown) {}
+    }
+    class TableRow {
+      constructor(public options?: unknown) {}
+    }
+    class TableCell {
+      constructor(public options?: unknown) {}
+    }
+    class TextRun {
+      constructor(public options?: unknown) {}
+    }
+    const Packer = {
+      toBuffer: jest.fn(async () => Buffer.from('docx')), // minimal placeholder
+    };
+    const AlignmentType = { LEFT: 'left', RIGHT: 'right', CENTER: 'center', JUSTIFIED: 'justified' } as const;
+    const HeadingLevel = { HEADING_1: 'heading_1', HEADING_2: 'heading_2' } as const;
+    const WidthType = { PERCENTAGE: 'pct', AUTO: 'auto' } as const;
+    return {
+      Document,
+      Paragraph,
+      Table,
+      TableRow,
+      TableCell,
+      TextRun,
+      Packer,
+      AlignmentType,
+      HeadingLevel,
+      WidthType,
+    };
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'pdfmake',
+  () => {
+    const { EventEmitter } = require('events');
+    return class PdfPrinter {
+      constructor(public fonts?: unknown) {}
+      public createPdfKitDocument() {
+        const stream = new EventEmitter() as EventEmitter & {
+          end: () => void;
+          pipe: jest.Mock;
+        };
+        stream.pipe = jest.fn(() => stream);
+        stream.end = () => {
+          stream.emit('data', Buffer.from('pdf'));
+          stream.emit('end');
+        };
+        return stream;
+      }
+    };
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'yaml',
+  () => ({
+    parse: jest.fn(() => ({})),
+    stringify: jest.fn(() => ''),
+  }),
+  { virtual: true },
+);
+
+jest.mock(
+  'tweetnacl',
+  () => ({
+    sign: { detached: { verify: jest.fn(() => true) } },
+  }),
+  { virtual: true },
+);
+
+jest.mock(
+  'pino',
+  () => {
+    const logger = {
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+      debug: jest.fn(),
+      child: jest.fn(() => logger),
+    };
+    const pinoFactory = jest.fn(() => logger);
+    pinoFactory.destination = jest.fn(() => ({}));
+    pinoFactory.stdSerializers = {};
+    return pinoFactory;
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'prom-client',
+  () => {
+    class Registry {
+      constructor() {
+        this.metricsStore = new Map();
+      }
+      registerMetric(metric) {
+        this.metricsStore.set(metric.name, metric);
+      }
+      async metrics() {
+        return Array.from(this.metricsStore.keys()).join('\n');
+      }
+      resetMetrics() {
+        this.metricsStore.clear();
+      }
+    }
+    return {
+      Registry,
+      Counter: class {
+        constructor(config) {
+          this.name = config.name;
+        }
+        labels() {
+          return this;
+        }
+        inc() {}
+        set() {}
+      },
+      Gauge: class {
+        constructor(config) {
+          this.name = config.name;
+        }
+        labels() {
+          return this;
+        }
+        inc() {}
+        set() {}
+        dec() {}
+      },
+      Histogram: class {
+        constructor(config) {
+          this.name = config.name;
+        }
+        labels() {
+          return this;
+        }
+        startTimer() {
+          return () => {};
+        }
+        observe() {}
+      },
+      collectDefaultMetrics: jest.fn(),
+    };
+  },
+  { virtual: true },
+);
+
+jest.mock(
+  'undici',
+  () => ({
+    Agent: class Agent {
+      constructor() {}
+    },
+    setGlobalDispatcher: jest.fn(),
+  }),
+  { virtual: true },
+);
+
+// Use real implementations of middleware modules for integration tests
+
+jest.mock('yauzl', () => ({
+  open: jest.fn(),
+}), { virtual: true });
+
+jest.mock(
+  'fast-xml-parser',
+  () => ({
+    XMLParser: jest.fn(() => ({ parse: jest.fn() })),
+  }),
+  { virtual: true },
+);
+
+jest.mock('yazl', () => ({ ZipFile: jest.fn() }), { virtual: true });
 
 const TEST_SERVER_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDsphbJCknHw4kG
@@ -3839,6 +4239,355 @@ describe('@soipack/server REST API', () => {
     expect(invalidArtifacts.body.error.code).toBe('INVALID_REQUEST');
   });
 
+  const normalizeTestUrl = (value: string): string => {
+    const url = new URL(value.trim());
+    url.hash = '';
+    url.searchParams.sort();
+    return url.toString();
+  };
+
+  const sanitizeConnectorOptions = (
+    raw: Record<string, string>,
+    urlKeys: string[] = [],
+  ): Record<string, string> => {
+    const sanitized: Record<string, string> = {};
+    Object.entries(raw).forEach(([key, value]) => {
+      const trimmed = value.trim();
+      sanitized[key] = urlKeys.includes(key) ? normalizeTestUrl(trimmed) : trimmed;
+    });
+    return sanitized;
+  };
+
+  const connectorTestCases = [
+    {
+      name: 'Polarion',
+      type: 'polarion' as const,
+      rawOptions: {
+        baseUrl: ' https://polarion.example.com/api ',
+        projectId: ' PROJ-1 ',
+        username: ' alice ',
+        password: ' secret-password ',
+      },
+      urlKeys: ['baseUrl'],
+      secretKeys: ['password'],
+    },
+    {
+      name: 'Jenkins',
+      type: 'jenkins' as const,
+      rawOptions: {
+        baseUrl: ' https://ci.example.com/ ',
+        job: ' Connector Job ',
+        username: ' builder ',
+        apiToken: ' token-value ',
+      },
+      urlKeys: ['baseUrl'],
+      secretKeys: ['apiToken'],
+    },
+    {
+      name: 'DOORS Next',
+      type: 'doorsNext' as const,
+      rawOptions: {
+        baseUrl: ' https://doors.example.com/ ',
+        project: ' Safety Project ',
+        username: ' bob ',
+        password: ' doors-secret ',
+      },
+      urlKeys: ['baseUrl'],
+      secretKeys: ['password'],
+    },
+    {
+      name: 'Jama',
+      type: 'jama' as const,
+      rawOptions: {
+        baseUrl: ' https://jama.example.com/ ',
+        projectId: ' 1234 ',
+        clientId: ' client-id ',
+        clientSecret: ' client-secret ',
+      },
+      urlKeys: ['baseUrl'],
+      secretKeys: ['clientSecret'],
+    },
+    {
+      name: 'Jira Cloud',
+      type: 'jiraCloud' as const,
+      rawOptions: {
+        site: ' https://example.atlassian.net ',
+        email: ' connector@example.com ',
+        apiToken: ' jira-secret ',
+        projectKey: ' KEY ',
+        baseUrl: ' https://api.atlassian.com/ ',
+      },
+      urlKeys: ['baseUrl'],
+      secretKeys: ['apiToken'],
+    },
+  ] as const;
+
+  describe.each(connectorTestCases)('%s connector imports', ({
+    type,
+    rawOptions,
+    urlKeys,
+    secretKeys,
+  }) => {
+    it('runs import with sanitized options and persists redacted metadata', async () => {
+      const runImportSpy = jest.spyOn(cli, 'runImport');
+      runImportSpy.mockImplementation(async (options) => {
+        const workspace: cli.ImportWorkspace = {
+          requirements: [],
+          testResults: [],
+          traceLinks: [],
+          testToCodeMap: {},
+          evidenceIndex: {},
+          findings: [],
+          builds: [],
+          designs: [],
+          metadata: {
+            generatedAt: new Date().toISOString(),
+            warnings: [],
+            inputs: {},
+            version: buildSnapshotVersion(),
+          },
+        };
+        return {
+          warnings: [],
+          workspace,
+          workspacePath: path.join(options.output, 'workspace.json'),
+        } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+      });
+
+      const projectVersion = `connector-${type}-${Date.now()}`;
+      const expectedSanitized = sanitizeConnectorOptions(rawOptions, urlKeys);
+
+      try {
+        const response = await request(app)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('reqif', minimalExample('spec.reqif'))
+          .field('projectName', `Connector ${type}`)
+          .field('projectVersion', projectVersion)
+          .field('connector', JSON.stringify({ type, options: rawOptions }))
+          .expect(202);
+
+        const jobId = response.body.id as string;
+        const job = await waitForJobCompletion(app, token, jobId);
+        expect(job.status).toBe('completed');
+
+        expect(runImportSpy).toHaveBeenCalledTimes(1);
+        const importOptions = runImportSpy.mock.calls[0]?.[0] as cli.ImportOptions;
+        const connectorOptions = (importOptions as Record<string, unknown>)[type] as Record<
+          string,
+          string
+        >;
+        expect(connectorOptions).toEqual(expectedSanitized);
+
+        const metadataPath = path.join(
+          storageDir,
+          'workspaces',
+          tenantId,
+          jobId,
+          'job.json',
+        );
+        const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+        const metadata = JSON.parse(metadataContent) as {
+          connector?: { type: string; metadata: Record<string, string> } | null;
+        };
+
+        expect(metadata.connector?.type).toBe(type);
+        const redactedMetadata = metadata.connector?.metadata ?? {};
+        const expectedRedacted = { ...expectedSanitized };
+        secretKeys.forEach((key) => {
+          if (expectedRedacted[key] !== undefined) {
+            expectedRedacted[key] = 'REDACTED';
+          }
+        });
+        expect(redactedMetadata).toEqual(expectedRedacted);
+      } finally {
+        runImportSpy.mockRestore();
+      }
+    });
+  });
+
+  it('redacts secrets from connector metadata in persisted jobs and logs', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    runImportSpy.mockImplementation(async (options) => {
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        findings: [],
+        builds: [],
+        designs: [],
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+          version: buildSnapshotVersion(),
+        },
+      };
+      return {
+        warnings: [],
+        workspace,
+        workspacePath: path.join(options.output, 'workspace.json'),
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const secretValue = 'top-secret-token';
+    const projectVersion = `secret-${Date.now()}`;
+    const initialLogCount = logEntries.length;
+
+    try {
+      const response = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .field('projectName', 'Secret Connector')
+        .field('projectVersion', projectVersion)
+        .field(
+          'connector',
+          JSON.stringify({
+            type: 'jenkins',
+            options: {
+              baseUrl: 'https://ci.secret.example/',
+              job: 'Secret Job',
+              username: 'builder',
+              apiToken: secretValue,
+            },
+          }),
+        )
+        .expect(202);
+
+      const jobId = response.body.id as string;
+      await waitForJobCompletion(app, token, jobId);
+
+      const metadataPath = path.join(
+        storageDir,
+        'workspaces',
+        tenantId,
+        jobId,
+        'job.json',
+      );
+      const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+      expect(metadataContent).not.toContain(secretValue);
+      const metadata = JSON.parse(metadataContent) as {
+        connector?: { metadata?: Record<string, string> } | null;
+      };
+      expect(metadata.connector?.metadata?.apiToken).toBe('REDACTED');
+
+      await flushLogs();
+      const newEntries = logEntries.slice(initialLogCount);
+      newEntries.forEach((entry) => {
+        expect(JSON.stringify(entry)).not.toContain(secretValue);
+      });
+      const connectorLog = newEntries.find(
+        (entry) => entry.event === 'import_connector_enqueued',
+      );
+      expect(
+        (connectorLog?.connector as { metadata?: Record<string, string> } | undefined)?.metadata
+          ?.apiToken,
+      ).toBe('REDACTED');
+    } finally {
+      runImportSpy.mockRestore();
+    }
+  });
+
+  it('produces deterministic job hashes for identical connector options', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    runImportSpy.mockImplementation(async (options) => {
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        findings: [],
+        builds: [],
+        designs: [],
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: {},
+          version: buildSnapshotVersion(),
+        },
+      };
+      return {
+        warnings: [],
+        workspace,
+        workspacePath: path.join(options.output, 'workspace.json'),
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const baseOptions = {
+      baseUrl: 'https://polarion.hash.example/',
+      projectId: 'HASH-DEMO',
+      username: 'hash-user',
+      password: 'hash-secret',
+    };
+    const projectVersion = `fingerprint-${Date.now()}`;
+
+    const submitImport = (options: Record<string, string>) =>
+      request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .field('projectName', 'Fingerprint Demo')
+        .field('projectVersion', projectVersion)
+        .field('connector', JSON.stringify({ type: 'polarion', options }));
+
+    try {
+      const firstResponse = await submitImport(baseOptions).expect(202);
+      const firstId = firstResponse.body.id as string;
+      await waitForJobCompletion(app, token, firstId);
+
+      const secondResponse = await submitImport(baseOptions);
+      expect([200, 202]).toContain(secondResponse.status);
+      expect(secondResponse.body.id).toBe(firstId);
+      if (secondResponse.status === 202) {
+        await waitForJobCompletion(app, token, secondResponse.body.id);
+      }
+
+      const modifiedOptions = { ...baseOptions, projectId: `${baseOptions.projectId}-2` };
+      const thirdResponse = await submitImport(modifiedOptions).expect(202);
+      expect(thirdResponse.body.id).not.toBe(firstId);
+      await waitForJobCompletion(app, token, thirdResponse.body.id);
+
+      expect(runImportSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      runImportSpy.mockRestore();
+    }
+  });
+
+  it('returns validation errors for malformed connector payloads', async () => {
+    const response = await request(app)
+      .post('/v1/import')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-SOIPACK-License', licenseHeader)
+      .attach('reqif', minimalExample('spec.reqif'))
+      .field('projectName', 'Invalid Connector')
+      .field('projectVersion', `invalid-${Date.now()}`)
+      .field(
+        'connector',
+        JSON.stringify({
+          type: 'jenkins',
+          options: {
+            baseUrl: 'https://ci.invalid.example/',
+            job: '   ',
+            username: 'builder',
+          },
+        }),
+      )
+      .expect(400);
+
+    expect(response.body.error.code).toBe('INVALID_CONNECTOR_REQUEST');
+    expect(response.body.error.message).toBe('Bağlayıcı yapılandırması doğrulanamadı.');
+    const issues = response.body.error.details?.issues as Array<{ message?: string }> | undefined;
+    expect(Array.isArray(issues)).toBe(true);
+    expect(issues && issues.length).toBeGreaterThan(0);
+  });
+
   it('passes plan configuration uploads and overrides to report jobs', async () => {
     const runReportSpy = jest.spyOn(cli, 'runReport');
     let capturedOptions: cli.ReportOptions | undefined;
@@ -5438,6 +6187,162 @@ describe('@soipack/server REST API', () => {
       await fsPromises.rm(failingStorageDir, { recursive: true, force: true });
     }
   });
+  describe('GET /v1/analyses/:id/gsn.dot', () => {
+    const analysisId = 'aaaaaaaaaaaaaaaa';
+    const analysisDir = () => path.join(storageDir, 'analyses', tenantId, analysisId);
+
+    const objectivesMetadata = [
+      {
+        id: 'A-3-01',
+        table: 'A-3',
+        stage: 'SOI-1',
+        name: 'Planlama faaliyetleri tamamlandı',
+        desc: 'Plan kapsamında gerekli çalışma ürünleri tamamlandı.',
+        artifacts: ['plan'],
+        levels: { A: true, B: true, C: true, D: true, E: false },
+        independence: 'required',
+      },
+    ] as const;
+
+    const snapshotTemplate = {
+      version: {
+        id: 'snapshot-demo',
+        fingerprint: 'f'.repeat(64),
+        createdAt: '2024-09-21T12:00:00Z',
+      },
+      objectives: [
+        {
+          objectiveId: 'A-3-01',
+          status: 'covered',
+          evidenceRefs: ['plan:/plans/system-plan.md'],
+        },
+      ],
+      independenceSummary: {
+        totals: { total: 1, covered: 1, partial: 0, missing: 0 },
+        objectives: [
+          {
+            objectiveId: 'A-3-01',
+            independence: 'required',
+            status: 'covered',
+            missingArtifacts: [],
+          },
+        ],
+      },
+      gaps: {
+        staleEvidence: [],
+        missingArtifacts: [],
+        missingRequirements: [],
+        missingTests: [],
+        missingDesign: [],
+      },
+    };
+
+    const analysisTemplate = {
+      metadata: {
+        generatedAt: '2024-09-21T12:00:00Z',
+        level: 'C',
+        project: { name: 'GSN Demo' },
+      },
+      objectives: objectivesMetadata,
+    };
+
+    const writeAnalysisArtifacts = async (options?: {
+      omitSnapshot?: boolean;
+      omitAnalysis?: boolean;
+    }): Promise<void> => {
+      await fsPromises.rm(analysisDir(), { recursive: true, force: true }).catch(() => undefined);
+      await fsPromises.mkdir(analysisDir(), { recursive: true });
+      const snapshotPath = path.join(analysisDir(), 'snapshot.json');
+      const analysisPath = path.join(analysisDir(), 'analysis.json');
+      const tracesPath = path.join(analysisDir(), 'traces.json');
+
+      if (!options?.omitSnapshot) {
+        await fsPromises.writeFile(snapshotPath, JSON.stringify(snapshotTemplate));
+      }
+      if (!options?.omitAnalysis) {
+        await fsPromises.writeFile(analysisPath, JSON.stringify(analysisTemplate));
+      }
+      await fsPromises.writeFile(tracesPath, '[]');
+
+      const metadata = {
+        tenantId,
+        id: analysisId,
+        hash: 'hash-gsn-demo',
+        kind: 'analyze' as const,
+        createdAt: new Date().toISOString(),
+        directory: analysisDir(),
+        params: {},
+        license: {
+          hash: 'license-hash',
+          licenseId: 'analysis-demo',
+          issuedTo: tenantId,
+          issuedAt: new Date().toISOString(),
+          expiresAt: null,
+          features: [],
+        },
+        exitCode: 0,
+        outputs: {
+          snapshotPath,
+          tracePath: tracesPath,
+          analysisPath,
+        },
+      };
+
+      await fsPromises.writeFile(
+        path.join(analysisDir(), 'job.json'),
+        JSON.stringify(metadata),
+      );
+    };
+
+    it('renders Graphviz DOT output for completed analyses', async () => {
+      await writeAnalysisArtifacts();
+
+      const response = await request(app)
+        .get(`/v1/analyses/${analysisId}/gsn.dot`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.headers['content-type']).toBe('text/vnd.graphviz; charset=utf-8');
+      expect(response.text).toContain('digraph');
+      expect(response.text).toContain('goal:A-3-01');
+      expect(response.text).toContain('Planlama faaliyetleri tamamlandı');
+    });
+
+    it('rejects requests without a permitted role', async () => {
+      await writeAnalysisArtifacts();
+      const limitedToken = await createAccessToken({ roles: [] });
+
+      const response = await request(app)
+        .get(`/v1/analyses/${analysisId}/gsn.dot`)
+        .set('Authorization', `Bearer ${limitedToken}`)
+        .expect(403);
+
+      expect(response.body.error.code).toBe('FORBIDDEN_ROLE');
+    });
+
+    it('returns 404 when analysis outputs are missing', async () => {
+      await writeAnalysisArtifacts({ omitSnapshot: true });
+
+      const response = await request(app)
+        .get(`/v1/analyses/${analysisId}/gsn.dot`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      expect(response.body.error.code).toBe('ANALYSIS_STALE');
+    });
+
+    it('returns 404 when analysis metadata cannot be found', async () => {
+      await fsPromises.rm(analysisDir(), { recursive: true, force: true }).catch(() => undefined);
+
+      const response = await request(app)
+        .get(`/v1/analyses/${analysisId}/gsn.dot`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      expect(response.body.error.code).toBe('ANALYSIS_NOT_FOUND');
+    });
+  });
+
   it('runs retention sweeps on a schedule', async () => {
     const storageDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-retention-'));
     let retentionApp: ReturnType<typeof createServer> | undefined;

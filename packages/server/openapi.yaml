@@ -198,6 +198,186 @@ components:
               properties:
                 summary:
                   type: object
+    ImportConnectorPayload:
+      type: object
+      description: >-
+        Uzak sistemlerden kanıt almak için kullanılan bağlayıcı yapılandırması. Sunucu, iş
+        meta verisi ve günlük kayıtlarında gizli alanları "REDACTED" olarak maskeleyerek
+        saklar.
+      required:
+        - type
+        - options
+      properties:
+        type:
+          type: string
+          description: Kullanılacak bağlayıcının türü.
+          enum:
+            - polarion
+            - jenkins
+            - doorsNext
+            - jama
+            - jiraCloud
+        options:
+          description: Bağlayıcıya özgü kimlik doğrulama ve kapsam ayarları.
+          oneOf:
+            - $ref: '#/components/schemas/PolarionConnectorOptions'
+            - $ref: '#/components/schemas/JenkinsConnectorOptions'
+            - $ref: '#/components/schemas/DoorsNextConnectorOptions'
+            - $ref: '#/components/schemas/JamaConnectorOptions'
+            - $ref: '#/components/schemas/JiraCloudConnectorOptions'
+    PolarionConnectorOptions:
+      type: object
+      description: Polarion ALM projelerinden gereksinim ve kanıt almak için gerekli ayarlar.
+      required:
+        - baseUrl
+        - username
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: Polarion sunucusunun taban URL’si.
+        projectId:
+          type: string
+          description: Polarion proje kimliği. project alanı yerine kullanılabilir.
+        project:
+          type: string
+          description: Polarion proje kısa adı. projectId alanı yerine kullanılabilir.
+        username:
+          type: string
+          description: Polarion kullanıcı adı.
+        password:
+          type: string
+          description: Polarion kullanıcısı için parola. token alanı yerine kullanılabilir.
+        token:
+          type: string
+          description: Polarion erişim belirteci. password alanı yerine kullanılabilir.
+    JenkinsConnectorOptions:
+      type: object
+      description: Jenkins işleri üzerinden artefakt indirmek için gerekli ayarlar.
+      required:
+        - baseUrl
+        - job
+        - username
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: Jenkins sunucusunun taban URL’si.
+        job:
+          type: string
+          description: Tetiklenecek Jenkins işinin adı.
+        username:
+          type: string
+          description: Jenkins kullanıcısı.
+        apiToken:
+          type: string
+          description: Jenkins API belirteci. token veya password yerine kullanılabilir.
+        token:
+          type: string
+          description: Jenkins erişim belirteci. apiToken veya password yerine kullanılabilir.
+        password:
+          type: string
+          description: Jenkins kullanıcısının parolası. apiToken veya token yerine kullanılabilir.
+    DoorsNextOAuthOptions:
+      type: object
+      description: Doors Next OAuth 2.0 istemci kimlik bilgileri.
+      required:
+        - tokenUrl
+        - clientId
+        - clientSecret
+      properties:
+        tokenUrl:
+          type: string
+          format: uri
+          description: OAuth belirteci almak için kullanılacak URL.
+        clientId:
+          type: string
+          description: OAuth istemci kimliği.
+        clientSecret:
+          type: string
+          description: OAuth istemci sırrı.
+        scope:
+          type: string
+          description: İsteğe bağlı OAuth kapsam değeri.
+    DoorsNextConnectorOptions:
+      type: object
+      description: IBM DOORS Next projeleri için kimlik doğrulama ve kapsam ayarları.
+      required:
+        - baseUrl
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: DOORS Next sunucusunun taban URL’si.
+        project:
+          type: string
+          description: İçe aktarılacak proje adı. projectArea alanı yerine kullanılabilir.
+        projectArea:
+          type: string
+          description: İçe aktarılacak proje alanı. project alanı yerine kullanılabilir.
+        username:
+          type: string
+          description: Temel kimlik doğrulaması için kullanıcı adı. password ile birlikte kullanılmalıdır.
+        password:
+          type: string
+          description: Temel kimlik doğrulaması için parola. username ile birlikte kullanılmalıdır.
+        accessToken:
+          type: string
+          description: DOORS Next erişim belirteci. username/password veya oauth yerine kullanılabilir.
+        oauth:
+          $ref: '#/components/schemas/DoorsNextOAuthOptions'
+          description: OAuth 2.0 ile kimlik doğrulamak için istemci kimlik bilgileri.
+    JamaConnectorOptions:
+      type: object
+      description: Jama Connect projeleriyle entegrasyon ayarları.
+      required:
+        - baseUrl
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: Jama Connect sunucusunun taban URL’si.
+        project:
+          type: string
+          description: İçe aktarılacak projenin kısa adı. projectId alanı yerine kullanılabilir.
+        projectId:
+          type: string
+          description: İçe aktarılacak projenin kimliği. project alanı yerine kullanılabilir.
+        clientId:
+          type: string
+          description: OAuth istemci kimliği. clientSecret ile birlikte kullanılmalıdır.
+        clientSecret:
+          type: string
+          description: OAuth istemci sırrı. clientId ile birlikte kullanılmalıdır.
+        apiToken:
+          type: string
+          description: Jama API belirteci. clientId/clientSecret yerine kullanılabilir.
+    JiraCloudConnectorOptions:
+      type: object
+      description: Atlassian Jira Cloud projelerinden iş öğesi almak için gereken alanlar.
+      required:
+        - site
+        - email
+        - apiToken
+        - projectKey
+      properties:
+        site:
+          type: string
+          description: Jira Cloud site alan adı (ör. example.atlassian.net).
+        email:
+          type: string
+          format: email
+          description: Jira Cloud kullanıcısının e-posta adresi.
+        apiToken:
+          type: string
+          description: Atlassian API belirteci.
+        projectKey:
+          type: string
+          description: Jira projesinin anahtar değeri.
+        baseUrl:
+          type: string
+          format: uri
+          description: Opsiyonel özel Jira taban URL’si. Varsayılan olarak site alan adı kullanılır.
                   required:
                     - generatedAt
                     - tools
@@ -1635,6 +1815,9 @@ paths:
       summary: Kanıt dosyalarını çalışma alanına aktarır.
       description: |
         Aynı dosya ve seçenek kombinasyonu tekrar gönderildiğinde aynı kimlikte sonuç üretir.
+        İsteğe bağlı olarak, dosya yüklemeden bağımsız biçimde uzaktan bağlayıcı
+        yapılandırması (`connector`) sağlayarak Polarion, Jenkins, DOORS Next, Jama
+        veya Jira Cloud sistemlerinden kanıt toplanması tetiklenebilir.
       security:
         - BearerAuth: []
       parameters:
@@ -1706,6 +1889,19 @@ paths:
                   items:
                     type: string
                     format: binary
+                connector:
+                  $ref: '#/components/schemas/ImportConnectorPayload'
+                  description: >-
+                    Polarion, Jenkins, DOORS Next, Jama veya Jira Cloud üzerinde barındırılan
+                    kanıtları senkronize etmek için kullanılacak bağlayıcı yapılandırması.
+                    Alan multipart form verisinde JSON olarak gönderilmelidir.
+                  example:
+                    type: polarion
+                    options:
+                      baseUrl: https://polarion.example.com/
+                      projectId: avionics
+                      username: traceability-bot
+                      token: s3cr3t-token
                 independentSources:
                   type: array
                   description: Bağımsız kaynak kanıtları için kimlikler listesi.
@@ -1723,6 +1919,9 @@ paths:
                 level:
                   type: string
                   description: Sertifikasyon seviyesi (A-E).
+            encoding:
+              connector:
+                contentType: application/json
       responses:
         '200':
           description: Import işlemi tamamlandı.

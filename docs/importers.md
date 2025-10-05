@@ -8,6 +8,45 @@ SOIPack dış araçlardan gelen kalite verilerini `@soipack/adapters` paketindek
 - **EvidenceIndex**: Dönüştürülen kayıtlar uyum matrisi ve raporlama katmanına kanıt olarak aktarılır.
 - Yeni dönüştürücüler büyük dosyaları satır veya olay bazlı okuyarak bellek kullanımını sabit tutar.
 
+## REST API içe aktarma hattı
+
+CLI komutlarının yanı sıra aynı dönüştürücüler, REST API üzerinden uzaktan yürütülen içe aktarma
+işlerinde de kullanılabilir. `POST /v1/import` uç noktası, multipart/form-data gövdesindeki dosyaların
+yanında JSON olarak kodlanmış bir `connector` alanı kabul eder. Alanın yapısı aşağıdaki gibidir:
+
+```json
+{
+  "connector": {
+    "type": "polarion",
+    "options": {
+      "baseUrl": "https://polarion.example.com",
+      "username": "qa-reader",
+      "token": "<api-token>"
+    }
+  }
+}
+```
+
+Birden çok dosya yüklerken JSON parçasını multipart isteğe aşağıdaki örnekteki gibi
+ekleyebilirsiniz:
+
+```bash
+curl -X POST https://soipack.example.com/v1/import \
+  -H 'Authorization: Bearer <JWT>' \
+  -H 'X-SOIPACK-License: <lisans>' \
+  -F "reqif=@spec.reqif" \
+  -F "junit=@results.xml" \
+  -F 'connector={"type":"polarion","options":{"baseUrl":"https://polarion.example.com","username":"qa-reader","token":"s3cr3t"}};type=application/json'
+```
+
+Sunucu yalnızca şemada tanımlanan seçenekleri işler; tüm anahtarlar trim edilerek tipleri normalize
+edilir ve fazlalıklar atılır. Parola, token, `apiToken`, `clientSecret` gibi gizli alanlar kalıcı
+`job.json` metaverisinde ve günlüklerde otomatik olarak "REDACTED" ile maskelenir. Ayrıca sanitized ve
+gizli alanlardan arındırılmış seçenekler deterministik biçimde hash’lenerek bir parmak izi (fingerprint)
+üretilir. Bu fingerprint hem iş karmasına (job hash) eklenir hem de aynı bağlayıcı seçenekleriyle
+tekrarlanan isteklerin deduplikasyonuna olanak tanır; seçenekler değiştirildiğinde yeni bir fingerprint
+hesaplanarak farklı bir iş kimliği üretilir.
+
 ## JUnit XML
 
 Dosya: `packages/adapters/src/adapters/junit.ts`
