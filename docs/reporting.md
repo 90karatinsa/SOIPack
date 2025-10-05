@@ -29,18 +29,47 @@ Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden pla
 
 Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen ayrı bir bölüm içerir. Rapordaki “Bağımsızlık Uyarıları” bloğunda toplam etkilenen hedef sayısı, kısmi/eksik durumlar ve hedeflerin zorunlu/önerilen bağımsızlık seviyeleri rozetlerle vurgulanır. Kırmızı (`Zorunlu`) rozetler sertifikasyon için kritik eksiklikleri, sarı (`Önerilen`) rozetler ise bağımsız inceleme bekleyen alanları gösterir. Tablo satırlarında eksik kanıt türleri (ör. `Gözden Geçirme`, `MC/DC Kapsamı`) ayrı rozetler halinde listelenir ve denetçilerin hangi kanıtların bağımsız gözden geçirme gerektirdiğini hızlıca görmesini sağlar. Eğer bağımsızlık eksikliği kalmamışsa bölüm “Bağımsızlık gerektiren hedeflerde eksik bulunamadı.” mesajıyla kapanır.
 
-## GSN Graphviz/DOT dışa aktarımı
+## GSN exports
 
 Uyumluluk snapshot'ları için DO-178C hedeflerini, referans kanıtlarını ve kalıcı boşlukları özetleyen bir Goal Structuring Notation (GSN) grafiği üretmek amacıyla `renderGsnGraphDot` fonksiyonu kullanılabilir. Fonksiyon Graphviz/DOT biçiminde bir dize döndürür; çıktı içerisinde SOI kümelerine ayrılmış hedef düğümleri, her hedefe bağlı kanıt (solution) düğümleri, eksik artefaktlar veya `staleEvidence` bulguları için kalıntı düğümleri ve bağımsızlık seviyelerini açıklayan bir lejant yer alır. Zorunlu bağımsızlık isteyen hedefler çift kenarlı olarak çizilir, eksikler kırmızı kalın kenarlarla vurgulanır ve legend'da bu kodlama özetlenir.
 
-**Çalışma akışı**
-
-1. `@soipack/engine` ile uyum snapshot'ını ve `Objective` meta verilerini oluşturun (örnek: `createReportFixture()` jest fikstürü).
-2. `renderGsnGraphDot(snapshot, { objectivesMetadata, graphName: 'ComplianceGSN' })` çağrısı ile DOT içeriğini üretin.
-3. Dönen değeri `reports/compliance-gsn.dot` benzeri bir dosyaya yazın ve `dot -Tsvg reports/compliance-gsn.dot -o reports/compliance-gsn.svg` komutu ile görseli üretin.
-4. Grafikteki lejant kanıt/boşluk düğümlerini, bağımsızlık kenar kalınlıklarını ve SOI kümelerini açıklar; böylece denetçiler hangi hedeflerin hangi kanıtlarla desteklendiğini ve hangi artefaktların eksik/stale kaldığını tek bakışta görebilir.
-
 DOT çıktısı varsayılan olarak tüm boşluk kategorilerini (plan/test/coverage vb.) ve `snapshot.gaps.staleEvidence` içindeki yaş aşımı veya snapshot'tan eski kanıt bulgularını kırmızı kalıntı düğümleri olarak gösterir. Bağımsızlık eksikliği bulunan hedefler için ayrıca “Bağımsızlık Eksikliği” lejantı, kalınlaştırılmış kenarlar ve düğüm etiketindeki “Bağımsızlık: …” satırı üretilir. CI pipeline'ı bu çıktıyı golden test ile doğruladığından, yeni hedefler eklendiğinde `UPDATE_GOLDENS=1 npm run test --workspace @soipack/report -- gsn` komutu ile güncel DOT şablonunu yakalayabilirsiniz.
+
+### CLI: `soipack render-gsn`
+
+GSN grafiğini komut satırından almak için `render-gsn` komutunu kullanın. Komut en az bir giriş kaynağı ister: uyum snapshot'ı (`--snapshot`) veya hedef meta verileri (`--objectives`). İkisi de sağlanırsa Graphviz yapısı her iki veri kümesini kullanarak etiketleri zenginleştirir ve çıktı dosyasına yazar.
+
+```bash
+soipack render-gsn \
+  --snapshot reports/snapshot.json \
+  --objectives analysis/objectives.json \
+  --output reports/analysis-gsn.dot
+```
+
+Komut, giriş yollarının okunabilirliğini ve çıkışın üst dizininin yazılabilirliğini doğrular; koşullardan biri sağlanmazsa işlem `exitCode=1` ile sonlanır. Başarılı çalıştırmada `reports/analysis-gsn.dot` dosyası Graphviz/DOT içeriğiyle doldurulur ve çıktı kısa bir bilgilendirme satırıyla teyit edilir. Üretilen dosya sonrasında `dot -Tsvg reports/analysis-gsn.dot -o reports/analysis-gsn.svg` komutu ile SVG veya PDF gibi diğer biçimlere dönüştürülebilir.
+
+Snapshot verisini yalnızca hedef şemasını test etmek için `--objectives` ile sınırlı tutmak mümkündür. Örneğin, sadece hedef katalog etiketi içeren bir DOT grafiği üretmek için:
+
+```bash
+soipack render-gsn \
+  --objectives analysis/objectives.json \
+  --output reports/objectives-only-gsn.dot
+```
+
+### REST API: `/v1/analyses/{id}/gsn.dot`
+
+Uzak analizin GSN grafiğini almak için REST API aynı DOT çıktısını `text/vnd.graphviz; charset=utf-8` (veya alternatif `text/plain`) içerik türüyle döndürür. İstek, analizin UUID kimliğiyle birlikte kimlik doğrulaması gerektirir. Başarılı yanıtlar indirilebilir dosya adı önerisi sunan `Content-Disposition: attachment; filename="analysis-gsn.dot"` başlığı içerir.
+
+```bash
+curl -H "Authorization: Bearer <TOKEN>" \
+  -H "Accept: text/vnd.graphviz; charset=utf-8" \
+  https://api.example.com/v1/analyses/3c8a7a1c-4f4c-4bf5-9db2-2e8331a077b4/gsn.dot \
+  -o reports/remote-analysis-gsn.dot
+```
+
+Yanıt gövdesi CLI çıktısıyla aynı Graphviz/DOT yapısını taşır. Geçersiz kimlikler (`400`), eksik yetkilendirme (`401`/`403`), bulunamayan analizler (`404`), desteklenmeyen `Accept` türleri (`406`), medya türü hataları (`415`), oran sınırı (`429`) veya beklenmeyen sunucu durumları (`500`) mevcut hata şemasıyla JSON döndürür. API ile indirilen `.dot` dosyası da yerel olarak `dot -Tsvg` veya `dot -Tpdf` gibi komutlarla görselleştirilebilir.
+
+Komut satırı veya REST akışından alınan DOT dosyaları CI içinde regression testi olarak saklanabilir. Golden DOT verileri güncellendiğinde `renderGsnGraphDot` fonksiyonunun çıktı alanlarının (SOI kümeleri, kanıt düğümleri, bağımsızlık lejantı vb.) beklenen biçimde kalması sağlanır.
 
 ### Değişiklik etki analizi
 

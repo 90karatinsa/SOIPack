@@ -2490,6 +2490,95 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/analyses/{id}/gsn.dot:
+    get:
+      operationId: getAnalysisGsnDot
+      summary: GSN’i Graphviz DOT olarak döndürür.
+      tags:
+        - Analyses
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Analiz kimliği.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Analizin GSN grafiği.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: attachment; filename="analysis-gsn.dot"
+          content:
+            text/vnd.graphviz; charset=utf-8:
+              schema:
+                type: string
+                description: Analizin GSN yapısının Graphviz DOT temsili.
+              example: |-
+                digraph GSN {
+                  Goal1 [label="Ana hedef"];
+                }
+            text/plain:
+              schema:
+                type: string
+                description: Analizin GSN yapısının Graphviz DOT temsili.
+              example: |-
+                digraph GSN {
+                  Goal1 [label="Ana hedef"];
+                }
+        '400':
+          description: Geçersiz analiz kimliği.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Yetki yetersiz.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Analiz bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '406':
+          description: Accept başlığı desteklenmeyen içerik türü talep etti.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: İstek medya türü desteklenmiyor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Çok fazla istek gönderildi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Beklenmeyen sunucu hatası.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/pack:
     post:
       operationId: createPackJob
