@@ -4,6 +4,7 @@ import type { ChangeEvent } from 'react';
 
 import { ComplianceMatrix } from './components/ComplianceMatrix';
 import { DownloadPackageButton } from './components/DownloadPackageButton';
+import { GsnGraph } from './components/GsnGraph';
 import { LicenseInput } from './components/LicenseInput';
 import { NavigationTabs, type View } from './components/NavigationTabs';
 import { TokenInput } from './components/TokenInput';
@@ -15,7 +16,12 @@ import { TimelinePage } from './pages/TimelinePage';
 import { RiskCockpitPage } from './pages/RiskCockpitPage';
 import RequirementsEditorPage, { type RequirementRecord } from './pages/RequirementsEditorPage';
 import { RoleGate, useRbac } from './providers/RbacProvider';
-import { ApiError, getWorkspaceDocumentThread, type WorkspaceDocumentThread } from './services/api';
+import {
+  ApiError,
+  fetchReportGsnGraph,
+  getWorkspaceDocumentThread,
+  type WorkspaceDocumentThread,
+} from './services/api';
 import { I18nProvider, useI18n } from './providers/I18nProvider';
 import type { Locale } from './microcopy';
 import type {
@@ -135,7 +141,7 @@ function AppContent() {
   };
 
   const navigationViews = useMemo(() => {
-    const baseViews: View[] = ['upload', 'compliance', 'traceability', 'risk', 'timeline'];
+    const baseViews: View[] = ['upload', 'compliance', 'traceability', 'gsn', 'risk', 'timeline'];
     if (canAccessRequirements) {
       baseViews.push('requirements');
     }
@@ -166,9 +172,22 @@ function AppContent() {
     }
   }, [reportData, activeStage]);
 
+  useEffect(() => {
+    if (!reportData) {
+      setGsnGraph(null);
+      setGsnError(null);
+      setGsnNotFound(false);
+      setGsnLoading(false);
+    }
+  }, [reportData]);
+
   const [requirementsThread, setRequirementsThread] = useState<WorkspaceDocumentThread<RequirementRecord[]> | null>(null);
   const [requirementsError, setRequirementsError] = useState<string | null>(null);
   const [requirementsLoading, setRequirementsLoading] = useState(false);
+  const [gsnGraph, setGsnGraph] = useState<string | null>(null);
+  const [gsnError, setGsnError] = useState<string | null>(null);
+  const [gsnNotFound, setGsnNotFound] = useState(false);
+  const [gsnLoading, setGsnLoading] = useState(false);
 
   useEffect(() => {
     if (activeView !== 'requirements' || !canAccessRequirements) {
@@ -214,6 +233,73 @@ function AppContent() {
       controller.abort();
     };
   }, [activeView, canAccessRequirements, isAuthorized, trimmedToken, trimmedLicense]);
+
+  useEffect(() => {
+    if (activeView !== 'gsn') {
+      return;
+    }
+
+    if (!isAuthorized) {
+      setGsnGraph(null);
+      setGsnError(null);
+      setGsnNotFound(false);
+      setGsnLoading(false);
+      return;
+    }
+
+    const currentReportId = reportData?.reportId;
+    if (!currentReportId) {
+      setGsnGraph(null);
+      setGsnError(null);
+      setGsnNotFound(false);
+      setGsnLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setGsnLoading(true);
+    setGsnError(null);
+    setGsnNotFound(false);
+
+    fetchReportGsnGraph({
+      token: trimmedToken,
+      license: trimmedLicense,
+      reportId: currentReportId,
+      signal: controller.signal,
+    })
+      .then((dot) => {
+        if (!controller.signal.aborted) {
+          setGsnGraph(dot);
+          setGsnError(null);
+          setGsnNotFound(false);
+        }
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          setGsnGraph(null);
+          setGsnError(null);
+          setGsnNotFound(true);
+        } else {
+          setGsnGraph(null);
+          setGsnNotFound(false);
+          setGsnError(
+            error instanceof ApiError ? error.message : 'GSN grafiği yüklenirken bir hata oluştu.',
+          );
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setGsnLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeView, isAuthorized, trimmedToken, trimmedLicense, reportData?.reportId]);
 
   const handleRun = (submission: UploadRunPayload) => {
     if (!canRunPipeline || isRunning) return;
@@ -415,6 +501,63 @@ function AppContent() {
               isEnabled={Boolean(reportData)}
               generatedAt={reportData?.generatedAt}
             />
+          )}
+          {activeView === 'gsn' && (
+            <div className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-slate-950/30">
+              {!isAuthorized ? (
+                <Alert
+                  variant="warning"
+                  title="Kimlik bilgileri gerekli"
+                  description="GSN grafiğini görüntülemek için token ve lisans sağlamalısınız."
+                />
+              ) : !reportData ? (
+                <Alert
+                  variant="warning"
+                  title="Rapor bekleniyor"
+                  description="GSN grafiğini görmek için önce bir rapor oluşturmalısınız."
+                />
+              ) : gsnLoading ? (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-6 text-center text-slate-300">
+                  GSN grafiği yükleniyor…
+                </div>
+              ) : gsnError ? (
+                <Alert variant="destructive" title="GSN grafiği yüklenemedi" description={gsnError} />
+              ) : gsnNotFound ? (
+                <Alert
+                  variant="warning"
+                  title="GSN grafiği bulunamadı"
+                  description="Bu rapor için GSN grafiği henüz üretilmedi."
+                />
+              ) : gsnGraph ? (
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <h2 className="text-lg font-semibold text-white">GSN Graphviz DOT</h2>
+                    <p className="text-sm text-slate-400">
+                      Raporun ürettiği güvence grafiği aşağıda Graphviz DOT formatında görüntülenmektedir.
+                    </p>
+                  </div>
+                  <GsnGraph
+                    dot={gsnGraph}
+                    data-testid="gsn-graph-content"
+                    className="max-h-96 overflow-auto rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow-inner shadow-slate-950/40"
+                    loadingMessage="GSN grafiği görselleştiriliyor…"
+                    fallbackMessage="GSN grafiği görselleştirilemedi. DOT içeriği aşağıda gösterilmeye devam ediyor."
+                  />
+                  <pre
+                    data-testid="gsn-graph-dot"
+                    className="max-h-96 overflow-auto whitespace-pre rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-emerald-300 shadow-inner shadow-slate-950/40"
+                  >
+                    {gsnGraph}
+                  </pre>
+                </div>
+              ) : (
+                <Alert
+                  variant="warning"
+                  title="GSN grafiği mevcut değil"
+                  description="Bu rapor için Graphviz çıktısı sağlanmadı."
+                />
+              )}
+            </div>
           )}
           {activeView === 'risk' && (
             <RiskCockpitPage token={token} license={license} isAuthorized={isAuthorized} />

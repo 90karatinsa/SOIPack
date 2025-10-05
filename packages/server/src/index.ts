@@ -1200,6 +1200,10 @@ interface ReportJobMetadata extends BaseJobMetadata {
     analysisPath: string;
     snapshotPath: string;
     tracesPath: string;
+    gsnGraphDot?: {
+      path: string;
+      href: string;
+    };
     toolQualification?: ToolQualificationMetadata;
   };
 }
@@ -1270,6 +1274,10 @@ interface ReportJobResult {
     analysis: string;
     snapshot: string;
     traces: string;
+    gsnGraphDot?: {
+      path: string;
+      href: string;
+    };
     toolQualification?: {
       summary: ToolQualificationSummary;
       tqp: string;
@@ -2670,6 +2678,14 @@ const toReportResult = (
     analysis: storage.toRelativePath(metadata.outputs.analysisPath),
     snapshot: storage.toRelativePath(metadata.outputs.snapshotPath),
     traces: storage.toRelativePath(metadata.outputs.tracesPath),
+    ...(metadata.outputs.gsnGraphDot
+      ? {
+          gsnGraphDot: {
+            path: storage.toRelativePath(metadata.outputs.gsnGraphDot.path),
+            href: metadata.outputs.gsnGraphDot.href,
+          },
+        }
+      : {}),
     ...(metadata.outputs.toolQualification
       ? {
           toolQualification: {
@@ -5239,6 +5255,12 @@ export const createServer = (config: ServerConfig): Express => {
               tarHref: toReportAssetHref(payload.reportDir, result.toolQualification.tar),
             }
           : undefined;
+        const gsnGraphMetadata = result.gsnGraphDot
+          ? {
+              path: result.gsnGraphDot,
+              href: toReportAssetHref(payload.reportDir, result.gsnGraphDot),
+            }
+          : undefined;
         const metadata: ReportJobMetadata = {
           tenantId: context.tenantId,
           id: context.id,
@@ -5265,6 +5287,7 @@ export const createServer = (config: ServerConfig): Express => {
             analysisPath: path.join(payload.reportDir, 'analysis.json'),
             snapshotPath: path.join(payload.reportDir, 'snapshot.json'),
             tracesPath: path.join(payload.reportDir, 'traces.json'),
+            ...(gsnGraphMetadata ? { gsnGraphDot: gsnGraphMetadata } : {}),
             ...(toolQualificationMetadata
               ? { toolQualification: toolQualificationMetadata }
               : {}),
@@ -7395,7 +7418,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
-    '/compliance',
+    '/v1/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId, subject } = getAuthContext(req);
@@ -7406,7 +7429,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
-    '/compliance/:id',
+    '/v1/compliance/:id',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId, subject } = getAuthContext(req);
@@ -7423,7 +7446,7 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.post(
-    '/compliance',
+    '/v1/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId, subject } = getAuthContext(req);
@@ -7646,6 +7669,19 @@ export const createServer = (config: ServerConfig): Express => {
       );
     }),
   );
+
+  const sendLegacyComplianceGone = (_req: Request, res: Response): void => {
+    res.status(410).json({
+      error: {
+        code: 'COMPLIANCE_ENDPOINT_DEPRECATED',
+        message: 'Uyum API\'si /v1/compliance yoluna taşındı. Lütfen istemcinizi güncelleyin.',
+      },
+    });
+  };
+
+  app.get('/compliance', requireAuth, sendLegacyComplianceGone);
+  app.get('/compliance/:id', requireAuth, sendLegacyComplianceGone);
+  app.post('/compliance', requireAuth, sendLegacyComplianceGone);
 
   const parseReviewTarget = (value: unknown): { kind: ReviewTargetKind; reference?: string | null } | undefined => {
     if (value === undefined) {
@@ -8376,6 +8412,48 @@ export const createServer = (config: ServerConfig): Express => {
       const dot = renderGsnGraphDot(snapshot, { objectivesMetadata: objectives });
 
       res.status(200).set('Content-Type', 'text/vnd.graphviz; charset=utf-8').send(dot);
+    }),
+  );
+
+  app.get(
+    '/v1/reports/:id/gsn-graph.dot',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+      const { id } = req.params as { id?: string };
+      if (!id) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'reportId parametresi zorunludur.');
+      }
+      assertJobId(id);
+
+      const reportDir = await findStageAwareJobDirectory(
+        storage,
+        directories.reports,
+        tenantId,
+        id,
+      );
+      if (!reportDir) {
+        throw new HttpError(404, 'REPORT_NOT_FOUND', 'İstenen rapor bulunamadı.');
+      }
+
+      const metadata = await readJobMetadata<ReportJobMetadata>(storage, reportDir);
+      if (metadata.kind !== 'report') {
+        throw new HttpError(400, 'REPORT_INCOMPLETE', 'Rapor çıktıları bulunamadı.');
+      }
+      if (metadata.tenantId !== tenantId) {
+        throw new HttpError(403, 'TENANT_MISMATCH', 'İstenen rapor bu kiracıya ait değil.');
+      }
+
+      const gsnGraphPath = metadata.outputs.gsnGraphDot?.path;
+      if (!gsnGraphPath || !(await storage.fileExists(gsnGraphPath))) {
+        throw new HttpError(404, 'REPORT_GSN_NOT_FOUND', 'Bu rapor için GSN grafiği bulunamadı.');
+      }
+
+      await streamStorageFile(res, storage, gsnGraphPath, {
+        contentType: 'text/vnd.graphviz; charset=utf-8',
+        fallbackName: 'gsn-graph.dot',
+      });
     }),
   );
 
@@ -9151,6 +9229,14 @@ export const createServer = (config: ServerConfig): Express => {
               analysis: storage.toRelativePath(reportMetadata.outputs.analysisPath),
               snapshot: storage.toRelativePath(reportMetadata.outputs.snapshotPath),
               traces: storage.toRelativePath(reportMetadata.outputs.tracesPath),
+              ...(reportMetadata.outputs.gsnGraphDot
+                ? {
+                    gsnGraphDot: {
+                      path: storage.toRelativePath(reportMetadata.outputs.gsnGraphDot.path),
+                      href: reportMetadata.outputs.gsnGraphDot.href,
+                    },
+                  }
+                : {}),
             },
             package: {
               id: packId,

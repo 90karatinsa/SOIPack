@@ -51,9 +51,80 @@ const formatCoverageLabel = (metric?: CoverageMetric): string | undefined => {
   return `${metric.covered}/${metric.total}`;
 };
 
+const createEmptySuggestionGroup = (): RequirementViewModel['suggestions'] => ({
+  code: [],
+  tests: [],
+});
+
+const buildSuggestionMap = (
+  suggestions: ComplianceMatrixPayload['traceSuggestions'],
+): Map<string, RequirementViewModel['suggestions']> => {
+  const lookup = new Map<string, RequirementViewModel['suggestions']>();
+
+  (suggestions ?? []).forEach((suggestion) => {
+    if (!lookup.has(suggestion.requirementId)) {
+      lookup.set(suggestion.requirementId, createEmptySuggestionGroup());
+    }
+    const group = lookup.get(suggestion.requirementId)!;
+    const entry = {
+      type: suggestion.type,
+      targetId: suggestion.targetId,
+      target: suggestion.targetName ?? suggestion.targetId,
+      confidence: suggestion.confidence,
+      reason: suggestion.reason,
+    };
+    if (suggestion.type === 'code') {
+      group.code.push(entry);
+    } else {
+      group.tests.push(entry);
+    }
+  });
+
+  lookup.forEach((group) => {
+    group.code.sort((a, b) => a.targetId.localeCompare(b.targetId));
+    group.tests.sort((a, b) => a.targetId.localeCompare(b.targetId));
+  });
+
+  return lookup;
+};
+
+const cloneSuggestionGroup = (
+  group?: RequirementViewModel['suggestions'],
+): RequirementViewModel['suggestions'] => ({
+  code: (group?.code ?? []).map((entry) => ({ ...entry })),
+  tests: (group?.tests ?? []).map((entry) => ({ ...entry })),
+});
+
+const collectRequirementDesigns = (
+  designIds: string[] | undefined,
+  traceDesigns: RequirementTracePayload['designs'],
+): RequirementViewModel['designs'] => {
+  const designs = new Map<string, RequirementViewModel['designs'][number]>();
+
+  (traceDesigns ?? []).forEach((design) => {
+    designs.set(design.id, {
+      id: design.id,
+      title: design.title,
+      status: design.status,
+    });
+  });
+
+  (designIds ?? []).forEach((designId) => {
+    if (!designs.has(designId)) {
+      designs.set(designId, {
+        id: designId,
+        title: designId,
+      });
+    }
+  });
+
+  return Array.from(designs.values()).sort((a, b) => a.id.localeCompare(b.id));
+};
+
 const buildRequirementView = (
   coverageEntry: ComplianceMatrixPayload['requirementCoverage'][number],
   trace?: RequirementTracePayload,
+  suggestions?: RequirementViewModel['suggestions'],
 ): RequirementViewModel => {
   const metric = selectCoverageMetric(coverageEntry.coverage);
   const codeMap = new Map<string, { coveragePercent?: number; coverageLabel?: string }>();
@@ -94,10 +165,15 @@ const buildRequirementView = (
       status: normalizeTestStatus(test.status),
       result: test.status,
     })),
+    designs: collectRequirementDesigns(coverageEntry.designs, trace?.designs),
+    suggestions: cloneSuggestionGroup(suggestions),
   };
 };
 
-const buildTraceOnlyRequirement = (trace: RequirementTracePayload): RequirementViewModel => {
+const buildTraceOnlyRequirement = (
+  trace: RequirementTracePayload,
+  suggestions?: RequirementViewModel['suggestions'],
+): RequirementViewModel => {
   const code = trace.code.map((entry) => {
     const metric = selectCoverageMetric(entry.coverage);
     return {
@@ -123,6 +199,8 @@ const buildTraceOnlyRequirement = (trace: RequirementTracePayload): RequirementV
       status: normalizeTestStatus(test.status),
       result: test.status,
     })),
+    designs: collectRequirementDesigns(undefined, trace.designs),
+    suggestions: cloneSuggestionGroup(suggestions),
   };
 };
 
@@ -136,14 +214,16 @@ export const createReportDataset = (
     traceMap.set(trace.requirement.id, trace);
   });
 
+  const suggestionMap = buildSuggestionMap(compliance.traceSuggestions);
+
   const requirements = compliance.requirementCoverage.map((entry) => {
     const trace = traceMap.get(entry.requirementId);
     traceMap.delete(entry.requirementId);
-    return buildRequirementView(entry, trace);
+    return buildRequirementView(entry, trace, suggestionMap.get(entry.requirementId));
   });
 
   traceMap.forEach((trace) => {
-    requirements.push(buildTraceOnlyRequirement(trace));
+    requirements.push(buildTraceOnlyRequirement(trace, suggestionMap.get(trace.requirement.id)));
   });
 
   requirements.sort((a, b) => a.id.localeCompare(b.id));

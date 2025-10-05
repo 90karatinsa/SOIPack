@@ -4252,6 +4252,7 @@ export interface ReportOptions {
   planOverrides?: PlanSectionOverrides;
   stage?: SoiStage;
   toolUsage?: string;
+  gsn?: boolean;
 }
 
 export interface GeneratedPlanOutput {
@@ -4271,6 +4272,7 @@ export interface ReportResult {
   gapsHtml: string;
   plans: Record<PlanTemplateId, GeneratedPlanOutput>;
   warnings: string[];
+  gsnGraphDot?: string;
   toolQualification?: {
     tqp: string;
     tar: string;
@@ -4845,6 +4847,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   const traceCsvPath = path.join(outputDir, 'trace.csv');
   const gapsHtmlPath = path.join(outputDir, 'gaps.html');
   let toolQualificationPaths: { tqp: string; tar: string } | undefined;
+  let gsnGraphDotPath: string | undefined;
 
   await fsPromises.copyFile(snapshotPath, path.join(outputDir, 'snapshot.json'));
   await fsPromises.copyFile(tracePath, path.join(outputDir, 'traces.json'));
@@ -4855,6 +4858,16 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
   await fsPromises.writeFile(traceHtmlPath, traceReport.html, 'utf8');
   await fsPromises.writeFile(traceCsvPath, traceReport.csv.csv, 'utf8');
   await fsPromises.writeFile(gapsHtmlPath, gapsHtml, 'utf8');
+
+  if (options.gsn) {
+    const gsnDir = path.join(outputDir, 'gsn');
+    await ensureDirectory(gsnDir);
+    gsnGraphDotPath = path.join(gsnDir, 'gsn-graph.dot');
+    const gsnDot = renderGsnGraphDotReport(snapshot, {
+      objectivesMetadata: analysis.objectives,
+    });
+    await fsPromises.writeFile(gsnGraphDotPath, gsnDot, 'utf8');
+  }
 
   if (toolQualificationPack) {
     const toolQualificationDir = path.join(outputDir, 'tool-qualification');
@@ -4945,6 +4958,7 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     gapsHtml: gapsHtmlPath,
     plans,
     warnings: planWarnings,
+    ...(gsnGraphDotPath ? { gsnGraphDot: gsnGraphDotPath } : {}),
     ...(toolQualificationPaths
       ? {
           toolQualification: {
@@ -7155,12 +7169,6 @@ export const renderGsnCommand: CommandModule<GlobalArguments, RenderGsnCommandOp
         describe: 'Üretilen Graphviz DOT çıktısının yazılacağı dosya.',
         type: 'string',
         demandOption: true,
-      })
-      .check((argv) => {
-        if (!argv.snapshot && !argv.objectives) {
-          throw new Error('En azından --snapshot veya --objectives seçeneğinden biri belirtilmelidir.');
-        }
-        return true;
       }),
   handler: async (argv) => {
     const logger = getLogger(argv);
@@ -7183,6 +7191,12 @@ export const renderGsnCommand: CommandModule<GlobalArguments, RenderGsnCommandOp
       ...(snapshotPath ? { snapshotPath } : {}),
       ...(objectivesPath ? { objectivesPath } : {}),
     } as const;
+
+    if (!snapshotPath && !objectivesPath) {
+      console.error('En azından --snapshot veya --objectives seçeneğinden biri belirtilmelidir.');
+      process.exitCode = exitCodes.error;
+      return;
+    }
 
     try {
       let snapshot: ComplianceSnapshot | undefined;
@@ -7938,6 +7952,11 @@ if (require.main === module) {
             describe: 'DO-330 araç kullanım metaverisini içeren JSON dosyası.',
             type: 'string',
           })
+          .option('gsn', {
+            describe: 'Goal Structuring Notation grafiğini (DOT) çıktısı olarak üretir.',
+            type: 'boolean',
+            default: false,
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -7953,6 +7972,7 @@ if (require.main === module) {
           output: argv.output,
           stage,
           toolUsage: argv['tool-usage'],
+          gsn: Boolean(argv.gsn),
         };
 
         try {
@@ -7969,6 +7989,7 @@ if (require.main === module) {
             planConfig: argv['plan-config'] as string | undefined,
             toolUsage: argv['tool-usage'] as string | undefined,
             stage,
+            gsn: Boolean(argv.gsn),
           });
 
           if (result.warnings.length > 0) {

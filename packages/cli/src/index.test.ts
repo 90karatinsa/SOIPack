@@ -293,10 +293,11 @@ describe('render-gsn command', () => {
 
     expect(result.exitCode).toBe(0);
     expect(renderSpy).toHaveBeenCalledTimes(1);
-    expect(renderSpy).toHaveBeenCalledWith({
-      snapshot: expect.objectContaining({ metadata: expect.any(Object) }),
-      objectives: undefined,
-    });
+    expect(renderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshot: expect.anything(),
+      }),
+    );
     await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
   });
 
@@ -312,12 +313,13 @@ describe('render-gsn command', () => {
 
     expect(result.exitCode).toBe(0);
     expect(renderSpy).toHaveBeenCalledTimes(1);
-    expect(renderSpy).toHaveBeenCalledWith({
-      snapshot: undefined,
-      objectives: expect.arrayContaining([
-        expect.objectContaining({ id: fixture.objectives[0]?.id }),
-      ]),
-    });
+    expect(renderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectives: expect.arrayContaining([
+          expect.objectContaining({ id: fixture.objectives[0]?.id }),
+        ]),
+      }),
+    );
     await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
   });
 
@@ -343,12 +345,16 @@ describe('render-gsn command', () => {
 
     expect(result.exitCode).toBe(0);
     expect(renderSpy).toHaveBeenCalledTimes(1);
-    expect(renderSpy).toHaveBeenCalledWith({
-      snapshot: expect.objectContaining({ metadata: expect.any(Object) }),
-      objectives: expect.arrayContaining([
-        expect.objectContaining({ id: fixture.objectives[0]?.id }),
-      ]),
-    });
+    expect(renderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snapshot: expect.objectContaining({
+          version: expect.objectContaining({ id: expect.any(String) }),
+        }),
+        objectives: expect.arrayContaining([
+          expect.objectContaining({ id: fixture.objectives[0]?.id }),
+        ]),
+      }),
+    );
     await expect(fs.readFile(outputPath, 'utf8')).resolves.toBe('digraph {}');
   });
 
@@ -363,7 +369,7 @@ describe('render-gsn command', () => {
       outputPath,
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(exitCodes.error);
     expect(result.stderr).toContain('Snapshot dosyası');
     await expect(fs.access(outputPath)).rejects.toBeDefined();
   });
@@ -384,7 +390,7 @@ describe('render-gsn command', () => {
       outputPath,
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(exitCodes.error);
     expect(result.stderr).toContain('Objectives dosyası');
     await expect(fs.access(outputPath)).rejects.toBeDefined();
   });
@@ -406,7 +412,7 @@ describe('render-gsn command', () => {
       outputPath,
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(exitCodes.error);
     expect(result.stderr).toContain('Çıktı dizini');
   });
 
@@ -426,7 +432,7 @@ describe('render-gsn command', () => {
 
     const result = await runRenderGsn(['render-gsn', '--output', outputPath]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(exitCodes.error);
     expect(result.stderr).toContain('En azından --snapshot veya --objectives seçeneğinden biri belirtilmelidir.');
   });
 
@@ -2006,6 +2012,40 @@ describe('CLI pipeline workflows', () => {
     expect(traceHtml).toContain('src/logger.c');
     expect(traceCsv.split('\n')[0]).toContain('Requirement ID');
     expect(traceCsv).toContain('REQ-TRACE-1');
+  });
+
+  it('emits a GSN graph when requested during report generation', async () => {
+    const fixtureDir = path.join(__dirname, '__fixtures__', 'trace-suggestions');
+    const workspaceDir = path.join(tempRoot, 'gsn-workspace');
+    const analysisDir = path.join(tempRoot, 'gsn-analysis');
+    const reportDir = path.join(tempRoot, 'gsn-report');
+
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.copyFile(path.join(fixtureDir, 'workspace.json'), path.join(workspaceDir, 'workspace.json'));
+
+    const analysisResult = await runAnalyze({
+      input: workspaceDir,
+      output: analysisDir,
+      level: 'C',
+      objectives: objectivesPath,
+    });
+
+    expect([exitCodes.success, exitCodes.missingEvidence]).toContain(analysisResult.exitCode);
+
+    const reportResult = await runReport({
+      input: analysisDir,
+      output: reportDir,
+      gsn: true,
+    });
+
+    const expectedDotPath = path.join(reportDir, 'gsn', 'gsn-graph.dot');
+    expect(reportResult.gsnGraphDot).toBe(expectedDotPath);
+
+    const stats = await fs.stat(expectedDotPath);
+    expect(stats.isFile()).toBe(true);
+
+    const dotContents = await fs.readFile(expectedDotPath, 'utf8');
+    expect(dotContents.trim().startsWith('digraph')).toBe(true);
   });
 
   it('marks configured evidence entries as independently reviewed', async () => {
