@@ -47,6 +47,46 @@ gizli alanlardan arındırılmış seçenekler deterministik biçimde hash’len
 tekrarlanan isteklerin deduplikasyonuna olanak tanır; seçenekler değiştirildiğinde yeni bir fingerprint
 hesaplanarak farklı bir iş kimliği üretilir.
 
+### Manuel DO-178C artefaktları ve Simulink kapsamı
+
+`/v1/import` uç noktası CLI'nin desteklediği tüm manuel DO-178C artefakt anahtarlarını form alanı olarak
+kabul eder. Aşağıdaki alanlar bir veya birden fazla dosya yükleyebilir:
+
+- `plan`
+- `standard`
+- `review`
+- `analysis`
+- `test`
+- `coverage_stmt`
+- `coverage_dec`
+- `coverage_mcdc`
+- `trace`
+- `cm_record`
+- `qa_record`
+- `problem_report`
+- `conformity`
+
+Her alan ZIP, PDF, JSON veya metin tabanlı kanıtları kabul eder; yüklenen her dosya `uploads/<jobId>/<alan>`
+altında saklanır. Simulink model kapsam raporları `simulink` alanına yüklenir ve VectorCAST/LDRA benzeri
+araçlarla aynı kapsam politikalarına tabidir.
+
+Örnek bir multipart istek:
+
+```bash
+curl -X POST https://soipack.example.com/v1/import \
+  -H 'Authorization: Bearer <JWT>' \
+  -H 'X-SOIPACK-License: <lisans>' \
+  -F "reqif=@spec.reqif" \
+  -F "plan=@PSAC.pdf" \
+  -F "qa_record=@qa-summary.csv" \
+  -F "simulink=@simulink-coverage.json;type=application/json"
+```
+
+İş tamamlandığında `workspace.json` dosyasındaki `metadata.inputs.manualArtifacts` alanı, her artefakt
+anahtarı için çalışma alanına eklenen dosya adlarını listeler. Aynı bilgiler `workspaces/<tenant>/<job>/job.json`
+dosyasındaki `params.manualArtifacts` içinde tutulur ve iş karmasına dahil edildiğinden, aynı artefaktların
+yeniden yüklenmesi aynı iş kimliğini üretir.
+
 ## JUnit XML
 
 Dosya: `packages/adapters/src/adapters/junit.ts`

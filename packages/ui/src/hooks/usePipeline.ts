@@ -22,6 +22,8 @@ import type {
   PolarionConnectorConfig,
 } from '../services/api';
 import { createReportDataset } from '../services/report';
+import { MANUAL_ARTIFACT_TYPES } from '../types/connectors';
+import type { ManualArtifactType, ManualArtifactsSelection } from '../types/connectors';
 import type {
   AnalyzeJobResult,
   ApiJob,
@@ -82,6 +84,7 @@ export interface PipelineRunOptions {
   files: File[];
   independentSources?: string[];
   independentArtifacts?: string[];
+  manualArtifacts?: ManualArtifactsSelection;
   polarion?: PolarionConnectorConfig;
   jenkins?: JenkinsConnectorConfig;
   doorsNext?: DoorsNextConnectorConfig;
@@ -97,6 +100,33 @@ export interface UsePipelineResult {
 }
 
 const appendJobLabel = (kind: PipelineJobKey, message: string): string => `${jobKindLabel[kind]} · ${message}`;
+
+const manualArtifactTypeSet = new Set<ManualArtifactType>(MANUAL_ARTIFACT_TYPES);
+
+const sanitizeManualArtifacts = (
+  manualArtifacts?: ManualArtifactsSelection,
+): ManualArtifactsSelection | undefined => {
+  if (!manualArtifacts) {
+    return undefined;
+  }
+  const sanitized: ManualArtifactsSelection = {};
+  for (const [typeKey, names] of Object.entries(manualArtifacts)) {
+    if (!manualArtifactTypeSet.has(typeKey as ManualArtifactType) || !Array.isArray(names)) {
+      continue;
+    }
+    const normalizedNames = Array.from(
+      new Set(
+        names
+          .map((name) => (typeof name === 'string' ? name.trim() : ''))
+          .filter((name): name is string => name.length > 0),
+      ),
+    );
+    if (normalizedNames.length > 0) {
+      sanitized[typeKey as ManualArtifactType] = normalizedNames;
+    }
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+};
 
 const parseDispositionFileName = (value: string | null): string | undefined => {
   if (!value) {
@@ -217,6 +247,7 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
       files,
       independentSources = [],
       independentArtifacts = [],
+      manualArtifacts,
       polarion,
       jenkins,
       doorsNext,
@@ -236,6 +267,25 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
       if (!files.length) {
         setError('Pipeline için en az bir dosya seçmelisiniz.');
         return;
+      }
+
+      const normalizedManualArtifacts = sanitizeManualArtifacts(manualArtifacts);
+      if (manualArtifacts && Object.keys(manualArtifacts).length > 0 && !normalizedManualArtifacts) {
+        setError('Lütfen DO-178C artefakt eşlemelerini kontrol edin.');
+        return;
+      }
+
+      const normalizedFileNames = new Set(files.map((file) => file.name.trim().toLowerCase()));
+      if (normalizedManualArtifacts) {
+        for (const names of Object.values(normalizedManualArtifacts)) {
+          for (const name of names) {
+            const normalizedName = name.trim().toLowerCase();
+            if (!normalizedFileNames.has(normalizedName)) {
+              setError('Seçilen DO-178C artefakt sınıflandırmaları mevcut dosyalarla eşleşmiyor.');
+              return;
+            }
+          }
+        }
       }
 
       abortRef.current?.abort();
@@ -261,6 +311,7 @@ export const usePipeline = ({ token, license }: PipelineAuth): UsePipelineResult
           signal: controller.signal,
           independentSources,
           independentArtifacts,
+          manualArtifacts: normalizedManualArtifacts,
           polarion,
           jenkins,
           doorsNext,

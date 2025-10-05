@@ -95,6 +95,54 @@ const createProps = (overrides: Partial<ComponentProps<typeof UploadAndRun>> = {
 describe('UploadAndRun', () => {
   jest.setTimeout(15000);
 
+  it('requires manual artefact selections and forwards manualArtifacts mapping', async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn();
+
+    const files = [
+      new File(['plan'], 'PSAC.pdf', { type: 'application/pdf' }),
+      new File(['qa'], 'qa-record.csv', { type: 'text/csv' }),
+      new File(['notes'], 'evidence.txt', { type: 'text/plain' }),
+    ];
+
+    render(
+      <UploadAndRun
+        {...createProps({
+          files,
+          onRun,
+          independentSources: ['jiraCsv'],
+        })}
+      />,
+    );
+
+    const selectors = screen.getAllByLabelText(/DO-178C artefaktı/i);
+    expect(selectors).toHaveLength(3);
+    expect(screen.getByTestId('manual-artifact-badge-0')).toHaveTextContent('Plan dokümanları');
+    expect(screen.getByTestId('manual-artifact-badge-1')).toHaveTextContent('QA denetim kayıtları');
+    expect(screen.getByTestId('manual-artifact-badge-2')).toHaveTextContent('Seçim gerekli');
+
+    await user.click(screen.getByRole('button', { name: /Pipeline Başlat/i }));
+    expect(
+      screen.getByText(/Lütfen tüm dosyalar için DO-178C artefakt türü seçin/i),
+    ).toBeInTheDocument();
+    expect(onRun).not.toHaveBeenCalled();
+
+    await user.selectOptions(selectors[0], ['plan']);
+    await user.selectOptions(selectors[1], ['qa_record']);
+    await user.selectOptions(selectors[2], ['auto']);
+
+    await user.click(screen.getByRole('button', { name: /Pipeline Başlat/i }));
+
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(onRun.mock.calls[0]?.[0]).toMatchObject({
+      manualArtifacts: {
+        plan: ['PSAC.pdf'],
+        qa_record: ['qa-record.csv'],
+      },
+      independentSources: ['jiraCsv'],
+    });
+  });
+
   it('notifies when independent sources toggles change', async () => {
     const user = userEvent.setup();
     const onIndependentSourcesChange = jest.fn();
@@ -193,6 +241,8 @@ describe('UploadAndRun', () => {
 
     const { rerender } = render(<UploadAndRun {...buildProps()} />);
     rerenderComponent = () => rerender(<UploadAndRun {...buildProps()} />);
+
+    await user.selectOptions(screen.getByLabelText(/DO-178C artefaktı/i), ['auto']);
 
     await user.click(screen.getByRole('checkbox', { name: /Polarion ALM/i }));
     await user.type(screen.getByLabelText(/Polarion URL/i), ' https://polarion.example.com ');
@@ -294,6 +344,7 @@ describe('UploadAndRun', () => {
         },
         "independentArtifacts": [],
         "independentSources": [],
+        "manualArtifacts": {},
       }
     `);
   });
@@ -319,6 +370,8 @@ describe('UploadAndRun', () => {
 
     const { rerender } = render(<UploadAndRun {...buildProps()} />);
     rerenderComponent = () => rerender(<UploadAndRun {...buildProps()} />);
+
+    await user.selectOptions(screen.getByLabelText(/DO-178C artefaktı/i), ['auto']);
 
     await user.click(screen.getByRole('checkbox', { name: /Jira Cloud/i }));
     await user.type(screen.getByLabelText(/Site URL/i), 'https://jira.example.com');

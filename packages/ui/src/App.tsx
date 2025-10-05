@@ -29,13 +29,43 @@ import type {
   JamaConnectorFormState,
   JenkinsConnectorFormState,
   JiraCloudConnectorFormState,
+  ManualArtifactType,
+  ManualArtifactsSelection,
   PolarionConnectorFormState,
   UploadRunPayload,
 } from './types/connectors';
+import { MANUAL_ARTIFACT_TYPES } from './types/connectors';
 import type { CoverageStatus, StageIdentifier } from './types/pipeline';
 
 const STAGE_STORAGE_KEY = 'soipack:ui:activeStage';
 const VALID_STAGE_IDS: StageIdentifier[] = ['all', 'SOI-1', 'SOI-2', 'SOI-3', 'SOI-4'];
+
+const manualArtifactTypeSet = new Set<ManualArtifactType>(MANUAL_ARTIFACT_TYPES);
+
+const normalizeManualArtifacts = (
+  manualArtifacts: ManualArtifactsSelection | undefined,
+): ManualArtifactsSelection | undefined => {
+  if (!manualArtifacts) {
+    return undefined;
+  }
+  const normalized: ManualArtifactsSelection = {};
+  Object.entries(manualArtifacts).forEach(([typeKey, names]) => {
+    if (!manualArtifactTypeSet.has(typeKey as ManualArtifactType) || !Array.isArray(names)) {
+      return;
+    }
+    const sanitized = Array.from(
+      new Set(
+        names
+          .map((name) => (typeof name === 'string' ? name.trim() : ''))
+          .filter((name): name is string => name.length > 0),
+      ),
+    );
+    if (sanitized.length > 0) {
+      normalized[typeKey as ManualArtifactType] = sanitized;
+    }
+  });
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+};
 
 const LOCALE_LABELS: Record<Locale, string> = {
   en: 'English',
@@ -110,6 +140,7 @@ function AppContent() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [independentSources, setIndependentSources] = useState<string[]>([]);
   const [independentArtifacts, setIndependentArtifacts] = useState<string[]>([]);
+  const [manualAssignments, setManualAssignments] = useState<ManualArtifactsSelection>({});
   const [polarion, setPolarion] = useState<PolarionConnectorFormState>(createPolarionFormState);
   const [jenkins, setJenkins] = useState<JenkinsConnectorFormState>(createJenkinsFormState);
   const [doorsNext, setDoorsNext] = useState<DoorsNextConnectorFormState>(createDoorsNextFormState);
@@ -131,7 +162,17 @@ function AppContent() {
 
   const { logs, isRunning, isDownloading, jobs, reportData, packageJob, error, lastCompletedAt } = state;
 
-  const canRunPipeline = selectedFiles.length > 0;
+  const hasManualAssignmentMismatch = useMemo(() => {
+    if (selectedFiles.length === 0) {
+      return false;
+    }
+    const fileNameSet = new Set(selectedFiles.map((file) => file.name.trim().toLowerCase()));
+    return Object.values(manualAssignments).some((names) =>
+      names.some((name) => !fileNameSet.has(name.trim().toLowerCase())),
+    );
+  }, [manualAssignments, selectedFiles]);
+
+  const canRunPipeline = selectedFiles.length > 0 && !hasManualAssignmentMismatch;
 
   const canAccessRequirements = roles.has('workspace:write') || roles.has('admin');
   const canAccessAdminUsers = roles.has('admin');
@@ -150,6 +191,36 @@ function AppContent() {
     }
     return baseViews;
   }, [canAccessRequirements, canAccessAdminUsers]);
+
+  useEffect(() => {
+    if (selectedFiles.length === 0) {
+      if (Object.keys(manualAssignments).length > 0) {
+        setManualAssignments({});
+      }
+      return;
+    }
+    setManualAssignments((previous) => {
+      if (Object.keys(previous).length === 0) {
+        return previous;
+      }
+      const fileNameSet = new Set(selectedFiles.map((file) => file.name.trim().toLowerCase()));
+      let changed = false;
+      const filtered: ManualArtifactsSelection = {};
+      Object.entries(previous).forEach(([typeKey, names]) => {
+        const retained = names.filter((name) => fileNameSet.has(name.trim().toLowerCase()));
+        if (retained.length > 0) {
+          filtered[typeKey as ManualArtifactType] = retained;
+        }
+        if (retained.length !== names.length) {
+          changed = true;
+        }
+      });
+      if (!changed) {
+        return previous;
+      }
+      return filtered;
+    });
+  }, [selectedFiles, manualAssignments]);
 
   useEffect(() => {
     if (!navigationViews.includes(activeView)) {
@@ -303,10 +374,13 @@ function AppContent() {
 
   const handleRun = (submission: UploadRunPayload) => {
     if (!canRunPipeline || isRunning) return;
+    const normalizedManual = normalizeManualArtifacts(submission.manualArtifacts);
+    setManualAssignments(normalizedManual ?? {});
     void runPipeline({
       files: selectedFiles,
       independentSources,
       independentArtifacts,
+      manualArtifacts: normalizedManual,
       polarion: submission.connectors.polarion,
       jenkins: submission.connectors.jenkins,
       doorsNext: submission.connectors.doorsNext,
@@ -362,6 +436,7 @@ function AppContent() {
     setSelectedFiles([]);
     setIndependentSources([]);
     setIndependentArtifacts([]);
+    setManualAssignments({});
     setPolarion(createPolarionFormState());
     setJenkins(createJenkinsFormState());
     setDoorsNext(createDoorsNextFormState());
@@ -375,6 +450,7 @@ function AppContent() {
     setSelectedFiles([]);
     setIndependentSources([]);
     setIndependentArtifacts([]);
+    setManualAssignments({});
     setPolarion(createPolarionFormState());
     setJenkins(createJenkinsFormState());
     setDoorsNext(createDoorsNextFormState());

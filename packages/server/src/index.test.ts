@@ -4514,6 +4514,142 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  it('passes manual DO-178C artefacts and Simulink coverage uploads to import jobs', async () => {
+    const runImportSpy = jest.spyOn(cli, 'runImport');
+    const capturedOptions: cli.ImportOptions[] = [];
+    runImportSpy.mockImplementation(async (options) => {
+      capturedOptions.push(options);
+      await fsPromises.mkdir(options.output, { recursive: true });
+      const manualInputs = Object.fromEntries(
+        Object.entries(options.manualArtifacts ?? {}).map(([key, entries]) => [
+          key,
+          entries.map((entry) => path.basename(entry)),
+        ]),
+      );
+      const workspace: cli.ImportWorkspace = {
+        requirements: [],
+        testResults: [],
+        traceLinks: [],
+        testToCodeMap: {},
+        evidenceIndex: {},
+        findings: [],
+        builds: [],
+        designs: [],
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          warnings: [],
+          inputs: Object.keys(manualInputs).length > 0 ? { manualArtifacts: manualInputs } : {},
+          version: buildSnapshotVersion(),
+        },
+      };
+      const workspacePath = path.join(options.output, 'workspace.json');
+      await fsPromises.writeFile(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`, 'utf8');
+      return {
+        warnings: [],
+        workspace,
+        workspacePath,
+      } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+    });
+
+    const manualDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'soipack-manual-'));
+    const qaRecordPath = path.join(manualDir, 'qa-record.csv');
+    const simulinkPath = path.join(manualDir, 'simulink-coverage.json');
+    await fsPromises.writeFile(qaRecordPath, 'qa_id,status\nQA-1,complete\n', 'utf8');
+    await fsPromises.writeFile(simulinkPath, '{"coverage":42}', 'utf8');
+
+    const projectVersion = `manual-${Date.now()}`;
+    const planPath = minimalExample('artifacts', 'PSAC.pdf');
+
+    try {
+      const response = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('plan', planPath)
+        .attach('qa_record', qaRecordPath)
+        .attach('simulink', simulinkPath)
+        .field('projectName', 'Manual Evidence Demo')
+        .field('projectVersion', projectVersion)
+        .expect(202);
+
+      const jobId = response.body.id as string;
+      const job = await waitForJobCompletion(app, token, jobId);
+      expect(job.status).toBe('completed');
+
+      expect(runImportSpy).toHaveBeenCalledTimes(1);
+      expect(capturedOptions).toHaveLength(1);
+      const importOptions = capturedOptions[0] as cli.ImportOptions;
+      const expectedUploadBase = path.join(storageDir, 'uploads', tenantId, jobId);
+
+      expect(importOptions.manualArtifacts?.plan).toEqual([
+        path.join(expectedUploadBase, 'plan', path.basename(planPath)),
+      ]);
+      expect(importOptions.manualArtifacts?.qa_record).toEqual([
+        path.join(expectedUploadBase, 'qa_record', 'qa-record.csv'),
+      ]);
+      expect(importOptions.simulink).toBe(
+        path.join(expectedUploadBase, 'simulink', 'simulink-coverage.json'),
+      );
+
+      const workspacePath = path.join(storageDir, 'workspaces', tenantId, jobId, 'workspace.json');
+      const workspaceContent = await fsPromises.readFile(workspacePath, 'utf8');
+      const workspace = JSON.parse(workspaceContent) as cli.ImportWorkspace;
+      expect(workspace.metadata.inputs.manualArtifacts?.plan).toEqual(['PSAC.pdf']);
+      expect(workspace.metadata.inputs.manualArtifacts?.qa_record).toEqual(['qa-record.csv']);
+
+      const metadataPath = path.join(storageDir, 'workspaces', tenantId, jobId, 'job.json');
+      const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+      const metadata = JSON.parse(metadataContent) as {
+        params: {
+          manualArtifacts?: Record<string, string[]> | null;
+        };
+      };
+      expect(metadata.params.manualArtifacts).toEqual({
+        plan: ['PSAC.pdf'],
+        qa_record: ['qa-record.csv'],
+      });
+
+      const reuseResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('plan', planPath)
+        .attach('qa_record', qaRecordPath)
+        .attach('simulink', simulinkPath)
+        .field('projectName', 'Manual Evidence Demo')
+        .field('projectVersion', projectVersion)
+        .expect(200);
+
+      expect(reuseResponse.body.id).toBe(jobId);
+      expect(reuseResponse.body.reused).toBe(true);
+      expect(runImportSpy).toHaveBeenCalledTimes(1);
+
+      await fsPromises.writeFile(qaRecordPath, 'qa_id,status\nQA-1,incomplete\n', 'utf8');
+
+      const newResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('plan', planPath)
+        .attach('qa_record', qaRecordPath)
+        .attach('simulink', simulinkPath)
+        .field('projectName', 'Manual Evidence Demo')
+        .field('projectVersion', projectVersion)
+        .expect(202);
+
+      const newJobId = newResponse.body.id as string;
+      expect(newJobId).not.toBe(jobId);
+      await waitForJobCompletion(app, token, newJobId);
+      expect(runImportSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      runImportSpy.mockRestore();
+      await fsPromises.rm(manualDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects invalid independence declarations for import jobs', async () => {
     const invalidSources = await request(app)
       .post('/v1/import')
