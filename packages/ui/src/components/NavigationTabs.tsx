@@ -4,6 +4,7 @@ export type View =
   | 'upload'
   | 'compliance'
   | 'traceability'
+  | 'gsn'
   | 'risk'
   | 'timeline'
   | 'requirements'
@@ -20,6 +21,7 @@ const viewLabels: Record<View, string> = {
   upload: 'Yükleme & Çalıştırma',
   compliance: 'Uyum Matrisi',
   traceability: 'İzlenebilirlik',
+  gsn: 'GSN Grafiği',
   risk: 'Risk Kokpiti',
   timeline: 'Zaman Çizelgesi',
   requirements: 'Gereksinim Editörü',
@@ -40,6 +42,11 @@ const viewIcons: Record<View, JSX.Element> = {
   traceability: (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9M7.5 12h9m-9 3.75h9M4.5 4.5l15 15" />
+    </svg>
+  ),
+  gsn: (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="h-5 w-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l7.5-15 7.5 15m-11.25-4.5h9" />
     </svg>
   ),
   risk: (

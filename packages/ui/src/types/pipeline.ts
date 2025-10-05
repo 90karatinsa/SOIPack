@@ -62,6 +62,10 @@ export interface ReportJobResult {
     analysis: string;
     snapshot: string;
     traces: string;
+    gsnGraphDot?: {
+      path: string;
+      href?: string;
+    };
     toolQualification?: {
       summary: {
         generatedAt: string;
@@ -127,6 +131,7 @@ export interface ComplianceRequirementCoverage {
     functions?: CoverageMetric;
   };
   codePaths?: string[];
+  designs?: string[];
 }
 
 export interface CoverageMetric {
@@ -167,6 +172,15 @@ export interface ComplianceMatrixPayload {
   objectives: ComplianceObjectivePayload[];
   stages: ComplianceStagePayload[];
   requirementCoverage: ComplianceRequirementCoverage[];
+  traceSuggestions?: Array<{
+    requirementId: string;
+    type: TraceSuggestionType;
+    targetId: string;
+    targetName?: string;
+    confidence: TraceSuggestionConfidence;
+    reason: string;
+    viaTestId?: string;
+  }>;
 }
 
 export type TestRunStatus = 'pending' | 'passed' | 'failed' | 'skipped';
@@ -226,6 +240,28 @@ export interface RequirementTracePayload {
   designs?: DesignRecord[];
 }
 
+export type TraceSuggestionType = 'code' | 'test';
+export type TraceSuggestionConfidence = 'low' | 'medium' | 'high';
+
+export interface RequirementDesignView {
+  id: string;
+  title: string;
+  status?: string;
+}
+
+export interface RequirementSuggestionView {
+  type: TraceSuggestionType;
+  targetId: string;
+  target: string;
+  confidence: TraceSuggestionConfidence;
+  reason: string;
+}
+
+export interface RequirementSuggestionGroup {
+  code: RequirementSuggestionView[];
+  tests: RequirementSuggestionView[];
+}
+
 export interface RequirementViewModel {
   id: string;
   title: string;
@@ -246,6 +282,8 @@ export interface RequirementViewModel {
     status: CoverageStatus;
     result: TestRunStatus;
   }>;
+  designs: RequirementDesignView[];
+  suggestions: RequirementSuggestionGroup;
 }
 
 export interface ComplianceObjectiveView {
@@ -299,5 +337,6 @@ export interface ReportAssetMap {
     traces: string;
     toolQualificationPlan?: string;
     toolQualificationReport?: string;
+    gsnGraphDot?: string;
   };
 }

@@ -6640,6 +6640,104 @@ describe('@soipack/server REST API', () => {
     });
   });
 
+  describe('GSN report graph download', () => {
+    const reportId = 'abcdabcdabcd0001';
+    const dotContent = 'digraph demo { goal -> solution }';
+
+    const writeReportArtifacts = async ({ omitGraph }: { omitGraph?: boolean } = {}) => {
+      const storage = __getStorageProviderForTesting(app);
+      const directories = storage.directories;
+      const reportDir = path.join(directories.reports, tenantId, reportId);
+      await storage.ensureDirectory(reportDir);
+      const gsnPath = path.join(reportDir, 'gsn', 'gsn-graph.dot');
+      const metadata = {
+        tenantId,
+        id: reportId,
+        hash: 'hash-report-gsn',
+        kind: 'report' as const,
+        createdAt: new Date().toISOString(),
+        directory: reportDir,
+        params: {},
+        license: {
+          hash: 'license-hash',
+          licenseId: 'report-gsn',
+          issuedTo: tenantId,
+          issuedAt: new Date().toISOString(),
+          expiresAt: null,
+          features: [],
+        },
+        outputs: {
+          directory: reportDir,
+          complianceHtml: path.join(reportDir, 'compliance.html'),
+          complianceJson: path.join(reportDir, 'compliance.json'),
+          complianceCsv: path.join(reportDir, 'compliance.csv'),
+          traceHtml: path.join(reportDir, 'trace.html'),
+          traceCsv: path.join(reportDir, 'trace.csv'),
+          gapsHtml: path.join(reportDir, 'gaps.html'),
+          analysisPath: path.join(reportDir, 'analysis.json'),
+          snapshotPath: path.join(reportDir, 'snapshot.json'),
+          tracesPath: path.join(reportDir, 'traces.json'),
+          ...(omitGraph
+            ? {}
+            : {
+                gsnGraphDot: {
+                  path: gsnPath,
+                  href: 'gsn/gsn-graph.dot',
+                },
+              }),
+        },
+      };
+
+      await storage.writeJson(path.join(reportDir, 'job.json'), metadata);
+      if (!omitGraph) {
+        await storage.ensureDirectory(path.dirname(gsnPath));
+        await fsPromises.writeFile(gsnPath, dotContent, 'utf8');
+      }
+    };
+
+    afterEach(async () => {
+      const storage = __getStorageProviderForTesting(app);
+      const reportDir = path.join(storage.directories.reports, tenantId, reportId);
+      await fsPromises.rm(reportDir, { recursive: true, force: true }).catch(() => undefined);
+    });
+
+    it('streams persisted GSN DOT output for completed reports', async () => {
+      await writeReportArtifacts();
+
+      const response = await request(app)
+        .get(`/v1/reports/${reportId}/gsn-graph.dot`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.headers['content-type']).toBe('text/vnd.graphviz; charset=utf-8');
+      expect(response.headers['content-disposition']).toContain('gsn-graph.dot');
+      expect(response.text).toContain('digraph demo');
+    });
+
+    it('enforces role-based access', async () => {
+      await writeReportArtifacts();
+      const limitedToken = await createAccessToken({ roles: [] });
+
+      const response = await request(app)
+        .get(`/v1/reports/${reportId}/gsn-graph.dot`)
+        .set('Authorization', `Bearer ${limitedToken}`)
+        .expect(403);
+
+      expect(response.body.error.code).toBe('FORBIDDEN_ROLE');
+    });
+
+    it('returns 404 when the report lacks a persisted GSN graph', async () => {
+      await writeReportArtifacts({ omitGraph: true });
+
+      const response = await request(app)
+        .get(`/v1/reports/${reportId}/gsn-graph.dot`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      expect(response.body.error.code).toBe('REPORT_GSN_NOT_FOUND');
+    });
+  });
+
   describe('GET /v1/compliance/remediation-plan', () => {
     class MemoryStorage implements StorageProvider {
       public readonly directories: PipelineDirectories;

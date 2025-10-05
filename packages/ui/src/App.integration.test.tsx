@@ -24,6 +24,20 @@ jest.mock('file-saver', () => ({
   saveAs: jest.fn()
 }));
 
+const mockGraphvizLayout = jest.fn(
+  async (_dot: string, _format: string, _engine: string) =>
+    '<svg xmlns="http://www.w3.org/2000/svg"><text>Demo</text></svg>'
+);
+
+jest.mock('@hpcc-js/wasm', () => ({
+  Graphviz: {
+    load: () =>
+      Promise.resolve({
+        layout: (dot: string, format: string, engine: string) => mockGraphvizLayout(dot, format, engine),
+      }),
+  },
+}));
+
 jest.mock('./services/events', () => {
   const actual = jest.requireActual('./services/events');
   return {
@@ -48,6 +62,7 @@ const streamInstances: StreamInstance[] = [];
 beforeEach(() => {
   window.localStorage.clear();
   streamInstances.length = 0;
+  mockGraphvizLayout.mockClear();
   createStreamMock.mockImplementation((options: ComplianceStreamOptions) => {
     const close = jest.fn();
     streamInstances.push({ options, close });
@@ -295,6 +310,8 @@ const reportAssets: Record<string, string> = {
   'gaps.html': '<html><body>gaps</body></html>'
 };
 
+const gsnDotContent = 'digraph Demo { "Goal" -> "Strategy" }';
+
 const packResult: PackJobResult = {
   manifestId: 'MANIFEST-1234',
   postQuantumSignature: {
@@ -509,6 +526,13 @@ const server = setupServer(
     }
     return res(ctx.status(200), ctx.json(tracesPayload));
   }),
+  rest.get('/v1/reports/:id/gsn-graph.dot', (req, res, ctx) => {
+    const authError = ensureLicense(req, res, ctx);
+    if (authError) {
+      return authError;
+    }
+    return res(ctx.status(200), ctx.set('Content-Type', 'text/vnd.graphviz'), ctx.text(gsnDotContent));
+  }),
   rest.get('/v1/workspaces/demo-workspace/documents/requirements', (req, res, ctx) => {
     const authError = ensureLicense(req, res, ctx);
     if (authError) {
@@ -634,7 +658,7 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe('App integration', () => {
-  it('runs the pipeline and renders report data from the API', async () => {
+  it('runs the pipeline and renders report data with the GSN tab', async () => {
     const user = userEvent.setup();
     window.localStorage.setItem('soipack.ui.locale', 'en');
     render(<App />);
@@ -729,6 +753,18 @@ describe('App integration', () => {
 
     const testsList = screen.getAllByText(/TC-/);
     expect(testsList.some((node) => node.textContent?.includes('TC-LOGIN-1'))).toBe(true);
+
+    const gsnTab = screen.getByRole('button', { name: 'GSN Grafiği' });
+    await act(async () => {
+      await user.click(gsnTab);
+    });
+
+    const gsnGraph = await screen.findByTestId('gsn-graph-content');
+    await waitFor(() => expect(gsnGraph.querySelector('svg')).not.toBeNull());
+    expect(mockGraphvizLayout).toHaveBeenCalled();
+
+    const gsnDot = screen.getByTestId('gsn-graph-dot');
+    expect(gsnDot).toHaveTextContent('digraph Demo');
 
     await act(async () => {
       await user.click(complianceTab);

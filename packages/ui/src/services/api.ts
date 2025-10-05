@@ -1563,6 +1563,22 @@ export const fetchRequirementTraces = async ({
   return readJson<RequirementTracePayload[]>(response);
 };
 
+export const fetchReportGsnGraph = async ({
+  token,
+  license,
+  reportId,
+  signal,
+}: FetchReportDataOptions): Promise<string> => {
+  const response = await fetch(joinUrl(`/v1/reports/${reportId}/gsn-graph.dot`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  await ensureOk(response);
+  return response.text();
+};
+
 interface FetchAssetOptions extends FetchReportDataOptions {
   asset: string;
 }
@@ -2295,6 +2311,13 @@ export const buildReportAssets = (job: ApiJob<ReportJobResult>): ReportAssetMap 
         ? {
             toolQualificationPlan: extractAssetPath(outputs.toolQualification.tqp, job.id),
             toolQualificationReport: extractAssetPath(outputs.toolQualification.tar, job.id),
+          }
+        : {}),
+      ...(outputs.gsnGraphDot
+        ? {
+            gsnGraphDot: outputs.gsnGraphDot.href
+              ? outputs.gsnGraphDot.href
+              : extractAssetPath(outputs.gsnGraphDot.path, job.id),
           }
         : {}),
     },

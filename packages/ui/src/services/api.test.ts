@@ -921,6 +921,10 @@ describe('buildReportAssets', () => {
         analysis: 'reports/demo-tenant/abcd1234ef567890/analysis.json',
         snapshot: 'reports/demo-tenant/abcd1234ef567890/snapshot.json',
         traces: 'reports/demo-tenant/abcd1234ef567890/traces.json',
+        gsnGraphDot: {
+          path: 'reports/demo-tenant/abcd1234ef567890/gsn/gsn-graph.dot',
+          href: 'gsn/gsn-graph.dot',
+        },
         toolQualification: {
           summary: {
             generatedAt: '2024-01-01T00:00:00.000Z',
@@ -950,6 +954,7 @@ describe('buildReportAssets', () => {
     expect(assets.assets.traceCsv).toBe('trace.csv');
     expect(assets.assets.toolQualificationPlan).toBe('tool-qualification/analyzer-plan.md');
     expect(assets.assets.toolQualificationReport).toBe('tool-qualification/analyzer-report.md');
+    expect(assets.assets.gsnGraphDot).toBe('gsn/gsn-graph.dot');
   });
 
   it('omits tool qualification assets when absent', () => {
@@ -957,5 +962,16 @@ describe('buildReportAssets', () => {
     const assets = buildReportAssets(jobWithoutTq);
     expect(assets.assets.toolQualificationPlan).toBeUndefined();
     expect(assets.assets.toolQualificationReport).toBeUndefined();
+    expect(assets.assets.gsnGraphDot).toBe('gsn/gsn-graph.dot');
+  });
+
+  it('falls back to deriving the GSN path when href is missing', () => {
+    const job = createJob({
+      gsnGraphDot: {
+        path: 'reports/demo-tenant/abcd1234ef567890/gsn/alt.dot',
+      },
+    });
+    const assets = buildReportAssets(job);
+    expect(assets.assets.gsnGraphDot).toBe('gsn/alt.dot');
   });
 });

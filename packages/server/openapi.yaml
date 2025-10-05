@@ -955,6 +955,160 @@ components:
           type: number
           format: double
           minimum: 0
+    ComplianceRequirementEntry:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          description: Gereksinimin benzersiz kimliği.
+        title:
+          type: string
+          description: Gereksinim başlığı.
+        status:
+          type: string
+          enum: [covered, partial, missing]
+          description: Gereksinimin kapsama durumu.
+        evidenceIds:
+          type: array
+          description: Gereksinimi destekleyen kanıt kimlikleri.
+          items:
+            type: string
+    ComplianceChangeImpactEntry:
+      type: object
+      required:
+        - id
+        - type
+        - severity
+        - state
+      properties:
+        id:
+          type: string
+          description: Etkisi izlenen öğenin kimliği.
+        type:
+          type: string
+          enum: [requirement, test, code, design]
+          description: Etki türü.
+        severity:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 0 ile 1 arasında normalleştirilmiş etki şiddeti.
+        state:
+          type: string
+          enum: [added, removed, modified, impacted]
+          description: Değişiklik etkisinin durumu.
+        reasons:
+          type: array
+          description: Etkinin öne çıkan nedenleri.
+          items:
+            type: string
+    ComplianceMatrixPayload:
+      type: object
+      required:
+        - requirements
+        - summary
+      properties:
+        project:
+          type: string
+          description: Uyum matrisinin ait olduğu proje adı.
+        level:
+          type: string
+          description: Sertifikasyon seviyesi (örn. DO-178 seviyeleri).
+        generatedAt:
+          type: string
+          format: date-time
+          description: Uyum matrisinin üretildiği zaman damgası.
+        requirements:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ComplianceRequirementEntry'
+        summary:
+          type: object
+          required:
+            - total
+            - covered
+            - partial
+            - missing
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            covered:
+              type: integer
+              minimum: 0
+            partial:
+              type: integer
+              minimum: 0
+            missing:
+              type: integer
+              minimum: 0
+        changeImpact:
+          type: array
+          description: Son değişikliklerin etkisinin özeti.
+          items:
+            $ref: '#/components/schemas/ComplianceChangeImpactEntry'
+    ComplianceCreateRequest:
+      type: object
+      required:
+        - sha256
+        - matrix
+        - coverage
+      properties:
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Gönderilen uyum verisinin SHA-256 karması.
+        matrix:
+          $ref: '#/components/schemas/ComplianceMatrixPayload'
+        coverage:
+          $ref: '#/components/schemas/ComplianceCoverageSnapshot'
+        metadata:
+          type: object
+          description: Ek bağlamsal meta veriler.
+          additionalProperties: true
+    ComplianceRecord:
+      type: object
+      required:
+        - id
+        - sha256
+        - createdAt
+        - matrix
+        - coverage
+        - metadata
+      properties:
+        id:
+          type: string
+          description: Kayıt kimliği.
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Kaydın kanonik SHA-256 karması.
+        createdAt:
+          type: string
+          format: date-time
+          description: Kaydın oluşturulma zamanı.
+        matrix:
+          $ref: '#/components/schemas/ComplianceMatrixPayload'
+        coverage:
+          $ref: '#/components/schemas/ComplianceCoverageSnapshot'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Kayda iliştirilen meta veriler.
+    ComplianceRecordListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceRecord'
     ComplianceGapSummary:
       type: object
       required:
@@ -3364,6 +3518,129 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/compliance:
+    get:
+      operationId: listComplianceRecords
+      summary: Uyum kayıtlarını listeler.
+      description: |
+        Kiracıya ait tüm uyum kayıtlarını kronolojik olarak döndürür. Eski
+        `/compliance` uç noktaları kullanımdan kaldırılmıştır ve HTTP 410
+        yanıtı ile `/v1/compliance` yoluna geçiş yapılmasını ister.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Uyum kayıtları listelendi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceRecordListResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createComplianceRecord
+      summary: Yeni uyum kaydı oluşturur.
+      description: |
+        En güncel uyum matrisini, kapsam özetini ve isteğe bağlı meta verileri
+        kaydeder. Eski `/compliance` uç noktaları HTTP 410 yanıtı döndürür ve bu
+        sürümlü uç noktanın kullanılmasını önerir.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceCreateRequest'
+      responses:
+        '201':
+          description: Uyum kaydı oluşturuldu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceRecord'
+        '400':
+          description: Gönderilen uyum verisi doğrulanamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/compliance/{id}:
+    get:
+      operationId: getComplianceRecord
+      summary: Belirli bir uyum kaydını döndürür.
+      description: |
+        Kimliği verilen uyum kaydının tüm matris ayrıntılarını, kapsam
+        yüzdelerini ve meta verilerini getirir. Eski `/compliance/{id}` uç noktası
+        HTTP 410 yanıtı döndürür.
+      tags:
+        - Compliance
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Uyum kaydının kimliği.
+      responses:
+        '200':
+          description: Uyum kaydı bulundu.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceRecord'
+        '400':
+          description: Geçersiz kimlik değeri.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulama başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Uyum kaydı bulunamadı.
           content:
             application/json:
               schema:
