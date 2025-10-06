@@ -3,8 +3,10 @@ import { type ChangeEvent, useEffect, useMemo, useReducer, useRef, useState } fr
 import { useRbac } from '../providers/RbacProvider';
 import {
   fetchStageRiskForecast,
+  getJob,
   getManifestProof,
   type ManifestMerkleProofPayload,
+  type PackJobResult,
   type StageRiskForecastEntry,
 } from '../services/api';
 import {
@@ -19,6 +21,7 @@ import {
   type StatusContext,
   type ToolQualificationAlertSummary,
 } from '../services/events';
+import type { JobStatus, PackSignatureMetadata } from '../types/pipeline';
 
 interface RiskCockpitPageProps {
   token: string;
@@ -119,6 +122,24 @@ interface StageRiskPanelState {
   error?: string;
 }
 
+interface SignaturePanelState {
+  status: 'idle' | 'loading' | 'ready' | 'pending' | 'error';
+  signatures: PackSignatureMetadata[];
+  jobId?: string | null;
+  jobStatus?: JobStatus;
+  error?: string;
+}
+
+interface SignatureHardwareRow {
+  id: string;
+  provider: string;
+  slotLabel: string | null;
+  attestationHash: string | null;
+  pqcHybrid: boolean;
+  signerIds: string[];
+  raw: PackSignatureMetadata;
+}
+
 interface RiskSandboxParams {
   coverageLift: number;
   failureRate: number;
@@ -193,6 +214,11 @@ const initialState: RiskCockpitState = {
   heatmap: [],
   ledgerDiffs: [],
   proofExplorer: undefined,
+};
+
+const initialSignaturePanelState: SignaturePanelState = {
+  status: 'idle',
+  signatures: [],
 };
 
 const toFixed = (value: number, digits: number): number =>
@@ -875,11 +901,16 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
   const [sandboxResult, setSandboxResult] = useState<RiskSandboxResult | null>(null);
   const [sandboxLastRun, setSandboxLastRun] = useState<string | null>(null);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [signaturePanel, setSignaturePanel] = useState<SignaturePanelState>(initialSignaturePanelState);
+  const [copiedSignatureId, setCopiedSignatureId] = useState<string | null>(null);
 
   const hasRoles = roles.size > 0;
   const canViewRisk = !hasRoles || roles.has('risk:read') || roles.has('admin');
   const canViewLedger = !hasRoles || roles.has('ledger:read') || roles.has('admin');
   const canViewDelta = canViewRisk && canViewLedger;
+  const toolAlerts = state.toolAlerts;
+  const proofExplorer = state.proofExplorer;
+  const packJobId = proofExplorer?.jobId ?? null;
 
   useEffect(() => {
     if (!isAuthorized) {
@@ -945,14 +976,100 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     };
   }, [token, license, isAuthorized, canViewRisk]);
 
+  useEffect(() => {
+    if (!isAuthorized) {
+      setSignaturePanel(initialSignaturePanelState);
+      return;
+    }
+
+    if (!packJobId) {
+      setSignaturePanel(initialSignaturePanelState);
+      return;
+    }
+
+    const controller = new AbortController();
+    setSignaturePanel({ status: 'loading', signatures: [], jobId: packJobId });
+
+    getJob<PackJobResult>({ token, license, jobId: packJobId, signal: controller.signal })
+      .then((job) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (job.status === 'failed') {
+          setSignaturePanel({
+            status: 'error',
+            signatures: [],
+            jobId: packJobId,
+            jobStatus: job.status,
+            error: job.error?.message ?? 'Paketleme işlemi başarısız oldu.',
+          });
+          return;
+        }
+        if (job.status !== 'completed') {
+          setSignaturePanel({
+            status: 'pending',
+            signatures: [],
+            jobId: packJobId,
+            jobStatus: job.status,
+          });
+          return;
+        }
+
+        if (!job.result) {
+          setSignaturePanel({
+            status: 'ready',
+            signatures: [],
+            jobId: packJobId,
+            jobStatus: job.status,
+          });
+          return;
+        }
+
+        const signatures = job.result.signatures ?? [];
+        setSignaturePanel({
+          status: 'ready',
+          signatures,
+          jobId: packJobId,
+          jobStatus: job.status,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSignaturePanel({
+          status: 'error',
+          signatures: [],
+          jobId: packJobId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [isAuthorized, token, license, packJobId]);
+
+  useEffect(() => {
+    setCopiedSignatureId(null);
+  }, [packJobId]);
+
+  useEffect(() => {
+    if (!copiedSignatureId) {
+      return;
+    }
+    const timer = setTimeout(() => setCopiedSignatureId(null), 2000);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [copiedSignatureId]);
+
   const statusMessage = useMemo(() => getStatusMessage(state, isAuthorized), [state, isAuthorized]);
   const deltaPanel = state.delta;
   const sparklineMax = deltaPanel && deltaPanel.sparklineValues.length > 0
     ? Math.max(...deltaPanel.sparklineValues, 1)
     : 1;
   const stageRisk = stageRiskState;
-  const toolAlerts = state.toolAlerts;
-  const proofExplorer = state.proofExplorer;
   const selectedProofEntry = useMemo(() => {
     if (!proofExplorer || !proofExplorer.selectedPath) {
       return null;
@@ -960,6 +1077,50 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
     return proofExplorer.files.find((file) => file.path === proofExplorer.selectedPath) ?? null;
   }, [proofExplorer]);
   const parsedProof = useMemo(() => parseMerkleProof(selectedProofEntry?.proof), [selectedProofEntry?.proof]);
+  const signatureRows = useMemo<SignatureHardwareRow[]>(() => {
+    if (signaturePanel.signatures.length === 0) {
+      return [];
+    }
+
+    return signaturePanel.signatures.map((signature, index) => {
+      const hardware = signature.hardware;
+      const slotLabelRaw = (hardware as { slotLabel?: unknown }).slotLabel;
+      const slotLabel =
+        typeof slotLabelRaw === 'string' && slotLabelRaw.trim().length > 0
+          ? slotLabelRaw
+          : null;
+      const slotValue = hardware.slot;
+      const slotDisplay =
+        slotLabel ??
+        (typeof slotValue === 'string'
+          ? slotValue
+          : typeof slotValue === 'number' && Number.isFinite(slotValue)
+            ? String(slotValue)
+            : null);
+
+      const attestation = hardware.attestation;
+      let attestationHash: string | null = null;
+      if (attestation) {
+        if (typeof attestation.hash === 'string' && attestation.hash.trim().length > 0) {
+          attestationHash = attestation.hash;
+        } else if (typeof attestation.value === 'string' && attestation.value.trim().length > 0) {
+          attestationHash = attestation.value;
+        }
+      }
+
+      const signerIds = Array.isArray(hardware.signerIds) ? hardware.signerIds : [];
+
+      return {
+        id: `${hardware.provider}-${index}`,
+        provider: hardware.provider,
+        slotLabel: slotDisplay,
+        attestationHash,
+        pqcHybrid: Boolean(signature.postQuantumSignature),
+        signerIds,
+        raw: signature,
+      };
+    });
+  }, [signaturePanel.signatures]);
   const proofRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
   const sandboxLastRunLabel = useMemo(() => formatTimestamp(sandboxLastRun ?? undefined), [sandboxLastRun]);
   const activeSandboxPreset = useMemo(
@@ -990,6 +1151,47 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
   const handleSandboxPresetSelect = (presetId: string, params: RiskSandboxParams) => {
     setSandboxParams({ ...params });
     setSelectedSandboxPreset(presetId);
+  };
+
+  const handleSignatureCopy = (row: SignatureHardwareRow) => {
+    const payload = {
+      provider: row.raw.hardware.provider,
+      slotLabel: (row.raw.hardware as { slotLabel?: string | null }).slotLabel ?? null,
+      slot: row.raw.hardware.slot ?? null,
+      attestation: row.raw.hardware.attestation ?? null,
+      pqcHybrid: Boolean(row.raw.postQuantumSignature),
+      signerIds: row.raw.hardware.signerIds ?? null,
+      manifestDigest: row.raw.manifestDigest ?? null,
+      ledgerRoot: row.raw.ledgerRoot ?? null,
+      previousLedgerRoot: row.raw.previousLedgerRoot ?? null,
+    };
+
+    const serialized = JSON.stringify(payload, null, 2);
+
+    const copy = async () => {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(serialized);
+        } else if (typeof document !== 'undefined') {
+          const textarea = document.createElement('textarea');
+          textarea.value = serialized;
+          textarea.setAttribute('readonly', '');
+          textarea.style.position = 'absolute';
+          textarea.style.left = '-9999px';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+        } else {
+          throw new Error('Clipboard API not available');
+        }
+        setCopiedSignatureId(row.id);
+      } catch {
+        setCopiedSignatureId(null);
+      }
+    };
+
+    void copy();
   };
 
   useEffect(() => {
@@ -1640,6 +1842,98 @@ export function RiskCockpitPage({ token, license, isAuthorized }: RiskCockpitPag
               <p className="text-sm text-slate-400">Ledger verilerine erişim yetkiniz yok.</p>
             ) : (
               <>
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30">
+                  <header className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Güvenlik imza metaverisi</h3>
+                      <p className="text-xs text-slate-400">
+                        Paket imzaları için donanım sağlayıcı ve attestation ayrıntıları.
+                      </p>
+                    </div>
+                    {packJobId && (
+                      <p className="text-[11px] uppercase tracking-wide text-slate-500">İş: {packJobId}</p>
+                    )}
+                  </header>
+                  <div className="mt-3 space-y-3 text-xs text-slate-300" data-testid="signature-hardware-panel">
+                    {signaturePanel.status === 'loading' ? (
+                      <p>İmza metaverisi yükleniyor…</p>
+                    ) : signaturePanel.status === 'error' ? (
+                      <p className="text-rose-300">
+                        İmza metaverisi alınamadı: {signaturePanel.error ?? 'Bilinmeyen hata'}
+                      </p>
+                    ) : signaturePanel.status === 'pending' ? (
+                      <p className="text-slate-400">
+                        Paketleme işlemi tamamlanmadı. İş tamamlandığında metaveri otomatik olarak görüntülenecek.
+                      </p>
+                    ) : signatureRows.length > 0 ? (
+                      <ul className="space-y-3" data-testid="signature-hardware-list">
+                        {signatureRows.map((row) => (
+                          <li
+                            key={row.id}
+                            className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-3"
+                            data-testid={`signature-hardware-${row.id}`}
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <p className="text-sm font-semibold text-white">{row.provider}</p>
+                                <p className="text-[11px] text-slate-400">
+                                  Slot etiketi: <span className="font-mono text-slate-200">{row.slotLabel ?? '—'}</span>
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {row.attestationHash ? (
+                                  <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-200">
+                                    Attestation
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center rounded-full bg-amber-500/20 px-2 py-1 text-[11px] font-semibold text-amber-200">
+                                    Attestation eksik
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleSignatureCopy(row)}
+                                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition focus:outline-none focus:ring-2 focus:ring-brand/60 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                                    copiedSignatureId === row.id
+                                      ? 'border-emerald-500/60 text-emerald-200'
+                                      : 'border-slate-700 text-slate-200 hover:border-brand hover:text-brand'
+                                  }`}
+                                  data-testid={`signature-copy-${row.id}`}
+                                >
+                                  {copiedSignatureId === row.id ? 'Kopyalandı' : 'Kopyala'}
+                                </button>
+                              </div>
+                            </div>
+                            <dl className="mt-3 grid gap-3 text-[11px] text-slate-300 sm:grid-cols-2">
+                              <div>
+                                <dt className="font-semibold uppercase tracking-wide text-slate-500">Attestation hash</dt>
+                                <dd
+                                  className="font-mono text-slate-200"
+                                  title={row.attestationHash ?? undefined}
+                                  data-testid={`signature-attestation-${row.id}`}
+                                >
+                                  {row.attestationHash ? shortHash(row.attestationHash, 12) : '—'}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="font-semibold uppercase tracking-wide text-slate-500">Post-kuantum hibrit</dt>
+                                <dd>{row.pqcHybrid ? 'Evet' : 'Hayır'}</dd>
+                              </div>
+                              <div>
+                                <dt className="font-semibold uppercase tracking-wide text-slate-500">Signer kimlikleri</dt>
+                                <dd>{row.signerIds.length ? row.signerIds.join(', ') : '—'}</dd>
+                              </div>
+                            </dl>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : signaturePanel.status === 'ready' ? (
+                      <p className="text-slate-400">Donanım imza metaverisi bulunamadı.</p>
+                    ) : (
+                      <p className="text-slate-400">Henüz paket imzası seçilmedi.</p>
+                    )}
+                  </div>
+                </div>
                 <div
                   data-testid="proof-explorer-card"
                   className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 shadow shadow-slate-950/30"

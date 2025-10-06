@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Buffer } from 'buffer';
 import type { DefaultBodyType, ResponseComposition, RestContext, RestRequest } from 'msw';
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
@@ -64,6 +65,7 @@ beforeEach(() => {
   streamInstances.length = 0;
   mockGraphvizLayout.mockClear();
   capturedImports.length = 0;
+  capturedPipelineSubmissions.length = 0;
   createStreamMock.mockImplementation((options: ComplianceStreamOptions) => {
     const close = jest.fn();
     streamInstances.push({ options, close });
@@ -337,6 +339,16 @@ const licensePayload = { tenant: 'demo', expiresAt: '2025-12-31T00:00:00Z' };
 const expectedLicenseHeader = Buffer.from(JSON.stringify(licensePayload)).toString('base64');
 const capturedLicenses: string[] = [];
 const capturedImports: Array<Record<string, string[]>> = [];
+interface CapturedPipelineSubmission {
+  url: string;
+  headers: Record<string, string>;
+  connectors: Array<{ kind: string; payload: unknown }>;
+  manualArtifacts: Array<{ name: string; mime: string; base64: string; classifications: string[] }>;
+}
+
+const capturedPipelineSubmissions: CapturedPipelineSubmission[] = [];
+
+const connectorFieldSet = new Set(['polarion', 'jenkins', 'doorsNext', 'jama', 'jiraCloud']);
 
 type LicenseResponse = ReturnType<ResponseComposition<DefaultBodyType>>;
 
@@ -376,16 +388,47 @@ const server = setupServer(
     }
     const formData = await _req.formData();
     const entries: Record<string, string[]> = {};
+    const connectors: CapturedPipelineSubmission['connectors'] = [];
+    const manualArtifacts: CapturedPipelineSubmission['manualArtifacts'] = [];
+    const seenConnectorKinds = new Set<string>();
     formData.forEach((value, key) => {
       const bucket = entries[key] ?? [];
       if (typeof value === 'string') {
         bucket.push(value);
+        if (connectorFieldSet.has(key) && !seenConnectorKinds.has(key)) {
+          try {
+            connectors.push({ kind: key, payload: JSON.parse(value) });
+            seenConnectorKinds.add(key);
+          } catch {
+            // ignore malformed connector payloads inside test doubles
+          }
+        }
       } else {
         bucket.push(value.name);
       }
       entries[key] = bucket;
     });
+    for (const [key, entryValue] of formData.entries()) {
+      if (entryValue instanceof File) {
+        const arrayBuffer = await entryValue.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        manualArtifacts.push({
+          name: entryValue.name,
+          mime: entryValue.type || 'application/octet-stream',
+          base64,
+          classifications: [key],
+        });
+      }
+    }
     capturedImports.push(entries);
+    const headerEntries = Object.fromEntries(_req.headers.entries());
+    const requestUrl = new URL(_req.url);
+    capturedPipelineSubmissions.push({
+      url: requestUrl.pathname,
+      headers: headerEntries,
+      connectors,
+      manualArtifacts,
+    });
     const jobId = 'job-import';
     const result: ImportJobResult = {
       warnings: ['REQ-2 testleri eksik'],
@@ -862,6 +905,226 @@ describe('App integration', () => {
       expect(value).toBe(expectedLicenseHeader);
       expect(value).not.toMatch(/\s/);
     });
+  });
+
+  it('supports mixing connectors with manual artifact uploads before running the pipeline', async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    const tokenInput = screen.getByPlaceholderText('Token girilmeden demo kilitli kalır');
+    await act(async () => {
+      await user.type(tokenInput, 'demo-token');
+    });
+
+    const licenseTextarea = screen.getByPlaceholderText('{"tenant":"demo","expiresAt":"2024-12-31"}');
+    await act(async () => {
+      fireEvent.change(licenseTextarea, { target: { value: JSON.stringify(licensePayload) } });
+    });
+
+    await screen.findByText('Kaynak: Panodan yapıştırıldı');
+
+    const planFile = new File(['plan'], 'PSAC-plan.pdf', { type: 'application/pdf' });
+    const qaFile = new File(['quality'], 'qa-audit.log', { type: 'text/plain' });
+    const evidenceFile = new File(['evidence'], 'evidence.json', { type: 'application/json' });
+    const fileInput = screen.getByLabelText(/Dosyaları sürükleyip bırakın ya da seçin/i, { selector: 'input' });
+
+    await act(async () => {
+      await user.upload(fileInput, [planFile, qaFile, evidenceFile]);
+    });
+
+    const selectionSummary = await screen.findByText(/3 dosya seçildi · Toplam boyut/i);
+    expect(selectionSummary).toBeInTheDocument();
+
+    const manualList = await screen.findByTestId('manual-artifact-list');
+    expect(within(manualList).getByText('PSAC-plan.pdf')).toBeInTheDocument();
+
+    const manualItems = within(manualList).getAllByRole('listitem');
+    expect(manualItems).toHaveLength(3);
+
+    const planItem = manualItems[0];
+    const planBadge = screen.getByTestId('manual-artifact-badge-0');
+    expect(planBadge).toHaveTextContent('Plan dokümanları');
+    const planSelect = within(planItem).getByLabelText(/DO-178C artefaktı/i) as HTMLSelectElement;
+    expect(planSelect.value).toBe('plan');
+    await act(async () => {
+      await user.selectOptions(planSelect, 'analysis');
+    });
+    await waitFor(() => expect(planSelect.value).toBe('analysis'));
+    expect(planBadge).toHaveTextContent('Analiz artefaktları');
+
+    const qaItem = manualItems[1];
+    const qaBadge = screen.getByTestId('manual-artifact-badge-1');
+    expect(qaBadge).toHaveTextContent('QA denetim kayıtları');
+    const qaSelect = within(qaItem).getByLabelText(/DO-178C artefaktı/i) as HTMLSelectElement;
+    expect(qaSelect.value).toBe('qa_record');
+    await act(async () => {
+      await user.selectOptions(qaSelect, 'cm_record');
+    });
+    await waitFor(() => expect(qaSelect.value).toBe('cm_record'));
+    expect(qaBadge).toHaveTextContent('Yapılandırma yönetimi kayıtları');
+
+    const thirdItem = manualItems[2];
+    const manualBadge = screen.getByTestId('manual-artifact-badge-2');
+    expect(manualBadge).toHaveTextContent('Otomatik seçim');
+    const manualSelect = within(thirdItem).getByLabelText(/DO-178C artefaktı/i) as HTMLSelectElement;
+    expect(manualSelect.value).toBe('auto');
+    await act(async () => {
+      await user.selectOptions(manualSelect, 'test');
+    });
+    await waitFor(() => expect(manualSelect.value).toBe('test'));
+    expect(manualBadge).toHaveTextContent('Test kanıtları');
+
+    const reopenedPlanSelect = within(screen.getByTestId('manual-artifact-item-0')).getByLabelText(
+      /DO-178C artefaktı/i,
+    ) as HTMLSelectElement;
+    const reopenedQaSelect = within(screen.getByTestId('manual-artifact-item-1')).getByLabelText(
+      /DO-178C artefaktı/i,
+    ) as HTMLSelectElement;
+    const reopenedManualSelect = within(screen.getByTestId('manual-artifact-item-2')).getByLabelText(
+      /DO-178C artefaktı/i,
+    ) as HTMLSelectElement;
+
+    expect(reopenedPlanSelect.value).toBe('analysis');
+    expect(reopenedQaSelect.value).toBe('cm_record');
+    expect(reopenedManualSelect.value).toBe('test');
+
+    const polarionCheckbox = screen.getByRole('checkbox', { name: /Polarion ALM/i });
+    await act(async () => {
+      await user.click(polarionCheckbox);
+    });
+    await act(async () => {
+      await user.type(screen.getByLabelText(/Polarion URL/i), 'https://polarion.example.com');
+    });
+    await act(async () => {
+      await user.type(
+        screen.getByLabelText(/Proje kimliği/i, { selector: '#connector-polarion-project' }),
+        'SOI',
+      );
+    });
+    await act(async () => {
+      await user.type(
+        screen.getByLabelText(/^Kullanıcı adı$/i, { selector: '#connector-polarion-username' }),
+        'alice',
+      );
+    });
+    await act(async () => {
+      await user.type(
+        screen.getByLabelText(/^Parola$/i, { selector: '#connector-polarion-password' }),
+        'secret',
+      );
+    });
+    await act(async () => {
+      await user.type(
+        screen.getByLabelText(/Erişim token/i, { selector: '#connector-polarion-token' }),
+        'polarion-token',
+      );
+    });
+
+    const jiraCheckbox = screen.getByRole('checkbox', { name: /Jira Cloud/i });
+    await act(async () => {
+      await user.click(jiraCheckbox);
+    });
+    await act(async () => {
+      await user.type(screen.getByLabelText(/Site URL/i), 'https://jira.example.com');
+    });
+    await act(async () => {
+      await user.type(screen.getByLabelText(/Proje anahtarı/i), 'SOI');
+    });
+    await act(async () => {
+      await user.type(screen.getByLabelText(/API e-posta/i), 'ops@example.com');
+    });
+    await act(async () => {
+      await user.type(
+        screen.getByLabelText(/API token/i, { selector: '#connector-jira-cloud-token' }),
+        'jira-token',
+      );
+    });
+
+    expect(polarionCheckbox).toBeChecked();
+    expect(jiraCheckbox).toBeChecked();
+    expect(screen.getByLabelText(/Polarion URL/i)).toBeEnabled();
+    expect(screen.getByLabelText(/Site URL/i)).toBeEnabled();
+
+    const connectorPanel = screen.getByText('Uzak bağlayıcılar').closest('div');
+    expect(connectorPanel).not.toBeNull();
+    const connectorBadges = within(connectorPanel as HTMLElement).getAllByText((content, element) => {
+      return (
+        ['Polarion ALM', 'Jira Cloud'].includes(content) &&
+        element?.tagName.toLowerCase() === 'span'
+      );
+    });
+    expect(connectorBadges.map((badge) => badge.textContent)).toEqual(
+      expect.arrayContaining(['Polarion ALM', 'Jira Cloud']),
+    );
+
+    await waitFor(() => expect(capturedImports).toHaveLength(0));
+
+    const runButton = screen.getByRole('button', { name: 'Pipeline Başlat' });
+    await act(async () => {
+      await user.click(runButton);
+    });
+
+    await waitFor(() => expect(capturedImports).toHaveLength(1));
+    await waitFor(() => expect(capturedPipelineSubmissions).toHaveLength(1));
+
+    const submission = capturedPipelineSubmissions[0];
+    expect(submission.url).toBe('/v1/import');
+    expect(submission.headers['content-type']).toBeDefined();
+    expect(submission.headers['content-type']).toMatch(/multipart\/form-data/i);
+    expect(submission.connectors).toHaveLength(2);
+    expect(submission.connectors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'polarion',
+          payload: expect.objectContaining({
+            baseUrl: 'https://polarion.example.com',
+            projectId: 'SOI',
+            username: 'alice',
+            password: 'secret',
+            token: 'polarion-token',
+          }),
+        }),
+        expect.objectContaining({
+          kind: 'jiraCloud',
+          payload: expect.objectContaining({
+            baseUrl: 'https://jira.example.com',
+            projectKey: 'SOI',
+            email: 'ops@example.com',
+            token: 'jira-token',
+          }),
+        }),
+      ]),
+    );
+    expect(new Set(submission.connectors.map((connector) => connector.kind)).size).toBe(
+      submission.connectors.length,
+    );
+
+    const manualArtifacts = submission.manualArtifacts;
+    expect(manualArtifacts).toHaveLength(3);
+    expect(new Set(manualArtifacts.map((artifact) => artifact.name)).size).toBe(manualArtifacts.length);
+    expect(manualArtifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'PSAC-plan.pdf',
+          mime: 'application/pdf',
+          base64: Buffer.from('plan').toString('base64'),
+          classifications: ['analysis'],
+        }),
+        expect.objectContaining({
+          name: 'qa-audit.log',
+          mime: 'text/plain',
+          base64: Buffer.from('quality').toString('base64'),
+          classifications: ['cm_record'],
+        }),
+        expect.objectContaining({
+          name: 'evidence.json',
+          mime: 'application/json',
+          base64: Buffer.from('evidence').toString('base64'),
+          classifications: ['test'],
+        }),
+      ]),
+    );
   });
 
   it('shows fallback messaging when the pack job lacks a post-quantum signature', async () => {

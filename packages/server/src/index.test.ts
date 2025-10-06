@@ -71,6 +71,7 @@ jest.mock(
       __setS3ClientHandler,
     };
   },
+  { virtual: true },
 );
 
 const {
@@ -154,9 +155,13 @@ setGlobalDispatcher(
   }),
 );
 
-jest.mock('@soipack/adapters', () => ({
-  fetchJiraChangeRequests: jest.fn(),
-}));
+jest.mock('@soipack/adapters', () => {
+  const actual = jest.requireActual('@soipack/adapters');
+  return {
+    ...actual,
+    fetchJiraChangeRequests: jest.fn(),
+  };
+});
 
 jest.mock(
   'jose',
@@ -346,9 +351,25 @@ jest.mock(
   { virtual: true },
 );
 
-jest.mock('@soipack/packager', () => ({
-  verifyManifestSignature: jest.fn(() => true),
-}));
+jest.mock('@soipack/packager', () => {
+  const actual = jest.requireActual('@soipack/packager');
+  return {
+    ...actual,
+    verifyManifestSignature: jest.fn(() => true),
+    verifyManifestSignatureWithSecuritySigner: jest.fn(() => ({
+      valid: true,
+      digest: { algorithm: 'SHA-256' },
+      cms: {
+        verified: true,
+        digestVerified: true,
+        signerSerialNumber: null,
+        signerIssuer: null,
+        signerSubject: null,
+        signatureAlgorithm: null,
+      },
+    })),
+  };
+});
 
 jest.mock(
   'nunjucks',
@@ -6295,6 +6316,161 @@ describe('@soipack/server REST API', () => {
       expect(failedJob.error?.code).toBe('PIPELINE_ERROR');
       expect(failedJob.error?.message).toContain('Paket oluşturma işlemi başarısız oldu.');
     } finally {
+      runPackSpy.mockRestore();
+    }
+  });
+
+  it('persists signature hardware metadata across pack outputs and events', async () => {
+    const hardwareMetadata = {
+      provider: 'pkcs11',
+      slot: '0',
+      attestation: { format: 'tpm', value: 'dG1wLWF0dGVzdGF0aW9uLXN0YXRlbWVudA==' },
+      signerIds: ['YubiHSM-123'],
+    } as const;
+
+    const runPackSpy = jest.spyOn(cli, 'runPack').mockImplementation(async (options) => {
+      const manifestDigest = 'a'.repeat(64);
+      const merkleRoot = 'b'.repeat(64);
+      const ledgerRoot = 'c'.repeat(64);
+      const previousRoot = 'd'.repeat(64);
+      const manifestId = 'stub-manifest';
+      await fsPromises.mkdir(options.output, { recursive: true });
+
+      const manifestPath = path.join(options.output, 'manifest.json');
+      const manifest: Manifest = {
+        createdAt: new Date().toISOString(),
+        toolVersion: 'soipack-test',
+        merkle: {
+          algorithm: 'ledger-merkle-v1',
+          root: merkleRoot,
+          manifestDigest,
+          snapshotId: 'snapshot-test',
+        },
+        files: [
+          {
+            path: 'reports/compliance.html',
+            sha256: 'e'.repeat(64),
+          },
+        ],
+      };
+      await fsPromises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+
+      const archivePath = path.join(options.output, 'package.zip');
+      await fsPromises.writeFile(archivePath, 'stub-archive', 'utf8');
+
+      const manifestSigPath = path.join(options.output, 'manifest.sig');
+      await fsPromises.writeFile(manifestSigPath, 'stub-signature', 'utf8');
+      const cmsSignaturePath = path.join(options.output, 'manifest.cms');
+      await fsPromises.writeFile(cmsSignaturePath, 'stub-cms', 'utf8');
+
+      const ledgerEntry: LedgerEntry & { signatureBundles?: Array<{ hardware: typeof hardwareMetadata }> } = {
+        index: 1,
+        snapshotId: 'snapshot-test',
+        manifestDigest,
+        timestamp: new Date().toISOString(),
+        evidence: [],
+        merkleRoot,
+        previousRoot,
+        ledgerRoot,
+        signatureBundles: [
+          {
+            hardware: hardwareMetadata,
+          },
+        ],
+      };
+
+      return {
+        manifestPath,
+        archivePath,
+        manifestId,
+        manifestDigest,
+        ledger: { root: ledgerRoot, entries: [ledgerEntry] },
+        ledgerEntry,
+        signatureBundles: [
+          {
+            hardware: hardwareMetadata,
+            manifestDigest: { algorithm: 'sha256', hash: manifestDigest },
+          },
+        ],
+        cmsSignaturePath,
+      } as unknown as ReturnType<typeof cli.runPack>;
+    });
+
+    const lifecycle = getServerLifecycle(app);
+    const publishLedgerSpy = jest.spyOn(lifecycle.events, 'publishLedgerEntry');
+
+    try {
+      const importResponse = await request(app)
+        .post('/v1/import')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .attach('reqif', minimalExample('spec.reqif'))
+        .attach('junit', minimalExample('results.xml'))
+        .attach('lcov', minimalExample('lcov.info'))
+        .field('projectName', 'Hardware Metadata Project')
+        .field('projectVersion', '1.0.0')
+        .expect(202);
+
+      const importJob = await waitForJobCompletion(app, token, importResponse.body.id);
+
+      const analyzeResponse = await request(app)
+        .post('/v1/analyze')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ importId: importJob.id })
+        .expect(202);
+
+      const analyzeJob = await waitForJobCompletion(app, token, analyzeResponse.body.id);
+
+      const reportResponse = await request(app)
+        .post('/v1/report')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ analysisId: analyzeJob.id })
+        .expect(202);
+
+      await waitForJobCompletion(app, token, reportResponse.body.id);
+
+      const packQueued = await request(app)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ reportId: reportResponse.body.id })
+        .expect(202);
+
+      const packJob = await waitForJobCompletion(app, token, packQueued.body.id);
+
+      expect(packJob.result.signatures?.[0]?.hardware).toEqual(hardwareMetadata);
+
+      const packageDir = path.resolve(storageDir, packJob.result.outputs.directory);
+      const packMetadata = JSON.parse(
+        await fsPromises.readFile(path.join(packageDir, 'job.json'), 'utf8'),
+      ) as { signatures?: Array<{ hardware?: unknown }> };
+      expect(packMetadata.signatures?.[0]?.hardware).toEqual(hardwareMetadata);
+
+      const packDetails = await request(app)
+        .get(`/v1/jobs/${packQueued.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      expect(packDetails.body.result.signatures?.[0]?.hardware).toEqual(hardwareMetadata);
+
+      expect(publishLedgerSpy).toHaveBeenCalled();
+      const ledgerCall = publishLedgerSpy.mock.calls[publishLedgerSpy.mock.calls.length - 1];
+      const ledgerPayload = ledgerCall?.[1] as
+        | { signatureBundles?: Array<{ hardware?: unknown }> }
+        | undefined;
+      expect(ledgerPayload?.signatureBundles?.[0]?.hardware).toEqual(hardwareMetadata);
+
+      const packReuse = await request(app)
+        .post('/v1/pack')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ reportId: reportResponse.body.id })
+        .expect(200);
+      expect(packReuse.body.reused).toBe(true);
+      expect(packReuse.body.result?.signatures?.[0]?.hardware).toEqual(hardwareMetadata);
+    } finally {
+      publishLedgerSpy.mockRestore();
       runPackSpy.mockRestore();
     }
   });

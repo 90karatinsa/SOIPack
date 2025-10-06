@@ -104,6 +104,35 @@ export interface PostQuantumSignatureMetadata {
   signature: string;
 }
 
+export interface ManifestDigestMetadata {
+  algorithm: string;
+  hash: string;
+}
+
+export interface SignatureHardwareAttestationMetadata {
+  format: string;
+  value?: string;
+  hash?: string;
+}
+
+export interface SignatureHardwareMetadata {
+  provider: string;
+  slot?: string | number;
+  slotLabel?: string | null;
+  attestation?: SignatureHardwareAttestationMetadata;
+  signerIds?: string[];
+}
+
+export interface PackSignatureMetadata {
+  signature?: string;
+  certificate?: string;
+  manifestDigest?: ManifestDigestMetadata;
+  ledgerRoot?: string | null;
+  previousLedgerRoot?: string | null;
+  postQuantumSignature?: PostQuantumSignatureMetadata;
+  hardware: SignatureHardwareMetadata;
+}
+
 export interface PackJobResult {
   manifestId: string;
   manifestDigest?: string;
@@ -111,6 +140,7 @@ export interface PackJobResult {
   previousLedgerRoot?: string | null;
   cmsSignature?: CmsSignatureMetadata;
   postQuantumSignature?: PostQuantumSignatureMetadata;
+  signatures?: PackSignatureMetadata[];
   outputs: {
     directory: string;
     manifest: string;
