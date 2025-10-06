@@ -6,7 +6,8 @@ import {
   createComplianceEventStream,
   type ComplianceEvent,
 } from '../services/events';
-import { fetchStageRiskForecast, getManifestProof } from '../services/api';
+import { fetchStageRiskForecast, getJob, getManifestProof } from '../services/api';
+import type { ApiJob, PackJobResult } from '../types/pipeline';
 
 jest.mock('../services/events', () => {
   const actual = jest.requireActual('../services/events');
@@ -20,6 +21,7 @@ jest.mock('../services/api', () => {
   const actual = jest.requireActual('../services/api');
   return {
     ...actual,
+    getJob: jest.fn(),
     getManifestProof: jest.fn(),
     fetchStageRiskForecast: jest.fn(),
   };
@@ -29,6 +31,7 @@ describe('RiskCockpitPage', () => {
   const mockCreateStream = createComplianceEventStream as jest.MockedFunction<
     typeof createComplianceEventStream
   >;
+  const mockGetJob = getJob as jest.MockedFunction<typeof getJob>;
   const mockGetManifestProof = getManifestProof as jest.MockedFunction<typeof getManifestProof>;
   const mockFetchStageRiskForecast =
     fetchStageRiskForecast as jest.MockedFunction<typeof fetchStageRiskForecast>;
@@ -48,6 +51,7 @@ describe('RiskCockpitPage', () => {
         getState: jest.fn(() => ({ connected: true, retries: 0 })),
       };
     });
+    mockGetJob.mockReset();
     mockFetchStageRiskForecast.mockResolvedValue({ generatedAt: '2024-03-01T00:00:00Z', forecasts: [] });
   });
 
@@ -362,6 +366,147 @@ describe('RiskCockpitPage', () => {
         new RegExp(`${entry.classification}.*%${(entry.share * 100).toFixed(1)}`),
       );
     });
+  });
+
+  it('renders signature hardware metadata and copy actions', async () => {
+    const jobId = 'pack-job-123';
+    const attestationHash = 'abcdef1234567890fedcba6543210987abcdef1234567890';
+    const packJob: ApiJob<PackJobResult> = {
+      id: jobId,
+      kind: 'pack',
+      hash: 'pack-job-hash',
+      status: 'completed',
+      createdAt: '2024-05-01T00:00:00Z',
+      updatedAt: '2024-05-01T00:00:00Z',
+      result: {
+        manifestId: 'manifest-hardware',
+        ledgerRoot: 'ledger-root',
+        previousLedgerRoot: null,
+        outputs: {
+          directory: 'dir',
+          manifest: 'manifest.json',
+          archive: 'archive.tgz',
+        },
+        signatures: [
+          {
+            hardware: {
+              provider: 'pkcs11',
+              slot: 0,
+              slotLabel: 'YubiSlot-0',
+              attestation: {
+                hash: attestationHash,
+              },
+              signerIds: ['YubiHSM-123'],
+            },
+            manifestDigest: { algorithm: 'sha256', hash: 'manifest-digest-hash' },
+            ledgerRoot: 'ledger-root',
+            previousLedgerRoot: null,
+            postQuantumSignature: {
+              algorithm: 'falcon-512',
+              publicKey: 'public-key',
+              signature: 'signature-value',
+            },
+          },
+          {
+            hardware: {
+              provider: 'soft-token',
+            },
+          },
+        ],
+      },
+    };
+    mockGetJob.mockResolvedValue(packJob);
+
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderPage();
+
+    const manifestEvent: ComplianceEvent = {
+      type: 'manifestProof',
+      tenantId: 'tenant-hardware',
+      manifestId: 'manifest-hardware',
+      jobId,
+      emittedAt: '2024-05-01T00:05:00Z',
+      merkle: {
+        algorithm: 'ledger-merkle-v1',
+        root: 'root-hash',
+        manifestDigest: 'manifest-digest',
+        snapshotId: 'snapshot-1',
+      },
+      files: [
+        { path: 'report.pdf', sha256: 'sha-report', hasProof: true, verified: true },
+      ],
+    };
+
+    await act(async () => {
+      handlers.onEvent?.(manifestEvent);
+    });
+
+    await waitFor(() => expect(mockGetJob).toHaveBeenCalledWith(expect.objectContaining({ jobId })));
+
+    const hardwareList = await screen.findByTestId('signature-hardware-list');
+    const hardwareRows = within(hardwareList).getAllByRole('listitem');
+    expect(hardwareRows).toHaveLength(2);
+
+    const primaryRow = hardwareRows[0];
+    expect(within(primaryRow).getByText('pkcs11')).toBeInTheDocument();
+    expect(within(primaryRow).getByText('YubiSlot-0')).toBeInTheDocument();
+    expect(within(primaryRow).getByText('Attestation')).toBeInTheDocument();
+
+    const attestationElement = within(primaryRow).getByTestId('signature-attestation-pkcs11-0');
+    expect(attestationElement).toHaveTextContent('abcdef123456…ef1234567890');
+    expect(attestationElement).toHaveAttribute('title', attestationHash);
+
+    const pqcLabel = within(primaryRow).getByText('Post-kuantum hibrit');
+    expect(pqcLabel.nextElementSibling).toHaveTextContent('Evet');
+    expect(within(primaryRow).getByText('YubiHSM-123')).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    const copyButton = within(primaryRow).getByRole('button', { name: 'Kopyala' });
+    await user.click(copyButton);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(copyButton).toHaveTextContent('Kopyalandı'));
+
+    const payload = JSON.parse(writeText.mock.calls[0][0]);
+    expect(payload).toEqual({
+      provider: 'pkcs11',
+      slotLabel: 'YubiSlot-0',
+      slot: 0,
+      attestation: { hash: attestationHash },
+      pqcHybrid: true,
+      signerIds: ['YubiHSM-123'],
+      manifestDigest: { algorithm: 'sha256', hash: 'manifest-digest-hash' },
+      ledgerRoot: 'ledger-root',
+      previousLedgerRoot: null,
+    });
+
+    const secondaryRow = hardwareRows[1];
+    expect(within(secondaryRow).getByText('soft-token')).toBeInTheDocument();
+    expect(within(secondaryRow).getByText('Attestation eksik')).toBeInTheDocument();
+
+    const fallbackAttestation = within(secondaryRow).getByTestId('signature-attestation-soft-token-1');
+    expect(fallbackAttestation).toHaveTextContent('—');
+    expect(fallbackAttestation).not.toHaveAttribute('title');
+
+    const slotPlaceholder = within(secondaryRow).getByText((content, node) => {
+      return node?.tagName === 'SPAN' && content.trim() === '—';
+    });
+    expect(slotPlaceholder).toBeInTheDocument();
+
+    const pqcFallbackLabel = within(secondaryRow).getByText('Post-kuantum hibrit');
+    expect(pqcFallbackLabel.nextElementSibling).toHaveTextContent('Hayır');
+
+    const signerFallback = within(secondaryRow).getByText((content, node) => {
+      return node?.tagName === 'DD' && content.trim() === '—';
+    });
+    expect(signerFallback).toBeInTheDocument();
+
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   it('shows an error when stage risk forecast retrieval fails', async () => {

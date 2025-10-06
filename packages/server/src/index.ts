@@ -1235,6 +1235,28 @@ interface PostQuantumSignatureMetadata {
   signature: string;
 }
 
+interface ManifestDigestMetadata {
+  algorithm: string;
+  hash: string;
+}
+
+interface SignatureHardwareMetadata {
+  provider: string;
+  slot?: string | number;
+  attestation?: { format: string; value: string };
+  signerIds?: string[];
+}
+
+interface PackSignatureMetadata {
+  signature?: string;
+  certificate?: string;
+  manifestDigest?: ManifestDigestMetadata;
+  ledgerRoot?: string | null;
+  previousLedgerRoot?: string | null;
+  postQuantumSignature?: PostQuantumSignatureMetadata;
+  hardware: SignatureHardwareMetadata;
+}
+
 interface PackJobMetadata extends BaseJobMetadata {
   kind: 'pack';
   outputs: {
@@ -1248,6 +1270,7 @@ interface PackJobMetadata extends BaseJobMetadata {
     cmsSignature?: CmsSignatureMetadata;
     postQuantumSignature?: PostQuantumSignatureMetadata;
   };
+  signatures?: PackSignatureMetadata[];
 }
 
 type JobMetadata = ImportJobMetadata | AnalyzeJobMetadata | ReportJobMetadata | PackJobMetadata;
@@ -1303,6 +1326,7 @@ interface PackJobResult {
   previousLedgerRoot?: string | null;
   cmsSignature?: CmsSignatureMetadata;
   postQuantumSignature?: PostQuantumSignatureMetadata;
+  signatures?: PackSignatureMetadata[];
   outputs: {
     directory: string;
     manifest: string;
@@ -1380,6 +1404,244 @@ const stripSecrets = <T>(input: T): T => {
   }
 
   return result as unknown as T;
+};
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const normalizeManifestDigest = (input: unknown): ManifestDigestMetadata | undefined => {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const algorithm = (input as { algorithm?: unknown }).algorithm;
+  const hash = (input as { hash?: unknown }).hash;
+
+  if (!isNonEmptyString(algorithm) || !isNonEmptyString(hash)) {
+    return undefined;
+  }
+
+  return { algorithm, hash };
+};
+
+const normalizePostQuantumSignature = (
+  input: unknown,
+): PostQuantumSignatureMetadata | undefined => {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const algorithm = (input as { algorithm?: unknown }).algorithm;
+  const publicKey = (input as { publicKey?: unknown }).publicKey;
+  const signature = (input as { signature?: unknown }).signature;
+
+  if (!isNonEmptyString(algorithm) || !isNonEmptyString(publicKey) || !isNonEmptyString(signature)) {
+    return undefined;
+  }
+
+  return { algorithm, publicKey, signature };
+};
+
+const normalizeSignatureHardware = (input: unknown): SignatureHardwareMetadata | undefined => {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const provider = (input as { provider?: unknown }).provider;
+  if (!isNonEmptyString(provider)) {
+    return undefined;
+  }
+
+  const hardware: SignatureHardwareMetadata = { provider };
+
+  const slot = (input as { slot?: unknown }).slot;
+  if (typeof slot === 'string' && slot.trim().length > 0) {
+    hardware.slot = slot;
+  } else if (typeof slot === 'number' && Number.isFinite(slot)) {
+    hardware.slot = slot;
+  } else if (slot && typeof slot === 'object') {
+    const slotId = (slot as { id?: unknown }).id;
+    if (typeof slotId === 'string' && slotId.trim().length > 0) {
+      hardware.slot = slotId;
+    } else if (typeof slotId === 'number' && Number.isFinite(slotId)) {
+      hardware.slot = slotId;
+    } else {
+      const slotIndex = (slot as { index?: unknown }).index;
+      if (typeof slotIndex === 'number' && Number.isFinite(slotIndex)) {
+        hardware.slot = slotIndex;
+      }
+    }
+  }
+
+  const attestation = (input as { attestation?: unknown }).attestation;
+  if (attestation && typeof attestation === 'object') {
+    const format = (attestation as { format?: unknown }).format;
+    const value =
+      (attestation as { value?: unknown }).value ?? (attestation as { data?: unknown }).data;
+    if (isNonEmptyString(format) && isNonEmptyString(value)) {
+      hardware.attestation = { format, value };
+    }
+  }
+
+  const signerIds = (input as { signerIds?: unknown }).signerIds;
+  if (Array.isArray(signerIds)) {
+    const filtered = signerIds.filter((id): id is string => isNonEmptyString(id));
+    if (filtered.length > 0) {
+      hardware.signerIds = filtered;
+    }
+  }
+
+  return hardware;
+};
+
+const normalizePackSignatures = (input: unknown): PackSignatureMetadata[] | undefined => {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+
+  const normalized = input
+    .map((bundle) => {
+      if (!bundle || typeof bundle !== 'object') {
+        return undefined;
+      }
+
+      const hardware = normalizeSignatureHardware((bundle as { hardware?: unknown }).hardware);
+      if (!hardware) {
+        return undefined;
+      }
+
+      const signatureRaw = (bundle as { signature?: unknown }).signature;
+      const certificateRaw = (bundle as { certificate?: unknown }).certificate;
+      const manifestDigest = normalizeManifestDigest(
+        (bundle as { manifestDigest?: unknown }).manifestDigest,
+      );
+      const ledgerRootRaw = (bundle as { ledgerRoot?: unknown }).ledgerRoot;
+      const previousLedgerRootRaw = (bundle as { previousLedgerRoot?: unknown }).previousLedgerRoot;
+      const postQuantumSignature = normalizePostQuantumSignature(
+        (bundle as { postQuantumSignature?: unknown }).postQuantumSignature,
+      );
+
+      const entry: PackSignatureMetadata = { hardware };
+
+      if (isNonEmptyString(signatureRaw)) {
+        entry.signature = signatureRaw;
+      }
+
+      if (isNonEmptyString(certificateRaw)) {
+        entry.certificate = certificateRaw;
+      }
+
+      if (manifestDigest) {
+        entry.manifestDigest = manifestDigest;
+      }
+
+      if (typeof ledgerRootRaw === 'string') {
+        entry.ledgerRoot = ledgerRootRaw;
+      } else if (ledgerRootRaw === null) {
+        entry.ledgerRoot = null;
+      }
+
+      if (typeof previousLedgerRootRaw === 'string') {
+        entry.previousLedgerRoot = previousLedgerRootRaw;
+      } else if (previousLedgerRootRaw === null) {
+        entry.previousLedgerRoot = null;
+      }
+
+      if (postQuantumSignature) {
+        entry.postQuantumSignature = postQuantumSignature;
+      }
+
+      return entry;
+    })
+    .filter((entry): entry is PackSignatureMetadata => Boolean(entry));
+
+  return normalized.length > 0 ? normalized : undefined;
+};
+
+const clonePackSignatures = (
+  input?: PackSignatureMetadata[] | null,
+): PackSignatureMetadata[] | undefined => {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+
+  const cloned = input
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object' || !entry.hardware) {
+        return undefined;
+      }
+
+      const hardwareSource = entry.hardware;
+      if (!isNonEmptyString(hardwareSource.provider)) {
+        return undefined;
+      }
+
+      const hardware: SignatureHardwareMetadata = { provider: hardwareSource.provider };
+
+      if (typeof hardwareSource.slot === 'string' && hardwareSource.slot.trim().length > 0) {
+        hardware.slot = hardwareSource.slot;
+      } else if (
+        typeof hardwareSource.slot === 'number' &&
+        Number.isFinite(hardwareSource.slot)
+      ) {
+        hardware.slot = hardwareSource.slot;
+      }
+
+      if (
+        hardwareSource.attestation &&
+        isNonEmptyString(hardwareSource.attestation.format) &&
+        isNonEmptyString(hardwareSource.attestation.value)
+      ) {
+        hardware.attestation = {
+          format: hardwareSource.attestation.format,
+          value: hardwareSource.attestation.value,
+        };
+      }
+
+      if (Array.isArray(hardwareSource.signerIds) && hardwareSource.signerIds.length > 0) {
+        const signerIds = hardwareSource.signerIds.filter((id) => isNonEmptyString(id));
+        if (signerIds.length > 0) {
+          hardware.signerIds = signerIds;
+        }
+      }
+
+      const clone: PackSignatureMetadata = { hardware };
+
+      if (isNonEmptyString(entry.signature)) {
+        clone.signature = entry.signature;
+      }
+
+      if (isNonEmptyString(entry.certificate)) {
+        clone.certificate = entry.certificate;
+      }
+
+      if (entry.manifestDigest) {
+        const digest = normalizeManifestDigest(entry.manifestDigest);
+        if (digest) {
+          clone.manifestDigest = digest;
+        }
+      }
+
+      if (entry.ledgerRoot !== undefined) {
+        clone.ledgerRoot = entry.ledgerRoot ?? null;
+      }
+
+      if (entry.previousLedgerRoot !== undefined) {
+        clone.previousLedgerRoot = entry.previousLedgerRoot ?? null;
+      }
+
+      if (entry.postQuantumSignature) {
+        const pq = normalizePostQuantumSignature(entry.postQuantumSignature);
+        if (pq) {
+          clone.postQuantumSignature = pq;
+        }
+      }
+
+      return clone;
+    })
+    .filter((entry): entry is PackSignatureMetadata => Boolean(entry));
+
+  return cloned.length > 0 ? cloned : undefined;
 };
 
 const toStableJson = (value: unknown): string => {
@@ -2758,6 +3020,7 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
     : undefined;
 
   const postQuantumSignature = metadata.outputs.postQuantumSignature;
+  const signatures = clonePackSignatures(metadata.signatures);
 
   return {
     manifestId: metadata.outputs.manifestId,
@@ -2766,6 +3029,7 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
     previousLedgerRoot: metadata.outputs.previousLedgerRoot,
     ...(cmsSignature ? { cmsSignature } : {}),
     ...(postQuantumSignature ? { postQuantumSignature } : {}),
+    ...(signatures ? { signatures } : {}),
     outputs: {
       directory: storage.toRelativePath(metadata.directory),
       manifest: storage.toRelativePath(metadata.outputs.manifestPath),
@@ -5407,6 +5671,9 @@ export const createServer = (config: ServerConfig): Express => {
           ...(payload.postQuantum !== undefined ? { postQuantum: payload.postQuantum } : {}),
         };
         const result = await runPack(packOptions);
+        const signatureBundles = normalizePackSignatures(
+          (result as { signatureBundles?: unknown }).signatureBundles,
+        );
 
         const manifestContent = await fsPromises.readFile(result.manifestPath, 'utf8');
         let manifest: Manifest;
@@ -5499,6 +5766,7 @@ export const createServer = (config: ServerConfig): Express => {
               ? { postQuantumSignature: result.signatureMetadata.postQuantumSignature }
               : {}),
           },
+          ...(signatureBundles ? { signatures: signatureBundles } : {}),
         };
 
         await writeJobMetadata(storage, payload.packageDir, metadata);
@@ -9264,6 +9532,7 @@ export const createServer = (config: ServerConfig): Express => {
                 path: storage.toRelativePath(packMetadata.outputs.cmsSignature.path),
               }
             : undefined;
+          const packageSignatures = clonePackSignatures(packMetadata.signatures);
 
           res.status(statusCode).json({
             status: 'completed',
@@ -9325,6 +9594,7 @@ export const createServer = (config: ServerConfig): Express => {
               previousLedgerRoot: packMetadata.outputs.previousLedgerRoot ?? null,
               cmsSignature,
               postQuantumSignature: packMetadata.outputs.postQuantumSignature ?? undefined,
+              ...(packageSignatures ? { signatures: packageSignatures } : {}),
             },
           });
         };
