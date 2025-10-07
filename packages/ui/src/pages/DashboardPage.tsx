@@ -1,5 +1,5 @@
-import { Alert, Badge, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
-import { useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { Alert, Badge, Button, Card, EmptyState, PageHeader, Skeleton, Table } from '@bora/ui-kit';
+import { useCallback, useEffect, useMemo, useState, type ComponentProps } from 'react';
 
 import { useT } from '../providers/I18nProvider';
 import {
@@ -9,7 +9,9 @@ import {
   fetchComplianceSummary,
   fetchChangeRequests,
   fetchRemediationPlanSummary,
+  fetchServiceMetadata,
   type ComplianceSummaryLatest,
+  type ServiceMetadata,
   type QueueMetricsResponse,
   type ReviewResource,
   type ChangeRequestItem,
@@ -74,6 +76,11 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     error: string | null;
     plan: RemediationPlanSummary | null;
   }>({ loading: true, error: null, plan: null });
+  const [serviceMetadataState, setServiceMetadataState] = useState<{
+    loading: boolean;
+    error: string | null;
+    metadata: ServiceMetadata | null;
+  }>({ loading: true, error: null, metadata: null });
   const t = useT();
   const trimmedToken = token.trim();
   const trimmedLicense = license.trim();
@@ -99,6 +106,11 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         error: t('dashboard.credentialsRequired'),
         plan: null,
       });
+      setServiceMetadataState({
+        loading: false,
+        error: t('dashboard.credentialsRequired'),
+        metadata: null,
+      });
       return;
     }
 
@@ -107,12 +119,14 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     const complianceController = new AbortController();
     const changeRequestController = new AbortController();
     const remediationController = new AbortController();
+    const serviceMetadataController = new AbortController();
 
     setQueueState((previous) => ({ ...previous, loading: true, error: null }));
     setReviewState((previous) => ({ ...previous, loading: true, error: null }));
     setComplianceState((previous) => ({ ...previous, loading: true, error: null }));
     setChangeRequestState((previous) => ({ ...previous, loading: true, error: null }));
     setRemediationPlanState((previous) => ({ ...previous, loading: true, error: null }));
+    setServiceMetadataState((previous) => ({ ...previous, loading: true, error: null }));
 
     listJobs({
       token: trimmedToken,
@@ -213,12 +227,29 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
         setRemediationPlanState({ loading: false, error: message, plan: null });
       });
 
+    fetchServiceMetadata({
+      token: trimmedToken,
+      license: trimmedLicense,
+      signal: serviceMetadataController.signal,
+    })
+      .then((response) => {
+        setServiceMetadataState({ loading: false, error: null, metadata: response });
+      })
+      .catch((error) => {
+        if (serviceMetadataController.signal.aborted) {
+          return;
+        }
+        const message = error instanceof ApiError ? error.message : t('dashboard.sbomError');
+        setServiceMetadataState({ loading: false, error: message, metadata: null });
+      });
+
     return () => {
       queueController.abort();
       reviewController.abort();
       complianceController.abort();
       changeRequestController.abort();
       remediationController.abort();
+      serviceMetadataController.abort();
     };
   }, [trimmedToken, trimmedLicense, t]);
 
@@ -391,6 +422,13 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     : '—';
   const remediationTopActions = remediationActions.slice(0, REMEDIATION_ACTION_DISPLAY_LIMIT);
   const remediationRemaining = Math.max(0, remediationActions.length - remediationTopActions.length);
+  const sbomMetadata = serviceMetadataState.metadata?.sbom ?? null;
+  const rawSbomUrl = sbomMetadata?.url?.trim() ?? '';
+  const sbomUrl = rawSbomUrl.length > 0 ? rawSbomUrl : null;
+  const sbomSha256Value = sbomMetadata?.sha256?.trim() ?? '';
+  const sbomSha256 = sbomSha256Value.length > 0 ? sbomSha256Value : null;
+  const sbomVerified = sbomMetadata?.verified === true;
+  const hasSbomMetadata = Boolean(sbomUrl || sbomSha256);
   const remediationPriorityLabels = useMemo(
     () => ({
       critical: t('dashboard.remediationPriority.critical'),
@@ -400,6 +438,18 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
     }),
     [t],
   );
+  const handleCopySbomDigest = useCallback(async () => {
+    if (!sbomSha256) {
+      return;
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(sbomSha256);
+      } catch {
+        // Clipboard errors can be safely ignored.
+      }
+    }
+  }, [sbomSha256]);
   const remediationPriorityVariants: Record<
     RemediationPlanPriority,
     ComponentProps<typeof Badge>['variant']
@@ -714,7 +764,78 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                 description={complianceSummary.summary.missing.toString()}
               />
             </div>
-            <div className="grid gap-4 xl:grid-cols-3">
+            <div className="grid gap-4 xl:grid-cols-4">
+              <div
+                className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+                data-testid="sbom-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">{t('dashboard.sbomTitle')}</h3>
+                    <p className="text-xs text-neutral-400">{t('dashboard.sbomSubtitle')}</p>
+                  </div>
+                  {hasSbomMetadata ? (
+                    <Badge
+                      variant={sbomVerified ? 'success' : 'warning'}
+                      data-testid="sbom-verify-badge"
+                    >
+                      {sbomVerified ? t('dashboard.sbomVerified') : t('dashboard.sbomUnverified')}
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="mt-3 space-y-3 text-sm text-neutral-300">
+                  {serviceMetadataState.loading ? (
+                    <div data-testid="sbom-loading" className="space-y-2">
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-4 w-40" />
+                    </div>
+                  ) : serviceMetadataState.error ? (
+                    <Alert
+                      data-testid="sbom-error"
+                      title={t('dashboard.sbomErrorTitle')}
+                      description={serviceMetadataState.error}
+                      variant="error"
+                    />
+                  ) : hasSbomMetadata ? (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs uppercase tracking-wide text-neutral-400">
+                          {t('dashboard.sbomDigestLabel')}
+                        </span>
+                        <code
+                          className="rounded bg-slate-900 px-2 py-1 font-mono text-xs text-emerald-300"
+                          data-testid="sbom-digest"
+                        >
+                          {sbomSha256 ?? '—'}
+                        </code>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={handleCopySbomDigest}
+                          disabled={!sbomSha256}
+                        >
+                          {t('dashboard.sbomCopyDigest')}
+                        </Button>
+                      </div>
+                      {sbomUrl ? (
+                        <a
+                          href={sbomUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 text-sm text-brand hover:underline"
+                          data-testid="sbom-download"
+                        >
+                          {t('dashboard.sbomDownload')}
+                        </a>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="text-sm text-neutral-400" data-testid="sbom-empty">
+                      —
+                    </p>
+                  )}
+                </div>
+              </div>
               <div
                 className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
                 data-testid="independence-card"

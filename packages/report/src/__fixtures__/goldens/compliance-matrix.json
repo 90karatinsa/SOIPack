@@ -111,7 +111,17 @@
       ],
       "evidenceRefs": [
         "plan:docs/verification-plan.md"
-      ]
+      ],
+      "regulatoryReferences": {
+        "ac20115d": [
+          "§6.3",
+          "§6.5"
+        ],
+        "faa8110_49": [
+          "§2.3",
+          "§3.4"
+        ]
+      }
     },
     {
       "id": "A-4-01",
@@ -131,7 +141,16 @@
       "evidenceRefs": [
         "analysis:reports/safety-analysis.pdf",
         "trace:artifacts/trace-map.csv"
-      ]
+      ],
+      "regulatoryReferences": {
+        "ac20115d": [
+          "§6.6",
+          "§6.7"
+        ],
+        "faa8110_49": [
+          "§5.4"
+        ]
+      }
     },
     {
       "id": "A-5-06",
@@ -153,7 +172,17 @@
         "test:reports/junit.xml",
         "trace:artifacts/trace-map.csv",
         "analysis:reports/safety-analysis.pdf"
-      ]
+      ],
+      "regulatoryReferences": {
+        "ac20115d": [
+          "§7.1",
+          "§7.2"
+        ],
+        "faa8110_49": [
+          "§6.3",
+          "§6.5"
+        ]
+      }
     },
     {
       "id": "A-5-08",
@@ -172,7 +201,17 @@
       "evidenceRefs": [
         "coverage_stmt:reports/coverage-summary.json",
         "analysis:reports/safety-analysis.pdf"
-      ]
+      ],
+      "regulatoryReferences": {
+        "ac20115d": [
+          "§7.1",
+          "§7.2"
+        ],
+        "faa8110_49": [
+          "§6.3",
+          "§6.5"
+        ]
+      }
     },
     {
       "id": "A-6-02",
@@ -185,7 +224,16 @@
         "Konfigürasyon Kaydı",
         "Problem Raporu"
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [],
+      "regulatoryReferences": {
+        "ac20115d": [
+          "§7.3",
+          "§7.4"
+        ],
+        "faa8110_49": [
+          "§7.4"
+        ]
+      }
     }
   ],
   "requirementCoverage": [

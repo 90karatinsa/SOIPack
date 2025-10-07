@@ -9,6 +9,7 @@ import {
   fetchComplianceSummary,
   fetchChangeRequests,
   fetchRemediationPlanSummary,
+  fetchServiceMetadata,
   ApiError,
 } from '../services/api';
 
@@ -21,6 +22,7 @@ jest.mock('../services/api', () => {
     fetchComplianceSummary: jest.fn(),
     fetchChangeRequests: jest.fn(),
     fetchRemediationPlanSummary: jest.fn(),
+    fetchServiceMetadata: jest.fn(),
   };
 });
 
@@ -33,6 +35,7 @@ describe('DashboardPage', () => {
   const mockFetchChangeRequests = fetchChangeRequests as jest.MockedFunction<typeof fetchChangeRequests>;
   const mockFetchRemediationPlanSummary =
     fetchRemediationPlanSummary as jest.MockedFunction<typeof fetchRemediationPlanSummary>;
+  const mockFetchServiceMetadata = fetchServiceMetadata as jest.MockedFunction<typeof fetchServiceMetadata>;
 
   const renderDashboard = (props?: { token?: string; license?: string }) =>
     render(
@@ -46,10 +49,21 @@ describe('DashboardPage', () => {
     mockFetchComplianceSummary.mockReset();
     mockFetchChangeRequests.mockReset();
     mockFetchRemediationPlanSummary.mockReset();
+    mockFetchServiceMetadata.mockReset();
+    mockFetchServiceMetadata.mockResolvedValue({ sbom: null });
+  });
+
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
   it('renders queue metrics and pending reviews when data resolves', async () => {
     const now = new Date().toISOString();
+    const sbomDigest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const sbomUrl = 'https://example.com/downloads/sbom.spdx.json';
+    mockFetchServiceMetadata.mockResolvedValue({
+      sbom: { url: sbomUrl, sha256: sbomDigest, verified: true },
+    });
     mockListJobs.mockResolvedValue({
       jobs: [
         { id: 'job-1', kind: 'analyze', status: 'queued', hash: 'h1', createdAt: now, updatedAt: now },
@@ -184,6 +198,8 @@ describe('DashboardPage', () => {
       ],
     });
 
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
     renderDashboard();
 
     expect(screen.getByTestId('queue-loading')).toBeInTheDocument();
@@ -205,6 +221,21 @@ describe('DashboardPage', () => {
     expect(mockFetchRemediationPlanSummary).toHaveBeenCalledWith(
       expect.objectContaining({ token: 'demo-token', license: 'demo-license' }),
     );
+    expect(mockFetchServiceMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'demo-token', license: 'demo-license' }),
+    );
+
+    const sbomCard = await screen.findByTestId('sbom-card');
+    expect(sbomCard).toBeInTheDocument();
+    expect(screen.getByTestId('sbom-digest')).toHaveTextContent(sbomDigest);
+    expect(screen.getByTestId('sbom-verify-badge')).toHaveTextContent('Doğrulandı');
+    expect(screen.getByTestId('sbom-download')).toHaveAttribute('href', sbomUrl);
+    const copyButton = screen.getByRole('button', { name: 'Özeti kopyala' });
+    expect(copyButton).not.toBeDisabled();
+    copyButton.click();
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(sbomDigest);
+    });
 
     expect(screen.getByTestId('compliance-summary')).toBeInTheDocument();
     expect(screen.getByText('Eylem Gerekli')).toBeInTheDocument();
@@ -265,6 +296,162 @@ describe('DashboardPage', () => {
     );
   });
 
+  it('DashboardPage renders the SBOM widget', async () => {
+    const now = new Date().toISOString();
+    const sbomDigest = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+    const sbomUrl = 'https://downloads.example.com/sbom.spdx.json';
+
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-sbom',
+        createdAt: now,
+        summary: { total: 0, covered: 0, partial: 0, missing: 0 },
+        coverage: { statements: 0 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+        changeImpact: [],
+        independence: {
+          totals: { covered: 0, partial: 0, missing: 0 },
+          objectives: [],
+        },
+      },
+    });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
+    mockFetchServiceMetadata.mockResolvedValue({
+      sbom: { url: sbomUrl, sha256: sbomDigest, verified: true },
+    });
+
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    renderDashboard();
+
+    const digest = await screen.findByTestId('sbom-digest');
+
+    expect(screen.getByTestId('sbom-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('sbom-loading')).not.toBeInTheDocument();
+    expect(digest).toHaveTextContent(sbomDigest);
+
+    const badge = screen.getByTestId('sbom-verify-badge');
+    expect(badge).toHaveTextContent('Doğrulandı');
+    expect(badge).toHaveAttribute('variant', 'success');
+
+    const downloadLink = screen.getByTestId('sbom-download');
+    expect(downloadLink).toHaveAttribute('href', sbomUrl);
+
+    const copyButton = screen.getByRole('button', { name: 'Özeti kopyala' });
+    expect(copyButton).not.toBeDisabled();
+    copyButton.click();
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(sbomDigest);
+    });
+  });
+
+  it('shows an unverified SBOM badge when verification fails', async () => {
+    const now = new Date().toISOString();
+    const sbomDigest = 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-sbom-unverified',
+        createdAt: now,
+        summary: { total: 0, covered: 0, partial: 0, missing: 0 },
+        coverage: { statements: 0 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+        changeImpact: [],
+        independence: {
+          totals: { covered: 0, partial: 0, missing: 0 },
+          objectives: [],
+        },
+      },
+    });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
+    mockFetchServiceMetadata.mockResolvedValue({
+      sbom: { url: null, sha256: sbomDigest, verified: false },
+    });
+
+    renderDashboard();
+
+    const badge = await screen.findByTestId('sbom-verify-badge');
+
+    expect(badge).toHaveTextContent('Doğrulanamadı');
+    expect(badge).toHaveAttribute('variant', 'warning');
+    expect(screen.queryByTestId('sbom-download')).not.toBeInTheDocument();
+  });
+
+  it('renders the SBOM error state when metadata retrieval fails', async () => {
+    const now = new Date().toISOString();
+
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-sbom-error',
+        createdAt: now,
+        summary: { total: 0, covered: 0, partial: 0, missing: 0 },
+        coverage: { statements: 0 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+        changeImpact: [],
+        independence: {
+          totals: { covered: 0, partial: 0, missing: 0 },
+          objectives: [],
+        },
+      },
+    });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
+    mockFetchServiceMetadata.mockRejectedValue(new ApiError(500, 'SBOM failed'));
+
+    renderDashboard();
+
+    const error = await screen.findByTestId('sbom-error');
+
+    expect(error).toHaveTextContent('SBOM metaverisi yüklenemedi');
+    expect(error).toHaveTextContent('SBOM failed');
+  });
+
+  it('renders the SBOM empty state when metadata is absent', async () => {
+    const now = new Date().toISOString();
+
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-sbom-empty',
+        createdAt: now,
+        summary: { total: 0, covered: 0, partial: 0, missing: 0 },
+        coverage: { statements: 0 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+        changeImpact: [],
+        independence: {
+          totals: { covered: 0, partial: 0, missing: 0 },
+          objectives: [],
+        },
+      },
+    });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
+    mockFetchServiceMetadata.mockResolvedValue({ sbom: null });
+
+    renderDashboard();
+
+    const emptyState = await screen.findByTestId('sbom-empty');
+
+    expect(emptyState).toHaveTextContent('—');
+    expect(screen.queryByTestId('sbom-verify-badge')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sbom-download')).not.toBeInTheDocument();
+  });
+
   it('shows error fallbacks when requests fail', async () => {
     const error = new ApiError(500, 'Queue failed');
     mockListJobs.mockRejectedValue(error);
@@ -272,6 +459,7 @@ describe('DashboardPage', () => {
     mockFetchComplianceSummary.mockRejectedValue(new ApiError(503, 'Summary failed'));
     mockFetchChangeRequests.mockRejectedValue(new ApiError(500, 'Change requests failed'));
     mockFetchRemediationPlanSummary.mockRejectedValue(new ApiError(502, 'Plan failed'));
+    mockFetchServiceMetadata.mockRejectedValue(new ApiError(500, 'Metadata failed'));
 
     renderDashboard();
 
@@ -281,6 +469,7 @@ describe('DashboardPage', () => {
       expect(screen.getByText(/Summary failed/)).toBeInTheDocument();
       expect(screen.getByText(/Change requests failed/)).toBeInTheDocument();
       expect(screen.getByText(/Plan failed/)).toBeInTheDocument();
+      expect(screen.getByText(/Metadata failed/)).toBeInTheDocument();
     });
   });
 
@@ -293,6 +482,7 @@ describe('DashboardPage', () => {
       expect(mockFetchComplianceSummary).not.toHaveBeenCalled();
       expect(mockFetchChangeRequests).not.toHaveBeenCalled();
       expect(mockFetchRemediationPlanSummary).not.toHaveBeenCalled();
+      expect(mockFetchServiceMetadata).not.toHaveBeenCalled();
     });
 
     expect(screen.getAllByText(/kimlik|credential/i).length).toBeGreaterThan(0);
@@ -329,6 +519,8 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Hazır')).toBeInTheDocument();
     });
+    expect(screen.getByTestId('sbom-empty')).toHaveTextContent('—');
+    expect(screen.queryByTestId('sbom-download')).not.toBeInTheDocument();
     expect(screen.getByText(/Hazırlık \(%\)/)).toBeInTheDocument();
     expect(screen.getByTestId('compliance-summary')).toHaveTextContent('100%');
     expect(screen.getByTestId('independence-all-clear')).toBeInTheDocument();
