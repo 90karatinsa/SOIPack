@@ -1,3 +1,6 @@
+Program,Flight Control Modernizasyonu,,,,,
+Sertifikasyon Seviyesi,DO-178C Seviye A,,,,,
+Proje Sürümü,v2.3.1,,,,,
 Objective ID,Table,Stage,Status,Satisfied Artifacts,Missing Artifacts,Evidence References
 A-3-04,A-3,SOI-1,Eksik,Plan,Plan | Gözden Geçirme,plan:docs/verification-plan.md
 A-4-01,A-4,SOI-2,Eksik,Analiz | İzlenebilirlik,Analiz | İzlenebilirlik | Gözden Geçirme,analysis:reports/safety-analysis.pdf | trace:artifacts/trace-map.csv

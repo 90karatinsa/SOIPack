@@ -39,8 +39,8 @@ eder.
 1. Manifesti oluşturur ve opsiyonel ledger bilgilerini ekler.
 2. Belirtilen kimlik bilgileriyle manifesti imzalar.
 3. İmzanın dosya listesi ve ledger kökleriyle tutarlı olduğunu doğrular.
-4. `manifest.json` ve `manifest.sig` dosyalarıyla birlikte rapor ve kanıt
-   içeriklerini ZIP arşivine yazar.
+4. `manifest.json`, `manifest.sig` ve CMS imzası etkinse `manifest.cms`
+   dosyalarıyla birlikte rapor ve kanıt içeriklerini ZIP arşivine yazar.
 
 İşlev başarıyla tamamlandığında çıktıda hem manifest hem de imza değeri
 bulunur. `manifest.ledger` ile `verifyManifestSignatureDetailed` sonuçlarındaki
@@ -63,6 +63,7 @@ const { manifest, signature, outputPath } = await createSoiDataPack({
   evidenceDirs: ['./out/evidence'],
   toolVersion: '0.2.0',
   credentialsPath: './keys/dev.pem',
+  cms: { bundlePath: './keys/cms.pem' },
   ledger: {
     root: 'aaaaaaaa…',
     previousRoot: 'bbbbbbbb…',
@@ -72,3 +73,6 @@ const { manifest, signature, outputPath } = await createSoiDataPack({
 
 Oluşturulan paket, zincirin beklenen köküyle eşleşmediğinde hata verir ve
 imzalar yüklenirken ledger sürekliliğinin otomatik olarak doğrulanmasını sağlar.
+CMS imzası sağlandığında arşivde `manifest.cms` dosyası üretilir ve dönen sonuç
+nesnesindeki `cmsSignature` alanı SHA-256 özeti ile DER çıktı doğrulamasını
+kolaylaştırır.

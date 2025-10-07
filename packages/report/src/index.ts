@@ -52,6 +52,9 @@ interface BaseReportOptions {
   git?: BuildInfo | null;
   snapshotId?: string;
   snapshotVersion?: SnapshotVersion;
+  programName?: string;
+  certificationLevel?: string;
+  projectVersion?: string;
 }
 
 interface LayoutContext extends BaseReportOptions {
@@ -140,6 +143,12 @@ interface ComplianceMatrixCsvExport {
   rows: ComplianceMatrixCsvRow[];
   records: string[][];
   csv: string;
+  metadata: {
+    programName?: string;
+    certificationLevel?: string;
+    projectVersion?: string;
+    rows: string[][];
+  };
   stages: Partial<Record<SoiStage, ComplianceMatrixCsvStageExport>>;
 }
 
@@ -517,6 +526,9 @@ export interface ComplianceMatrixJson {
   manifestId?: string;
   generatedAt: string;
   version: string;
+  programName?: string;
+  certificationLevel?: string;
+  projectVersion?: string;
   snapshotId: string;
   snapshotVersion: SnapshotVersion;
   stats: ComplianceStatistics;
@@ -1746,6 +1758,15 @@ const layoutTemplate = nunjucks.compile(
         <h1>{{ title }}</h1>
         {% if subtitle %}
           <p class="report-meta">{{ subtitle }}</p>
+        {% endif %}
+        {% if programName %}
+          <p class="report-meta">Program: <strong>{{ programName }}</strong></p>
+        {% endif %}
+        {% if certificationLevel %}
+          <p class="report-meta">Sertifikasyon Seviyesi: <strong>{{ certificationLevel }}</strong></p>
+        {% endif %}
+        {% if projectVersion %}
+          <p class="report-meta">Proje Sürümü: <strong>{{ projectVersion }}</strong></p>
         {% endif %}
         <p class="report-meta">Kanıt Manifest ID: <strong>{{ manifestId or 'N/A' }}</strong></p>
         <p class="report-meta">
@@ -3096,6 +3117,7 @@ const buildComplianceMatrixView = (
 const createComplianceMatrixCsv = (
   rows: ComplianceMatrixRow[],
   stageTabs: StageComplianceTab[],
+  options: ComplianceMatrixOptions,
 ): ComplianceMatrixCsvExport => {
   const normalizeRow = (row: ComplianceMatrixRow): ComplianceMatrixCsvRow => ({
     objectiveId: row.id,
@@ -3122,9 +3144,29 @@ const createComplianceMatrixCsv = (
 
   const normalizedRows = rows.map(normalizeRow);
   const records = normalizedRows.map(toRecord);
-  const csvLines = [complianceCsvHeaders, ...records].map((line) =>
-    line.map(escapeCsvValue).join(','),
-  );
+  const metadataRecords: string[][] = [];
+  if (options.programName) {
+    metadataRecords.push(['Program', options.programName]);
+  }
+  if (options.certificationLevel) {
+    metadataRecords.push(['Sertifikasyon Seviyesi', options.certificationLevel]);
+  }
+  if (options.projectVersion) {
+    metadataRecords.push(['Proje Sürümü', options.projectVersion]);
+  }
+
+  const metadataLines = metadataRecords.map((row) => {
+    const padded = Array.from({ length: complianceCsvHeaders.length }, () => '');
+    padded[0] = row[0];
+    padded[1] = row[1];
+    return padded;
+  });
+
+  const csvLines = [
+    ...metadataLines,
+    complianceCsvHeaders,
+    ...records,
+  ].map((line) => line.map(escapeCsvValue).join(','));
 
   const stageExports: Partial<Record<SoiStage, ComplianceMatrixCsvStageExport>> = {};
 
@@ -3152,6 +3194,12 @@ const createComplianceMatrixCsv = (
     rows: normalizedRows,
     records,
     csv: csvLines.join('\n'),
+    metadata: {
+      programName: options.programName,
+      certificationLevel: options.certificationLevel,
+      projectVersion: options.projectVersion,
+      rows: metadataRecords,
+    },
     stages: stageExports,
   };
 };
@@ -3192,6 +3240,9 @@ const buildComplianceMatrixJson = (
   manifestId: options.manifestId,
   generatedAt: options.generatedAt ?? snapshot.generatedAt,
   version: options.version ?? packageInfo.version,
+  programName: options.programName,
+  certificationLevel: options.certificationLevel,
+  projectVersion: options.projectVersion,
   snapshotId: options.snapshotId ?? snapshot.version.id,
   snapshotVersion: options.snapshotVersion ?? snapshot.version,
   stages: view.stageTabs.map((tab) => ({
@@ -3331,10 +3382,13 @@ export const renderComplianceMatrix = (
     content: sections.join(''),
     subtitle: 'Denetlenebilir uyum için kanıt özet matrisi',
     git: options.git,
+    programName: options.programName,
+    certificationLevel: options.certificationLevel,
+    projectVersion: options.projectVersion,
   });
 
   const json = buildComplianceMatrixJson(snapshot, options, view);
-  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs);
+  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs, options);
 
   return { html, json, csv };
 };
@@ -3407,6 +3461,9 @@ export const renderComplianceCoverageReport = (
     content,
     subtitle: 'Uyumluluk hedefleri ve yapısal kapsam özetleri',
     git: options.git,
+    programName: options.programName,
+    certificationLevel: options.certificationLevel,
+    projectVersion: options.projectVersion,
   });
 
   const json = {
@@ -3416,7 +3473,7 @@ export const renderComplianceCoverageReport = (
     ...(changeRequestBacklog.length > 0 ? { changeRequestBacklog } : {}),
     ...(ledgerDiffs.length > 0 ? { ledgerDiffs } : {}),
   } as ComplianceCoverageReportResult['json'];
-  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs);
+  const csv = createComplianceMatrixCsv(view.objectives, view.stageTabs, options);
 
   return {
     html,
@@ -3572,6 +3629,9 @@ export const renderTraceMatrix = (
     content: traceTemplate.render({ rows, suggestions: suggestionGroups }),
     subtitle: 'Gereksinim → Test → Kod eşleşmelerinin kurumsal görünümü',
     git: options.git,
+    programName: options.programName,
+    certificationLevel: options.certificationLevel,
+    projectVersion: options.projectVersion,
   });
 
   const csv = createTraceMatrixCsv(rows, options);
@@ -4246,6 +4306,9 @@ export const renderGaps = (
     content: gapsTemplate.render({ categories }),
     subtitle: 'Kanıt eksikliği bulunan alanların özet görünümü',
     git: options.git,
+    programName: options.programName,
+    certificationLevel: options.certificationLevel,
+    projectVersion: options.projectVersion,
   });
 };
 

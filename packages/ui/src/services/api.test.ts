@@ -31,7 +31,7 @@ import {
   fetchChangeRequests,
 } from './api';
 
-import type { ApiJob, ReportJobResult } from '../types/pipeline';
+import type { ApiJob, PackJobResult, ReportJobResult } from '../types/pipeline';
 
 const IMPORT_META_OVERRIDE_KEY = '__SOIPACK_IMPORT_META_ENV__';
 
@@ -991,6 +991,30 @@ describe('buildReportAssets', () => {
     },
   });
 
+  const createPackJob = (
+    overrides?: Partial<PackJobResult>,
+    outputOverrides?: Partial<PackJobResult['outputs']>,
+  ): ApiJob<PackJobResult> => ({
+    id: 'pack-job-123',
+    kind: 'pack',
+    status: 'completed',
+    hash: 'pack-hash',
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:05:00.000Z',
+    result: {
+      manifestId: 'manifest-1',
+      outputs: {
+        directory: 'packages/demo-tenant/pack-job-123',
+        manifest: 'packages/demo-tenant/pack-job-123/manifest.json',
+        archive: 'packages/demo-tenant/pack-job-123/archive.zip',
+        sbom: 'packages/demo-tenant/pack-job-123/sbom.spdx.json',
+        ...outputOverrides,
+      },
+      sbomSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      ...overrides,
+    },
+  });
+
   it('normalizes compliance CSV and tool qualification asset paths', () => {
     const assets = buildReportAssets(createJob());
     expect(assets.assets.complianceCsv).toBe('compliance.csv');
@@ -1016,5 +1040,25 @@ describe('buildReportAssets', () => {
     });
     const assets = buildReportAssets(job);
     expect(assets.assets.gsnGraphDot).toBe('gsn/alt.dot');
+  });
+
+  it('includes SBOM download metadata when pack job contains SBOM output', () => {
+    const packJob = createPackJob();
+    const assets = buildReportAssets(createJob(), packJob);
+
+    expect(assets.packageId).toBe('pack-job-123');
+    expect(assets.sbom).toEqual({
+      packageId: 'pack-job-123',
+      downloadUrl: `/v1/packages/${encodeURIComponent('pack-job-123')}/sbom`,
+      relativePath: 'sbom.spdx.json',
+      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    });
+  });
+
+  it('omits SBOM metadata when pack job lacks SBOM outputs', () => {
+    const packJob = createPackJob({ sbomSha256: undefined }, { sbom: undefined });
+    const assets = buildReportAssets(createJob(), packJob);
+
+    expect(assets.sbom).toBeUndefined();
   });
 });

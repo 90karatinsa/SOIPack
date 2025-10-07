@@ -64,12 +64,15 @@ describe('@soipack/report', () => {
     mockedValidator.mockClear();
   });
 
-  it('renders ComplianceDelta dashboard with regression sparkline', () => {
+  it('renderComplianceMatrix renders ComplianceDelta dashboard with regression sparkline', () => {
     const fixture = createReportFixture();
     const result = renderComplianceMatrix(fixture.snapshot, {
       manifestId: fixture.manifestId,
       objectivesMetadata: fixture.objectives,
       signoffs: fixture.signoffs,
+      programName: fixture.programName,
+      certificationLevel: fixture.certificationLevel,
+      projectVersion: fixture.projectVersion,
     });
 
     expect(result.html).toContain('Uyum Delta Panosu');
@@ -81,16 +84,30 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Bağımsızlık Eksikleri');
     expect(result.html).toContain('Değişiklik Etki Analizi');
     expect(result.html).toContain('TC-AUDIT-NEW');
+    expect(result.html).toContain(fixture.programName);
+    expect(result.html).toContain(fixture.certificationLevel);
+    expect(result.html).toContain(fixture.projectVersion);
     expect(result.json.changeImpact).toBeDefined();
     expect(result.json.changeImpact?.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.totals.regressions).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
     expect(result.json.independenceSummary.objectives.length).toBeGreaterThan(0);
+    expect(result.json.programName).toBe(fixture.programName);
+    expect(result.json.certificationLevel).toBe(fixture.certificationLevel);
+    expect(result.json.projectVersion).toBe(fixture.projectVersion);
 
     maybeUpdateGolden('compliance-matrix.csv', result.csv.csv);
     const goldenCsv = readFileSync(path.join(goldenDir, 'compliance-matrix.csv'), 'utf-8');
     expect(result.csv.csv).toBe(goldenCsv);
+    expect(result.csv.metadata.programName).toBe(fixture.programName);
+    expect(result.csv.metadata.certificationLevel).toBe(fixture.certificationLevel);
+    expect(result.csv.metadata.projectVersion).toBe(fixture.projectVersion);
+    expect(result.csv.metadata.rows).toEqual([
+      ['Program', fixture.programName],
+      ['Sertifikasyon Seviyesi', fixture.certificationLevel],
+      ['Proje Sürümü', fixture.projectVersion],
+    ]);
     expect(result.csv.headers).toEqual([
       'Objective ID',
       'Table',
@@ -166,6 +183,9 @@ describe('@soipack/report', () => {
       signoffs: fixture.signoffs,
       changeRequestBacklog: backlog,
       ledgerDiffs,
+      programName: fixture.programName,
+      certificationLevel: fixture.certificationLevel,
+      projectVersion: fixture.projectVersion,
     });
 
     expect(result.coverageWarnings).toEqual(coverageWarnings);
@@ -181,6 +201,9 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Zorunlu Bağımsızlık');
     expect(result.html).toContain('Değişiklik Etki Analizi');
     expect(result.html).toContain('src/security/new-audit.ts');
+    expect(result.html).toContain(fixture.programName);
+    expect(result.html).toContain(fixture.certificationLevel);
+    expect(result.html).toContain(fixture.projectVersion);
     expect(result.json.coverage).toEqual(coverage);
     expect(result.json.coverageWarnings).toEqual(coverageWarnings);
     expect(result.json.changeRequestBacklog).toEqual(backlog);
@@ -188,9 +211,13 @@ describe('@soipack/report', () => {
     expect(result.json.changeImpact).toEqual(fixture.snapshot.changeImpact);
     expect(result.json.snapshotId).toBe(fixture.snapshot.version.id);
     expect(result.json.snapshotVersion).toEqual(fixture.snapshot.version);
+    expect(result.json.programName).toBe(fixture.programName);
+    expect(result.json.certificationLevel).toBe(fixture.certificationLevel);
+    expect(result.json.projectVersion).toBe(fixture.projectVersion);
     expect(result.changeRequestBacklog).toEqual(backlog);
     expect(result.ledgerDiffs).toEqual(ledgerDiffs);
     expect(result.csv.headers[0]).toBe('Objective ID');
+    expect(result.csv.metadata.rows[0]).toEqual(['Program', fixture.programName]);
     expect(result.html).toContain('Risk Profili');
     expect(result.html).toContain('Signoff Zaman Çizelgesi');
     expect(result.json.independenceSummary.totals.partial + result.json.independenceSummary.totals.missing).toBeGreaterThanOrEqual(0);
@@ -360,6 +387,9 @@ describe('@soipack/report', () => {
       coverageWarnings: warnings,
       git: gitFixture,
       signoffs: fixture.signoffs,
+      programName: fixture.programName,
+      certificationLevel: fixture.certificationLevel,
+      projectVersion: fixture.projectVersion,
     });
     const actions: string[] = [];
 
@@ -370,6 +400,9 @@ describe('@soipack/report', () => {
         expect(content).toContain('Rapor Tarihi: 2024-02-01 12:00 UTC');
         expect(content).toContain('<li class="muted">MC/DC kapsam verisi eksik: PDF-WARN-1</li>');
         expect(content).toContain('Signoff Zaman Çizelgesi');
+        expect(content).toContain(fixture.programName);
+        expect(content).toContain(fixture.certificationLevel);
+        expect(content).toContain(fixture.projectVersion);
       },
       async pdf(options: {
         format: string;

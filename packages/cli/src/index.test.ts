@@ -476,7 +476,7 @@ describe('CLI pipeline workflows', () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('runs the minimal demo end-to-end', async () => {
+  it('runReport propagates metadata in the minimal demo end-to-end', async () => {
     const workDir = path.join(tempRoot, 'work');
     const analysisDir = path.join(tempRoot, 'analysis');
     const distDir = path.join(tempRoot, 'dist');
@@ -536,9 +536,22 @@ describe('CLI pipeline workflows', () => {
 
     const complianceHtmlStats = await fs.stat(reportResult.complianceHtml);
     expect(complianceHtmlStats.isFile()).toBe(true);
+    const complianceHtml = await fs.readFile(reportResult.complianceHtml, 'utf8');
+    expect(complianceHtml).toContain('Program: <strong>Demo Avionics</strong>');
+    expect(complianceHtml).toContain('Sertifikasyon Seviyesi: <strong>C</strong>');
+    expect(complianceHtml).toContain('Proje Sürümü: <strong>1.0.0</strong>');
+    const complianceJson = JSON.parse(
+      await fs.readFile(reportResult.complianceJson, 'utf8'),
+    ) as { programName?: string; certificationLevel?: string; projectVersion?: string };
+    expect(complianceJson.programName).toBe('Demo Avionics');
+    expect(complianceJson.certificationLevel).toBe('C');
+    expect(complianceJson.projectVersion).toBe('1.0.0');
     const complianceCsv = await fs.readFile(reportResult.complianceCsv, 'utf8');
-    const csvLines = complianceCsv.split('\n');
-    expect(csvLines[0]).toBe(
+    const csvLines = complianceCsv.split(/\r?\n/);
+    expect(csvLines[0]).toBe('Program,Demo Avionics,,,,,');
+    expect(csvLines[1]).toBe('Sertifikasyon Seviyesi,C,,,,,');
+    expect(csvLines[2]).toBe('Proje Sürümü,1.0.0,,,,,');
+    expect(csvLines[3]).toBe(
       'Objective ID,Table,Stage,Status,Satisfied Artifacts,Missing Artifacts,Evidence References',
     );
     expect(complianceCsv).toContain('A-5-06');
@@ -842,7 +855,7 @@ describe('CLI pipeline workflows', () => {
     expect(result.coverageSummary.statements).toBeGreaterThan(0);
   });
 
-  it('generates compliance and coverage summaries with runIngestPipeline', async () => {
+  it('runReport metadata is preserved in runIngestPipeline outputs', async () => {
     const ingestOutput = path.join(tempRoot, 'ingest-dist');
     const workingDir = path.join(tempRoot, 'ingest-work');
 
@@ -867,6 +880,21 @@ describe('CLI pipeline workflows', () => {
     expect(result.coverageSummary).toEqual(expect.objectContaining({ statements: expect.any(Number) }));
     const complianceStats = await fs.stat(result.compliancePath);
     expect(complianceStats.isFile()).toBe(true);
+    const complianceData = JSON.parse(
+      await fs.readFile(result.compliancePath, 'utf8'),
+    ) as { programName?: string; certificationLevel?: string; projectVersion?: string };
+    expect(complianceData.programName).toBe('Demo Avionics');
+    expect(complianceData.certificationLevel).toBe('C');
+    expect(complianceData.projectVersion).toBe('1.0.0');
+    const ingestComplianceHtml = await fs.readFile(result.reportResult.complianceHtml, 'utf8');
+    expect(ingestComplianceHtml).toContain('Program: <strong>Demo Avionics</strong>');
+    expect(ingestComplianceHtml).toContain('Sertifikasyon Seviyesi: <strong>C</strong>');
+    expect(ingestComplianceHtml).toContain('Proje Sürümü: <strong>1.0.0</strong>');
+    const ingestComplianceCsv = await fs.readFile(result.reportResult.complianceCsv, 'utf8');
+    const ingestCsvLines = ingestComplianceCsv.split(/\r?\n/);
+    expect(ingestCsvLines[0]).toBe('Program,Demo Avionics,,,,,');
+    expect(ingestCsvLines[1]).toBe('Sertifikasyon Seviyesi,C,,,,,');
+    expect(ingestCsvLines[2]).toBe('Proje Sürümü,1.0.0,,,,,');
   });
 
   it('archives demo data into a signed release with consistent manifest hashes', async () => {

@@ -27,6 +27,6 @@
   ],
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
-    "test": "jest --config ./jest.config.cjs"
+    "test": "jest --runInBand --config ./jest.config.cjs"
   }
 }

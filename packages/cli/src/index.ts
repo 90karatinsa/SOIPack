@@ -4802,6 +4802,10 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     };
   }
 
+  const programName = analysis.metadata.project?.name;
+  const projectVersion = analysis.metadata.project?.version;
+  const certificationLevel = analysis.metadata.level;
+
   const compliance = renderComplianceMatrix(snapshot, {
     objectivesMetadata: analysis.objectives,
     manifestId: options.manifestId,
@@ -4812,6 +4816,9 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     git: analysis.git,
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
+    programName,
+    certificationLevel,
+    projectVersion,
     ...(toolQualificationLinks ? { toolQualification: toolQualificationLinks } : {}),
   });
   const traceReport = renderTraceMatrix(traces, {
@@ -4824,6 +4831,9 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     git: analysis.git,
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
+    programName,
+    certificationLevel,
+    projectVersion,
   });
   const gapsHtml = renderGaps(snapshot, {
     objectivesMetadata: analysis.objectives,
@@ -4835,6 +4845,9 @@ export const runReport = async (options: ReportOptions): Promise<ReportResult> =
     git: analysis.git,
     snapshotId: snapshot.version.id,
     snapshotVersion: snapshot.version,
+    programName,
+    certificationLevel,
+    projectVersion,
   });
 
   const outputDir = path.resolve(options.output);
