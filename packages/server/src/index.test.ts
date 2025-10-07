@@ -6,7 +6,7 @@ import type { AddressInfo } from 'net';
 import os from 'os';
 import path from 'path';
 import { EventEmitter } from 'events';
-import { Readable, Writable } from 'stream';
+import { PassThrough, Readable, Writable } from 'stream';
 import tls from 'tls';
 
 import * as cli from '@soipack/cli';
@@ -353,21 +353,27 @@ jest.mock(
 
 jest.mock('@soipack/packager', () => {
   const actual = jest.requireActual('@soipack/packager');
-  return {
-    ...actual,
-    verifyManifestSignature: jest.fn(() => true),
-    verifyManifestSignatureWithSecuritySigner: jest.fn(() => ({
-      valid: true,
-      digest: { algorithm: 'SHA-256' },
+  const buildVerificationResult = (cmsPem: string | undefined) => {
+    const isInvalidCms = typeof cmsPem === 'string' && cmsPem.includes('INVALID');
+    return {
+      valid: !isInvalidCms,
+      digest: { algorithm: 'SHA-256' as const },
       cms: {
-        verified: true,
-        digestVerified: true,
+        verified: !isInvalidCms,
+        digestVerified: !isInvalidCms,
         signerSerialNumber: null,
         signerIssuer: null,
         signerSubject: null,
         signatureAlgorithm: null,
       },
-    })),
+    };
+  };
+  return {
+    ...actual,
+    verifyManifestSignature: jest.fn(() => true),
+    verifyManifestSignatureWithSecuritySigner: jest.fn((_, __, options) =>
+      buildVerificationResult(options?.cms?.signaturePem),
+    ),
   };
 });
 
@@ -581,7 +587,22 @@ jest.mock(
   { virtual: true },
 );
 
-jest.mock('yazl', () => ({ ZipFile: jest.fn() }), { virtual: true });
+jest.mock(
+  'yazl',
+  () => {
+    const ZipFile = jest.fn(() => {
+      const outputStream = new PassThrough();
+      return {
+        outputStream,
+        addFile: jest.fn(),
+        addBuffer: jest.fn(),
+        end: jest.fn(() => outputStream.end()),
+      };
+    });
+    return { ZipFile };
+  },
+  { virtual: true },
+);
 
 const TEST_SERVER_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDsphbJCknHw4kG
@@ -5882,6 +5903,13 @@ describe('@soipack/server REST API', () => {
       }),
     );
     expect(packJob.result.postQuantumSignature?.signature.length).toBeGreaterThan(0);
+    expect(packJob.result.sbomSha256).toMatch(/^[0-9a-f]{64}$/i);
+    expect(packJob.result.outputs.sbom).toMatch(/^packages\//);
+
+    const sbomAbsolutePath = path.resolve(storageDir, packJob.result.outputs.sbom!);
+    const sbomContent = await fsPromises.readFile(sbomAbsolutePath, 'utf8');
+    const sbomDigest = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
+    expect(packJob.result.sbomSha256).toBe(sbomDigest);
 
     const ledgerAbsolutePath = path.resolve(storageDir, packJob.result.outputs.ledger!);
     const ledgerContent = JSON.parse(await fsPromises.readFile(ledgerAbsolutePath, 'utf8')) as {
@@ -5913,6 +5941,8 @@ describe('@soipack/server REST API', () => {
     expect(packDetails.body.result.manifestId).toBe(packJob.result.manifestId);
     expect(packDetails.body.result.manifestDigest).toBe(packJob.result.manifestDigest);
     expect(packDetails.body.result.outputs.ledger).toBe(packJob.result.outputs.ledger);
+    expect(packDetails.body.result.outputs.sbom).toBe(packJob.result.outputs.sbom);
+    expect(packDetails.body.result.sbomSha256).toBe(packJob.result.sbomSha256);
     expect(packDetails.body.result.cmsSignature).toMatchObject({
       path: cmsMetadata.path,
       sha256: cmsMetadata.sha256,
@@ -6077,6 +6107,20 @@ describe('@soipack/server REST API', () => {
     const downloadedManifest = JSON.parse((manifestDownload.body as Buffer).toString('utf8')) as Manifest;
     expect(downloadedManifest).toEqual(manifest);
 
+    const sbomDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/sbom`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect('Content-Type', /application\/json/)
+      .expect(200);
+    expect(sbomDownload.headers['content-disposition']).toContain('sbom');
+    expect((sbomDownload.body as Buffer).toString('utf8')).toBe(sbomContent);
+
     const cmsDownload = await request(app)
       .get(`/v1/packages/${packQueued.body.id}/manifest.cms`)
       .set('Authorization', `Bearer ${token}`)
@@ -6108,6 +6152,12 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${otherTenantToken}`)
       .expect(404);
     expect(cmsForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
+
+    const sbomForbiddenDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/sbom`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(sbomForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
 
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
@@ -6253,11 +6303,14 @@ describe('@soipack/server REST API', () => {
     const expectedPackDir = `packages/${tenantId}/${soiStage}/${packResponse.body.id}`;
     expect(packJob.result.outputs.directory).toBe(expectedPackDir);
     expect(packJob.result.outputs.archive.startsWith(`${expectedPackDir}/`)).toBe(true);
+    expect(packJob.result.outputs.sbom?.startsWith(`${expectedPackDir}/`)).toBe(true);
+    expect(packJob.result.sbomSha256).toMatch(/^[0-9a-f]{64}$/i);
 
     const packMetadata = JSON.parse(
       await fsPromises.readFile(path.resolve(storageDir, expectedPackDir, 'job.json'), 'utf8'),
-    ) as { params?: { soiStage?: string | null } };
+    ) as { params?: { soiStage?: string | null }; outputs?: { sbomPath?: string } };
     expect(packMetadata.params?.soiStage).toBe(soiStage);
+    expect(packMetadata.outputs?.sbomPath).toContain(expectedPackDir);
   });
 
   it('fails pack jobs when CMS signature verification fails', async () => {
@@ -6363,6 +6416,11 @@ describe('@soipack/server REST API', () => {
       const cmsSignaturePath = path.join(options.output, 'manifest.cms');
       await fsPromises.writeFile(cmsSignaturePath, 'stub-cms', 'utf8');
 
+      const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3' });
+      const sbomPath = path.join(options.output, 'sbom.spdx.json');
+      await fsPromises.writeFile(sbomPath, sbomContent, 'utf8');
+      const sbomSha256 = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
+
       const ledgerEntry: LedgerEntry & { signatureBundles?: Array<{ hardware: typeof hardwareMetadata }> } = {
         index: 1,
         snapshotId: 'snapshot-test',
@@ -6393,6 +6451,8 @@ describe('@soipack/server REST API', () => {
           },
         ],
         cmsSignaturePath,
+        sbomPath,
+        sbomSha256,
       } as unknown as ReturnType<typeof cli.runPack>;
     });
 
@@ -8734,11 +8794,17 @@ describe('@soipack/server REST API', () => {
             await fsPromises.writeFile(manifestPath, JSON.stringify(manifest));
             const archivePath = path.join(options.output, 'package.zip');
             await fsPromises.writeFile(archivePath, 'archive');
+            const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3' });
+            const sbomPath = path.join(options.output, 'sbom.spdx.json');
+            await fsPromises.writeFile(sbomPath, sbomContent, 'utf8');
+            const sbomSha256 = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
             return {
               manifestPath,
               archivePath,
               manifestId: 'ingestpkg001',
               manifestDigest: createHash('sha256').update('ingestpkg001').digest('hex'),
+              sbomPath,
+              sbomSha256,
             };
           });
 
@@ -8769,6 +8835,8 @@ describe('@soipack/server REST API', () => {
           expect(response.body.analyze.snapshot).toMatch(/^analyses\//);
           expect(response.body.report.complianceJson).toMatch(/^reports\//);
           expect(response.body.package.manifest).toMatch(/^packages\//);
+          expect(response.body.package.sbom).toMatch(/^packages\//);
+          expect(response.body.package.sbomSha256).toMatch(/^[0-9a-f]{64}$/i);
           expect(runImportMock).toHaveBeenCalledTimes(1);
           expect(runAnalyzeMock).toHaveBeenCalledTimes(1);
           expect(runReportMock).toHaveBeenCalledTimes(1);
@@ -8889,11 +8957,17 @@ describe('@soipack/server REST API', () => {
               );
               const archivePath = path.join(options.output, 'package.zip');
               await fsPromises.writeFile(archivePath, 'archive');
+              const sbomContent = JSON.stringify({ spdxVersion: 'SPDX-2.3' });
+              const sbomPath = path.join(options.output, 'sbom.spdx.json');
+              await fsPromises.writeFile(sbomPath, sbomContent, 'utf8');
+              const sbomSha256 = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
               return {
                 manifestPath,
                 archivePath,
                 manifestId: 'reusepkg001',
                 manifestDigest: createHash('sha256').update('reusepkg001').digest('hex'),
+                sbomPath,
+                sbomSha256,
               };
             });
           };
@@ -8921,6 +8995,8 @@ describe('@soipack/server REST API', () => {
           expect(secondResponse.body.reused).toBe(true);
           expect(secondResponse.body.manifestId).toBe('reusepkg001');
           expect(secondResponse.body.package.manifest).toMatch(/^packages\//);
+          expect(secondResponse.body.package.sbom).toMatch(/^packages\//);
+          expect(secondResponse.body.package.sbomSha256).toMatch(/^[0-9a-f]{64}$/i);
           expect(runImportMock).toHaveBeenCalledTimes(1);
           expect(runAnalyzeMock).toHaveBeenCalledTimes(1);
           expect(runReportMock).toHaveBeenCalledTimes(1);

@@ -1267,6 +1267,8 @@ interface PackJobMetadata extends BaseJobMetadata {
     ledgerPath?: string;
     ledgerRoot?: string;
     previousLedgerRoot?: string | null;
+    sbomPath?: string;
+    sbomSha256?: string;
     cmsSignature?: CmsSignatureMetadata;
     postQuantumSignature?: PostQuantumSignatureMetadata;
   };
@@ -1324,6 +1326,7 @@ interface PackJobResult {
   manifestDigest: string;
   ledgerRoot?: string;
   previousLedgerRoot?: string | null;
+  sbomSha256?: string;
   cmsSignature?: CmsSignatureMetadata;
   postQuantumSignature?: PostQuantumSignatureMetadata;
   signatures?: PackSignatureMetadata[];
@@ -1332,6 +1335,7 @@ interface PackJobResult {
     manifest: string;
     archive: string;
     ledger?: string;
+    sbom?: string;
     cmsSignature?: CmsSignatureMetadata;
     postQuantumSignature?: PostQuantumSignatureMetadata;
   };
@@ -3020,6 +3024,8 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
     : undefined;
 
   const postQuantumSignature = metadata.outputs.postQuantumSignature;
+  const sbomPath = metadata.outputs.sbomPath;
+  const sbomSha256 = metadata.outputs.sbomSha256;
   const signatures = clonePackSignatures(metadata.signatures);
 
   return {
@@ -3027,6 +3033,7 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
     manifestDigest: metadata.outputs.manifestDigest,
     ledgerRoot: metadata.outputs.ledgerRoot,
     previousLedgerRoot: metadata.outputs.previousLedgerRoot,
+    ...(sbomSha256 ? { sbomSha256 } : {}),
     ...(cmsSignature ? { cmsSignature } : {}),
     ...(postQuantumSignature ? { postQuantumSignature } : {}),
     ...(signatures ? { signatures } : {}),
@@ -3037,6 +3044,7 @@ const toPackResult = (storage: StorageProvider, metadata: PackJobMetadata): Pack
       ...(metadata.outputs.ledgerPath
         ? { ledger: storage.toRelativePath(metadata.outputs.ledgerPath) }
         : {}),
+      ...(sbomPath ? { sbom: storage.toRelativePath(sbomPath) } : {}),
       ...(cmsSignature ? { cmsSignature } : {}),
       ...(postQuantumSignature ? { postQuantumSignature } : {}),
     },
@@ -5758,6 +5766,8 @@ export const createServer = (config: ServerConfig): Express => {
             archivePath: result.archivePath,
             manifestId: result.manifestId,
             manifestDigest: result.manifestDigest,
+            sbomPath: result.sbomPath,
+            sbomSha256: result.sbomSha256,
             ledgerPath: result.ledger ? packageLedgerPath : undefined,
             ledgerRoot: result.ledgerEntry?.ledgerRoot,
             previousLedgerRoot: result.ledgerEntry?.previousRoot ?? null,
@@ -8970,6 +8980,17 @@ export const createServer = (config: ServerConfig): Express => {
   );
 
   app.get(
+    '/v1/packages/:id(*)/sbom',
+    requireAuth,
+    createPackageStreamHandler(
+      (metadata) => metadata.outputs?.sbomPath,
+      'PACKAGE_NOT_FOUND',
+      'SBOM dosyası bulunamadı.',
+      { contentType: 'application/json; charset=utf-8', fallbackName: 'sbom.spdx.json' },
+    ),
+  );
+
+  app.get(
     '/v1/packages/:id(*)/manifest.cms',
     requireAuth,
     createPackageStreamHandler(
@@ -9532,6 +9553,10 @@ export const createServer = (config: ServerConfig): Express => {
                 path: storage.toRelativePath(packMetadata.outputs.cmsSignature.path),
               }
             : undefined;
+          const sbomPath = packMetadata.outputs.sbomPath
+            ? storage.toRelativePath(packMetadata.outputs.sbomPath)
+            : undefined;
+          const sbomSha256 = packMetadata.outputs.sbomSha256;
           const packageSignatures = clonePackSignatures(packMetadata.signatures);
 
           res.status(statusCode).json({
@@ -9590,6 +9615,8 @@ export const createServer = (config: ServerConfig): Express => {
               ledger: packMetadata.outputs.ledgerPath
                 ? storage.toRelativePath(packMetadata.outputs.ledgerPath)
                 : undefined,
+              sbom: sbomPath,
+              sbomSha256,
               ledgerRoot: packMetadata.outputs.ledgerRoot ?? null,
               previousLedgerRoot: packMetadata.outputs.previousLedgerRoot ?? null,
               cmsSignature,

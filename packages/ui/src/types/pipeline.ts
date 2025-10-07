@@ -138,6 +138,7 @@ export interface PackJobResult {
   manifestDigest?: string;
   ledgerRoot?: string;
   previousLedgerRoot?: string | null;
+  sbomSha256?: string;
   cmsSignature?: CmsSignatureMetadata;
   postQuantumSignature?: PostQuantumSignatureMetadata;
   signatures?: PackSignatureMetadata[];
@@ -146,6 +147,7 @@ export interface PackJobResult {
     manifest: string;
     archive: string;
     ledger?: string;
+    sbom?: string;
     cmsSignature?: CmsSignatureMetadata;
     postQuantumSignature?: PostQuantumSignatureMetadata;
   };
@@ -355,6 +357,7 @@ export interface ReportDataset {
 
 export interface ReportAssetMap {
   reportId: string;
+  packageId?: string;
   assets: {
     complianceHtml: string;
     complianceJson: string;
@@ -368,5 +371,11 @@ export interface ReportAssetMap {
     toolQualificationPlan?: string;
     toolQualificationReport?: string;
     gsnGraphDot?: string;
+  };
+  sbom?: {
+    packageId: string;
+    downloadUrl: string;
+    relativePath?: string;
+    sha256?: string;
   };
 }

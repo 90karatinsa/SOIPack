@@ -48,6 +48,9 @@ describe('compliance matrix stages', () => {
       title: 'Kurumsal Uyum Matrisi',
       git: gitFixture,
       signoffs: fixture.signoffs,
+      programName: fixture.programName,
+      certificationLevel: fixture.certificationLevel,
+      projectVersion: fixture.projectVersion,
     });
 
     expect(result.json.manifestId).toBe(fixture.manifestId);
@@ -59,6 +62,9 @@ describe('compliance matrix stages', () => {
     );
     expect(result.json.stages.find((stage) => stage.id === 'SOI-1')).toBeDefined();
     expect(result.html).toContain('stage-tabs');
+    expect(result.html).toContain(fixture.programName);
+    expect(result.html).toContain(fixture.certificationLevel);
+    expect(result.html).toContain(fixture.projectVersion);
 
     maybeUpdateGolden('compliance-matrix.html', result.html);
     const goldenHtml = readFileSync(path.join(goldenDir, 'compliance-matrix.html'), 'utf-8');

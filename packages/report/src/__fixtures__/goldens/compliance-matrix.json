@@ -2,6 +2,9 @@
   "manifestId": "MAN-TR-2024-0001",
   "generatedAt": "2024-02-01T12:00:00Z",
   "version": "0.1.0",
+  "programName": "Flight Control Modernizasyonu",
+  "certificationLevel": "DO-178C Seviye A",
+  "projectVersion": "v2.3.1",
   "snapshotId": "20240201T120000Z-83e26294b06b",
   "snapshotVersion": {
     "id": "20240201T120000Z-83e26294b06b",

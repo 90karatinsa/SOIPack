@@ -16,6 +16,7 @@ import {
 import { ZipFile } from 'yazl';
 
 import {
+  CmsSigningOptions,
   ManifestSignatureBundle,
   SecuritySignerOptions,
   VerificationOptions,
@@ -36,6 +37,38 @@ interface FileForPackaging {
 const normalizeToPosix = (value: string): string => value.replace(/\\/g, '/');
 
 const joinPosix = (...segments: string[]): string => normalizeToPosix(path.join(...segments));
+
+const resolveCmsOptions = (
+  cms?: CmsSigningOptions | false,
+): CmsSigningOptions | false | undefined => {
+  if (cms === undefined) {
+    return undefined;
+  }
+
+  if (cms === false) {
+    return false;
+  }
+
+  const resolved: CmsSigningOptions = { ...cms };
+
+  if (cms.bundlePath) {
+    resolved.bundlePath = path.resolve(cms.bundlePath);
+  }
+
+  if (cms.certificatePath) {
+    resolved.certificatePath = path.resolve(cms.certificatePath);
+  }
+
+  if (cms.privateKeyPath) {
+    resolved.privateKeyPath = path.resolve(cms.privateKeyPath);
+  }
+
+  if (cms.chainPath) {
+    resolved.chainPath = path.resolve(cms.chainPath);
+  }
+
+  return resolved;
+};
 
 export interface ManifestLedgerMetadata {
   ledger?: {
@@ -366,6 +399,7 @@ export interface PackageCreationOptions {
   packageName?: string;
   ledger?: ManifestLedgerOptions | null;
   stage?: SoiStage | null;
+  cms?: CmsSigningOptions | false;
 }
 
 export interface PackageCreationResult {
@@ -377,6 +411,15 @@ export interface PackageCreationResult {
     algorithm: 'sha256';
     digest: string;
     content: string;
+  };
+  cmsSignature?: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+    der: string;
+    pem: string;
+    certificates: string[];
+    digestAlgorithm: string;
   };
 }
 
@@ -488,6 +531,7 @@ export const createSoiDataPack = async ({
   packageName,
   ledger,
   stage,
+  cms,
 }: PackageCreationOptions): Promise<PackageCreationResult> => {
   const timestamp = now ?? new Date();
   const resolvedReportDir = path.resolve(reportDir);
@@ -548,10 +592,15 @@ export const createSoiDataPack = async ({
           previousRoot: ledger.previousRoot ?? null,
         }
       : undefined;
-  const bundle = signManifestBundle(manifestWithSbom, {
+  const resolvedCmsOptions = resolveCmsOptions(cms);
+  const signingOptions: SecuritySignerOptions = {
     bundlePem: credentialsPem,
     ledger: ledgerForSigning,
-  });
+  };
+  if (resolvedCmsOptions !== undefined) {
+    signingOptions.cms = resolvedCmsOptions;
+  }
+  const bundle = signManifestBundle(manifestWithSbom, signingOptions);
   const signature = bundle.signature;
   const verification = verifyManifestSignatureDetailed(manifestWithSbom, signature, {
     expectedLedgerRoot: ledger?.root ?? null,
@@ -589,6 +638,21 @@ export const createSoiDataPack = async ({
 
   zipFile.addBuffer(Buffer.from(JSON.stringify(manifestWithSbom, null, 2), 'utf8'), 'manifest.json');
   zipFile.addBuffer(Buffer.from(signature, 'utf8'), 'manifest.sig');
+  let cmsSignatureMetadata: PackageCreationResult['cmsSignature'];
+  if (bundle.cmsSignature) {
+    const cmsBuffer = Buffer.from(bundle.cmsSignature.der, 'base64');
+    const cmsDigest = createHash('sha256').update(cmsBuffer).digest('hex');
+    zipFile.addBuffer(cmsBuffer, 'manifest.cms');
+    cmsSignatureMetadata = {
+      path: 'manifest.cms',
+      algorithm: 'sha256',
+      digest: cmsDigest,
+      der: bundle.cmsSignature.der,
+      pem: bundle.cmsSignature.pem,
+      certificates: bundle.cmsSignature.certificates,
+      digestAlgorithm: bundle.cmsSignature.digestAlgorithm,
+    };
+  }
   zipFile.addBuffer(Buffer.from(serializedSbom, 'utf8'), SBOM_FILENAME);
 
   zipFile.end();
@@ -599,10 +663,12 @@ export const createSoiDataPack = async ({
     signature,
     outputPath,
     sbom: { ...sbomMetadata, content: serializedSbom },
+    cmsSignature: cmsSignatureMetadata,
   };
 };
 
 export type {
+  CmsSigningOptions,
   ManifestDigest,
   ManifestSignatureBundle,
   SecuritySignerOptions,

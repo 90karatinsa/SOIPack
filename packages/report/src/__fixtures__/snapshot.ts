@@ -28,6 +28,9 @@ export interface ReportFixture {
   objectives: Objective[];
   manifestId: string;
   signoffs: SignoffTimelineEntry[];
+  programName: string;
+  certificationLevel: string;
+  projectVersion: string;
 }
 
 const allLevels = { A: true, B: true, C: true, D: true, E: false } as const;
@@ -259,6 +262,9 @@ export const signoffTimelineFixture = (): SignoffTimelineEntry[] => [
 ];
 
 export const createReportFixture = (): ReportFixture => {
+  const programName = 'Flight Control Modernizasyonu';
+  const certificationLevel = 'DO-178C Seviye A';
+  const projectVersion = 'v2.3.1';
   const requirements = requirementFixture();
   const objectives = objectivesFixture();
   const baseTestResults = testResultsFixture();
@@ -388,5 +394,8 @@ export const createReportFixture = (): ReportFixture => {
     objectives,
     manifestId: 'MAN-TR-2024-0001',
     signoffs,
+    programName,
+    certificationLevel,
+    projectVersion,
   };
 };

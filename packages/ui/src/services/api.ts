@@ -1699,6 +1699,22 @@ export const fetchPackageManifest = async ({
   return response;
 };
 
+export const fetchPackageSbom = async ({
+  token,
+  license,
+  packageId,
+  signal,
+}: FetchPackageOptions): Promise<Response> => {
+  const response = await fetch(joinUrl(`/v1/packages/${packageId}/sbom`), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  await ensureOk(response);
+  return response;
+};
+
 interface ListManifestProofsOptions extends AuthCredentials {
   manifestId: string;
   signal?: AbortSignal;
@@ -2349,13 +2365,16 @@ const extractAssetPath = (fullPath: string, reportId: string): string => {
   return segments[segments.length - 1] ?? normalized;
 };
 
-export const buildReportAssets = (job: ApiJob<ReportJobResult>): ReportAssetMap => {
+export const buildReportAssets = (
+  job: ApiJob<ReportJobResult>,
+  packJob?: ApiJob<PackJobResult> | null,
+): ReportAssetMap => {
   const outputs = job.result?.outputs;
   if (!outputs) {
     throw new Error('Rapor çıktıları henüz hazır değil.');
   }
 
-  return {
+  const assetMap: ReportAssetMap = {
     reportId: job.id,
     assets: {
       complianceHtml: extractAssetPath(outputs.complianceHtml, job.id),
@@ -2382,4 +2401,22 @@ export const buildReportAssets = (job: ApiJob<ReportJobResult>): ReportAssetMap 
         : {}),
     },
   };
+
+  if (packJob?.id) {
+    assetMap.packageId = packJob.id;
+    const sbomPath = packJob.result?.outputs.sbom;
+    const sbomSha256 = packJob.result?.sbomSha256;
+
+    if (sbomPath || sbomSha256) {
+      const relativePath = sbomPath ? extractAssetPath(sbomPath, packJob.id) : undefined;
+      assetMap.sbom = {
+        packageId: packJob.id,
+        downloadUrl: `/v1/packages/${encodeURIComponent(packJob.id)}/sbom`,
+        ...(relativePath ? { relativePath } : {}),
+        ...(sbomSha256 ? { sha256: sbomSha256 } : {}),
+      };
+    }
+  }
+
+  return assetMap;
 };

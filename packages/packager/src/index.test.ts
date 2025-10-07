@@ -36,6 +36,7 @@ const computeSha256 = (filePath: string): string => {
 };
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
+const CMS_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/cms-test.pem');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
 const DEFAULT_MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
 
@@ -100,6 +101,15 @@ const loadDevCredentials = (): { bundlePem: string; certificatePem: string; publ
   return { bundlePem, certificatePem: certificateMatch[0], publicKeyPem };
 };
 
+const loadCmsCredentials = (): { bundlePem: string; certificatePem: string } => {
+  const bundlePem = readFileSync(CMS_CERT_BUNDLE_PATH, 'utf8');
+  const certificateMatch = bundlePem.match(CERTIFICATE_PATTERN);
+  if (!certificateMatch) {
+    throw new Error('CMS sertifikası bulunamadı.');
+  }
+  return { bundlePem, certificatePem: certificateMatch[0] };
+};
+ 
 describe('packager', () => {
   const fixturesRoot = path.join(__dirname, '__fixtures__');
   const reportDir = path.join(fixturesRoot, 'report');
@@ -193,7 +203,10 @@ describe('packager', () => {
     const workDir = mkdtempSync(path.join(tmpdir(), 'soipack-packager-'));
     const bundlePath = path.join(workDir, 'dev.pem');
     const { bundlePem, certificatePem, publicKeyPem } = loadDevCredentials();
+    const { bundlePem: cmsBundlePem, certificatePem: cmsCertificate } = loadCmsCredentials();
     writeFileSync(bundlePath, bundlePem, 'utf8');
+    const cmsBundlePath = path.join(workDir, 'cms.pem');
+    writeFileSync(cmsBundlePath, cmsBundlePem, 'utf8');
 
     try {
       const result = await createSoiDataPack({
@@ -204,12 +217,37 @@ describe('packager', () => {
         outputDir: workDir,
         now: timestamp,
         ledger,
+        cms: { bundlePath: cmsBundlePath },
       });
 
       expect(path.basename(result.outputPath)).toBe('soi-pack-20240201_1015.zip');
       expect(existsSync(result.outputPath)).toBe(true);
       expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
       expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
+
+      expect(result.cmsSignature).toEqual(
+        expect.objectContaining({
+          path: 'manifest.cms',
+          algorithm: 'sha256',
+          digestAlgorithm: 'SHA-256',
+        }),
+      );
+      const manifestCmsBuffer = Buffer.from(result.cmsSignature?.der ?? '', 'base64');
+      expect(result.cmsSignature?.digest).toBe(
+        createHash('sha256').update(manifestCmsBuffer).digest('hex'),
+      );
+
+      const detailedWithCms = verifyManifestSignatureDetailed(result.manifest, result.signature, {
+        certificatePem,
+        cms: {
+          signatureDer: result.cmsSignature?.der,
+          certificatePem: cmsCertificate,
+          required: true,
+        },
+      });
+      expect(detailedWithCms.valid).toBe(true);
+      expect(detailedWithCms.cms?.verified).toBe(true);
+      expect(detailedWithCms.cms?.digestVerified).toBe(true);
 
       const parsedSbom = JSON.parse(result.sbom.content) as Record<string, unknown>;
       expect(parsedSbom.spdxVersion).toBe('SPDX-2.3');
