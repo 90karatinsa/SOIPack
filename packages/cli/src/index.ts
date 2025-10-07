@@ -17,6 +17,7 @@ import {
   importJiraCsv,
   importJUnitXml,
   importLcov,
+  importParasoft,
   importDoorsClassicCsv,
   importQaLogs,
   fetchDoorsNextArtifacts,
@@ -36,6 +37,7 @@ import {
   type FileCoverageSummary,
   type CoverageSummary as StructuralCoverageSummary,
   type Finding,
+  type ImportedFileHash,
   type JiraRequirement,
   type JenkinsClientOptions,
   type JenkinsCoverageArtifactMetadata,
@@ -193,6 +195,7 @@ interface ImportPaths {
   ldra?: string;
   vectorcast?: string;
   simulink?: string;
+  parasoft?: string[];
   polarion?: string;
   jenkins?: string;
   manualArtifacts?: Partial<Record<ObjectiveArtifactType, string[]>>;
@@ -226,6 +229,7 @@ export interface ImportWorkspace {
   git?: BuildInfo | null;
   findings: Finding[];
   builds: ExternalBuildRecord[];
+  fileHashes?: ImportedFileHash[];
   metadata: {
     generatedAt: string;
     warnings: string[];
@@ -1009,6 +1013,20 @@ interface ExternalSourceMetadata {
     problemReports?: number;
     openProblems?: number;
     reports?: Array<{ file: string; total: number; open: number }>;
+  };
+  parasoft?: {
+    reports: Array<{
+      file: string;
+      tests: number;
+      findings: number;
+      coverageFiles: number;
+      fileHashes: number;
+      warnings: string[];
+    }>;
+    totalTests: number;
+    totalFindings: number;
+    coverageFiles: number;
+    fileHashes: number;
   };
 }
 
@@ -2737,6 +2755,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const testResults: TestResult[] = [];
   const findings: Finding[] = [];
   const builds: ExternalBuildRecord[] = [];
+  const fileHashes: ImportedFileHash[] = [];
   const sourceMetadata: ExternalSourceMetadata = {};
   const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
@@ -2766,6 +2785,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
     vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
     simulink: options.simulink ? normalizeRelativePath(options.simulink) : undefined,
+    parasoft: options.parasoft?.map((filePath) => normalizeRelativePath(filePath)),
     polarion: options.polarion ? `${options.polarion.baseUrl}#${options.polarion.projectId}` : undefined,
     jenkins: options.jenkins
       ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
@@ -3100,6 +3120,65 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
         );
       }
     }
+  }
+
+  if (options.parasoft) {
+    const parasoftSummary: ExternalSourceMetadata['parasoft'] =
+      sourceMetadata.parasoft ?? {
+        reports: [],
+        totalFindings: 0,
+        totalTests: 0,
+        coverageFiles: 0,
+        fileHashes: 0,
+      };
+
+    for (const reportPath of options.parasoft) {
+      const result = await importParasoft(reportPath);
+      warnings.push(...result.warnings);
+
+      const reportData = result.data;
+
+      if (reportData.testResults && reportData.testResults.length > 0) {
+        testResults.push(...reportData.testResults);
+        await appendEvidence('test', 'parasoft', reportPath, 'Parasoft test sonuçları');
+        parasoftSummary.totalTests += reportData.testResults.length;
+      }
+
+      if (reportData.coverage) {
+        structuralCoverage = mergeStructuralCoverage(structuralCoverage, reportData.coverage);
+        await appendEvidence('coverage_stmt', 'parasoft', reportPath, 'Parasoft kapsam özeti');
+        if (structuralCoverageHasMetric(reportData.coverage, 'dec')) {
+          await appendEvidence('coverage_dec', 'parasoft', reportPath, 'Parasoft karar kapsamı');
+        }
+        if (structuralCoverageHasMetric(reportData.coverage, 'mcdc')) {
+          await appendEvidence('coverage_mcdc', 'parasoft', reportPath, 'Parasoft MC/DC kapsamı');
+        }
+        parasoftSummary.coverageFiles += reportData.coverage.files.length;
+      }
+
+      if (reportData.findings && reportData.findings.length > 0) {
+        findings.push(...reportData.findings);
+        await appendEvidence('review', 'parasoft', reportPath, 'Parasoft statik analiz bulguları');
+        parasoftSummary.totalFindings += reportData.findings.length;
+      }
+
+      if (reportData.fileHashes && reportData.fileHashes.length > 0) {
+        fileHashes.push(...reportData.fileHashes);
+        await appendEvidence('cm_record', 'parasoft', reportPath, 'Parasoft dosya özetleri');
+        parasoftSummary.fileHashes += reportData.fileHashes.length;
+      }
+
+      parasoftSummary.reports.push({
+        file: normalizeRelativePath(reportPath),
+        tests: reportData.testResults?.length ?? 0,
+        findings: reportData.findings?.length ?? 0,
+        coverageFiles: reportData.coverage?.files.length ?? 0,
+        fileHashes: reportData.fileHashes?.length ?? 0,
+        warnings: [...result.warnings],
+      });
+    }
+
+    sourceMetadata.parasoft = parasoftSummary;
   }
 
   if (options.git) {
@@ -3707,6 +3786,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     git: gitMetadata,
     findings,
     builds,
+    ...(fileHashes.length > 0 ? { fileHashes: [...fileHashes] } : {}),
     metadata: {
       generatedAt,
       warnings,
@@ -3744,6 +3824,7 @@ export interface AnalyzeOptions {
   stage?: SoiStage;
   baselineSnapshot?: string;
   baselineGitRef?: string;
+  parasoft?: string[];
 }
 
 export interface AnalyzeResult {
@@ -4165,10 +4246,107 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const workspacePath = path.join(inputDir, 'workspace.json');
   const workspace = await readJsonFile<ImportWorkspace>(workspacePath);
 
-  const level = options.level ?? workspace.metadata.targetLevel ?? 'C';
+  const augmentedWorkspace: ImportWorkspace = {
+    ...workspace,
+    requirements: [...workspace.requirements],
+    designs: [...workspace.designs],
+    testResults: [...workspace.testResults],
+    coverage: workspace.coverage,
+    structuralCoverage: workspace.structuralCoverage
+      ? mergeStructuralCoverage(undefined, workspace.structuralCoverage)
+      : undefined,
+    traceLinks: [...workspace.traceLinks],
+    testToCodeMap: { ...workspace.testToCodeMap },
+    evidenceIndex: workspace.evidenceIndex,
+    git: workspace.git,
+    findings: [...workspace.findings],
+    builds: [...workspace.builds],
+    fileHashes: workspace.fileHashes ? [...workspace.fileHashes] : undefined,
+    metadata: {
+      ...workspace.metadata,
+      inputs: { ...(workspace.metadata.inputs ?? {}) },
+      sources: workspace.metadata.sources ? { ...workspace.metadata.sources } : undefined,
+    },
+  };
+
+  const parasoftWarnings: string[] = [];
+
+  if (options.parasoft && options.parasoft.length > 0) {
+    const normalizedParasoftInputs = [...(augmentedWorkspace.metadata.inputs.parasoft ?? [])];
+    const hashMap = new Map<string, ImportedFileHash>();
+    augmentedWorkspace.fileHashes?.forEach((entry) => {
+      hashMap.set(entry.path, entry);
+    });
+
+    const parasoftSourceSummary: ExternalSourceMetadata['parasoft'] =
+      augmentedWorkspace.metadata.sources?.parasoft ?? {
+        reports: [],
+        totalTests: 0,
+        totalFindings: 0,
+        coverageFiles: 0,
+        fileHashes: 0,
+      };
+
+    for (const reportPath of options.parasoft) {
+      const result = await importParasoft(reportPath);
+      parasoftWarnings.push(...result.warnings);
+      normalizedParasoftInputs.push(normalizeRelativePath(reportPath));
+
+      const reportData = result.data;
+      if (reportData.testResults && reportData.testResults.length > 0) {
+        augmentedWorkspace.testResults.push(...reportData.testResults);
+        parasoftSourceSummary.totalTests += reportData.testResults.length;
+      }
+
+      if (reportData.coverage) {
+        augmentedWorkspace.structuralCoverage = mergeStructuralCoverage(
+          augmentedWorkspace.structuralCoverage,
+          reportData.coverage,
+        );
+        parasoftSourceSummary.coverageFiles += reportData.coverage.files.length;
+      }
+
+      if (reportData.findings && reportData.findings.length > 0) {
+        augmentedWorkspace.findings.push(...reportData.findings);
+        parasoftSourceSummary.totalFindings += reportData.findings.length;
+      }
+
+      if (reportData.fileHashes && reportData.fileHashes.length > 0) {
+        reportData.fileHashes.forEach((entry) => {
+          hashMap.set(entry.path, entry);
+        });
+      }
+
+      parasoftSourceSummary.reports.push({
+        file: normalizeRelativePath(reportPath),
+        tests: reportData.testResults?.length ?? 0,
+        findings: reportData.findings?.length ?? 0,
+        coverageFiles: reportData.coverage?.files.length ?? 0,
+        fileHashes: reportData.fileHashes?.length ?? 0,
+        warnings: [...result.warnings],
+      });
+    }
+
+    const uniqueInputs = Array.from(new Set(normalizedParasoftInputs));
+    if (uniqueInputs.length > 0) {
+      augmentedWorkspace.metadata.inputs.parasoft = uniqueInputs;
+    }
+
+    const mergedHashes = hashMap.size > 0 ? Array.from(hashMap.values()) : undefined;
+    augmentedWorkspace.fileHashes = mergedHashes
+      ? mergedHashes.sort((a, b) => a.path.localeCompare(b.path))
+      : augmentedWorkspace.fileHashes;
+
+    if (!augmentedWorkspace.metadata.sources) {
+      augmentedWorkspace.metadata.sources = {};
+    }
+    augmentedWorkspace.metadata.sources.parasoft = parasoftSourceSummary;
+  }
+
+  const level = options.level ?? augmentedWorkspace.metadata.targetLevel ?? 'C';
   const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
   const objectivesPathRaw =
-    options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
+    options.objectives ?? augmentedWorkspace.metadata.objectivesPath ?? fallbackObjectivesPath;
   const objectivesPath = path.resolve(objectivesPathRaw);
   const objectives = await loadObjectives(objectivesPath);
   const filteredObjectives = filterObjectivesByStage(
@@ -4176,7 +4354,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     options.stage,
   );
 
-  const bundle = buildImportBundle(workspace, filteredObjectives, level);
+  const bundle = buildImportBundle(augmentedWorkspace, filteredObjectives, level);
   const { traceGraph: baselineTraceGraph, warnings: baselineWarnings } =
     await loadBaselineTraceGraph({
       baselineSnapshot: options.baselineSnapshot,
@@ -4188,7 +4366,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     baselineTraceGraph ? { changeImpactBaseline: baselineTraceGraph } : undefined,
   );
   const engine = new TraceEngine(bundle);
-  const traces = collectRequirementTraces(engine, workspace.requirements);
+  const traces = collectRequirementTraces(engine, augmentedWorkspace.requirements);
 
   const gatingEvaluation = evaluateCertificationGating(level, snapshot.objectives);
 
@@ -4202,10 +4380,10 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const analysisGeneratedAt = getCurrentTimestamp();
   const analysisMetadata: AnalysisMetadata = {
     project:
-      options.projectName || options.projectVersion || workspace.metadata.project
+      options.projectName || options.projectVersion || augmentedWorkspace.metadata.project
         ? {
-            name: options.projectName ?? workspace.metadata.project?.name,
-            version: options.projectVersion ?? workspace.metadata.project?.version,
+            name: options.projectName ?? augmentedWorkspace.metadata.project?.name,
+            version: options.projectVersion ?? augmentedWorkspace.metadata.project?.version,
           }
         : undefined,
     level,
@@ -4218,7 +4396,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   await writeJsonFile(snapshotPath, snapshot);
   await writeJsonFile(tracePath, traces);
   const analysisWarnings = [
-    ...(workspace.metadata.warnings ?? []),
+    ...(augmentedWorkspace.metadata.warnings ?? []),
+    ...parasoftWarnings,
     ...gatingEvaluation.warnings,
     ...baselineWarnings,
   ];
@@ -4227,13 +4406,13 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     objectives: filteredObjectives,
     objectiveCoverage: snapshot.objectives,
     gaps: snapshot.gaps,
-    requirements: workspace.requirements,
-    designs: workspace.designs,
-    tests: workspace.testResults,
-    coverage: workspace.coverage,
-    evidenceIndex: workspace.evidenceIndex,
-    git: workspace.git,
-    inputs: workspace.metadata.inputs,
+    requirements: augmentedWorkspace.requirements,
+    designs: augmentedWorkspace.designs,
+    tests: augmentedWorkspace.testResults,
+    coverage: augmentedWorkspace.coverage,
+    evidenceIndex: augmentedWorkspace.evidenceIndex,
+    git: augmentedWorkspace.git,
+    inputs: augmentedWorkspace.metadata.inputs,
     warnings: analysisWarnings,
     qualityFindings: snapshot.qualityFindings,
     traceSuggestions: snapshot.traceSuggestions,
@@ -5777,6 +5956,7 @@ export interface IngestPipelineOptions {
   stage?: SoiStage;
   baselineSnapshot?: string;
   baselineGitRef?: string;
+  parasoft?: string[];
 }
 
 export interface IngestPipelineResult {
@@ -5865,6 +6045,24 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
   await ensureDirectory(workingRoot);
   await ensureDirectory(resolvedOutputDir);
 
+  const parasoftInputs: string[] = [];
+  if (options.parasoft && options.parasoft.length > 0) {
+    options.parasoft.forEach((entry) => {
+      if (typeof entry === 'string' && entry.trim().length > 0) {
+        parasoftInputs.push(path.resolve(entry));
+      }
+    });
+  }
+  if (parasoftInputs.length === 0) {
+    const detectedParasoft = await resolveInputFile(resolvedInputDir, [
+      'parasoft.xml',
+      'parasoft-report.xml',
+    ]);
+    if (detectedParasoft) {
+      parasoftInputs.push(detectedParasoft);
+    }
+  }
+
   await runImport({
     output: workspaceDir,
     jira: await resolveInputFile(resolvedInputDir, ['issues.csv', 'jira.csv']),
@@ -5879,6 +6077,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     level: options.level,
     projectName: options.projectName,
     projectVersion: options.projectVersion,
+    parasoft: parasoftInputs.length > 0 ? parasoftInputs : undefined,
   });
 
   const analyzeResult = await runAnalyze({
@@ -6967,6 +7166,7 @@ export const runPipeline = async (
     simulink: config.inputs?.simulink
       ? path.resolve(baseDir, config.inputs.simulink)
       : undefined,
+    parasoft: config.inputs?.parasoft?.map((entry) => path.resolve(baseDir, entry)),
     designCsv: config.inputs?.designCsv
       ? path.resolve(baseDir, config.inputs.designCsv)
       : undefined,
@@ -7436,6 +7636,10 @@ if (require.main === module) {
             describe: 'Simulink model kapsam raporu JSON çıktısı.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('git', {
             describe: 'Git deposu kök dizini.',
             type: 'string',
@@ -7689,6 +7893,10 @@ if (require.main === module) {
             (argv as Record<string, unknown>).doorsClassicTests,
             '--doors-classic-tests',
           );
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
 
           const result = await runImport({
             output: argv.output,
@@ -7713,6 +7921,7 @@ if (require.main === module) {
             vectorcast: importArguments.adapters.vectorcast,
             manualArtifacts: importArguments.manualArtifacts,
             qaLogs,
+            parasoft,
             polarion: buildPolarionOptions(argv),
             jenkins: buildJenkinsOptions(argv),
             doorsNext: buildDoorsNextOptions(argv),
@@ -7775,6 +7984,10 @@ if (require.main === module) {
             describe: 'Proje sürümü.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -7816,6 +8029,11 @@ if (require.main === module) {
             requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
           }
 
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
+
           const result = await runAnalyze({
             input: argv.input,
             output: argv.output,
@@ -7826,6 +8044,7 @@ if (require.main === module) {
             stage,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
             baselineGitRef: argv.baselineGitRef as string | undefined,
+            parasoft,
           });
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
@@ -7965,6 +8184,10 @@ if (require.main === module) {
             describe: 'DO-330 araç kullanım metaverisini içeren JSON dosyası.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('gsn', {
             describe: 'Goal Structuring Notation grafiğini (DOT) çıktısı olarak üretir.',
             type: 'boolean',
@@ -8055,6 +8278,10 @@ if (require.main === module) {
             describe: 'Proje sürümü.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('baseline-snapshot', {
             describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
             type: 'string',
@@ -8095,6 +8322,11 @@ if (require.main === module) {
             ? String(argv.output[0])
             : (argv.output as string | undefined) ?? './dist';
 
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
+
           const result = await runIngestPipeline({
             inputDir,
             outputDir,
@@ -8104,6 +8336,7 @@ if (require.main === module) {
             projectVersion: argv.projectVersion as string | undefined,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
             baselineGitRef: argv.baselineGitRef as string | undefined,
+            parasoft,
           });
 
           logger.info(

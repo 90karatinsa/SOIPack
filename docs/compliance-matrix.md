@@ -50,6 +50,22 @@ Fonksiyon her hedef için beklenen artefakt türlerini `EvidenceIndex` ile eşle
 
 Özet bölümünde her durum için sayaçlar tutulur. `warnings` listesi, eksik kanıt bulunan hedefleri kullanıcıya sunar ve aynı mesajlar tablo düzeyindeki girdilerde de saklanır.
 
+## Regülasyon çapraz referansları
+
+Uyum matrisi, her hedef satırında ilgili düzenleyici rehberliği gösterebilmek için bir çapraz referans kataloğu kullanır. `@soipack/report` paketi, DO-178C Ek A tablolarını hem FAA danışma materyalleriyle hem de EASA AMC 20-152A maddeleriyle eşler. Bu bilgiler HTML, JSON ve CSV çıktılarında `regulatoryReferences` alanındaki `ac20115d`, `faa8110_49` ve `easaAmc_20_152a` dizilerine yayılır.
+
+Aşağıdaki tabloda, her DO-178C tablosu için yerleşik referanslar listelenmiştir:
+
+| DO-178C Tablosu | AC 20-115D | FAA 8110.49A | EASA AMC 20-152A |
+| --- | --- | --- | --- |
+| A-3 | §6.3, §6.5 | §2.3, §3.4 | §5.1.1, §5.1.3 |
+| A-4 | §6.6, §6.7 | §5.4 | §6.2.1, §6.2.2 |
+| A-5 | §7.1, §7.2 | §6.3, §6.5 | §6.3.1, §6.3.3 |
+| A-6 | §7.3, §7.4 | §7.4 | §6.4.1, §6.4.2 |
+| A-7 | §8.1, §8.4 | §9.3, §9.5 | §6.6.1, §6.6.2 |
+
+Rapor çıktılarında yeni `easaAmc_20_152a` dizisi boş olmadığında, kullanıcı arayüzü AMC referanslarını AC 20-115D ve FAA 8110.49A alıntılarının yanında gösterir. Böylece aynı hedefin FAA ve EASA beklentileri tek satırda izlenebilir.
+
 ## Uyum snapshot'larında bağımsızlık özeti
 
 `generateComplianceSnapshot` çıktısı, bağımsız kanıt eksikliklerini de raporlar. Snapshot yapısındaki `independenceSummary` alanı şu bilgileri içerir:

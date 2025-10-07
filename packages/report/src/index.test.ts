@@ -154,9 +154,11 @@ describe('@soipack/report', () => {
 
     expect(first.html).toContain('Regulatory References');
     expect(first.html).toContain('AC 20-115D');
+    expect(first.html).toContain('AMC 20-152A');
     expect(first.html).toContain('FAA 8110.49');
     expect(first.html).toContain('§6.3');
     expect(first.html).toContain('§6.5');
+    expect(first.html).toContain('§5.1.1');
     expect(first.html).toContain('§2.3');
     expect(first.html).toContain('§3.4');
 
@@ -164,6 +166,7 @@ describe('@soipack/report', () => {
     expect(objective).toBeDefined();
     expect(objective?.regulatoryReferences).toEqual({
       ac20115d: ['§6.3', '§6.5'],
+      easaAmc_20_152a: ['§5.1.1', '§5.1.3'],
       faa8110_49: ['§2.3', '§3.4'],
     });
 

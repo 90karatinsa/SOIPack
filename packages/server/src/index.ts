@@ -2497,6 +2497,17 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
       'application/octet-stream',
     ],
   },
+  parasoft: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/xml',
+      'text/xml',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+      'text/*',
+    ],
+  },
   ldra: {
     maxSizeBytes: maxUploadSize,
     allowedMimeTypes: [
@@ -3121,14 +3132,25 @@ type JobHandlers = {
   [K in JobKind]: JobHandler<K>;
 };
 
-const serializeJobSummary = (summary: JobSummary) => ({
-  id: summary.id,
-  kind: summary.kind,
-  hash: summary.hash,
-  status: summary.status,
-  createdAt: summary.createdAt.toISOString(),
-  updatedAt: summary.updatedAt.toISOString(),
-});
+const serializeJobSummary = (summary: JobSummary | JobDetails<unknown>) => {
+  const base = {
+    id: summary.id,
+    kind: summary.kind,
+    hash: summary.hash,
+    status: summary.status,
+    createdAt: summary.createdAt.toISOString(),
+    updatedAt: summary.updatedAt.toISOString(),
+  };
+
+  if ('result' in summary && summary.result && typeof summary.result === 'object') {
+    const candidate = (summary.result as { warnings?: unknown }).warnings;
+    if (Array.isArray(candidate) && candidate.every((value) => typeof value === 'string')) {
+      return { ...base, warnings: candidate };
+    }
+  }
+
+  return base;
+};
 
 const serializeJobDetails = <T>(job: JobDetails<T>) => ({
   ...serializeJobSummary(job),
@@ -5418,6 +5440,7 @@ export const createServer = (config: ServerConfig): Express => {
       try {
         const qaLogUploads = payload.uploads.qaLogs ?? [];
         const jiraDefectUploads = payload.uploads.jiraDefects ?? [];
+        const parasoftUploads = payload.uploads.parasoft ?? [];
         const simulinkUpload = payload.uploads.simulink?.[0];
         const manualArtifacts = payload.manualArtifacts
           ? Object.entries(payload.manualArtifacts).reduce<ManualArtifactUploads>((acc, [key, values]) => {
@@ -5439,6 +5462,7 @@ export const createServer = (config: ServerConfig): Express => {
           traceLinksJson: payload.uploads.traceLinksJson?.[0],
           designCsv: payload.uploads.designCsv?.[0],
           jiraDefects: jiraDefectUploads.length > 0 ? [...jiraDefectUploads] : undefined,
+          parasoft: parasoftUploads.length > 0 ? [...parasoftUploads] : undefined,
           polyspace: payload.uploads.polyspace?.[0],
           ldra: payload.uploads.ldra?.[0],
           vectorcast: payload.uploads.vectorcast?.[0],
@@ -9125,6 +9149,7 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'traceLinksJson', maxCount: 1 },
     { name: 'designCsv', maxCount: 1 },
     { name: 'jiraDefects', maxCount: 25 },
+    { name: 'parasoft', maxCount: 25 },
     { name: 'polyspace', maxCount: 1 },
     { name: 'ldra', maxCount: 1 },
     { name: 'vectorcast', maxCount: 1 },
@@ -9151,6 +9176,7 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'traceLinksJson', maxCount: 1 },
     { name: 'designCsv', maxCount: 1 },
     { name: 'jiraDefects', maxCount: 25 },
+    { name: 'parasoft', maxCount: 25 },
     { name: 'polyspace', maxCount: 1 },
     { name: 'ldra', maxCount: 1 },
     { name: 'vectorcast', maxCount: 1 },

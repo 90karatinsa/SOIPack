@@ -167,28 +167,34 @@ export type Do178cObjectiveId = Objective['id'];
 interface RegulatoryCrosswalkEntry {
   ac20115d: string[];
   faa8110_49: string[];
+  easaAmc_20_152a: string[];
 }
 
 const tableRegulatoryReferences: Record<ObjectiveTable, RegulatoryCrosswalkEntry> = {
   'A-3': {
     ac20115d: ['§6.3', '§6.5'],
     faa8110_49: ['§2.3', '§3.4'],
+    easaAmc_20_152a: ['§5.1.1', '§5.1.3'],
   },
   'A-4': {
     ac20115d: ['§6.6', '§6.7'],
     faa8110_49: ['§5.4'],
+    easaAmc_20_152a: ['§6.2.1', '§6.2.2'],
   },
   'A-5': {
     ac20115d: ['§7.1', '§7.2'],
     faa8110_49: ['§6.3', '§6.5'],
+    easaAmc_20_152a: ['§6.3.1', '§6.3.3'],
   },
   'A-6': {
     ac20115d: ['§7.3', '§7.4'],
     faa8110_49: ['§7.4'],
+    easaAmc_20_152a: ['§6.4.1', '§6.4.2'],
   },
   'A-7': {
     ac20115d: ['§8.1', '§8.4'],
     faa8110_49: ['§9.3', '§9.5'],
+    easaAmc_20_152a: ['§6.6.1', '§6.6.2'],
   },
 } as const;
 
@@ -201,19 +207,21 @@ export const REGULATORY_CROSSWALK: Record<Do178cObjectiveId, RegulatoryCrosswalk
       ? {
           ac20115d: sortReferences(references.ac20115d),
           faa8110_49: sortReferences(references.faa8110_49),
+          easaAmc_20_152a: sortReferences(references.easaAmc_20_152a),
         }
-      : { ac20115d: [], faa8110_49: [] };
+      : { ac20115d: [], faa8110_49: [], easaAmc_20_152a: [] };
     return acc;
   }, {} as Record<Do178cObjectiveId, RegulatoryCrosswalkEntry>);
 
 const getRegulatoryReferences = (objectiveId: string): RegulatoryCrosswalkEntry => {
   const references = REGULATORY_CROSSWALK[objectiveId as Do178cObjectiveId];
   if (!references) {
-    return { ac20115d: [], faa8110_49: [] };
+    return { ac20115d: [], faa8110_49: [], easaAmc_20_152a: [] };
   }
   return {
     ac20115d: [...references.ac20115d],
     faa8110_49: [...references.faa8110_49],
+    easaAmc_20_152a: [...references.easaAmc_20_152a],
   };
 };
 
@@ -2169,6 +2177,18 @@ const complianceTemplate = nunjucks.compile(
                             {% endif %}
                           </div>
                           <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            {% if row.regulatoryReferences.easaAmc_20_152a.length %}
+                              <ul class="list">
+                                {% for reference in row.regulatoryReferences.easaAmc_20_152a %}
+                                  <li class="muted">{{ reference }}</li>
+                                {% endfor %}
+                              </ul>
+                            {% else %}
+                              <span class="muted">—</span>
+                            {% endif %}
+                          </div>
+                          <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
                             {% if row.regulatoryReferences.faa8110_49.length %}
                               <ul class="list">
@@ -3358,6 +3378,7 @@ const buildComplianceMatrixJson = (
     evidenceRefs: [...row.evidenceRefs],
     regulatoryReferences: {
       ac20115d: [...row.regulatoryReferences.ac20115d],
+      easaAmc_20_152a: [...row.regulatoryReferences.easaAmc_20_152a],
       faa8110_49: [...row.regulatoryReferences.faa8110_49],
     },
   })),

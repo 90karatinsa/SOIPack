@@ -1,0 +1,39 @@
+<parasoftReport>
+  <module name="Core">
+    <testCases>
+      <testCase id="TC-1" name="core_add" suite="CoreSuite" verdict="pass" durationMs="1200" requirement="REQ-1 REQ-2" />
+      <testCase id="TC-2" name="core_div" suite="CoreSuite" verdict="fail" duration="0.75">
+        <failure>Division by zero</failure>
+      </testCase>
+    </testCases>
+    <staticAnalysis>
+      <finding id="F-1" rule="MISRA-10.1" severity="High" file="src/core.c" line="42">Do not divide by zero</finding>
+      <finding id="F-2" rule="MISRA-8.3" severity="Advisory" file="src/unused.c" line="13">Naming guideline</finding>
+    </staticAnalysis>
+    <coverage>
+      <file path="src/core.c" hash="ABCDEF1234">
+        <metric type="line" covered="90" total="100" />
+        <metric type="branch" covered="40" total="50" />
+      </file>
+      <file path="src/shared.c" hash="fedcba9876">
+        <metric type="line" covered="55" total="60" />
+        <metric type="mcdc" covered="12" total="14" />
+      </file>
+    </coverage>
+  </module>
+  <module name="Utils">
+    <tests>
+      <testCase uid="UTIL-1" name="utils_trim" suite="UtilsSuite" status="Passed" durationMs="600" />
+    </tests>
+    <findings>
+      <finding id="F-3" rule="CERT-12" severity="Medium" file="src/utils.c" line="21">Potential overflow</finding>
+    </findings>
+    <files>
+      <file name="src/core.c">
+        <metric name="line" covered="5" total="5" />
+        <metric name="branch" covered="2" total="2" />
+        <metric name="mcdc" covered="3" total="3" />
+      </file>
+    </files>
+  </module>
+</parasoftReport>

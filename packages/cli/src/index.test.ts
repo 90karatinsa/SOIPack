@@ -1519,6 +1519,217 @@ describe('CLI pipeline workflows', () => {
     expect(changeControl?.status).toBe('covered');
   });
 
+  describe('ParasoftIntegration', () => {
+    const defaultObjectives = path.resolve(
+      __dirname,
+      '../../../data/objectives/do178c_objectives.min.json',
+    );
+
+    it('runImport persists Parasoft artefacts and evidence', async () => {
+      const workDir = path.join(tempRoot, 'parasoft-import-workspace');
+      const parasoftReport = path.join(tempRoot, 'parasoft-report.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftCoverage: StructuralCoverageSummary = {
+        tool: 'parasoft',
+        files: [
+          {
+            path: 'src/control.c',
+            stmt: { covered: 18, total: 20 },
+            dec: { covered: 9, total: 10 },
+            mcdc: { covered: 4, total: 5 },
+          },
+        ],
+        objectiveLinks: ['A-5-08', 'A-5-09', 'A-5-10'],
+      };
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: ['Module Control missing MC/DC data'],
+        data: {
+          coverage: parasoftCoverage,
+          findings: [
+            {
+              tool: 'parasoft',
+              id: 'F-001',
+              file: 'src/control.c',
+              severity: 'warn',
+              message: 'Possible null dereference',
+              objectiveLinks: ['A-5-05'],
+            },
+          ],
+          testResults: [
+            {
+              tool: 'parasoft',
+              testId: 'ControlSuite#initializesOutputs',
+              name: 'initializesOutputs',
+              status: 'passed',
+              durationMs: 120,
+              requirementsRefs: ['REQ-CTRL-1'],
+            },
+          ],
+          fileHashes: [
+            {
+              artifact: 'cm_record',
+              path: 'src/control.c',
+              hash: 'abcdef1234567890abcdef1234567890abcdef12',
+            },
+          ],
+        },
+      });
+
+      const result = await runImport({ output: workDir, parasoft: [parasoftReport] });
+
+      expect(parasoftSpy).toHaveBeenCalledWith(parasoftReport);
+      expect(result.warnings).toContain('Module Control missing MC/DC data');
+      expect(result.workspace.metadata.inputs.parasoft).toEqual(
+        expect.arrayContaining([expect.stringMatching(/parasoft-report\.xml$/)]),
+      );
+      expect(result.workspace.structuralCoverage?.tool).toBe('parasoft');
+      expect(result.workspace.structuralCoverage?.files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: 'src/control.c' })]),
+      );
+      expect(result.workspace.findings).toEqual(
+        expect.arrayContaining([expect.objectContaining({ tool: 'parasoft', id: 'F-001' })]),
+      );
+      expect(result.workspace.fileHashes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'src/control.c', hash: 'abcdef1234567890abcdef1234567890abcdef12' }),
+        ]),
+      );
+
+      const evidence = result.workspace.evidenceIndex;
+      expect(evidence.test).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_stmt).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_dec).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_mcdc).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.review).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.cm_record).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+
+      expect(result.workspace.metadata.sources?.parasoft).toEqual(
+        expect.objectContaining({
+          totalTests: 1,
+          totalFindings: 1,
+          coverageFiles: 1,
+          fileHashes: 1,
+        }),
+      );
+
+      parasoftSpy.mockRestore();
+    });
+
+    it('runAnalyze merges Parasoft bundles provided at runtime', async () => {
+      const workspaceDir = path.join(tempRoot, 'parasoft-analyze-workspace');
+      const analysisDir = path.join(tempRoot, 'parasoft-analyze-output');
+      await runImport({ output: workspaceDir });
+
+      const parasoftReport = path.join(tempRoot, 'parasoft-analysis-report.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: ['Generated additional Parasoft insights'],
+        data: {
+          coverage: {
+            tool: 'parasoft',
+            files: [
+              { path: 'src/runtime.c', stmt: { covered: 10, total: 12 } },
+            ],
+            objectiveLinks: ['A-5-08'],
+          },
+          findings: [],
+          testResults: [
+            {
+              tool: 'parasoft',
+              testId: 'RuntimeSuite#initializes',
+              name: 'initializes',
+              status: 'passed',
+              durationMs: 45,
+            },
+          ],
+          fileHashes: [],
+        },
+      });
+
+      const analysisResult = await runAnalyze({
+        input: workspaceDir,
+        output: analysisDir,
+        objectives: defaultObjectives,
+        parasoft: [parasoftReport],
+      });
+
+      expect(analysisResult.exitCode).toBe(exitCodes.success);
+      expect(parasoftSpy).toHaveBeenCalledWith(parasoftReport);
+
+      const analysisData = JSON.parse(
+        await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+      ) as {
+        tests: Array<{ testId: string }>;
+        warnings: string[];
+        coverage?: CoverageReport;
+      };
+
+      expect(analysisData.tests).toEqual(
+        expect.arrayContaining([expect.objectContaining({ testId: 'RuntimeSuite#initializes' })]),
+      );
+      expect(analysisData.warnings).toEqual(
+        expect.arrayContaining(['Generated additional Parasoft insights']),
+      );
+
+      parasoftSpy.mockRestore();
+    });
+
+    it('runIngestPipeline forwards Parasoft inputs to runImport', async () => {
+      const inputDir = path.join(tempRoot, 'parasoft-ingest-input');
+      const outputDir = path.join(tempRoot, 'parasoft-ingest-output');
+      await fs.mkdir(inputDir, { recursive: true });
+      const parasoftReport = path.join(inputDir, 'parasoft-ingest.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: [],
+        data: {
+          coverage: undefined,
+          findings: [],
+          testResults: [],
+          fileHashes: [],
+        },
+      });
+
+      const originalRunImport = cliModule.runImport;
+      const runImportSpy = jest
+        .spyOn(cliModule, 'runImport')
+        .mockImplementation(async (options) => {
+          expect(options.parasoft).toEqual(
+            expect.arrayContaining([expect.stringContaining('parasoft-ingest.xml')]),
+          );
+          return originalRunImport(options);
+        });
+
+      try {
+        await runIngestPipeline({
+          inputDir,
+          outputDir,
+          objectives: defaultObjectives,
+          parasoft: [parasoftReport],
+        });
+      } finally {
+        runImportSpy.mockRestore();
+        parasoftSpy.mockRestore();
+      }
+    });
+  });
+
   it('emits change impact insights when a baseline snapshot is supplied', async () => {
     const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
     const inputDir = path.join(tempRoot, 'change-impact-input');

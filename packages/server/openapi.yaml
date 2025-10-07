@@ -897,6 +897,11 @@ components:
         updatedAt:
           type: string
           format: date-time
+        warnings:
+          type: array
+          description: İşlemler sırasında oluşan uyarı mesajları.
+          items:
+            type: string
     JobError:
       type: object
       required:
@@ -2487,6 +2492,12 @@ paths:
                   items:
                     type: string
                     format: binary
+                parasoft:
+                  type: array
+                  description: Parasoft C/C++test XML raporları; çoklu dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
                 reqif:
                   type: string
                   format: binary
@@ -2696,6 +2707,12 @@ paths:
                 jiraDefects:
                   type: array
                   description: Jira hata CSV dışa aktarımları; birden fazla dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
+                parasoft:
+                  type: array
+                  description: Parasoft C/C++test XML raporları; alan birden fazla dosya alır.
                   items:
                     type: string
                     format: binary
