@@ -184,6 +184,14 @@ export interface ManifestProofResponse {
   verified: boolean;
 }
 
+export interface ServiceMetadata {
+  sbom?: {
+    url?: string | null;
+    sha256?: string | null;
+    verified?: boolean | null;
+  } | null;
+}
+
 export interface StageRiskSparklinePointPayload {
   timestamp: string;
   regressionRatio: number;
@@ -1571,6 +1579,26 @@ export const fetchRemediationPlanSummary = async ({
 
   const payload = await readJson<unknown>(response);
   return sanitizeRemediationPlanSummary(payload);
+};
+
+interface FetchServiceMetadataOptions {
+  token: string;
+  license: string;
+  signal?: AbortSignal;
+}
+
+export const fetchServiceMetadata = async ({
+  token,
+  license,
+  signal,
+}: FetchServiceMetadataOptions): Promise<ServiceMetadata> => {
+  const response = await fetch(joinUrl('/v1/service/metadata'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  return readJson<ServiceMetadata>(response);
 };
 
 interface FetchChangeRequestsOptions {

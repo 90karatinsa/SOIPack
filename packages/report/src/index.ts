@@ -2,10 +2,12 @@ import type { BuildInfo, CoverageMetric, CoverageReport } from '@soipack/adapter
 import {
   Objective,
   ObjectiveArtifactType,
+  ObjectiveTable,
   Requirement,
   SnapshotVersion,
   SoiStage,
   TestCase,
+  objectiveCatalog,
   soiStages,
 } from '@soipack/core';
 import {
@@ -101,6 +103,7 @@ interface ComplianceMatrixRow {
   satisfiedArtifacts: string[];
   missingArtifacts: string[];
   evidenceRefs: string[];
+  regulatoryReferences: RegulatoryCrosswalkEntry;
 }
 
 interface StageComplianceSummary {
@@ -157,6 +160,61 @@ const stageLabels: Record<SoiStage, string> = {
   'SOI-2': 'SOI-2 Geliştirme',
   'SOI-3': 'SOI-3 Doğrulama',
   'SOI-4': 'SOI-4 Sertifikasyon',
+};
+
+export type Do178cObjectiveId = Objective['id'];
+
+interface RegulatoryCrosswalkEntry {
+  ac20115d: string[];
+  faa8110_49: string[];
+}
+
+const tableRegulatoryReferences: Record<ObjectiveTable, RegulatoryCrosswalkEntry> = {
+  'A-3': {
+    ac20115d: ['§6.3', '§6.5'],
+    faa8110_49: ['§2.3', '§3.4'],
+  },
+  'A-4': {
+    ac20115d: ['§6.6', '§6.7'],
+    faa8110_49: ['§5.4'],
+  },
+  'A-5': {
+    ac20115d: ['§7.1', '§7.2'],
+    faa8110_49: ['§6.3', '§6.5'],
+  },
+  'A-6': {
+    ac20115d: ['§7.3', '§7.4'],
+    faa8110_49: ['§7.4'],
+  },
+  'A-7': {
+    ac20115d: ['§8.1', '§8.4'],
+    faa8110_49: ['§9.3', '§9.5'],
+  },
+} as const;
+
+const sortReferences = (references: string[]): string[] => [...references].sort((a, b) => a.localeCompare(b));
+
+export const REGULATORY_CROSSWALK: Record<Do178cObjectiveId, RegulatoryCrosswalkEntry> =
+  objectiveCatalog.reduce((acc, objective) => {
+    const references = tableRegulatoryReferences[objective.table];
+    acc[objective.id as Do178cObjectiveId] = references
+      ? {
+          ac20115d: sortReferences(references.ac20115d),
+          faa8110_49: sortReferences(references.faa8110_49),
+        }
+      : { ac20115d: [], faa8110_49: [] };
+    return acc;
+  }, {} as Record<Do178cObjectiveId, RegulatoryCrosswalkEntry>);
+
+const getRegulatoryReferences = (objectiveId: string): RegulatoryCrosswalkEntry => {
+  const references = REGULATORY_CROSSWALK[objectiveId as Do178cObjectiveId];
+  if (!references) {
+    return { ac20115d: [], faa8110_49: [] };
+  }
+  return {
+    ac20115d: [...references.ac20115d],
+    faa8110_49: [...references.faa8110_49],
+  };
 };
 
 interface RequirementCoverageRow {
@@ -547,6 +605,7 @@ export interface ComplianceMatrixJson {
     satisfiedArtifacts: string[];
     missingArtifacts: string[];
     evidenceRefs: string[];
+    regulatoryReferences: RegulatoryCrosswalkEntry;
   }>;
   requirementCoverage: Array<{
     requirementId: string;
@@ -2046,6 +2105,7 @@ const complianceTemplate = nunjucks.compile(
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
+                    <th>Regulatory References</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2093,6 +2153,34 @@ const complianceTemplate = nunjucks.compile(
                         {% else %}
                           <span class="muted">Referans bulunmuyor</span>
                         {% endif %}
+                      </td>
+                      <td>
+                        <div class="regulatory-group">
+                          <div class="regulatory-item">
+                            <div class="muted">AC 20-115D</div>
+                            {% if row.regulatoryReferences.ac20115d.length %}
+                              <ul class="list">
+                                {% for reference in row.regulatoryReferences.ac20115d %}
+                                  <li class="muted">{{ reference }}</li>
+                                {% endfor %}
+                              </ul>
+                            {% else %}
+                              <span class="muted">—</span>
+                            {% endif %}
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">FAA 8110.49</div>
+                            {% if row.regulatoryReferences.faa8110_49.length %}
+                              <ul class="list">
+                                {% for reference in row.regulatoryReferences.faa8110_49 %}
+                                  <li class="muted">{{ reference }}</li>
+                                {% endfor %}
+                              </ul>
+                            {% else %}
+                              <span class="muted">—</span>
+                            {% endif %}
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   {% endfor %}
@@ -3031,6 +3119,7 @@ const buildComplianceMatrixView = (
       satisfiedArtifacts: objective.satisfiedArtifacts.map(formatArtifact),
       missingArtifacts: objective.missingArtifacts.map(formatArtifact),
       evidenceRefs: objective.evidenceRefs,
+      regulatoryReferences: getRegulatoryReferences(objective.objectiveId),
     };
   });
 
@@ -3267,6 +3356,10 @@ const buildComplianceMatrixJson = (
     satisfiedArtifacts: [...row.satisfiedArtifacts],
     missingArtifacts: [...row.missingArtifacts],
     evidenceRefs: [...row.evidenceRefs],
+    regulatoryReferences: {
+      ac20115d: [...row.regulatoryReferences.ac20115d],
+      faa8110_49: [...row.regulatoryReferences.faa8110_49],
+    },
   })),
   requirementCoverage: snapshot.requirementCoverage.map((entry) => ({
     requirementId: entry.requirement.id,

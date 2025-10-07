@@ -22,6 +22,7 @@ import {
   renderTraceGraphDot,
   renderGsnGraphDot,
   printToPDF,
+  type ComplianceMatrixOptions,
   type ToolUsageMetadata,
 } from './index';
 
@@ -135,6 +136,40 @@ describe('@soipack/report', () => {
     expect(stageCsv?.records[0]?.[3]).toBe('Eksik');
     const soi1Record = result.csv.stages['SOI-1'];
     expect(soi1Record?.records[0]?.[2]).toBe('SOI-1');
+  });
+
+  it('renderComplianceMatrix includes the regulator crosswalk data', () => {
+    const fixture = createReportFixture();
+    const options = {
+      manifestId: fixture.manifestId,
+      objectivesMetadata: fixture.objectives,
+      signoffs: fixture.signoffs,
+      programName: fixture.programName,
+      certificationLevel: fixture.certificationLevel,
+      projectVersion: fixture.projectVersion,
+    } satisfies ComplianceMatrixOptions;
+
+    const first = renderComplianceMatrix(fixture.snapshot, options);
+    const second = renderComplianceMatrix(fixture.snapshot, options);
+
+    expect(first.html).toContain('Regulatory References');
+    expect(first.html).toContain('AC 20-115D');
+    expect(first.html).toContain('FAA 8110.49');
+    expect(first.html).toContain('§6.3');
+    expect(first.html).toContain('§6.5');
+    expect(first.html).toContain('§2.3');
+    expect(first.html).toContain('§3.4');
+
+    const objective = first.json.objectives.find((item) => item.id === 'A-3-04');
+    expect(objective).toBeDefined();
+    expect(objective?.regulatoryReferences).toEqual({
+      ac20115d: ['§6.3', '§6.5'],
+      faa8110_49: ['§2.3', '§3.4'],
+    });
+
+    expect(second.html).toBe(first.html);
+    expect(second.json).toEqual(first.json);
+    expect(second.csv.csv).toBe(first.csv.csv);
   });
 
   it('renders combined compliance and coverage report with valid HTML', async () => {
