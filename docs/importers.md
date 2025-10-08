@@ -131,6 +131,14 @@ Dosya: `packages/adapters/src/adapters/reqif.ts`
 - Eksik `THE-VALUE` alanları uyarı üretir; ciddi biçim bozuklukları hata fırlatır.
 - Üst düzey API `importReqIF`, hataları yakalayarak kullanıcıya boş veri kümesi ve uyarı mesajı döndürür.
 
+## Parasoft C/C++test
+
+- `@soipack/adapters` paketindeki `importParasoft` dönüştürücüsü, Parasoft C/C++test XML raporlarından test sonuçlarını, kapsam metriklerini (satır, dal, MC/DC) ve statik analiz bulgularını `ImportedBundle` yapılarına normalleştirir.
+- CLI içe aktarma hattında `--parasoft <dosya>` bayrağı ile bir veya daha fazla XML raporu sağlayabilirsiniz. Bayrak hem `soipack import` hem de `soipack analyze`, `soipack ingest` ve `soipack report` komutlarında desteklenir; belirtilen dosyalar çalışma alanındaki `evidence.imported` kaydına Parasoft aracı için kaynak bilgisiyle eklenir.
+- REST API üzerinden aynı dönüştürücüyü tetiklemek için `POST /v1/import` isteğinde Parasoft raporlarını `parasoft` form alanı ile (birden fazla dosya için alanı tekrarlayarak) yükleyin. S3 etaplama (`storage=s3`) kullanırken raporlar aynı alan adı ile otomatik olarak saklanır.
+- Dönüştürücü, şiddeti yapılandırılabilir statik analiz bulgularını `ObjectiveArtifactType.StaticAnalysis` altında raporlar, test vaka sonuçlarını normalleştirerek uyarıları iş özetlerine yansıtır ve kapsam metriklerini `%` olarak iki ondalık basamağa yuvarlar.
+- Parasoft raporları dosya karmaları (SHA-256) ile birlikte kaydedildiğinden, aynı rapor yeniden yüklendiğinde deduplikasyon ve iş tekrar kullanımından yararlanabilirsiniz.
+
 ## Manuel DO-178C artefakt eşlemeleri
 
 - `--import artefakt=dosya` sözdizimi tüm DO-178C artefakt türleri için geçerlidir (ör. `plan`, `standard`, `qa_record`, `conformity`).

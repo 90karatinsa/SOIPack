@@ -140,6 +140,7 @@ export const evidenceSources = [
   'ldra',
   'vectorcast',
   'simulink',
+  'parasoft',
   'doorsNext',
   'staticAnalysis',
   'jama',

@@ -19,6 +19,8 @@ export { fromLDRA } from './ldra';
 export { fromVectorCAST } from './vectorcast';
 export { fromSimulink } from './simulink';
 export { importQaLogs } from './qaLogs';
+export { importParasoft } from './parasoft';
+export type { ImportParasoftOptions } from './parasoft';
 export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions, PolarionAttachmentMetadata } from './polarion';
 export { fetchJamaArtifacts } from './jama';

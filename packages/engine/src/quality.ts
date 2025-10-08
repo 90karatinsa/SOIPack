@@ -162,6 +162,7 @@ const toolLabels: Record<Finding['tool'], string> = {
   polyspace: 'Polyspace',
   ldra: 'LDRA',
   vectorcast: 'VectorCAST',
+  parasoft: 'Parasoft C/C++test',
 };
 
 const normalizeAnalysisMessage = (finding: Finding): string => {

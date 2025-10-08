@@ -31,6 +31,7 @@ import {
   type CoverageSnapshot,
   type RiskInput,
   type RiskProfile,
+  type StageRiskForecast,
 } from './risk';
 import {
   detectStaleEvidence,
@@ -1540,6 +1541,474 @@ export const generateComplianceSnapshot = (
   }
 
   return snapshot;
+};
+
+type ReadinessComponent =
+  | 'objectives'
+  | 'independence'
+  | 'structuralCoverage'
+  | 'riskTrend';
+
+export interface ReadinessComponentBreakdown {
+  component: ReadinessComponent;
+  score: number;
+  weight: number;
+  contribution: number;
+  details: string;
+  missing?: boolean;
+}
+
+export interface ComputeReadinessIndexOptions {
+  objectives: Objective[];
+  coverage: ObjectiveCoverage[];
+  targetLevel?: CertificationLevel;
+  targetLevels?: CertificationLevel[];
+  independenceSummary?: ComplianceIndependenceSummary;
+  structuralCoverage?: StructuralCoverageSummary;
+  riskForecasts?: StageRiskForecast[];
+  weights?: Partial<Record<ReadinessComponent, number>>;
+  seed?: number;
+}
+
+export interface ReadinessIndexResult {
+  percentile: number;
+  breakdown: ReadinessComponentBreakdown[];
+  seed: number;
+}
+
+const CERTIFICATION_PRIORITY: CertificationLevel[] = ['A', 'B', 'C', 'D', 'E'];
+
+const COMPONENT_WEIGHTS: Record<ReadinessComponent, number> = {
+  objectives: 0.4,
+  independence: 0.2,
+  structuralCoverage: 0.25,
+  riskTrend: 0.15,
+};
+
+const LEVEL_WEIGHTS: Record<CertificationLevel, number> = {
+  A: 1,
+  B: 0.85,
+  C: 0.7,
+  D: 0.5,
+  E: 0.35,
+};
+
+const COVERAGE_STATUS_SCORES: Record<ObjectiveCoverageStatus, number> = {
+  covered: 1,
+  partial: 0.6,
+  missing: 0.2,
+};
+
+const INDEPENDENCE_STATUS_SCORES: Record<ObjectiveCoverageStatus, number> = {
+  covered: 1,
+  partial: 0.4,
+  missing: 0,
+};
+
+const RISK_CLASSIFICATION_ADJUSTMENT: Record<StageRiskForecast['classification'], number> = {
+  nominal: 0.08,
+  guarded: -0.05,
+  elevated: -0.15,
+  critical: -0.3,
+};
+
+const clamp = (value: number, min = 0, max = 1): number => {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
+};
+
+const round = (value: number, precision = 2): number => {
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+};
+
+const createRng = (seed: number): (() => number) => {
+  let state = seed >>> 0;
+  if (state === 0) {
+    state = 0x6d2b79f5;
+  }
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+};
+
+const fallbackScore = (rng: () => number, center = 0.52, spread = 0.08): number => {
+  const offset = (rng() - 0.5) * spread * 2;
+  return clamp(center + offset, 0, 1);
+};
+
+const resolveTargetLevels = (
+  targetLevel?: CertificationLevel,
+  targetLevels?: CertificationLevel[],
+): CertificationLevel[] => {
+  if (targetLevels && targetLevels.length > 0) {
+    const unique = Array.from(new Set(targetLevels));
+    return unique.sort((a, b) => CERTIFICATION_PRIORITY.indexOf(a) - CERTIFICATION_PRIORITY.indexOf(b));
+  }
+
+  if (targetLevel) {
+    return [targetLevel];
+  }
+
+  return [...CERTIFICATION_PRIORITY];
+};
+
+const resolveObjectiveWeight = (
+  objective: Objective,
+  orderedLevels: CertificationLevel[],
+  fallback = 0.4,
+): number => {
+  for (const level of orderedLevels) {
+    if (objective.levels[level]) {
+      return LEVEL_WEIGHTS[level];
+    }
+  }
+
+  for (const level of CERTIFICATION_PRIORITY) {
+    if (objective.levels[level]) {
+      return LEVEL_WEIGHTS[level];
+    }
+  }
+
+  return fallback;
+};
+
+const summarizeStructuralCoverage = (
+  summary: StructuralCoverageSummary | undefined,
+  rng: () => number,
+): { score: number; details: string; missing: boolean } => {
+  if (!summary || summary.files.length === 0) {
+    return {
+      score: fallbackScore(rng),
+      details: 'No structural coverage summary provided; using neutral fallback.',
+      missing: true,
+    };
+  }
+
+  const totals: Record<'stmt' | 'dec' | 'mcdc', { covered: number; total: number }> = {
+    stmt: { covered: 0, total: 0 },
+    dec: { covered: 0, total: 0 },
+    mcdc: { covered: 0, total: 0 },
+  };
+
+  summary.files.forEach((file) => {
+    totals.stmt.covered += file.stmt.covered;
+    totals.stmt.total += file.stmt.total;
+
+    if (file.dec) {
+      totals.dec.covered += file.dec.covered;
+      totals.dec.total += file.dec.total;
+    }
+
+    if (file.mcdc) {
+      totals.mcdc.covered += file.mcdc.covered;
+      totals.mcdc.total += file.mcdc.total;
+    }
+  });
+
+  const metricWeights: Record<'stmt' | 'dec' | 'mcdc', number> = {
+    stmt: 0.45,
+    dec: 0.35,
+    mcdc: 0.2,
+  };
+
+  const activeMetrics = (['stmt', 'dec', 'mcdc'] as const)
+    .map((metric) => {
+      const total = totals[metric].total;
+      if (total <= 0) {
+        return undefined;
+      }
+      const ratio = clamp(totals[metric].covered / Math.max(1, total));
+      return { metric, ratio };
+    })
+    .filter((entry): entry is { metric: 'stmt' | 'dec' | 'mcdc'; ratio: number } => entry !== undefined);
+
+  if (activeMetrics.length === 0) {
+    return {
+      score: fallbackScore(rng),
+      details: 'Structural coverage totals were zero; using neutral fallback.',
+      missing: true,
+    };
+  }
+
+  const weightSum = activeMetrics.reduce((acc, entry) => acc + metricWeights[entry.metric], 0);
+  const score = activeMetrics.reduce((acc, entry) => {
+    const weight = metricWeights[entry.metric] / weightSum;
+    return acc + entry.ratio * weight;
+  }, 0);
+
+  const details = activeMetrics
+    .map((entry) => {
+      const label =
+        entry.metric === 'stmt'
+          ? 'Statement'
+          : entry.metric === 'dec'
+          ? 'Decision'
+          : 'MC/DC';
+      return `${label} ${round(entry.ratio * 100, 1)}%`;
+    })
+    .join(', ');
+
+  return {
+    score: clamp(score),
+    details,
+    missing: false,
+  };
+};
+
+const summarizeRiskForecasts = (
+  forecasts: StageRiskForecast[] | undefined,
+  rng: () => number,
+): { score: number; details: string; missing: boolean } => {
+  const sanitized = (forecasts ?? []).filter((forecast) => Number.isFinite(forecast.probability));
+
+  if (sanitized.length === 0) {
+    return {
+      score: fallbackScore(rng, 0.55, 0.1),
+      details: 'No risk forecast data available; applying seeded baseline.',
+      missing: true,
+    };
+  }
+
+  const probabilities = sanitized.map((forecast) => clamp(forecast.probability / 100));
+  const averageProbability = probabilities.reduce((sum, value) => sum + value, 0) / sanitized.length;
+  const classificationAdjustment =
+    sanitized.reduce((sum, forecast) => sum + RISK_CLASSIFICATION_ADJUSTMENT[forecast.classification], 0) /
+    sanitized.length;
+
+  const trendAdjustment = sanitized.reduce((sum, forecast) => {
+    if (!forecast.sparkline || forecast.sparkline.length < 2) {
+      return sum;
+    }
+    const first = forecast.sparkline[0].regressionRatio;
+    const last = forecast.sparkline[forecast.sparkline.length - 1].regressionRatio;
+    const delta = clamp(first - last, -0.5, 0.5);
+    return sum + delta * 0.5;
+  }, 0);
+
+  const normalizedTrend = trendAdjustment / sanitized.length;
+
+  const score = clamp(1 - averageProbability + classificationAdjustment + normalizedTrend);
+  const details = `Mean regression probability ${round(averageProbability * 100, 1)}%, ` +
+    `trend delta ${round((normalizedTrend ?? 0) * 100, 1)} pts`;
+
+  return {
+    score,
+    details,
+    missing: false,
+  };
+};
+
+const summarizeObjectiveCoverage = (
+  objectives: Objective[],
+  coverage: ObjectiveCoverage[],
+  orderedLevels: CertificationLevel[],
+  rng: () => number,
+): { score: number; details: string; missing: boolean } => {
+  const levelSet = new Set(orderedLevels);
+  const relevantObjectives = objectives.filter((objective) => {
+    if (levelSet.size === 0) {
+      return true;
+    }
+    return orderedLevels.some((level) => objective.levels[level]);
+  });
+
+  if (relevantObjectives.length === 0) {
+    return {
+      score: fallbackScore(rng, 0.5, 0.12),
+      details: 'No objectives matched selected certification levels; using neutral fallback.',
+      missing: true,
+    };
+  }
+
+  const coverageById = new Map(coverage.map((entry) => [entry.objectiveId, entry]));
+  const statusTotals: Record<ObjectiveCoverageStatus, number> = { covered: 0, partial: 0, missing: 0 };
+  let weightedScore = 0;
+  let weightTotal = 0;
+
+  relevantObjectives.forEach((objective) => {
+    const coverageEntry = coverageById.get(objective.id);
+    const weight = resolveObjectiveWeight(objective, orderedLevels);
+    weightTotal += weight;
+
+    if (!coverageEntry) {
+      statusTotals.missing += 1;
+      weightedScore += COVERAGE_STATUS_SCORES.missing * weight;
+      return;
+    }
+
+    statusTotals[coverageEntry.status] += 1;
+    weightedScore += COVERAGE_STATUS_SCORES[coverageEntry.status] * weight;
+  });
+
+  if (weightTotal === 0) {
+    return {
+      score: fallbackScore(rng),
+      details: 'Objective weights resolved to zero; using fallback.',
+      missing: true,
+    };
+  }
+
+  const score = clamp(weightedScore / weightTotal);
+  const details = `${statusTotals.covered}/${relevantObjectives.length} covered, ` +
+    `${statusTotals.partial} partial, ${statusTotals.missing} missing`;
+
+  return { score, details, missing: false };
+};
+
+const summarizeIndependence = (
+  objectives: Objective[],
+  summary: ComplianceIndependenceSummary | undefined,
+  orderedLevels: CertificationLevel[],
+  rng: () => number,
+): { score: number; details: string; missing: boolean } => {
+  if (!summary) {
+    return {
+      score: fallbackScore(rng, 0.48, 0.1),
+      details: 'No independence summary available; using seeded fallback.',
+      missing: true,
+    };
+  }
+
+  const objectivesById = new Map(objectives.map((objective) => [objective.id, objective]));
+  const relevant = summary.objectives.filter((entry) => {
+    const objective = objectivesById.get(entry.objectiveId);
+    if (!objective) {
+      return false;
+    }
+    return orderedLevels.some((level) => objective.levels[level]);
+  });
+
+  if (relevant.length === 0) {
+    return {
+      score: fallbackScore(rng, 0.5, 0.1),
+      details: 'No independence-qualified objectives matched the requested levels.',
+      missing: true,
+    };
+  }
+
+  let weightedScore = 0;
+  let weightTotal = 0;
+  const statusTotals: Record<ObjectiveCoverageStatus, number> = { covered: 0, partial: 0, missing: 0 };
+
+  relevant.forEach((entry) => {
+    const objective = objectivesById.get(entry.objectiveId);
+    if (!objective) {
+      return;
+    }
+    const levelWeight = resolveObjectiveWeight(objective, orderedLevels, 0.35);
+    const independenceWeight = entry.independence === 'required' ? 1 : entry.independence === 'recommended' ? 0.7 : 0.4;
+    const weight = levelWeight * independenceWeight;
+    weightTotal += weight;
+    statusTotals[entry.status] += 1;
+    weightedScore += INDEPENDENCE_STATUS_SCORES[entry.status] * weight;
+  });
+
+  if (weightTotal === 0) {
+    return {
+      score: fallbackScore(rng, 0.45, 0.08),
+      details: 'Independence weights collapsed to zero; using fallback.',
+      missing: true,
+    };
+  }
+
+  const score = clamp(weightedScore / weightTotal);
+  const details = `${statusTotals.covered}/${relevant.length} independent, ` +
+    `${statusTotals.partial} partial, ${statusTotals.missing} missing`;
+
+  return { score, details, missing: false };
+};
+
+export const computeReadinessIndex = ({
+  objectives,
+  coverage,
+  targetLevel,
+  targetLevels,
+  independenceSummary,
+  structuralCoverage,
+  riskForecasts,
+  weights,
+  seed: seedInput,
+}: ComputeReadinessIndexOptions): ReadinessIndexResult => {
+  const seed = seedInput ?? 1337;
+  const rng = createRng(seed);
+  const orderedLevels = resolveTargetLevels(targetLevel, targetLevels);
+
+  const objectiveComponent = summarizeObjectiveCoverage(objectives, coverage, orderedLevels, rng);
+  const independenceComponent = summarizeIndependence(objectives, independenceSummary, orderedLevels, rng);
+  const structuralComponent = summarizeStructuralCoverage(structuralCoverage, rng);
+  const riskComponent = summarizeRiskForecasts(riskForecasts, rng);
+
+  const configuredWeights: Record<ReadinessComponent, number> = {
+    ...COMPONENT_WEIGHTS,
+    ...(weights ?? {}),
+  };
+
+  const components: Array<{
+    component: ReadinessComponent;
+    score: number;
+    details: string;
+    weight: number;
+    missing: boolean;
+  }> = [
+    {
+      component: 'objectives',
+      score: objectiveComponent.score,
+      details: objectiveComponent.details,
+      weight: configuredWeights.objectives,
+      missing: objectiveComponent.missing,
+    },
+    {
+      component: 'independence',
+      score: independenceComponent.score,
+      details: independenceComponent.details,
+      weight: configuredWeights.independence,
+      missing: independenceComponent.missing,
+    },
+    {
+      component: 'structuralCoverage',
+      score: structuralComponent.score,
+      details: structuralComponent.details,
+      weight: configuredWeights.structuralCoverage,
+      missing: structuralComponent.missing,
+    },
+    {
+      component: 'riskTrend',
+      score: riskComponent.score,
+      details: riskComponent.details,
+      weight: configuredWeights.riskTrend,
+      missing: riskComponent.missing,
+    },
+  ];
+
+  const weightTotal = components.reduce((sum, entry) => sum + Math.max(entry.weight, 0), 0);
+  const normalizedComponents = components.map((entry) => {
+    const normalizedWeight = weightTotal > 0 ? Math.max(entry.weight, 0) / weightTotal : 1 / components.length;
+    return { ...entry, normalizedWeight };
+  });
+
+  const readinessScore = normalizedComponents.reduce(
+    (sum, entry) => sum + entry.score * entry.normalizedWeight,
+    0,
+  );
+
+  const breakdown: ReadinessComponentBreakdown[] = normalizedComponents.map((entry) => ({
+    component: entry.component,
+    score: round(entry.score * 100, 1),
+    weight: round(entry.normalizedWeight, 3),
+    contribution: round(entry.score * entry.normalizedWeight * 100, 1),
+    details: entry.details,
+    missing: entry.missing || undefined,
+  }));
+
+  return {
+    percentile: round(readinessScore * 100, 1),
+    breakdown,
+    seed,
+  };
 };
 
 export type { QualityFinding, QualityFindingCategory, QualityFindingSeverity } from './quality';

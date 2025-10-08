@@ -17,6 +17,7 @@ import {
   importJiraCsv,
   importJUnitXml,
   importLcov,
+  importParasoft,
   importDoorsClassicCsv,
   importQaLogs,
   fetchDoorsNextArtifacts,
@@ -36,6 +37,7 @@ import {
   type FileCoverageSummary,
   type CoverageSummary as StructuralCoverageSummary,
   type Finding,
+  type ImportedFileHash,
   type JiraRequirement,
   type JenkinsClientOptions,
   type JenkinsCoverageArtifactMetadata,
@@ -88,9 +90,11 @@ import {
 } from '@soipack/core';
 import {
   ComplianceSnapshot,
+  ComplianceIndependenceSummary,
   EvidenceIndex,
   ImportBundle,
   ObjectiveCoverage,
+  ObjectiveCoverageStatus,
   RequirementTrace,
   TraceEngine,
   generateComplianceSnapshot,
@@ -193,6 +197,7 @@ interface ImportPaths {
   ldra?: string;
   vectorcast?: string;
   simulink?: string;
+  parasoft?: string[];
   polarion?: string;
   jenkins?: string;
   manualArtifacts?: Partial<Record<ObjectiveArtifactType, string[]>>;
@@ -226,6 +231,7 @@ export interface ImportWorkspace {
   git?: BuildInfo | null;
   findings: Finding[];
   builds: ExternalBuildRecord[];
+  fileHashes?: ImportedFileHash[];
   metadata: {
     generatedAt: string;
     warnings: string[];
@@ -1009,6 +1015,20 @@ interface ExternalSourceMetadata {
     problemReports?: number;
     openProblems?: number;
     reports?: Array<{ file: string; total: number; open: number }>;
+  };
+  parasoft?: {
+    reports: Array<{
+      file: string;
+      tests: number;
+      findings: number;
+      coverageFiles: number;
+      fileHashes: number;
+      warnings: string[];
+    }>;
+    totalTests: number;
+    totalFindings: number;
+    coverageFiles: number;
+    fileHashes: number;
   };
 }
 
@@ -2737,6 +2757,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
   const testResults: TestResult[] = [];
   const findings: Finding[] = [];
   const builds: ExternalBuildRecord[] = [];
+  const fileHashes: ImportedFileHash[] = [];
   const sourceMetadata: ExternalSourceMetadata = {};
   const coverageMaps: Array<{ map: Record<string, string[]>; origin: string }> = [];
   const normalizedInputs: ImportPaths = {
@@ -2766,6 +2787,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     ldra: options.ldra ? normalizeRelativePath(options.ldra) : undefined,
     vectorcast: options.vectorcast ? normalizeRelativePath(options.vectorcast) : undefined,
     simulink: options.simulink ? normalizeRelativePath(options.simulink) : undefined,
+    parasoft: options.parasoft?.map((filePath) => normalizeRelativePath(filePath)),
     polarion: options.polarion ? `${options.polarion.baseUrl}#${options.polarion.projectId}` : undefined,
     jenkins: options.jenkins
       ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
@@ -3100,6 +3122,65 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
         );
       }
     }
+  }
+
+  if (options.parasoft) {
+    const parasoftSummary: ExternalSourceMetadata['parasoft'] =
+      sourceMetadata.parasoft ?? {
+        reports: [],
+        totalFindings: 0,
+        totalTests: 0,
+        coverageFiles: 0,
+        fileHashes: 0,
+      };
+
+    for (const reportPath of options.parasoft) {
+      const result = await importParasoft(reportPath);
+      warnings.push(...result.warnings);
+
+      const reportData = result.data;
+
+      if (reportData.testResults && reportData.testResults.length > 0) {
+        testResults.push(...reportData.testResults);
+        await appendEvidence('test', 'parasoft', reportPath, 'Parasoft test sonuçları');
+        parasoftSummary.totalTests += reportData.testResults.length;
+      }
+
+      if (reportData.coverage) {
+        structuralCoverage = mergeStructuralCoverage(structuralCoverage, reportData.coverage);
+        await appendEvidence('coverage_stmt', 'parasoft', reportPath, 'Parasoft kapsam özeti');
+        if (structuralCoverageHasMetric(reportData.coverage, 'dec')) {
+          await appendEvidence('coverage_dec', 'parasoft', reportPath, 'Parasoft karar kapsamı');
+        }
+        if (structuralCoverageHasMetric(reportData.coverage, 'mcdc')) {
+          await appendEvidence('coverage_mcdc', 'parasoft', reportPath, 'Parasoft MC/DC kapsamı');
+        }
+        parasoftSummary.coverageFiles += reportData.coverage.files.length;
+      }
+
+      if (reportData.findings && reportData.findings.length > 0) {
+        findings.push(...reportData.findings);
+        await appendEvidence('review', 'parasoft', reportPath, 'Parasoft statik analiz bulguları');
+        parasoftSummary.totalFindings += reportData.findings.length;
+      }
+
+      if (reportData.fileHashes && reportData.fileHashes.length > 0) {
+        fileHashes.push(...reportData.fileHashes);
+        await appendEvidence('cm_record', 'parasoft', reportPath, 'Parasoft dosya özetleri');
+        parasoftSummary.fileHashes += reportData.fileHashes.length;
+      }
+
+      parasoftSummary.reports.push({
+        file: normalizeRelativePath(reportPath),
+        tests: reportData.testResults?.length ?? 0,
+        findings: reportData.findings?.length ?? 0,
+        coverageFiles: reportData.coverage?.files.length ?? 0,
+        fileHashes: reportData.fileHashes?.length ?? 0,
+        warnings: [...result.warnings],
+      });
+    }
+
+    sourceMetadata.parasoft = parasoftSummary;
   }
 
   if (options.git) {
@@ -3707,6 +3788,7 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     git: gitMetadata,
     findings,
     builds,
+    ...(fileHashes.length > 0 ? { fileHashes: [...fileHashes] } : {}),
     metadata: {
       generatedAt,
       warnings,
@@ -3744,6 +3826,7 @@ export interface AnalyzeOptions {
   stage?: SoiStage;
   baselineSnapshot?: string;
   baselineGitRef?: string;
+  parasoft?: string[];
 }
 
 export interface AnalyzeResult {
@@ -4165,10 +4248,107 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const workspacePath = path.join(inputDir, 'workspace.json');
   const workspace = await readJsonFile<ImportWorkspace>(workspacePath);
 
-  const level = options.level ?? workspace.metadata.targetLevel ?? 'C';
+  const augmentedWorkspace: ImportWorkspace = {
+    ...workspace,
+    requirements: [...workspace.requirements],
+    designs: [...workspace.designs],
+    testResults: [...workspace.testResults],
+    coverage: workspace.coverage,
+    structuralCoverage: workspace.structuralCoverage
+      ? mergeStructuralCoverage(undefined, workspace.structuralCoverage)
+      : undefined,
+    traceLinks: [...workspace.traceLinks],
+    testToCodeMap: { ...workspace.testToCodeMap },
+    evidenceIndex: workspace.evidenceIndex,
+    git: workspace.git,
+    findings: [...workspace.findings],
+    builds: [...workspace.builds],
+    fileHashes: workspace.fileHashes ? [...workspace.fileHashes] : undefined,
+    metadata: {
+      ...workspace.metadata,
+      inputs: { ...(workspace.metadata.inputs ?? {}) },
+      sources: workspace.metadata.sources ? { ...workspace.metadata.sources } : undefined,
+    },
+  };
+
+  const parasoftWarnings: string[] = [];
+
+  if (options.parasoft && options.parasoft.length > 0) {
+    const normalizedParasoftInputs = [...(augmentedWorkspace.metadata.inputs.parasoft ?? [])];
+    const hashMap = new Map<string, ImportedFileHash>();
+    augmentedWorkspace.fileHashes?.forEach((entry) => {
+      hashMap.set(entry.path, entry);
+    });
+
+    const parasoftSourceSummary: ExternalSourceMetadata['parasoft'] =
+      augmentedWorkspace.metadata.sources?.parasoft ?? {
+        reports: [],
+        totalTests: 0,
+        totalFindings: 0,
+        coverageFiles: 0,
+        fileHashes: 0,
+      };
+
+    for (const reportPath of options.parasoft) {
+      const result = await importParasoft(reportPath);
+      parasoftWarnings.push(...result.warnings);
+      normalizedParasoftInputs.push(normalizeRelativePath(reportPath));
+
+      const reportData = result.data;
+      if (reportData.testResults && reportData.testResults.length > 0) {
+        augmentedWorkspace.testResults.push(...reportData.testResults);
+        parasoftSourceSummary.totalTests += reportData.testResults.length;
+      }
+
+      if (reportData.coverage) {
+        augmentedWorkspace.structuralCoverage = mergeStructuralCoverage(
+          augmentedWorkspace.structuralCoverage,
+          reportData.coverage,
+        );
+        parasoftSourceSummary.coverageFiles += reportData.coverage.files.length;
+      }
+
+      if (reportData.findings && reportData.findings.length > 0) {
+        augmentedWorkspace.findings.push(...reportData.findings);
+        parasoftSourceSummary.totalFindings += reportData.findings.length;
+      }
+
+      if (reportData.fileHashes && reportData.fileHashes.length > 0) {
+        reportData.fileHashes.forEach((entry) => {
+          hashMap.set(entry.path, entry);
+        });
+      }
+
+      parasoftSourceSummary.reports.push({
+        file: normalizeRelativePath(reportPath),
+        tests: reportData.testResults?.length ?? 0,
+        findings: reportData.findings?.length ?? 0,
+        coverageFiles: reportData.coverage?.files.length ?? 0,
+        fileHashes: reportData.fileHashes?.length ?? 0,
+        warnings: [...result.warnings],
+      });
+    }
+
+    const uniqueInputs = Array.from(new Set(normalizedParasoftInputs));
+    if (uniqueInputs.length > 0) {
+      augmentedWorkspace.metadata.inputs.parasoft = uniqueInputs;
+    }
+
+    const mergedHashes = hashMap.size > 0 ? Array.from(hashMap.values()) : undefined;
+    augmentedWorkspace.fileHashes = mergedHashes
+      ? mergedHashes.sort((a, b) => a.path.localeCompare(b.path))
+      : augmentedWorkspace.fileHashes;
+
+    if (!augmentedWorkspace.metadata.sources) {
+      augmentedWorkspace.metadata.sources = {};
+    }
+    augmentedWorkspace.metadata.sources.parasoft = parasoftSourceSummary;
+  }
+
+  const level = options.level ?? augmentedWorkspace.metadata.targetLevel ?? 'C';
   const fallbackObjectivesPath = path.resolve('data', 'objectives', 'do178c_objectives.min.json');
   const objectivesPathRaw =
-    options.objectives ?? workspace.metadata.objectivesPath ?? fallbackObjectivesPath;
+    options.objectives ?? augmentedWorkspace.metadata.objectivesPath ?? fallbackObjectivesPath;
   const objectivesPath = path.resolve(objectivesPathRaw);
   const objectives = await loadObjectives(objectivesPath);
   const filteredObjectives = filterObjectivesByStage(
@@ -4176,7 +4356,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     options.stage,
   );
 
-  const bundle = buildImportBundle(workspace, filteredObjectives, level);
+  const bundle = buildImportBundle(augmentedWorkspace, filteredObjectives, level);
   const { traceGraph: baselineTraceGraph, warnings: baselineWarnings } =
     await loadBaselineTraceGraph({
       baselineSnapshot: options.baselineSnapshot,
@@ -4188,7 +4368,7 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     baselineTraceGraph ? { changeImpactBaseline: baselineTraceGraph } : undefined,
   );
   const engine = new TraceEngine(bundle);
-  const traces = collectRequirementTraces(engine, workspace.requirements);
+  const traces = collectRequirementTraces(engine, augmentedWorkspace.requirements);
 
   const gatingEvaluation = evaluateCertificationGating(level, snapshot.objectives);
 
@@ -4202,10 +4382,10 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   const analysisGeneratedAt = getCurrentTimestamp();
   const analysisMetadata: AnalysisMetadata = {
     project:
-      options.projectName || options.projectVersion || workspace.metadata.project
+      options.projectName || options.projectVersion || augmentedWorkspace.metadata.project
         ? {
-            name: options.projectName ?? workspace.metadata.project?.name,
-            version: options.projectVersion ?? workspace.metadata.project?.version,
+            name: options.projectName ?? augmentedWorkspace.metadata.project?.name,
+            version: options.projectVersion ?? augmentedWorkspace.metadata.project?.version,
           }
         : undefined,
     level,
@@ -4218,7 +4398,8 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
   await writeJsonFile(snapshotPath, snapshot);
   await writeJsonFile(tracePath, traces);
   const analysisWarnings = [
-    ...(workspace.metadata.warnings ?? []),
+    ...(augmentedWorkspace.metadata.warnings ?? []),
+    ...parasoftWarnings,
     ...gatingEvaluation.warnings,
     ...baselineWarnings,
   ];
@@ -4227,13 +4408,13 @@ export const runAnalyze = async (options: AnalyzeOptions): Promise<AnalyzeResult
     objectives: filteredObjectives,
     objectiveCoverage: snapshot.objectives,
     gaps: snapshot.gaps,
-    requirements: workspace.requirements,
-    designs: workspace.designs,
-    tests: workspace.testResults,
-    coverage: workspace.coverage,
-    evidenceIndex: workspace.evidenceIndex,
-    git: workspace.git,
-    inputs: workspace.metadata.inputs,
+    requirements: augmentedWorkspace.requirements,
+    designs: augmentedWorkspace.designs,
+    tests: augmentedWorkspace.testResults,
+    coverage: augmentedWorkspace.coverage,
+    evidenceIndex: augmentedWorkspace.evidenceIndex,
+    git: augmentedWorkspace.git,
+    inputs: augmentedWorkspace.metadata.inputs,
     warnings: analysisWarnings,
     qualityFindings: snapshot.qualityFindings,
     traceSuggestions: snapshot.traceSuggestions,
@@ -5777,6 +5958,7 @@ export interface IngestPipelineOptions {
   stage?: SoiStage;
   baselineSnapshot?: string;
   baselineGitRef?: string;
+  parasoft?: string[];
 }
 
 export interface IngestPipelineResult {
@@ -5865,6 +6047,24 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
   await ensureDirectory(workingRoot);
   await ensureDirectory(resolvedOutputDir);
 
+  const parasoftInputs: string[] = [];
+  if (options.parasoft && options.parasoft.length > 0) {
+    options.parasoft.forEach((entry) => {
+      if (typeof entry === 'string' && entry.trim().length > 0) {
+        parasoftInputs.push(path.resolve(entry));
+      }
+    });
+  }
+  if (parasoftInputs.length === 0) {
+    const detectedParasoft = await resolveInputFile(resolvedInputDir, [
+      'parasoft.xml',
+      'parasoft-report.xml',
+    ]);
+    if (detectedParasoft) {
+      parasoftInputs.push(detectedParasoft);
+    }
+  }
+
   await runImport({
     output: workspaceDir,
     jira: await resolveInputFile(resolvedInputDir, ['issues.csv', 'jira.csv']),
@@ -5879,6 +6079,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     level: options.level,
     projectName: options.projectName,
     projectVersion: options.projectVersion,
+    parasoft: parasoftInputs.length > 0 ? parasoftInputs : undefined,
   });
 
   const analyzeResult = await runAnalyze({
@@ -6084,22 +6285,11 @@ interface ManifestForDiff {
 
 const normalizeSha256 = (value: string): string => value.toLowerCase();
 
-const loadManifestForDiff = async (
-  kind: 'base' | 'target',
-  manifestPath: string,
-): Promise<ManifestForDiff> => {
-  const resolved = path.resolve(manifestPath);
-  const manifestLabel = kind === 'base' ? 'Referans manifest' : 'Hedef manifest';
-  const manifestRaw = await readUtf8File(resolved, `${manifestLabel} dosyası okunamadı`);
-
-  let manifest: Manifest;
-  try {
-    manifest = JSON.parse(manifestRaw) as Manifest;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${manifestLabel} JSON formatı çözümlenemedi: ${reason}`);
-  }
-
+const buildManifestForDiff = (
+  manifest: Manifest,
+  resolvedPath: string,
+  manifestLabel: string,
+): ManifestForDiff => {
   const digest = computeManifestDigestHex(manifest);
   const merkle = manifest.merkle ?? undefined;
 
@@ -6150,12 +6340,31 @@ const loadManifestForDiff = async (
 
   return {
     manifest,
-    resolvedPath: resolved,
+    resolvedPath,
     digest,
     createdAt,
     proofs: { verified: verifiedProofs, total: totalProofs },
     files,
   };
+};
+
+const loadManifestForDiff = async (
+  kind: 'base' | 'target',
+  manifestPath: string,
+): Promise<ManifestForDiff> => {
+  const resolved = path.resolve(manifestPath);
+  const manifestLabel = kind === 'base' ? 'Referans manifest' : 'Hedef manifest';
+  const manifestRaw = await readUtf8File(resolved, `${manifestLabel} dosyası okunamadı`);
+
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(manifestRaw) as Manifest;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${manifestLabel} JSON formatı çözümlenemedi: ${reason}`);
+  }
+
+  return buildManifestForDiff(manifest, resolved, manifestLabel);
 };
 
 const computeManifestDiff = (
@@ -6200,6 +6409,358 @@ const computeManifestDiff = (
   sortByPath(changed);
 
   return { added, removed, changed };
+};
+
+interface SnapshotForCompare {
+  kind: 'snapshot' | 'manifest';
+  snapshot: ComplianceSnapshot;
+  snapshotPath: string;
+  manifest?: ManifestForDiff;
+}
+
+const isManifestPayload = (value: unknown): value is Manifest => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const manifest = value as Partial<Manifest>;
+  return Array.isArray(manifest.files) && typeof manifest.createdAt === 'string';
+};
+
+const isSnapshotPayload = (value: unknown): value is ComplianceSnapshot => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const snapshot = value as Partial<ComplianceSnapshot>;
+  const version = snapshot.version as Partial<SnapshotVersion> | undefined;
+  return (
+    Array.isArray(snapshot.objectives) &&
+    !!version &&
+    typeof version.id === 'string' &&
+    typeof snapshot.generatedAt === 'string'
+  );
+};
+
+const readSnapshotWithContext = async (
+  snapshotPath: string,
+  label: string,
+): Promise<ComplianceSnapshot> => {
+  try {
+    return await readJsonFile<ComplianceSnapshot>(snapshotPath);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} snapshot dosyası okunamadı (${snapshotPath}): ${reason}`);
+  }
+};
+
+const loadSnapshotForCompare = async (
+  kind: 'base' | 'target',
+  inputPath: string,
+): Promise<SnapshotForCompare> => {
+  const resolved = path.resolve(inputPath);
+  const labelPrefix = kind === 'base' ? 'Referans' : 'Hedef';
+  const raw = await readUtf8File(resolved, `${labelPrefix} dosyası okunamadı`);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${labelPrefix} JSON formatı çözümlenemedi: ${reason}`);
+  }
+
+  if (isManifestPayload(parsed)) {
+    const manifestInfo = buildManifestForDiff(parsed, resolved, `${labelPrefix} manifest`);
+    const snapshotEntry = parsed.files.find((file) => file.path.endsWith('snapshot.json'));
+    if (!snapshotEntry) {
+      throw new Error(`${labelPrefix} manifest snapshot dosyası içermiyor (reports/snapshot.json).`);
+    }
+    const snapshotPath = path.resolve(path.dirname(resolved), snapshotEntry.path);
+    const snapshot = await readSnapshotWithContext(snapshotPath, `${labelPrefix} manifest`);
+    return { kind: 'manifest', snapshot, snapshotPath, manifest: manifestInfo };
+  }
+
+  if (isSnapshotPayload(parsed)) {
+    return { kind: 'snapshot', snapshot: parsed, snapshotPath: resolved };
+  }
+
+  throw new Error(
+    `${labelPrefix} dosyası uyum snapshot veya manifest formatıyla eşleşmedi: ${path.basename(resolved)}`,
+  );
+};
+
+export interface ComplianceCompareObjectiveDelta {
+  objectiveId: string;
+  previousStatus: ObjectiveCoverageStatus;
+  currentStatus: ObjectiveCoverageStatus;
+}
+
+export interface ComplianceCompareObjectivesSummary {
+  improvements: ComplianceCompareObjectiveDelta[];
+  regressions: ComplianceCompareObjectiveDelta[];
+  unchanged: number;
+}
+
+export interface ComplianceCompareIndependenceRegression {
+  objectiveId: string;
+  independence: Objective['independence'];
+  previousStatus: ObjectiveCoverageStatus;
+  currentStatus: ObjectiveCoverageStatus;
+  missingArtifacts: ObjectiveArtifactType[];
+}
+
+export interface ComplianceCompareEvidenceChanges {
+  added: ManifestDiffEntry[];
+  removed: ManifestDiffEntry[];
+  changed: ManifestDiffChange[];
+}
+
+export interface ComplianceCompareResult {
+  base: {
+    path: string;
+    snapshotId: string;
+    generatedAt: string;
+    version: SnapshotVersion;
+    kind: SnapshotForCompare['kind'];
+    manifest?: {
+      path: string;
+      digest: string;
+      createdAt: string;
+      proofs: ManifestForDiff['proofs'];
+    };
+  };
+  target: {
+    path: string;
+    snapshotId: string;
+    generatedAt: string;
+    version: SnapshotVersion;
+    kind: SnapshotForCompare['kind'];
+    manifest?: {
+      path: string;
+      digest: string;
+      createdAt: string;
+      proofs: ManifestForDiff['proofs'];
+    };
+  };
+  objectives: ComplianceCompareObjectivesSummary;
+  independenceRegressions: ComplianceCompareIndependenceRegression[];
+  evidenceChanges?: ComplianceCompareEvidenceChanges;
+}
+
+export interface ComplianceCompareOptions {
+  basePath: string;
+  targetPath: string;
+}
+
+const objectiveStatusRankForCompare: Record<ObjectiveCoverageStatus, number> = {
+  missing: 0,
+  partial: 1,
+  covered: 2,
+};
+
+const computeObjectiveDeltas = (
+  baseObjectives: ObjectiveCoverage[],
+  targetObjectives: ObjectiveCoverage[],
+): ComplianceCompareObjectivesSummary => {
+  const baseById = new Map(baseObjectives.map((entry) => [entry.objectiveId, entry]));
+  const improvements: ComplianceCompareObjectiveDelta[] = [];
+  const regressions: ComplianceCompareObjectiveDelta[] = [];
+  let unchanged = 0;
+
+  targetObjectives.forEach((entry) => {
+    const previous = baseById.get(entry.objectiveId);
+    if (!previous) {
+      return;
+    }
+    const previousRank = objectiveStatusRankForCompare[previous.status];
+    const currentRank = objectiveStatusRankForCompare[entry.status];
+    if (currentRank > previousRank) {
+      improvements.push({
+        objectiveId: entry.objectiveId,
+        previousStatus: previous.status,
+        currentStatus: entry.status,
+      });
+    } else if (currentRank < previousRank) {
+      regressions.push({
+        objectiveId: entry.objectiveId,
+        previousStatus: previous.status,
+        currentStatus: entry.status,
+      });
+    } else {
+      unchanged += 1;
+    }
+  });
+
+  const sortByObjective = (items: ComplianceCompareObjectiveDelta[]): ComplianceCompareObjectiveDelta[] =>
+    items.sort((a, b) => a.objectiveId.localeCompare(b.objectiveId));
+
+  sortByObjective(improvements);
+  sortByObjective(regressions);
+
+  return { improvements, regressions, unchanged };
+};
+
+const computeIndependenceRegressions = (
+  base: ComplianceIndependenceSummary,
+  target: ComplianceIndependenceSummary,
+): ComplianceCompareIndependenceRegression[] => {
+  const baseById = new Map(base.objectives.map((entry) => [entry.objectiveId, entry]));
+  const regressions: ComplianceCompareIndependenceRegression[] = [];
+
+  target.objectives.forEach((entry) => {
+    const previous = baseById.get(entry.objectiveId);
+    if (!previous) {
+      return;
+    }
+    const previousRank = objectiveStatusRankForCompare[previous.status];
+    const currentRank = objectiveStatusRankForCompare[entry.status];
+    if (currentRank < previousRank) {
+      regressions.push({
+        objectiveId: entry.objectiveId,
+        independence: entry.independence,
+        previousStatus: previous.status,
+        currentStatus: entry.status,
+        missingArtifacts: [...entry.missingArtifacts],
+      });
+    }
+  });
+
+  regressions.sort((a, b) => a.objectiveId.localeCompare(b.objectiveId));
+  return regressions;
+};
+
+export const runComplianceCompare = async (
+  options: ComplianceCompareOptions,
+): Promise<ComplianceCompareResult> => {
+  const base = await loadSnapshotForCompare('base', options.basePath);
+  const target = await loadSnapshotForCompare('target', options.targetPath);
+
+  const objectives = computeObjectiveDeltas(base.snapshot.objectives, target.snapshot.objectives);
+  const independenceRegressions = computeIndependenceRegressions(
+    base.snapshot.independenceSummary,
+    target.snapshot.independenceSummary,
+  );
+
+  let evidenceChanges: ComplianceCompareEvidenceChanges | undefined;
+  if (base.manifest && target.manifest) {
+    const diff = computeManifestDiff(base.manifest, target.manifest);
+    evidenceChanges = diff;
+  }
+
+  return {
+    base: {
+      path: base.snapshotPath,
+      snapshotId: base.snapshot.version.id,
+      generatedAt: base.snapshot.generatedAt,
+      version: base.snapshot.version,
+      kind: base.kind,
+      ...(base.manifest
+        ? {
+            manifest: {
+              path: base.manifest.resolvedPath,
+              digest: base.manifest.digest,
+              createdAt: base.manifest.createdAt,
+              proofs: base.manifest.proofs,
+            },
+          }
+        : {}),
+    },
+    target: {
+      path: target.snapshotPath,
+      snapshotId: target.snapshot.version.id,
+      generatedAt: target.snapshot.generatedAt,
+      version: target.snapshot.version,
+      kind: target.kind,
+      ...(target.manifest
+        ? {
+            manifest: {
+              path: target.manifest.resolvedPath,
+              digest: target.manifest.digest,
+              createdAt: target.manifest.createdAt,
+              proofs: target.manifest.proofs,
+            },
+          }
+        : {}),
+    },
+    objectives,
+    independenceRegressions,
+    ...(evidenceChanges ? { evidenceChanges } : {}),
+  };
+};
+
+const renderTable = <T>(rows: T[], columns: Array<{ header: string; getter: (row: T) => string }>): string => {
+  const widths = columns.map((column) => {
+    const headerWidth = column.header.length;
+    const dataWidth = rows.reduce((acc, row) => Math.max(acc, column.getter(row).length), 0);
+    return Math.max(headerWidth, dataWidth);
+  });
+
+  const formatRow = (row: T): string =>
+    columns
+      .map((column, index) => column.getter(row).padEnd(widths[index]))
+      .join('  ')
+      .trimEnd();
+
+  const header = columns
+    .map((column, index) => column.header.padEnd(widths[index]))
+    .join('  ')
+    .trimEnd();
+  const separator = columns
+    .map((_, index) => ''.padEnd(widths[index], '-'))
+    .join('  ')
+    .trimEnd();
+
+  const lines = [header, separator, ...rows.map((row) => formatRow(row))];
+  return lines.join('\n');
+};
+
+const renderObjectiveDeltaTable = (rows: ComplianceCompareObjectiveDelta[]): string => {
+  if (rows.length === 0) {
+    return 'Değişiklik bulunamadı.';
+  }
+  return renderTable(rows, [
+    { header: 'Objective', getter: (row) => row.objectiveId },
+    { header: 'Önceki', getter: (row) => row.previousStatus },
+    { header: 'Güncel', getter: (row) => row.currentStatus },
+  ]);
+};
+
+const renderIndependenceRegressionTable = (
+  rows: ComplianceCompareIndependenceRegression[],
+): string => {
+  if (rows.length === 0) {
+    return 'Bağımsızlık gerilemesi bulunamadı.';
+  }
+  return renderTable(rows, [
+    { header: 'Objective', getter: (row) => row.objectiveId },
+    { header: 'Bağımsızlık', getter: (row) => row.independence },
+    { header: 'Önceki', getter: (row) => row.previousStatus },
+    { header: 'Güncel', getter: (row) => row.currentStatus },
+    {
+      header: 'Eksik Artefaktlar',
+      getter: (row) => (row.missingArtifacts.length > 0 ? row.missingArtifacts.join(', ') : '—'),
+    },
+  ]);
+};
+
+const renderManifestDiffEntries = (entries: ManifestDiffEntry[]): string => {
+  if (entries.length === 0) {
+    return '';
+  }
+  return renderTable(entries, [
+    { header: 'Dosya', getter: (entry) => entry.path },
+    { header: 'SHA-256', getter: (entry) => entry.sha256 },
+  ]);
+};
+
+const renderManifestDiffChanges = (entries: ManifestDiffChange[]): string => {
+  if (entries.length === 0) {
+    return '';
+  }
+  return renderTable(entries, [
+    { header: 'Dosya', getter: (entry) => entry.path },
+    { header: 'Önceki', getter: (entry) => entry.baseSha256 },
+    { header: 'Güncel', getter: (entry) => entry.targetSha256 },
+  ]);
 };
 
 interface ZipEntryMetadata {
@@ -6967,6 +7528,7 @@ export const runPipeline = async (
     simulink: config.inputs?.simulink
       ? path.resolve(baseDir, config.inputs.simulink)
       : undefined,
+    parasoft: config.inputs?.parasoft?.map((entry) => path.resolve(baseDir, entry)),
     designCsv: config.inputs?.designCsv
       ? path.resolve(baseDir, config.inputs.designCsv)
       : undefined,
@@ -7436,6 +7998,10 @@ if (require.main === module) {
             describe: 'Simulink model kapsam raporu JSON çıktısı.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('git', {
             describe: 'Git deposu kök dizini.',
             type: 'string',
@@ -7689,6 +8255,10 @@ if (require.main === module) {
             (argv as Record<string, unknown>).doorsClassicTests,
             '--doors-classic-tests',
           );
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
 
           const result = await runImport({
             output: argv.output,
@@ -7713,6 +8283,7 @@ if (require.main === module) {
             vectorcast: importArguments.adapters.vectorcast,
             manualArtifacts: importArguments.manualArtifacts,
             qaLogs,
+            parasoft,
             polarion: buildPolarionOptions(argv),
             jenkins: buildJenkinsOptions(argv),
             doorsNext: buildDoorsNextOptions(argv),
@@ -7775,6 +8346,10 @@ if (require.main === module) {
             describe: 'Proje sürümü.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -7816,6 +8391,11 @@ if (require.main === module) {
             requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
           }
 
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
+
           const result = await runAnalyze({
             input: argv.input,
             output: argv.output,
@@ -7826,6 +8406,7 @@ if (require.main === module) {
             stage,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
             baselineGitRef: argv.baselineGitRef as string | undefined,
+            parasoft,
           });
 
           logger.info({ ...context, exitCode: result.exitCode }, 'Analiz tamamlandı.');
@@ -7965,6 +8546,10 @@ if (require.main === module) {
             describe: 'DO-330 araç kullanım metaverisini içeren JSON dosyası.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('gsn', {
             describe: 'Goal Structuring Notation grafiğini (DOT) çıktısı olarak üretir.',
             type: 'boolean',
@@ -8055,6 +8640,10 @@ if (require.main === module) {
             describe: 'Proje sürümü.',
             type: 'string',
           })
+          .option('parasoft', {
+            describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
+            type: 'array',
+          })
           .option('baseline-snapshot', {
             describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
             type: 'string',
@@ -8095,6 +8684,11 @@ if (require.main === module) {
             ? String(argv.output[0])
             : (argv.output as string | undefined) ?? './dist';
 
+          const parasoft = parseStringArrayOption(
+            (argv as Record<string, unknown>).parasoft,
+            '--parasoft',
+          );
+
           const result = await runIngestPipeline({
             inputDir,
             outputDir,
@@ -8104,6 +8698,7 @@ if (require.main === module) {
             projectVersion: argv.projectVersion as string | undefined,
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
             baselineGitRef: argv.baselineGitRef as string | undefined,
+            parasoft,
           });
 
           logger.info(
@@ -8728,6 +9323,148 @@ if (require.main === module) {
           logCliError(logger, error, context);
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Manifest doğrulaması sırasında hata oluştu: ${message}`);
+          process.exitCode = exitCodes.error;
+        }
+      },
+    )
+    .command(
+      'compare',
+      'Uyum snapshot veya manifest çıktıları arasındaki değişiklikleri özetler.',
+      (y) =>
+        y
+          .option('base', {
+            describe: 'Referans snapshot veya manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          })
+          .option('target', {
+            describe: 'Karşılaştırılacak hedef snapshot veya manifest JSON dosyası.',
+            type: 'string',
+            demandOption: true,
+          }),
+      async (argv) => {
+        const logger = getLogger(argv);
+        const baseOption = Array.isArray(argv.base) ? argv.base[0] : argv.base;
+        const targetOption = Array.isArray(argv.target) ? argv.target[0] : argv.target;
+
+        const basePath = path.resolve(String(baseOption));
+        const targetPath = path.resolve(String(targetOption));
+
+        const context = {
+          command: 'compare',
+          basePath,
+          targetPath,
+        };
+
+        try {
+          const result = await runComplianceCompare({ basePath, targetPath });
+
+          logger.info(
+            {
+              ...context,
+              baseSnapshot: result.base.snapshotId,
+              targetSnapshot: result.target.snapshotId,
+              improvements: result.objectives.improvements.length,
+              regressions: result.objectives.regressions.length,
+              independenceRegressions: result.independenceRegressions.length,
+              addedEvidence: result.evidenceChanges?.added.length ?? 0,
+              removedEvidence: result.evidenceChanges?.removed.length ?? 0,
+              changedEvidence: result.evidenceChanges?.changed.length ?? 0,
+            },
+            'Uyum karşılaştırması tamamlandı.',
+          );
+
+          const displayPath = (filePath: string) => {
+            const relative = path.relative(process.cwd(), filePath);
+            return relative.length > 0 ? relative : filePath;
+          };
+
+          console.log(
+            `Referans snapshot: ${result.base.snapshotId} (${displayPath(result.base.path)})`,
+          );
+          if (result.base.manifest) {
+            console.log(
+              `Referans manifest: ${displayPath(result.base.manifest.path)} (digest ${result.base.manifest.digest})`,
+            );
+          }
+          console.log(
+            `Hedef snapshot: ${result.target.snapshotId} (${displayPath(result.target.path)})`,
+          );
+          if (result.target.manifest) {
+            console.log(
+              `Hedef manifest: ${displayPath(result.target.manifest.path)} (digest ${result.target.manifest.digest})`,
+            );
+          }
+
+          console.log('');
+          console.log('Hedef durumu değişiklikleri:');
+          if (
+            result.objectives.improvements.length === 0 &&
+            result.objectives.regressions.length === 0
+          ) {
+            console.log(' - Durum değişikliği tespit edilmedi.');
+          } else {
+            if (result.objectives.improvements.length > 0) {
+              console.log('İyileşen hedefler:');
+              console.log(renderObjectiveDeltaTable(result.objectives.improvements));
+            }
+            if (result.objectives.regressions.length > 0) {
+              if (result.objectives.improvements.length > 0) {
+                console.log('');
+              }
+              console.log('Gerileyen hedefler:');
+              console.log(renderObjectiveDeltaTable(result.objectives.regressions));
+            }
+            if (result.objectives.unchanged > 0) {
+              console.log(`Değişmeyen hedef sayısı: ${result.objectives.unchanged}.`);
+            }
+          }
+
+          console.log('');
+          console.log('Bağımsızlık gerilemeleri:');
+          if (result.independenceRegressions.length === 0) {
+            console.log(' - Bağımsızlık gerilemesi tespit edilmedi.');
+          } else {
+            console.log(renderIndependenceRegressionTable(result.independenceRegressions));
+          }
+
+          if (result.evidenceChanges) {
+            console.log('');
+            console.log('Kanıt karması değişiklikleri:');
+            const { added, removed, changed } = result.evidenceChanges;
+            if (added.length === 0 && removed.length === 0 && changed.length === 0) {
+              console.log(' - Manifestler arasında kanıt değişikliği bulunamadı.');
+            } else {
+              if (added.length > 0) {
+                console.log('Eklenen kanıtlar:');
+                console.log(renderManifestDiffEntries(added));
+              }
+              if (removed.length > 0) {
+                if (added.length > 0) {
+                  console.log('');
+                }
+                console.log('Kaldırılan kanıtlar:');
+                console.log(renderManifestDiffEntries(removed));
+              }
+              if (changed.length > 0) {
+                if (added.length > 0 || removed.length > 0) {
+                  console.log('');
+                }
+                console.log('Güncellenen kanıt karmaları:');
+                console.log(renderManifestDiffChanges(changed));
+              }
+            }
+          }
+
+          console.log('');
+          console.log('JSON özet:');
+          console.log(JSON.stringify(result, null, 2));
+
+          process.exitCode = exitCodes.success;
+        } catch (error) {
+          logCliError(logger, error, context);
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Uyum karşılaştırması sırasında hata oluştu: ${message}`);
           process.exitCode = exitCodes.error;
         }
       },

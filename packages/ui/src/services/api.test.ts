@@ -650,6 +650,98 @@ describe('API integrations', () => {
     expect(response.latest?.changeImpact).toEqual([]);
   });
 
+  it('sanitizes readiness summaries from the API', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          computedAt: '2024-07-01T12:00:00Z',
+          latest: {
+            id: 'summary-12',
+            createdAt: '2024-07-01T12:00:00Z',
+            summary: { total: 2, covered: 1, partial: 1, missing: 0 },
+            coverage: { statements: 88 },
+            gaps: { missingIds: [], partialIds: [], openObjectiveCount: 0 },
+            readiness: {
+              percentile: 103.789,
+              seed: 4242.9,
+              computedAt: '2024-06-30T20:00:00Z',
+              breakdown: [
+                {
+                  component: ' objectives ',
+                  score: '0.987',
+                  weight: '0.4',
+                  contribution: '0.3948',
+                  details: ' Objectives complete ',
+                },
+                {
+                  component: 'riskTrend',
+                  score: 0.4,
+                  weight: 0.15,
+                  contribution: 0.06,
+                  missing: true,
+                  details: '',
+                },
+                null,
+              ],
+            },
+          },
+        },
+      }),
+    );
+
+    const response = await fetchComplianceSummary({ token: 'token', license: 'license' });
+
+    expect(response.latest?.readiness).toEqual({
+      percentile: 100,
+      seed: 4242,
+      computedAt: '2024-06-30T20:00:00Z',
+      breakdown: [
+        {
+          component: 'objectives',
+          score: 0.987,
+          weight: 0.4,
+          contribution: 0.395,
+          details: 'Objectives complete',
+          missing: false,
+        },
+        {
+          component: 'riskTrend',
+          score: 0.4,
+          weight: 0.15,
+          contribution: 0.06,
+          details: '',
+          missing: true,
+        },
+      ],
+    });
+  });
+
+  it('omits readiness summaries when payload is malformed', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(
+      createResponse({
+        body: {
+          computedAt: '2024-07-02T08:00:00Z',
+          latest: {
+            id: 'summary-13',
+            createdAt: '2024-07-02T08:00:00Z',
+            summary: { total: 1, covered: 0, partial: 1, missing: 0 },
+            coverage: { statements: 12 },
+            gaps: { missingIds: [], partialIds: [], openObjectiveCount: 1 },
+            readiness: {
+              percentile: 'not-a-number',
+              seed: 101,
+              computedAt: '',
+              breakdown: [],
+            },
+          },
+        },
+      }),
+    );
+
+    const response = await fetchComplianceSummary({ token: 'token', license: 'license' });
+    expect(response.latest?.readiness).toBeNull();
+  });
+
   it('sanitizes compliance change impact entries from the API', async () => {
     (global.fetch as jest.Mock).mockResolvedValue(
       createResponse({

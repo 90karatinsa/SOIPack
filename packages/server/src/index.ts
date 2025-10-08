@@ -54,6 +54,7 @@ import {
   verifyLedgerProof,
 } from '@soipack/core';
 import {
+  computeReadinessIndex,
   computeRemediationPlan,
   computeRiskProfile,
   computeStageRiskForecast,
@@ -62,13 +63,16 @@ import {
   type ComplianceRiskFactorContributions,
   type ComplianceRiskSimulationResult,
   type GapAnalysis,
+  type ReadinessComponentBreakdown,
   type RiskInput,
   type RiskProfile,
   type RiskSimulationBacklogSample,
   type RiskSimulationCoverageSample,
   type RiskSimulationTestSample,
+  type StructuralCoverageSummary,
   type StageComplianceTrendPoint,
   type StageRiskForecast,
+  type ObjectiveCoverage,
 } from '@soipack/engine';
 import express, { Express, NextFunction, Request, Response } from 'express';
 import expressRateLimit from 'express-rate-limit';
@@ -385,6 +389,13 @@ interface ComplianceChangeImpactEntry {
   reasons: string[];
 }
 
+interface ComplianceReadinessSummaryPayload {
+  percentile: number;
+  breakdown: ReadinessComponentBreakdown[];
+  seed: number;
+  computedAt: string;
+}
+
 interface ComplianceSummaryResponsePayload {
   computedAt: string;
   latest: {
@@ -407,6 +418,7 @@ interface ComplianceSummaryResponsePayload {
     };
     independence?: ComplianceIndependenceSummaryPayload;
     changeImpact?: ComplianceChangeImpactEntry[];
+    readiness?: ComplianceReadinessSummaryPayload;
   } | null;
 }
 
@@ -424,6 +436,10 @@ const complianceSummaryCacheRegistry = new Set<Map<string, ComplianceSummaryCach
 
 export const __clearComplianceSummaryCacheForTesting = (): void => {
   complianceSummaryCacheRegistry.forEach((cache) => cache.clear());
+};
+
+export const __clearReadinessIndexCacheForTesting = (): void => {
+  readinessIndexCacheRegistry.forEach((cache) => cache.clear());
 };
 
 interface AuthContext {
@@ -2497,6 +2513,17 @@ const createDefaultUploadPolicies = (maxUploadSize: number): UploadPolicyMap => 
       'application/octet-stream',
     ],
   },
+  parasoft: {
+    maxSizeBytes: maxUploadSize,
+    allowedMimeTypes: [
+      'application/xml',
+      'text/xml',
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/octet-stream',
+      'text/*',
+    ],
+  },
   ldra: {
     maxSizeBytes: maxUploadSize,
     allowedMimeTypes: [
@@ -3121,14 +3148,25 @@ type JobHandlers = {
   [K in JobKind]: JobHandler<K>;
 };
 
-const serializeJobSummary = (summary: JobSummary) => ({
-  id: summary.id,
-  kind: summary.kind,
-  hash: summary.hash,
-  status: summary.status,
-  createdAt: summary.createdAt.toISOString(),
-  updatedAt: summary.updatedAt.toISOString(),
-});
+const serializeJobSummary = (summary: JobSummary | JobDetails<unknown>) => {
+  const base = {
+    id: summary.id,
+    kind: summary.kind,
+    hash: summary.hash,
+    status: summary.status,
+    createdAt: summary.createdAt.toISOString(),
+    updatedAt: summary.updatedAt.toISOString(),
+  };
+
+  if ('result' in summary && summary.result && typeof summary.result === 'object') {
+    const candidate = (summary.result as { warnings?: unknown }).warnings;
+    if (Array.isArray(candidate) && candidate.every((value) => typeof value === 'string')) {
+      return { ...base, warnings: candidate };
+    }
+  }
+
+  return base;
+};
 
 const serializeJobDetails = <T>(job: JobDetails<T>) => ({
   ...serializeJobSummary(job),
@@ -4121,11 +4159,26 @@ export const createServer = (config: ServerConfig): Express => {
     metadata?: Record<string, unknown>;
   }
 
+  interface TenantReadinessRecord extends ComplianceReadinessSummaryPayload {
+    recordId: string;
+    recordCreatedAt: string;
+  }
+
+  interface ReadinessCacheEntry {
+    recordId?: string;
+    recordCreatedAt?: string;
+    readiness?: TenantReadinessRecord;
+    expiresAt: number;
+  }
+
   const evidenceStore = new Map<string, Map<string, EvidenceRecord>>();
   const evidenceHashIndex = new Map<string, Map<string, string>>();
   const complianceStore = new Map<string, Map<string, ComplianceRecord>>();
   const complianceSummaryCache = new Map<string, ComplianceSummaryCacheEntry>();
   complianceSummaryCacheRegistry.add(complianceSummaryCache);
+  const readinessIndexCache = new Map<string, ReadinessCacheEntry>();
+  const readinessIndexStore = new Map<string, TenantReadinessRecord>();
+  const readinessIndexCacheRegistry = new Set<Map<string, ReadinessCacheEntry>>([readinessIndexCache]);
   const riskProfileCache = new Map<string, RiskProfileCacheEntry>();
   riskProfileCacheRegistry.add(riskProfileCache);
   const backlogSeverityCache = new Map<string, BacklogSeverityCacheEntry>();
@@ -4137,6 +4190,7 @@ export const createServer = (config: ServerConfig): Express => {
   const TENANT_EVIDENCE_FILE = 'evidence.json';
   const TENANT_COMPLIANCE_FILE = 'compliance.json';
   const TENANT_SNAPSHOT_FILE = 'snapshot.json';
+  const TENANT_READINESS_FILE = 'readiness.json';
 
   interface RoleSummary {
     id: string;
@@ -4351,6 +4405,15 @@ export const createServer = (config: ServerConfig): Express => {
     await writeTenantJson(tenantId, TENANT_EVIDENCE_FILE, Array.from(store.values()));
   };
 
+  const persistTenantReadiness = async (tenantId: string): Promise<void> => {
+    const record = readinessIndexStore.get(tenantId);
+    if (!record) {
+      await writeTenantJson(tenantId, TENANT_READINESS_FILE, null);
+      return;
+    }
+    await writeTenantJson(tenantId, TENANT_READINESS_FILE, record);
+  };
+
   const persistTenantCompliance = async (tenantId: string): Promise<void> => {
     complianceSummaryCache.delete(tenantId);
     riskProfileCache.delete(tenantId);
@@ -4470,6 +4533,13 @@ export const createServer = (config: ServerConfig): Express => {
             complianceStore.set(tenantId, store);
           }
 
+          const readinessRecord = readPersistedJson<TenantReadinessRecord>(
+            path.join(tenantDir, TENANT_READINESS_FILE),
+          );
+          if (readinessRecord && readinessRecord.recordId && readinessRecord.recordCreatedAt) {
+            readinessIndexStore.set(tenantId, readinessRecord);
+          }
+
           const persistedVersion = readPersistedJson<SnapshotVersion>(
             path.join(tenantDir, TENANT_SNAPSHOT_FILE),
           );
@@ -4533,6 +4603,13 @@ export const createServer = (config: ServerConfig): Express => {
             complianceStore.set(tenantId, store);
           }
 
+          const readinessRecord = await readPersistedJsonAsync<TenantReadinessRecord>(
+            path.join(tenantDir, TENANT_READINESS_FILE),
+          );
+          if (readinessRecord && readinessRecord.recordId && readinessRecord.recordCreatedAt) {
+            readinessIndexStore.set(tenantId, readinessRecord);
+          }
+
           const persistedVersion = await readPersistedJsonAsync<SnapshotVersion>(
             path.join(tenantDir, TENANT_SNAPSHOT_FILE),
           );
@@ -4580,6 +4657,142 @@ export const createServer = (config: ServerConfig): Express => {
       }
     });
     return latest;
+  };
+
+  const computeTenantReadinessIndex = async (
+    tenantId: string,
+    record: ComplianceRecord,
+    nowMs: number,
+  ): Promise<TenantReadinessRecord | undefined> => {
+    const objectives = collectObjectivesForRecord(record);
+    const coverage = buildObjectiveCoverage(record);
+    const independenceSummary = extractIndependenceSummary(record);
+    const structuralCoverage = extractStructuralCoverageSummary(record);
+    const targetLevel = parseCertificationLevel(record.matrix.level);
+
+    const records = Array.from(getTenantComplianceMap(tenantId).values());
+    const { coverageByStage, trendByStage } = buildStageHistories(records);
+    const testHistory = collectTestHistory(records);
+    const backlogHistory = await fetchBacklogHistory(tenantId);
+
+    const riskForecasts: StageRiskForecast[] = [];
+    soiStages.forEach((stage) => {
+      const coverageHistory = coverageByStage.get(stage) ?? [];
+      const trendHistory = trendByStage.get(stage) ?? [];
+      if (coverageHistory.length === 0 && trendHistory.length === 0) {
+        return;
+      }
+
+      const simulation = simulateComplianceRisk({
+        coverageHistory,
+        testHistory,
+        backlogHistory,
+      });
+
+      const monteCarloSamples = [
+        simulation.mean,
+        simulation.percentiles.p50,
+        simulation.percentiles.p90,
+        simulation.percentiles.p95,
+        simulation.percentiles.p99,
+        simulation.min,
+        simulation.max,
+      ]
+        .map((value) => value / 100)
+        .filter((value) => Number.isFinite(value));
+
+      const forecast = computeStageRiskForecast({
+        stage,
+        trend: trendHistory,
+        monteCarloProbabilities: monteCarloSamples,
+      });
+
+      riskForecasts.push(forecast);
+    });
+
+    const readinessResult = computeReadinessIndex({
+      objectives,
+      coverage,
+      targetLevel,
+      independenceSummary,
+      structuralCoverage,
+      riskForecasts: riskForecasts.length > 0 ? riskForecasts : undefined,
+    });
+
+    return {
+      recordId: record.id,
+      recordCreatedAt: record.createdAt,
+      percentile: readinessResult.percentile,
+      breakdown: readinessResult.breakdown,
+      seed: readinessResult.seed,
+      computedAt: new Date(nowMs).toISOString(),
+    };
+  };
+
+  const ensureTenantReadiness = async (
+    tenantId: string,
+    record: ComplianceRecord | undefined,
+    options: { nowMs?: number; publish?: boolean } = {},
+  ): Promise<TenantReadinessRecord | undefined> => {
+    const nowMs = options.nowMs ?? Date.now();
+    if (!record) {
+      readinessIndexCache.delete(tenantId);
+      readinessIndexStore.delete(tenantId);
+      return undefined;
+    }
+
+    const cached = readinessIndexCache.get(tenantId);
+    if (
+      cached &&
+      cached.recordId === record.id &&
+      cached.recordCreatedAt === record.createdAt &&
+      cached.readiness &&
+      cached.expiresAt > nowMs
+    ) {
+      return cached.readiness;
+    }
+
+    let readiness: TenantReadinessRecord | undefined;
+    try {
+      readiness = await computeTenantReadinessIndex(tenantId, record, nowMs);
+    } catch (error) {
+      logger.warn({ err: error, tenantId }, 'Readiness index computation failed.');
+      return undefined;
+    }
+    if (!readiness) {
+      readinessIndexCache.delete(tenantId);
+      readinessIndexStore.delete(tenantId);
+      return undefined;
+    }
+
+    readinessIndexCache.set(tenantId, {
+      recordId: readiness.recordId,
+      recordCreatedAt: readiness.recordCreatedAt,
+      readiness,
+      expiresAt: nowMs + READINESS_INDEX_CACHE_TTL_MS,
+    });
+
+    const previous = readinessIndexStore.get(tenantId);
+    readinessIndexStore.set(tenantId, readiness);
+    await persistTenantReadiness(tenantId).catch((error) =>
+      logger.warn({ err: error, tenantId }, 'Readiness index could not be persisted.'),
+    );
+
+    if (options.publish !== false) {
+      if (
+        !previous ||
+        previous.recordId !== readiness.recordId ||
+        previous.percentile !== readiness.percentile ||
+        previous.computedAt !== readiness.computedAt
+      ) {
+        events.publishReadinessIndex(tenantId, readiness, {
+          id: `readiness:${readiness.recordId}`,
+          emittedAt: readiness.computedAt,
+        });
+      }
+    }
+
+    return readiness;
   };
 
   const MAX_CHANGE_IMPACT_SUMMARY_ENTRIES = 25;
@@ -4749,11 +4962,55 @@ export const createServer = (config: ServerConfig): Express => {
     return sanitizeIndependenceSummary(metadata.independenceSummary);
   };
 
+  const parseCertificationLevel = (value: unknown): CertificationLevel | undefined => {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const normalized = value.trim().toUpperCase();
+    return ['A', 'B', 'C', 'D', 'E'].includes(normalized)
+      ? (normalized as CertificationLevel)
+      : undefined;
+  };
+
+  const extractStructuralCoverageSummary = (
+    record: ComplianceRecord | undefined,
+  ): StructuralCoverageSummary | undefined => {
+    if (!record || !record.metadata || typeof record.metadata !== 'object') {
+      return undefined;
+    }
+    const raw = (record.metadata as { structuralCoverage?: unknown }).structuralCoverage;
+    if (!raw || typeof raw !== 'object') {
+      return undefined;
+    }
+    try {
+      return JSON.parse(JSON.stringify(raw)) as StructuralCoverageSummary;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const buildObjectiveCoverage = (record: ComplianceRecord): ObjectiveCoverage[] =>
+    record.matrix.requirements.map((requirement) => ({
+      objectiveId: requirement.id,
+      status: requirement.status,
+      evidenceRefs: requirement.evidenceIds,
+      satisfiedArtifacts: [],
+      missingArtifacts: [],
+    }));
+
+  const collectObjectivesForRecord = (record: ComplianceRecord): Objective[] => {
+    const ids = new Set(record.matrix.requirements.map((requirement) => requirement.id));
+    return Array.from(ids)
+      .map((id) => objectiveCatalogById.get(id))
+      .filter((objective): objective is Objective => Boolean(objective));
+  };
+
   const buildComplianceSummaryPayload = (
     record: ComplianceRecord | undefined,
     computedAtIso: string,
     independenceSummary: ComplianceIndependenceSummaryPayload | undefined = extractIndependenceSummary(record),
     changeImpact: ComplianceChangeImpactEntry[] | undefined = extractChangeImpactSummary(record),
+    readiness: TenantReadinessRecord | undefined = undefined,
   ): ComplianceSummaryResponsePayload => {
     if (!record) {
       return { computedAt: computedAtIso, latest: null };
@@ -4803,6 +5060,15 @@ export const createServer = (config: ServerConfig): Express => {
       latestPayload.changeImpact = changeImpact;
     }
 
+    if (readiness) {
+      latestPayload.readiness = {
+        percentile: readiness.percentile,
+        breakdown: readiness.breakdown,
+        seed: readiness.seed,
+        computedAt: readiness.computedAt,
+      };
+    }
+
     return {
       computedAt: computedAtIso,
       latest: latestPayload,
@@ -4839,6 +5105,7 @@ export const createServer = (config: ServerConfig): Express => {
     metadata: record.metadata ?? {},
   });
 
+  const READINESS_INDEX_CACHE_TTL_MS = 60_000;
   const RISK_PROFILE_CACHE_TTL_MS = 180_000;
   const BACKLOG_SEVERITY_CACHE_TTL_MS = 120_000;
   const STAGE_RISK_FORECAST_CACHE_TTL_MS = 60_000;
@@ -5418,6 +5685,7 @@ export const createServer = (config: ServerConfig): Express => {
       try {
         const qaLogUploads = payload.uploads.qaLogs ?? [];
         const jiraDefectUploads = payload.uploads.jiraDefects ?? [];
+        const parasoftUploads = payload.uploads.parasoft ?? [];
         const simulinkUpload = payload.uploads.simulink?.[0];
         const manualArtifacts = payload.manualArtifacts
           ? Object.entries(payload.manualArtifacts).reduce<ManualArtifactUploads>((acc, [key, values]) => {
@@ -5439,6 +5707,7 @@ export const createServer = (config: ServerConfig): Express => {
           traceLinksJson: payload.uploads.traceLinksJson?.[0],
           designCsv: payload.uploads.designCsv?.[0],
           jiraDefects: jiraDefectUploads.length > 0 ? [...jiraDefectUploads] : undefined,
+          parasoft: parasoftUploads.length > 0 ? [...parasoftUploads] : undefined,
           polyspace: payload.uploads.polyspace?.[0],
           ldra: payload.uploads.ldra?.[0],
           vectorcast: payload.uploads.vectorcast?.[0],
@@ -6647,6 +6916,7 @@ export const createServer = (config: ServerConfig): Express => {
             request: req,
             heartbeatMs: config.events?.heartbeatMs,
             actorLabel: principal.label ?? principal.preview,
+            roles: principal.roles,
           });
         } catch (error) {
           next(error);
@@ -7470,7 +7740,10 @@ export const createServer = (config: ServerConfig): Express => {
     requireAuth,
     createAsyncHandler(async (req, res) => {
       const { tenantId } = getAuthContext(req);
-      await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+      const principal = await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+      const canViewReadiness = principal.roles.some((role) =>
+        role === 'maintainer' || role === 'operator' || role === 'admin',
+      );
 
       const now = Date.now();
       const ttlSeconds = Math.floor(COMPLIANCE_SUMMARY_CACHE_TTL_MS / 1000);
@@ -7499,6 +7772,25 @@ export const createServer = (config: ServerConfig): Express => {
           reasons: entry.reasons,
         }));
       }
+      if (canViewReadiness) {
+        const stored = readinessIndexStore.get(tenantId);
+        if (stored && latest && stored.recordId === latest.id) {
+          metadataSignaturePayload.readiness = {
+            percentile: stored.percentile,
+            seed: stored.seed,
+            computedAt: stored.computedAt,
+            breakdown: stored.breakdown.map((entry) => ({
+              component: entry.component,
+              score: entry.score,
+              weight: entry.weight,
+              contribution: entry.contribution,
+              ...(entry.missing !== undefined ? { missing: entry.missing } : {}),
+            })),
+          };
+        } else {
+          delete metadataSignaturePayload.readiness;
+        }
+      }
       const metadataSignature =
         Object.keys(metadataSignaturePayload).length > 0
           ? computeObjectSha256(metadataSignaturePayload)
@@ -7515,25 +7807,70 @@ export const createServer = (config: ServerConfig): Express => {
         ) ||
           (!latest && cached.recordId === undefined))
       ) {
-        res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(cached.payload);
+        const basePayload = cached.payload;
+        const responsePayload =
+          canViewReadiness || !basePayload.latest?.readiness
+            ? basePayload
+            : {
+                ...basePayload,
+                latest: basePayload.latest
+                  ? { ...basePayload.latest, readiness: undefined }
+                  : null,
+              };
+        res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(responsePayload);
         return;
       }
+
+      let readiness: TenantReadinessRecord | undefined;
+      if (canViewReadiness && latest) {
+        readiness = await ensureTenantReadiness(tenantId, latest, { nowMs: now, publish: false });
+        if (readiness) {
+          metadataSignaturePayload.readiness = {
+            percentile: readiness.percentile,
+            seed: readiness.seed,
+            computedAt: readiness.computedAt,
+            breakdown: readiness.breakdown.map((entry) => ({
+              component: entry.component,
+              score: entry.score,
+              weight: entry.weight,
+              contribution: entry.contribution,
+              ...(entry.missing !== undefined ? { missing: entry.missing } : {}),
+            })),
+          };
+        } else {
+          delete metadataSignaturePayload.readiness;
+        }
+      }
+
+      const computedMetadataSignature =
+        Object.keys(metadataSignaturePayload).length > 0
+          ? computeObjectSha256(metadataSignaturePayload)
+          : undefined;
 
       const payload = buildComplianceSummaryPayload(
         latest,
         new Date(now).toISOString(),
         independenceSummary,
         changeImpactSummary,
+        readiness,
       );
       complianceSummaryCache.set(tenantId, {
         recordId: latest?.id,
         recordCreatedAt: latest?.createdAt,
         payload,
-        metadataSignature,
+        metadataSignature: computedMetadataSignature,
         expiresAt: now + COMPLIANCE_SUMMARY_CACHE_TTL_MS,
       });
 
-      res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(payload);
+      const responsePayload =
+        canViewReadiness || !payload.latest?.readiness
+          ? payload
+          : {
+              ...payload,
+              latest: payload.latest ? { ...payload.latest, readiness: undefined } : null,
+            };
+
+      res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(responsePayload);
     }),
   );
 
@@ -8008,6 +8345,10 @@ export const createServer = (config: ServerConfig): Express => {
         tenantCompliance.delete(record.id);
         throw error;
       }
+
+      void ensureTenantReadiness(tenantId, record, { nowMs: Date.now(), publish: true }).catch((error) =>
+        logger.warn({ err: error, tenantId }, 'Readiness index refresh failed after compliance update.'),
+      );
 
       res.status(201).json(serializeComplianceRecord(record));
 
@@ -9125,6 +9466,7 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'traceLinksJson', maxCount: 1 },
     { name: 'designCsv', maxCount: 1 },
     { name: 'jiraDefects', maxCount: 25 },
+    { name: 'parasoft', maxCount: 25 },
     { name: 'polyspace', maxCount: 1 },
     { name: 'ldra', maxCount: 1 },
     { name: 'vectorcast', maxCount: 1 },
@@ -9151,6 +9493,7 @@ export const createServer = (config: ServerConfig): Express => {
     { name: 'traceLinksJson', maxCount: 1 },
     { name: 'designCsv', maxCount: 1 },
     { name: 'jiraDefects', maxCount: 25 },
+    { name: 'parasoft', maxCount: 25 },
     { name: 'polyspace', maxCount: 1 },
     { name: 'ldra', maxCount: 1 },
     { name: 'vectorcast', maxCount: 1 },

@@ -18,7 +18,7 @@ import {
   deserializeLedgerProof,
   verifyLedgerProof,
 } from '@soipack/core';
-import type { RiskProfile } from '@soipack/engine';
+import * as engine from '@soipack/engine';
 import { verifyManifestSignature } from '@soipack/packager';
 import { loadDefaultSphincsPlusKeyPair } from '@soipack/packager/security/pqc';
 import { generateKeyPair, SignJWT, exportJWK, type JWK, type JSONWebKeySet, type KeyLike } from 'jose';
@@ -103,6 +103,7 @@ import {
   getServerLifecycle,
   __clearChangeRequestCacheForTesting,
   __clearComplianceSummaryCacheForTesting,
+  __clearReadinessIndexCacheForTesting,
   __clearRiskProfileCacheForTesting,
   __clearBacklogSeverityCacheForTesting,
   __clearStageRiskForecastCacheForTesting,
@@ -2214,6 +2215,7 @@ describe('@soipack/server REST API', () => {
 
   afterEach(() => {
     __clearComplianceSummaryCacheForTesting();
+    __clearReadinessIndexCacheForTesting();
     __clearRiskProfileCacheForTesting();
     __clearBacklogSeverityCacheForTesting();
     __clearStageRiskForecastCacheForTesting();
@@ -2751,6 +2753,16 @@ describe('@soipack/server REST API', () => {
         },
       ],
     });
+    expect(summaryResponse.body.latest?.readiness).toEqual(
+      expect.objectContaining({
+        percentile: expect.any(Number),
+        seed: expect.any(Number),
+        computedAt: expect.any(String),
+        breakdown: expect.arrayContaining([
+          expect.objectContaining({ component: expect.any(String), score: expect.any(Number) }),
+        ]),
+      }),
+    );
     expect(summaryResponse.body.latest?.changeImpact).toEqual([
       {
         id: 'CODE-1',
@@ -2782,6 +2794,83 @@ describe('@soipack/server REST API', () => {
 
     expect(cachedResponse.body.computedAt).toBe(summaryResponse.body.computedAt);
     expect(cachedResponse.body.latest).toEqual(summaryResponse.body.latest);
+  });
+
+  it('enforces ReadinessSummary access and caches computed scores', async () => {
+    const adminToken = await createAccessToken();
+    const maintainerToken = await createAccessToken({ roles: ['maintainer'] });
+    const readerToken = await createAccessToken({ roles: ['reader'] });
+
+    const matrix = {
+      project: 'Readiness Demo',
+      level: 'A',
+      generatedAt: '2024-11-01T00:00:00Z',
+      requirements: [
+        { id: 'A-1-01', status: 'covered' as const, evidenceIds: [] },
+        { id: 'A-3-05', status: 'partial' as const, evidenceIds: [] },
+      ],
+      summary: { total: 2, covered: 1, partial: 1, missing: 0 },
+    };
+
+    const coverage = { statements: 91.2, branches: 63.4 };
+    const metadata = {
+      independenceSummary: {
+        totals: { covered: 1, partial: 0, missing: 1 },
+        objectives: [
+          {
+            objectiveId: 'A-3-05',
+            status: 'partial',
+            independence: 'required',
+            missingArtifacts: ['analysis'],
+          },
+        ],
+      },
+    };
+
+    const computeSpy = jest.spyOn(engine, 'computeReadinessIndex');
+
+    try {
+      await request(app)
+        .post('/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          sha256: createHash('sha256')
+            .update(JSON.stringify(buildCanonicalCompliancePayload(matrix, coverage, metadata)))
+            .digest('hex'),
+          matrix,
+          coverage,
+          metadata,
+        })
+        .expect(201);
+
+      expect(computeSpy).toHaveBeenCalledTimes(1);
+
+      const maintainerSummary = await request(app)
+        .get('/v1/compliance/summary')
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .expect(200);
+
+      expect(maintainerSummary.body.latest?.readiness).toEqual(
+        expect.objectContaining({ percentile: expect.any(Number), computedAt: expect.any(String) }),
+      );
+      expect(computeSpy).toHaveBeenCalledTimes(1);
+
+      await request(app)
+        .get('/v1/compliance/summary')
+        .set('Authorization', `Bearer ${maintainerToken}`)
+        .expect(200);
+      expect(computeSpy).toHaveBeenCalledTimes(1);
+
+      const readerSummary = await request(app)
+        .get('/v1/compliance/summary')
+        .set('Authorization', `Bearer ${readerToken}`)
+        .expect(200);
+
+      expect(readerSummary.body.latest?.readiness).toBeUndefined();
+      expect(computeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      computeSpy.mockRestore();
+    }
   });
 
   it('rejects evidence uploads after configuration freeze', async () => {
@@ -4690,6 +4779,314 @@ describe('@soipack/server REST API', () => {
       runImportSpy.mockRestore();
       await fsPromises.rm(manualDir, { recursive: true, force: true });
     }
+  });
+
+  describe('ParasoftUpload', () => {
+    it('queues Parasoft uploads, records warnings, and cleans staging directories', async () => {
+      const runImportSpy = jest.spyOn(cli, 'runImport');
+      const warnings = ['Parasoft coverage rounding adjusted'];
+      runImportSpy.mockImplementation(async (options: cli.ImportOptions) => {
+        await fsPromises.mkdir(options.output, { recursive: true });
+        const workspace: cli.ImportWorkspace = {
+          requirements: [],
+          tests: [],
+          coverage: {
+            summary: { statements: 0, branches: 0, functions: 0, lines: 0 },
+            files: [],
+          },
+          testToCodeMap: {},
+          evidenceIndex: {},
+          findings: [],
+          builds: [],
+          designs: [],
+          metadata: {
+            generatedAt: new Date().toISOString(),
+            warnings,
+            inputs: {},
+            version: buildSnapshotVersion(),
+          },
+        };
+        const workspacePath = path.join(options.output, 'workspace.json');
+        await fsPromises.writeFile(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`, 'utf8');
+        return { warnings, workspace, workspacePath } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+      });
+
+      try {
+        const response = await request(app)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('reqif', minimalExample('spec.reqif'))
+          .attach('parasoft', Buffer.from('<results id="moduleA"/>', 'utf8'), {
+            filename: 'moduleA.xml',
+            contentType: 'application/xml',
+          })
+          .attach('parasoft', Buffer.from('<results id="moduleB"/>', 'utf8'), {
+            filename: 'moduleB.xml',
+            contentType: 'application/xml',
+          })
+          .field('projectName', 'Parasoft Demo')
+          .field('projectVersion', '1.0.0')
+          .expect(202);
+
+        const jobId = response.body.id as string;
+        const job = await waitForJobCompletion(app, token, jobId);
+        expect(job.status).toBe('completed');
+        expect(job.result.warnings).toEqual(warnings);
+
+        expect(runImportSpy).toHaveBeenCalledTimes(1);
+        const [importOptions] = runImportSpy.mock.calls[0] as [cli.ImportOptions];
+        expect(importOptions.parasoft).toHaveLength(2);
+        const expectedUploadBase = path.join(storageDir, 'uploads', tenantId, jobId);
+        expect(importOptions.parasoft).toEqual([
+          path.join(expectedUploadBase, 'parasoft', 'moduleA.xml'),
+          path.join(expectedUploadBase, 'parasoft', 'moduleB.xml'),
+        ]);
+
+        const metadataPath = path.join(storageDir, 'workspaces', tenantId, jobId, 'job.json');
+        const metadataContent = await fsPromises.readFile(metadataPath, 'utf8');
+        const metadata = JSON.parse(metadataContent) as { params: { files?: Record<string, string[]> | null } };
+        expect(metadata.params.files?.parasoft).toEqual(['moduleA.xml', 'moduleB.xml']);
+
+        const listResponse = await request(app)
+          .get('/v1/jobs')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        const summary = listResponse.body.jobs.find((item: { id: string }) => item.id === jobId);
+        expect(summary).toBeDefined();
+        expect(summary.warnings).toEqual(warnings);
+
+        await expect(
+          fsPromises.access(path.join(storageDir, 'uploads', tenantId, jobId), fs.constants.F_OK),
+        ).rejects.toThrow();
+
+        const reuseResponse = await request(app)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('reqif', minimalExample('spec.reqif'))
+          .attach('parasoft', Buffer.from('<results id="moduleA"/>', 'utf8'), {
+            filename: 'moduleA.xml',
+            contentType: 'application/xml',
+          })
+          .attach('parasoft', Buffer.from('<results id="moduleB"/>', 'utf8'), {
+            filename: 'moduleB.xml',
+            contentType: 'application/xml',
+          })
+          .field('projectName', 'Parasoft Demo')
+          .field('projectVersion', '1.0.0')
+          .expect(200);
+
+        expect(reuseResponse.body.id).toBe(jobId);
+        expect(reuseResponse.body.reused).toBe(true);
+        expect(reuseResponse.body.result.warnings).toEqual(warnings);
+      } finally {
+        runImportSpy.mockRestore();
+      }
+    });
+
+    it('rejects Parasoft uploads that exceed configured limits', async () => {
+      const limitedApp = createServer({
+        ...baseConfig,
+        uploadPolicies: { parasoft: { maxSizeBytes: 8 } },
+        metricsRegistry: new Registry(),
+      });
+
+      try {
+        const response = await request(limitedApp)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('parasoft', Buffer.from('exceeds-size'), {
+            filename: 'oversize.xml',
+            contentType: 'application/xml',
+          })
+          .expect(413);
+
+        expect(response.body.error.code).toBe('FILE_TOO_LARGE');
+        expect(response.body.error.message).toContain('parasoft');
+      } finally {
+        await getServerLifecycle(limitedApp).shutdown();
+      }
+    });
+
+    it('stages Parasoft uploads through S3 storage and reuses cached jobs', async () => {
+      const snapshot = snapshotStorageEnv();
+      const runImportSpy = jest.spyOn(cli, 'runImport');
+      const warnings = ['S3 Parasoft variance detected'];
+      runImportSpy.mockImplementation(async (options: cli.ImportOptions) => {
+        await fsPromises.mkdir(options.output, { recursive: true });
+        const workspace: cli.ImportWorkspace = {
+          requirements: [],
+          tests: [],
+          coverage: {
+            summary: { statements: 0, branches: 0, functions: 0, lines: 0 },
+            files: [],
+          },
+          testToCodeMap: {},
+          evidenceIndex: {},
+          findings: [],
+          builds: [],
+          designs: [],
+          metadata: {
+            generatedAt: new Date().toISOString(),
+            warnings,
+            inputs: {},
+            version: buildSnapshotVersion(),
+          },
+        };
+        const workspacePath = path.join(options.output, 'workspace.json');
+        await fsPromises.writeFile(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`, 'utf8');
+        return { warnings, workspace, workspacePath } satisfies Awaited<ReturnType<typeof cli.runImport>>;
+      });
+
+      const uploadedKeys: string[] = [];
+      const deletedKeys: string[][] = [];
+      const storedObjects = new Map<string, Buffer>();
+      const toBuffer = async (body: unknown): Promise<Buffer> => {
+        if (!body) {
+          return Buffer.alloc(0);
+        }
+        if (Buffer.isBuffer(body)) {
+          return body;
+        }
+        if (body instanceof Uint8Array) {
+          return Buffer.from(body);
+        }
+        if (typeof body === 'string') {
+          return Buffer.from(body, 'utf8');
+        }
+        if (body instanceof Readable) {
+          const chunks: Buffer[] = [];
+          for await (const chunk of body) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          return Buffer.concat(chunks);
+        }
+        return Buffer.from(String(body));
+      };
+
+      __setS3ClientHandler(async (command) => {
+        if (command instanceof PutObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (key) {
+            const data = await toBuffer(command.input.Body);
+            storedObjects.set(key, data);
+            uploadedKeys.push(key);
+          }
+          return {};
+        }
+        if (command instanceof ListObjectsV2Command) {
+          const prefix = command.input.Prefix as string | undefined;
+          const contents = [...storedObjects.keys()]
+            .filter((key) => !prefix || key.startsWith(prefix))
+            .map((Key) => ({ Key }));
+          return { Contents: contents, IsTruncated: false };
+        }
+        if (command instanceof DeleteObjectsCommand) {
+          const keys = (command.input.Delete?.Objects ?? [])
+            .map((entry) => entry?.Key)
+            .filter((key): key is string => Boolean(key));
+          if (keys.length > 0) {
+            deletedKeys.push(keys);
+          }
+          keys.forEach((key) => storedObjects.delete(key));
+          return {};
+        }
+        if (command instanceof HeadObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (key && storedObjects.has(key)) {
+            return {};
+          }
+          const error = new Error('NotFound');
+          (error as { name: string }).name = 'NotFound';
+          (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+          throw error;
+        }
+        if (command instanceof GetObjectCommand) {
+          const key = command.input.Key as string | undefined;
+          if (!key || !storedObjects.has(key)) {
+            const error = new Error('NotFound');
+            (error as { name: string }).name = 'NotFound';
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata = { httpStatusCode: 404 };
+            throw error;
+          }
+          return { Body: Readable.from([storedObjects.get(key)!]) };
+        }
+        return {};
+      });
+
+      let s3App: ReturnType<typeof createServer> | undefined;
+      try {
+        process.env.SOIPACK_STORAGE_BACKEND = 's3';
+        process.env.SOIPACK_STORAGE_S3_BUCKET = 'unit-test-bucket';
+        process.env.SOIPACK_STORAGE_S3_REGION = 'us-east-1';
+        process.env.SOIPACK_STORAGE_S3_PREFIX = 'integration-test';
+
+        s3App = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+
+        const response = await request(s3App)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('reqif', minimalExample('spec.reqif'))
+          .attach('parasoft', Buffer.from('<results id="moduleA"/>', 'utf8'), {
+            filename: 'moduleA.xml',
+            contentType: 'application/xml',
+          })
+          .attach('parasoft', Buffer.from('<results id="moduleB"/>', 'utf8'), {
+            filename: 'moduleB.xml',
+            contentType: 'application/xml',
+          })
+          .field('projectName', 'S3 Parasoft Demo')
+          .field('projectVersion', '3.1.4')
+          .expect(202);
+
+        const jobId = response.body.id as string;
+        const job = await waitForJobCompletion(s3App, token, jobId);
+        expect(job.result.warnings).toEqual(warnings);
+
+        const parasoftKeys = (runImportSpy.mock.calls[0][0] as cli.ImportOptions).parasoft ?? [];
+        expect(parasoftKeys).toHaveLength(2);
+        parasoftKeys.forEach((key) => {
+          expect(uploadedKeys).toContain(key);
+          expect(key.startsWith(`integration-test/uploads/${tenantId}/${jobId}/parasoft/`)).toBe(true);
+        });
+
+        const flattenedDeletes = deletedKeys.flat();
+        expect(flattenedDeletes).toEqual(expect.arrayContaining(parasoftKeys));
+
+        const reuseResponse = await request(s3App)
+          .post('/v1/import')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .attach('reqif', minimalExample('spec.reqif'))
+          .attach('parasoft', Buffer.from('<results id="moduleA"/>', 'utf8'), {
+            filename: 'moduleA.xml',
+            contentType: 'application/xml',
+          })
+          .attach('parasoft', Buffer.from('<results id="moduleB"/>', 'utf8'), {
+            filename: 'moduleB.xml',
+            contentType: 'application/xml',
+          })
+          .field('projectName', 'S3 Parasoft Demo')
+          .field('projectVersion', '3.1.4')
+          .expect(200);
+
+        expect(reuseResponse.body.id).toBe(jobId);
+        expect(reuseResponse.body.reused).toBe(true);
+        expect(reuseResponse.body.result.warnings).toEqual(warnings);
+      } finally {
+        runImportSpy.mockRestore();
+        __setS3ClientHandler(async () => {
+          throw new Error('S3 client handler not configured.');
+        });
+        if (s3App) {
+          await getServerLifecycle(s3App).shutdown();
+        }
+        restoreStorageEnv(snapshot);
+      }
+    });
   });
 
   it('rejects invalid independence declarations for import jobs', async () => {
@@ -8139,7 +8536,7 @@ describe('@soipack/server REST API', () => {
         { factor: 'coverage', contribution: 12, weight: 40, details: 'Coverage tracking' },
       ],
       missingSignals: ['testing'],
-    } as RiskProfile;
+    } as engine.RiskProfile;
 
     lifecycle.events.publishRiskProfile(tenantId, profile, {
       id: 'risk-stream',
@@ -8214,6 +8611,71 @@ describe('@soipack/server REST API', () => {
     expect(riskMessages).toHaveLength(1);
 
     client.close();
+    await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
+    await lifecycle.shutdown();
+  });
+
+  it('emits ReadinessSummary events only to elevated roles', async () => {
+    const streamingApp = createServer({ ...baseConfig, metricsRegistry: new Registry() });
+    const httpsServer = createHttpsServer(streamingApp, {
+      key: TEST_SERVER_KEY,
+      cert: TEST_SERVER_CERT,
+    });
+
+    await new Promise<void>((resolve) => httpsServer.listen(0, resolve));
+    const { port } = httpsServer.address() as AddressInfo;
+
+    const maintainerToken = await createAccessToken({ roles: ['maintainer'] });
+    const readerToken = await createAccessToken({ roles: ['reader'] });
+
+    const url = `https://localhost:${port}/v1/stream/compliance`;
+    const maintainerClient = createSseClient(url, {
+      headers: { Authorization: `Bearer ${maintainerToken}` },
+    });
+    const readerClient = createSseClient(url, {
+      headers: { Authorization: `Bearer ${readerToken}` },
+    });
+
+    await Promise.all([maintainerClient.opened, readerClient.opened]);
+
+    const lifecycle = getServerLifecycle(streamingApp);
+    const readinessPromise = new Promise<Record<string, unknown>>((resolve) => {
+      maintainerClient.on('readinessIndex', (data: string) => {
+        resolve(JSON.parse(data) as Record<string, unknown>);
+      });
+    });
+
+    let readerReceived = false;
+    readerClient.on('readinessIndex', () => {
+      readerReceived = true;
+    });
+
+    lifecycle.events.publishReadinessIndex(
+      tenantId,
+      {
+        percentile: 72.5,
+        seed: 4242,
+        computedAt: '2024-11-02T12:00:00Z',
+        breakdown: [
+          {
+            component: 'objectives',
+            score: 88.1,
+            weight: 0.4,
+            contribution: 35.2,
+            details: 'Objectives mostly satisfied.',
+          },
+        ],
+      },
+      { id: 'readiness-event', emittedAt: '2024-11-02T12:00:00Z' },
+    );
+
+    const readinessData = await readinessPromise;
+    expect(readinessData.readiness).toMatchObject({ percentile: 72.5, seed: 4242 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(readerReceived).toBe(false);
+
+    maintainerClient.close();
+    readerClient.close();
     await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
     await lifecycle.shutdown();
   });

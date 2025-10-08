@@ -145,6 +145,28 @@ describe('DashboardPage', () => {
             },
           ],
         },
+        readiness: {
+          percentile: 72.5,
+          seed: 4242,
+          computedAt: now,
+          breakdown: [
+            {
+              component: 'objectives',
+              score: 0.92,
+              weight: 0.4,
+              contribution: 0.368,
+              details: 'Objectives nearly complete',
+            },
+            {
+              component: 'riskTrend',
+              score: 0.4,
+              weight: 0.15,
+              contribution: 0.06,
+              details: 'Recent regressions detected',
+              missing: true,
+            },
+          ],
+        },
       },
     });
     mockFetchChangeRequests.mockResolvedValue({
@@ -238,6 +260,29 @@ describe('DashboardPage', () => {
     });
 
     expect(screen.getByTestId('compliance-summary')).toBeInTheDocument();
+    const readinessGauge = screen.getByRole('img', {
+      name: 'Hazırlık yüzdelik dilimi: 72.5%',
+    });
+    expect(readinessGauge).toBeInTheDocument();
+    expect(screen.getByTestId('readiness-gauge')).toHaveTextContent('72.5%');
+    expect(screen.getByTestId('readiness-gauge')).toHaveTextContent('yüzdelik');
+    expect(screen.getByText(/Hesaplanma:/)).toHaveTextContent(new Date(now).toLocaleString());
+    expect(screen.getByTestId('readiness-detail-card')).toHaveTextContent('Hazırlık bileşenleri');
+    expect(screen.getByTestId('readiness-detail-card')).toHaveTextContent(
+      'Hedef, bağımsızlık, kapsam ve risk katkıları',
+    );
+    expect(screen.getByTestId('readiness-component-objectives')).toHaveTextContent('Hedefler');
+    expect(screen.getByTestId('readiness-component-objectives')).toHaveTextContent(
+      'Objectives nearly complete',
+    );
+    expect(screen.getByTestId('readiness-component-objectives')).toHaveTextContent('92%');
+    expect(screen.getByTestId('readiness-component-objectives')).toHaveTextContent('40%');
+    expect(screen.getByTestId('readiness-component-objectives')).toHaveTextContent('36.8%');
+    expect(screen.getByTestId('readiness-component-risktrend')).toHaveTextContent('Risk eğilimi');
+    expect(screen.getByTestId('readiness-component-risktrend')).toHaveTextContent(
+      'Recent regressions detected',
+    );
+    expect(screen.getByTestId('readiness-component-risktrend')).toHaveTextContent('Veri eksik');
     expect(screen.getByText('Eylem Gerekli')).toBeInTheDocument();
     expect(screen.getByText('Hazırlık (%)')).toBeInTheDocument();
     expect(screen.getByTestId('compliance-summary')).toHaveTextContent('75%');
@@ -452,6 +497,36 @@ describe('DashboardPage', () => {
     expect(screen.queryByTestId('sbom-download')).not.toBeInTheDocument();
   });
 
+  it('degrades gracefully when readiness data is unavailable', async () => {
+    const now = new Date().toISOString();
+
+    mockListJobs.mockResolvedValue({ jobs: [] });
+    mockListReviews.mockResolvedValue({ reviews: [], hasMore: false, nextOffset: null });
+    mockFetchComplianceSummary.mockResolvedValue({
+      computedAt: now,
+      latest: {
+        id: 'summary-readiness-missing',
+        createdAt: now,
+        summary: { total: 3, covered: 1, partial: 1, missing: 1 },
+        coverage: { statements: 50 },
+        gaps: { missingIds: [], partialIds: [], openObjectiveCount: 1 },
+        changeImpact: [],
+        independence: null,
+        readiness: null,
+      },
+    });
+    mockFetchChangeRequests.mockResolvedValue({ fetchedAt: now, items: [] });
+    mockFetchRemediationPlanSummary.mockResolvedValue({ generatedAt: now, actions: [] });
+    mockFetchServiceMetadata.mockResolvedValue({ sbom: null });
+
+    renderDashboard();
+
+    const gaugeFallback = await screen.findByTestId('readiness-gauge-unavailable');
+    expect(gaugeFallback).toHaveTextContent('Hazırlık skoru kullanılamıyor.');
+    const breakdownFallback = await screen.findByTestId('readiness-breakdown-unavailable');
+    expect(breakdownFallback).toHaveTextContent('Hazırlık bileşenleri alınamadı.');
+  });
+
   it('shows error fallbacks when requests fail', async () => {
     const error = new ApiError(500, 'Queue failed');
     mockListJobs.mockRejectedValue(error);
@@ -519,6 +594,12 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Hazır')).toBeInTheDocument();
     });
+    expect(screen.getByTestId('readiness-gauge-unavailable')).toHaveTextContent(
+      'Hazırlık skoru kullanılamıyor.',
+    );
+    expect(screen.getByTestId('readiness-breakdown-unavailable')).toHaveTextContent(
+      'Hazırlık bileşenleri alınamadı.',
+    );
     expect(screen.getByTestId('sbom-empty')).toHaveTextContent('—');
     expect(screen.queryByTestId('sbom-download')).not.toBeInTheDocument();
     expect(screen.getByText(/Hazırlık \(%\)/)).toBeInTheDocument();

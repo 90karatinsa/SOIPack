@@ -23,6 +23,7 @@ import {
   renderGsnGraphDot,
   printToPDF,
   type ComplianceMatrixOptions,
+  type ComplianceReadinessSummary,
   type ToolUsageMetadata,
 } from './index';
 
@@ -67,6 +68,42 @@ describe('@soipack/report', () => {
 
   it('renderComplianceMatrix renders ComplianceDelta dashboard with regression sparkline', () => {
     const fixture = createReportFixture();
+    const readiness: ComplianceReadinessSummary = {
+      percentile: 72.5,
+      computedAt: '2024-02-12T10:30:00Z',
+      seed: 4242,
+      breakdown: [
+        {
+          component: 'objectives',
+          score: 82.1,
+          contribution: 32.8,
+          weight: 0.4,
+          details: 'HLR kapsamı %85 seviyesinde.',
+        },
+        {
+          component: 'independence',
+          score: 61.4,
+          contribution: 15.4,
+          weight: 0.25,
+          details: 'Bağımsız gözden geçirme eksikleri azaltıldı.',
+        },
+        {
+          component: 'structuralCoverage',
+          score: 55.2,
+          contribution: 11.0,
+          weight: 0.2,
+          details: 'MC/DC kapsama raporları güncellendi.',
+          missing: true,
+        },
+        {
+          component: 'riskTrend',
+          score: 70.5,
+          contribution: 13.3,
+          weight: 0.15,
+          details: 'Audit uyarılarında aşağı yönlü trend.',
+        },
+      ],
+    };
     const result = renderComplianceMatrix(fixture.snapshot, {
       manifestId: fixture.manifestId,
       objectivesMetadata: fixture.objectives,
@@ -74,6 +111,7 @@ describe('@soipack/report', () => {
       programName: fixture.programName,
       certificationLevel: fixture.certificationLevel,
       projectVersion: fixture.projectVersion,
+      readiness,
     });
 
     expect(result.html).toContain('Uyum Delta Panosu');
@@ -84,6 +122,10 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Zorunlu Bağımsızlık');
     expect(result.html).toContain('Bağımsızlık Eksikleri');
     expect(result.html).toContain('Değişiklik Etki Analizi');
+    expect(result.html).toContain('Hazırlık Endeksi');
+    expect(result.html).toContain('Hazırlık bileşen katkı eğrisi');
+    expect(result.html).toContain('En güçlü bileşen');
+    expect(result.html).toContain('Hazırlık Skoru');
     expect(result.html).toContain('TC-AUDIT-NEW');
     expect(result.html).toContain(fixture.programName);
     expect(result.html).toContain(fixture.certificationLevel);
@@ -97,6 +139,11 @@ describe('@soipack/report', () => {
     expect(result.json.programName).toBe(fixture.programName);
     expect(result.json.certificationLevel).toBe(fixture.certificationLevel);
     expect(result.json.projectVersion).toBe(fixture.projectVersion);
+    expect(result.json.readiness?.percentile).toBe(72.5);
+    expect(result.json.readiness?.breakdown).toHaveLength(4);
+    expect(result.json.readiness?.breakdown[0]).toEqual(
+      expect.objectContaining({ component: 'objectives', score: 82.1, contribution: 32.8, weight: 0.4 }),
+    );
 
     maybeUpdateGolden('compliance-matrix.csv', result.csv.csv);
     const goldenCsv = readFileSync(path.join(goldenDir, 'compliance-matrix.csv'), 'utf-8');
@@ -104,11 +151,20 @@ describe('@soipack/report', () => {
     expect(result.csv.metadata.programName).toBe(fixture.programName);
     expect(result.csv.metadata.certificationLevel).toBe(fixture.certificationLevel);
     expect(result.csv.metadata.projectVersion).toBe(fixture.projectVersion);
-    expect(result.csv.metadata.rows).toEqual([
+    expect(result.csv.metadata.rows.slice(0, 4)).toEqual([
       ['Program', fixture.programName],
       ['Sertifikasyon Seviyesi', fixture.certificationLevel],
       ['Proje Sürümü', fixture.projectVersion],
+      ['Hazırlık Skoru', '72.5/100'],
     ]);
+    expect(result.csv.metadata.rows).toEqual(
+      expect.arrayContaining([
+        ['Hazırlık Hedefler', expect.stringContaining('Skor 82.1%')],
+        ['Hazırlık Bağımsızlık', expect.stringContaining('Katkı 15.4%')],
+        ['Hazırlık Yapısal kapsam', expect.stringContaining('Veri eksik')],
+        ['Hazırlık Risk eğilimi', expect.stringContaining('Audit uyarılarında')],
+      ]),
+    );
     expect(result.csv.headers).toEqual([
       'Objective ID',
       'Table',
@@ -154,9 +210,11 @@ describe('@soipack/report', () => {
 
     expect(first.html).toContain('Regulatory References');
     expect(first.html).toContain('AC 20-115D');
+    expect(first.html).toContain('AMC 20-152A');
     expect(first.html).toContain('FAA 8110.49');
     expect(first.html).toContain('§6.3');
     expect(first.html).toContain('§6.5');
+    expect(first.html).toContain('§5.1.1');
     expect(first.html).toContain('§2.3');
     expect(first.html).toContain('§3.4');
 
@@ -164,6 +222,7 @@ describe('@soipack/report', () => {
     expect(objective).toBeDefined();
     expect(objective?.regulatoryReferences).toEqual({
       ac20115d: ['§6.3', '§6.5'],
+      easaAmc_20_152a: ['§5.1.1', '§5.1.3'],
       faa8110_49: ['§2.3', '§3.4'],
     });
 
@@ -208,6 +267,16 @@ describe('@soipack/report', () => {
         removedEvidence: ['EV-050'],
       },
     ];
+    const readiness: ComplianceReadinessSummary = {
+      percentile: 68.2,
+      computedAt: '2024-02-11T07:45:00Z',
+      breakdown: [
+        { component: 'objectives', score: 78.4, contribution: 31.4, weight: 0.42 },
+        { component: 'independence', score: 58.0, contribution: 12.2, weight: 0.2 },
+        { component: 'structuralCoverage', score: 49.5, contribution: 9.9, weight: 0.18, missing: true },
+        { component: 'riskTrend', score: 66.1, contribution: 14.7, weight: 0.2 },
+      ],
+    };
 
     const result = renderComplianceCoverageReport(fixture.snapshot, coverage, {
       manifestId: fixture.manifestId,
@@ -221,6 +290,7 @@ describe('@soipack/report', () => {
       programName: fixture.programName,
       certificationLevel: fixture.certificationLevel,
       projectVersion: fixture.projectVersion,
+      readiness,
     });
 
     expect(result.coverageWarnings).toEqual(coverageWarnings);
@@ -235,6 +305,7 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Bağımsızlık Uyarıları');
     expect(result.html).toContain('Zorunlu Bağımsızlık');
     expect(result.html).toContain('Değişiklik Etki Analizi');
+    expect(result.html).toContain('Hazırlık Endeksi');
     expect(result.html).toContain('src/security/new-audit.ts');
     expect(result.html).toContain(fixture.programName);
     expect(result.html).toContain(fixture.certificationLevel);
@@ -249,6 +320,7 @@ describe('@soipack/report', () => {
     expect(result.json.programName).toBe(fixture.programName);
     expect(result.json.certificationLevel).toBe(fixture.certificationLevel);
     expect(result.json.projectVersion).toBe(fixture.projectVersion);
+    expect(result.json.readiness?.percentile).toBe(68.2);
     expect(result.changeRequestBacklog).toEqual(backlog);
     expect(result.ledgerDiffs).toEqual(ledgerDiffs);
     expect(result.csv.headers[0]).toBe('Objective ID');

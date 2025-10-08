@@ -248,6 +248,22 @@ export interface ComplianceIndependenceSummary {
   objectives: ComplianceIndependenceObjective[];
 }
 
+export interface ComplianceReadinessBreakdown {
+  component: 'objectives' | 'independence' | 'structuralCoverage' | 'riskTrend' | string;
+  score: number;
+  weight: number;
+  contribution: number;
+  details: string;
+  missing?: boolean;
+}
+
+export interface ComplianceReadinessSummary {
+  percentile: number;
+  breakdown: ComplianceReadinessBreakdown[];
+  seed: number;
+  computedAt: string;
+}
+
 export interface ComplianceSummaryLatest {
   id: string;
   createdAt: string;
@@ -259,6 +275,7 @@ export interface ComplianceSummaryLatest {
   gaps: ComplianceGapSummary;
   changeImpact: ComplianceChangeImpactEntry[];
   independence?: ComplianceIndependenceSummary | null;
+  readiness?: ComplianceReadinessSummary | null;
 }
 
 export interface ComplianceSummaryResponse {
@@ -595,6 +612,14 @@ const toSafeCount = (value: unknown): number => {
   return 0;
 };
 
+const clamp01 = (value: unknown): number => {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, numeric));
+};
+
 const sanitizeStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -711,6 +736,68 @@ const sanitizeComplianceIndependenceSummary = (
     .filter((entry): entry is ComplianceIndependenceObjective => entry !== null);
 
   return { totals, objectives };
+};
+
+const allowedReadinessComponents: ComplianceReadinessBreakdown['component'][] = [
+  'objectives',
+  'independence',
+  'structuralCoverage',
+  'riskTrend',
+];
+
+const sanitizeComplianceReadinessSummary = (
+  readiness: unknown,
+): ComplianceReadinessSummary | null => {
+  if (!readiness || typeof readiness !== 'object') {
+    return null;
+  }
+
+  const payload = readiness as Record<string, unknown>;
+  const percentileValue = Number(payload.percentile);
+  if (!Number.isFinite(percentileValue)) {
+    return null;
+  }
+  const percentile = Math.max(0, Math.min(100, Math.round(percentileValue * 10) / 10));
+
+  const seedValue = Number(payload.seed);
+  if (!Number.isFinite(seedValue)) {
+    return null;
+  }
+  const seed = Math.trunc(seedValue);
+
+  const computedAt = typeof payload.computedAt === 'string' ? payload.computedAt.trim() : '';
+  if (!computedAt) {
+    return null;
+  }
+
+  const breakdownRaw = Array.isArray(payload.breakdown) ? payload.breakdown : [];
+  const breakdown = breakdownRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const componentRaw = typeof record.component === 'string' ? record.component.trim() : '';
+      const component = allowedReadinessComponents.includes(
+        componentRaw as ComplianceReadinessBreakdown['component'],
+      )
+        ? (componentRaw as ComplianceReadinessBreakdown['component'])
+        : componentRaw;
+      if (!component) {
+        return null;
+      }
+
+      const score = Math.round(clamp01(record.score) * 1000) / 1000;
+      const weight = Math.round(clamp01(record.weight) * 1000) / 1000;
+      const contribution = Math.round(clamp01(record.contribution) * 1000) / 1000;
+      const details = typeof record.details === 'string' ? record.details.trim() : '';
+      const missing = record.missing === true;
+
+      return { component, score, weight, contribution, details, missing };
+    })
+    .filter((entry): entry is ComplianceReadinessBreakdown => entry !== null);
+
+  return { percentile, seed, computedAt, breakdown };
 };
 
 const allowedRemediationGapCategories: RemediationGapCategory[] = [
@@ -1518,9 +1605,10 @@ export const fetchComplianceMatrix = async ({
 };
 
 interface ComplianceSummaryLatestPayload
-  extends Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact'> {
+  extends Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact' | 'readiness'> {
   independence?: unknown;
   changeImpact?: unknown;
+  readiness?: unknown;
 }
 
 interface ComplianceSummaryResponsePayload {
@@ -1550,11 +1638,12 @@ export const fetchComplianceSummary = async ({
     return { computedAt: payload.computedAt, latest: null };
   }
 
-  const { changeImpact, independence, ...rest } = payload.latest;
+  const { changeImpact, independence, readiness, ...rest } = payload.latest;
   const normalized: ComplianceSummaryLatest = {
-    ...(rest as Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact'>),
+    ...(rest as Omit<ComplianceSummaryLatest, 'independence' | 'changeImpact' | 'readiness'>),
     changeImpact: sanitizeComplianceChangeImpactEntries(changeImpact),
     independence: sanitizeComplianceIndependenceSummary(independence),
+    readiness: sanitizeComplianceReadinessSummary(readiness),
   };
 
   return { computedAt: payload.computedAt, latest: normalized };
