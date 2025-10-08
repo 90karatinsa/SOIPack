@@ -1,11 +1,20 @@
 import type { Request, Response } from 'express';
 
 import type { LedgerEntry, ManifestMerkleSummary } from '@soipack/core';
-import type { ComplianceRiskFactorContributions, RiskProfile } from '@soipack/engine';
+import type {
+  ComplianceRiskFactorContributions,
+  ReadinessComponentBreakdown,
+  RiskProfile,
+} from '@soipack/engine';
 
 import type { JobSummary } from './queue';
 
-export type ComplianceEventType = 'riskProfile' | 'ledgerEntry' | 'queueState' | 'manifestProof';
+export type ComplianceEventType =
+  | 'riskProfile'
+  | 'ledgerEntry'
+  | 'queueState'
+  | 'manifestProof'
+  | 'readinessIndex';
 
 export interface ComplianceEventBase {
   tenantId: string;
@@ -45,11 +54,22 @@ export interface ComplianceManifestProofEvent extends ComplianceEventBase {
   files: Array<{ path: string; sha256: string; hasProof: boolean; verified: boolean }>;
 }
 
+export interface ComplianceReadinessEvent extends ComplianceEventBase {
+  type: 'readinessIndex';
+  readiness: {
+    percentile: number;
+    seed: number;
+    computedAt: string;
+    breakdown: ReadinessComponentBreakdown[];
+  };
+}
+
 export type ComplianceEvent =
   | ComplianceRiskEvent
   | ComplianceLedgerEvent
   | ComplianceQueueEvent
-  | ComplianceManifestProofEvent;
+  | ComplianceManifestProofEvent
+  | ComplianceReadinessEvent;
 
 export class EventAuthorizationError extends Error {
   constructor(message: string) {
@@ -184,15 +204,19 @@ interface ConnectOptions {
   request: Request;
   actorLabel?: string;
   heartbeatMs?: number;
+  roles?: string[];
 }
 
 interface PublishOptions {
   id?: string;
   emittedAt?: string;
+  filter?: (roles: string[]) => boolean;
 }
 
 export class ComplianceEventStream {
   private readonly connections = new Map<string, Set<SseConnection>>();
+
+  private readonly connectionRoles = new WeakMap<SseConnection, string[]>();
 
   private readonly defaultHeartbeatMs: number;
 
@@ -219,6 +243,7 @@ export class ComplianceEventStream {
     const clients = this.connections.get(options.tenantId) ?? new Set<SseConnection>();
     clients.add(connection);
     this.connections.set(options.tenantId, clients);
+    this.connectionRoles.set(connection, options.roles ?? []);
 
     connection.send(': ready\n\n');
   }
@@ -233,7 +258,15 @@ export class ComplianceEventStream {
       emittedAt: event.emittedAt ?? options.emittedAt ?? new Date().toISOString(),
     } as ComplianceEvent;
     const message = formatSseMessage(enriched, options.id);
-    clients.forEach((client) => client.send(message));
+    clients.forEach((client) => {
+      if (options.filter) {
+        const roles = this.connectionRoles.get(client) ?? [];
+        if (!options.filter(roles)) {
+          return;
+        }
+      }
+      client.send(message);
+    });
   }
 
   public publishRiskProfile(
@@ -317,6 +350,26 @@ export class ComplianceEventStream {
     );
   }
 
+  public publishReadinessIndex(
+    tenantId: string,
+    readiness: ComplianceReadinessEvent['readiness'],
+    options: PublishOptions = {},
+  ): void {
+    const allowedRoles = new Set(['admin', 'maintainer', 'operator']);
+    const filter = options.filter
+      ? (roles: string[]) => options.filter?.(roles) && roles.some((role) => allowedRoles.has(role))
+      : (roles: string[]) => roles.some((role) => allowedRoles.has(role));
+    this.publish(
+      {
+        type: 'readinessIndex',
+        tenantId,
+        readiness,
+        emittedAt: options.emittedAt,
+      },
+      { ...options, filter },
+    );
+  }
+
   public closeAll(): void {
     for (const clients of this.connections.values()) {
       for (const client of clients) {
@@ -343,6 +396,7 @@ export class ComplianceEventStream {
       return;
     }
     clients.delete(connection);
+    this.connectionRoles.delete(connection);
     if (clients.size === 0) {
       this.connections.delete(tenantId);
     }

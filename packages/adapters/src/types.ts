@@ -1,4 +1,4 @@
-import type { TraceLinkType } from '@soipack/core';
+import type { ObjectiveArtifactType, TraceLinkType } from '@soipack/core';
 
 export interface ParseResult<T> {
   data: T;
@@ -146,7 +146,7 @@ export type EvidenceKind =
   | 'conformity';
 
 export interface Finding {
-  tool: 'polyspace' | 'ldra' | 'vectorcast';
+  tool: 'polyspace' | 'ldra' | 'vectorcast' | 'parasoft';
   id: string;
   file?: string;
   func?: string;
@@ -159,7 +159,7 @@ export interface Finding {
 }
 
 export interface CoverageSummary {
-  tool: 'vectorcast' | 'ldra' | 'simulink';
+  tool: 'vectorcast' | 'ldra' | 'simulink' | 'parasoft';
   files: Array<{
     path: string;
     stmt: { covered: number; total: number };
@@ -172,4 +172,12 @@ export interface CoverageSummary {
 export interface ImportedBundle {
   findings?: Finding[];
   coverage?: CoverageSummary;
+  testResults?: TestResult[];
+  fileHashes?: ImportedFileHash[];
+}
+
+export interface ImportedFileHash {
+  artifact: ObjectiveArtifactType;
+  path: string;
+  hash: string;
 }

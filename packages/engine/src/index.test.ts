@@ -21,10 +21,15 @@ import {
   ObjectiveMapper,
   TraceEngine,
   computeRemediationPlan,
+  computeReadinessIndex,
   type GapAnalysis,
   type RemediationAction,
+  type ReadinessIndexResult,
   generateComplianceSnapshot,
+  type ObjectiveCoverage,
+  type ComplianceIndependenceSummary,
 } from './index';
+import type { StageRiskForecast } from './risk';
 
 const evidence = (
   type: ObjectiveArtifactType,
@@ -1138,6 +1143,187 @@ describe('computeRemediationPlan', () => {
       { type: 'independence', independence: 'recommended', missingArtifacts: ['analysis'] },
       { type: 'gap', category: 'tests', missingArtifacts: ['test'] },
     ]);
+  });
+});
+
+describe('computeReadinessIndex', () => {
+  const objectives: Objective[] = [
+    {
+      id: 'OBJ-A1',
+      table: 'A-3',
+      stage: 'SOI-1',
+      name: 'Planning baseline approved',
+      desc: 'All planning artifacts reviewed and accepted.',
+      artifacts: ['plan', 'analysis'],
+      levels: { A: true, B: true, C: true, D: true, E: false },
+      independence: 'required' as const,
+    } as Objective,
+    {
+      id: 'OBJ-A2',
+      table: 'A-4',
+      stage: 'SOI-2',
+      name: 'High-level requirements verified',
+      desc: 'High-level requirements validated and traced.',
+      artifacts: ['analysis', 'trace', 'review'],
+      levels: { A: true, B: true, C: true, D: true, E: false },
+      independence: 'required' as const,
+    } as Objective,
+    {
+      id: 'OBJ-B1',
+      table: 'A-5',
+      stage: 'SOI-3',
+      name: 'Structural coverage decision analysis',
+      desc: 'Decision coverage analysis performed.',
+      artifacts: ['coverage_dec', 'analysis'],
+      levels: { A: false, B: true, C: true, D: true, E: false },
+      independence: 'recommended' as const,
+    } as Objective,
+  ];
+
+  const coverage: ObjectiveCoverage[] = [
+    {
+      objectiveId: 'OBJ-A1',
+      status: 'covered',
+      evidenceRefs: [],
+      satisfiedArtifacts: ['plan', 'analysis'],
+      missingArtifacts: [],
+    },
+    {
+      objectiveId: 'OBJ-A2',
+      status: 'partial',
+      evidenceRefs: [],
+      satisfiedArtifacts: ['analysis'],
+      missingArtifacts: ['trace'],
+    },
+    {
+      objectiveId: 'OBJ-B1',
+      status: 'partial',
+      evidenceRefs: [],
+      satisfiedArtifacts: ['coverage_dec'],
+      missingArtifacts: ['analysis'],
+    },
+  ];
+
+  const independenceSummary: ComplianceIndependenceSummary = {
+    objectives: [
+      {
+        objectiveId: 'OBJ-A1',
+        independence: 'required',
+        status: 'covered',
+        missingArtifacts: [],
+      },
+      {
+        objectiveId: 'OBJ-A2',
+        independence: 'required',
+        status: 'missing',
+        missingArtifacts: ['analysis'],
+      },
+      {
+        objectiveId: 'OBJ-B1',
+        independence: 'recommended',
+        status: 'partial',
+        missingArtifacts: ['analysis'],
+      },
+    ],
+    totals: { covered: 1, partial: 1, missing: 1 },
+  };
+
+  const structuralCoverage: StructuralCoverageSummary = {
+    tool: 'ldra',
+    files: [
+      {
+        path: 'src/nav/autopilot.c',
+        stmt: { covered: 180, total: 200 },
+        dec: { covered: 90, total: 110 },
+        mcdc: { covered: 60, total: 80 },
+      },
+      {
+        path: 'src/nav/control.c',
+        stmt: { covered: 120, total: 140 },
+        dec: { covered: 70, total: 90 },
+      },
+    ],
+    objectiveLinks: ['OBJ-B1'],
+  };
+
+  const riskForecasts: StageRiskForecast[] = [
+    {
+      stage: 'SOI-3',
+      probability: 24,
+      classification: 'guarded',
+      horizonDays: 30,
+      credibleInterval: { lower: 10, upper: 40, confidence: 90 },
+      posterior: { alpha: 4.2, beta: 13.7, sampleSize: 120 },
+      sparkline: [
+        { timestamp: '2024-03-01T00:00:00Z', regressionRatio: 0.18 },
+        { timestamp: '2024-03-15T00:00:00Z', regressionRatio: 0.12 },
+        { timestamp: '2024-03-30T00:00:00Z', regressionRatio: 0.08 },
+      ],
+      updatedAt: '2024-03-30T00:00:00Z',
+    },
+  ];
+
+  it('blends objective, independence, structural, and risk data for level A/B mixes', () => {
+    const result = computeReadinessIndex({
+      objectives,
+      coverage,
+      targetLevels: ['A', 'B'],
+      independenceSummary,
+      structuralCoverage,
+      riskForecasts,
+      seed: 42,
+    });
+
+    expect(result.percentile).toBeGreaterThan(60);
+    expect(result.percentile).toBeLessThan(90);
+
+    const objectivesEntry = result.breakdown.find((entry) => entry.component === 'objectives');
+    const independenceEntry = result.breakdown.find((entry) => entry.component === 'independence');
+    const riskEntry = result.breakdown.find((entry) => entry.component === 'riskTrend');
+
+    expect(objectivesEntry?.score).toBeGreaterThan(independenceEntry?.score ?? 0);
+    expect(riskEntry?.score).toBeGreaterThan(50);
+    expect(objectivesEntry?.missing).toBeFalsy();
+  });
+
+  it('falls back gracefully when structural coverage and risk data are absent', () => {
+    const result = computeReadinessIndex({
+      objectives,
+      coverage: [],
+      targetLevel: 'A',
+      independenceSummary: undefined,
+      structuralCoverage: undefined,
+      riskForecasts: undefined,
+      seed: 99,
+    });
+
+    const structuralEntry = result.breakdown.find((entry) => entry.component === 'structuralCoverage');
+    const riskEntry = result.breakdown.find((entry) => entry.component === 'riskTrend');
+
+    expect(structuralEntry?.missing).toBe(true);
+    expect(riskEntry?.missing).toBe(true);
+    expect(result.percentile).toBeGreaterThan(30);
+    expect(result.percentile).toBeLessThan(70);
+  });
+
+  it('produces deterministic output for identical seeds', () => {
+    const baseInputs = {
+      objectives,
+      coverage,
+      targetLevel: 'A' as const,
+      independenceSummary: undefined,
+      structuralCoverage: undefined,
+      riskForecasts: undefined,
+    };
+
+    const seeded: ReadinessIndexResult = computeReadinessIndex({ ...baseInputs, seed: 1337 });
+    const seededAgain: ReadinessIndexResult = computeReadinessIndex({ ...baseInputs, seed: 1337 });
+    const differentSeed: ReadinessIndexResult = computeReadinessIndex({ ...baseInputs, seed: 2024 });
+
+    expect(seeded.percentile).toBeCloseTo(seededAgain.percentile, 5);
+    expect(seeded.breakdown).toEqual(seededAgain.breakdown);
+    expect(differentSeed.percentile).not.toBeCloseTo(seeded.percentile, 5);
+    expect(seeded.seed).toBe(1337);
   });
 });
 

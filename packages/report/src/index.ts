@@ -69,6 +69,29 @@ export interface ComplianceMatrixOptions extends BaseReportOptions {
   objectivesMetadata?: Objective[];
   signoffs?: SignoffTimelineEntry[];
   toolQualification?: ToolQualificationLinkOptions;
+  readiness?: ComplianceReadinessSummary;
+}
+
+export type ReadinessComponentId =
+  | 'objectives'
+  | 'independence'
+  | 'structuralCoverage'
+  | 'riskTrend';
+
+export interface ComplianceReadinessBreakdown {
+  component: ReadinessComponentId;
+  score: number;
+  weight: number;
+  contribution: number;
+  details?: string;
+  missing?: boolean;
+}
+
+export interface ComplianceReadinessSummary {
+  percentile: number;
+  computedAt?: string;
+  seed?: number;
+  breakdown: ComplianceReadinessBreakdown[];
 }
 
 export interface TraceMatrixOptions extends BaseReportOptions {
@@ -162,33 +185,49 @@ const stageLabels: Record<SoiStage, string> = {
   'SOI-4': 'SOI-4 Sertifikasyon',
 };
 
+const readinessComponentLabels: Record<ReadinessComponentId, string> = {
+  objectives: 'Hedefler',
+  independence: 'Bağımsızlık',
+  structuralCoverage: 'Yapısal kapsam',
+  riskTrend: 'Risk eğilimi',
+};
+
+const readinessExplainer =
+  'Hazırlık endeksi; hedef karşılanma oranı, bağımsızlık boşlukları, yapısal kapsam ve risk trendi bileşenlerini ağırlıklı bir yüzdelik skor olarak harmanlar.';
+
 export type Do178cObjectiveId = Objective['id'];
 
 interface RegulatoryCrosswalkEntry {
   ac20115d: string[];
   faa8110_49: string[];
+  easaAmc_20_152a: string[];
 }
 
 const tableRegulatoryReferences: Record<ObjectiveTable, RegulatoryCrosswalkEntry> = {
   'A-3': {
     ac20115d: ['§6.3', '§6.5'],
     faa8110_49: ['§2.3', '§3.4'],
+    easaAmc_20_152a: ['§5.1.1', '§5.1.3'],
   },
   'A-4': {
     ac20115d: ['§6.6', '§6.7'],
     faa8110_49: ['§5.4'],
+    easaAmc_20_152a: ['§6.2.1', '§6.2.2'],
   },
   'A-5': {
     ac20115d: ['§7.1', '§7.2'],
     faa8110_49: ['§6.3', '§6.5'],
+    easaAmc_20_152a: ['§6.3.1', '§6.3.3'],
   },
   'A-6': {
     ac20115d: ['§7.3', '§7.4'],
     faa8110_49: ['§7.4'],
+    easaAmc_20_152a: ['§6.4.1', '§6.4.2'],
   },
   'A-7': {
     ac20115d: ['§8.1', '§8.4'],
     faa8110_49: ['§9.3', '§9.5'],
+    easaAmc_20_152a: ['§6.6.1', '§6.6.2'],
   },
 } as const;
 
@@ -201,19 +240,21 @@ export const REGULATORY_CROSSWALK: Record<Do178cObjectiveId, RegulatoryCrosswalk
       ? {
           ac20115d: sortReferences(references.ac20115d),
           faa8110_49: sortReferences(references.faa8110_49),
+          easaAmc_20_152a: sortReferences(references.easaAmc_20_152a),
         }
-      : { ac20115d: [], faa8110_49: [] };
+      : { ac20115d: [], faa8110_49: [], easaAmc_20_152a: [] };
     return acc;
   }, {} as Record<Do178cObjectiveId, RegulatoryCrosswalkEntry>);
 
 const getRegulatoryReferences = (objectiveId: string): RegulatoryCrosswalkEntry => {
   const references = REGULATORY_CROSSWALK[objectiveId as Do178cObjectiveId];
   if (!references) {
-    return { ac20115d: [], faa8110_49: [] };
+    return { ac20115d: [], faa8110_49: [], easaAmc_20_152a: [] };
   }
   return {
     ac20115d: [...references.ac20115d],
     faa8110_49: [...references.faa8110_49],
+    easaAmc_20_152a: [...references.easaAmc_20_152a],
   };
 };
 
@@ -404,6 +445,44 @@ interface ComplianceMatrixView {
   signoffs?: SignoffTimelineView;
   toolQualification?: ToolQualificationLinkView;
   independence: IndependenceSummaryView;
+  readiness?: ReadinessView;
+}
+
+interface ReadinessBadgeView {
+  label: string;
+  value: string;
+  accent?: boolean;
+  missing?: boolean;
+}
+
+interface ReadinessSparklineBarView {
+  height: number;
+  title: string;
+  missing?: boolean;
+}
+
+interface ReadinessSparklineView {
+  label: string;
+  bars: ReadinessSparklineBarView[];
+}
+
+interface ReadinessComponentView {
+  label: string;
+  scoreLabel: string;
+  contributionLabel: string;
+  weightLabel: string;
+  details?: string;
+  missing?: boolean;
+}
+
+interface ReadinessView {
+  percentile: string;
+  percentileLabel: string;
+  computedAtLabel?: string;
+  badges: ReadinessBadgeView[];
+  sparkline: ReadinessSparklineView;
+  components: ReadinessComponentView[];
+  explanation: string;
 }
 
 interface TraceMatrixRow {
@@ -640,6 +719,7 @@ export interface ComplianceMatrixJson {
   complianceDelta?: RiskDeltaSummaryJson;
   signoffs: SignoffTimelineEntry[];
   toolQualification?: ToolQualificationLinkOptions;
+  readiness?: ComplianceReadinessSummary | null;
 }
 
 export interface ComplianceMatrixResult {
@@ -1706,6 +1786,154 @@ const baseStyles = `
     color: #1e293b;
   }
 
+  .readiness-grid {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    align-items: stretch;
+  }
+
+  .readiness-score {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(14, 116, 144, 0.08));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-score-value {
+    font-size: 40px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-score-label {
+    font-size: 13px;
+    color: #1e293b;
+  }
+
+  .readiness-score-meta {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .readiness-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .readiness-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+  }
+
+  .readiness-badge--accent {
+    background: rgba(59, 130, 246, 0.2);
+    color: #1d4ed8;
+  }
+
+  .readiness-badge--missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .readiness-explainer {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .readiness-sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px;
+    background: #f8fafc;
+  }
+
+  .readiness-sparkline-bar {
+    width: 22px;
+    border-radius: 8px 8px 0 0;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.8), rgba(59, 130, 246, 0.35));
+    transition: opacity 0.2s ease-in-out;
+  }
+
+  .readiness-sparkline-bar--missing {
+    background: repeating-linear-gradient(
+      180deg,
+      rgba(248, 113, 113, 0.85),
+      rgba(248, 113, 113, 0.85) 10px,
+      rgba(254, 226, 226, 0.7) 10px,
+      rgba(254, 226, 226, 0.7) 20px
+    );
+  }
+
+  .readiness-breakdown {
+    margin-top: 24px;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .readiness-component {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 18px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-component header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .readiness-component h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  .readiness-component dl {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .readiness-component dt {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+  }
+
+  .readiness-component dd {
+    margin: 0;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-component p {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
   .risk-grid {
     display: grid;
     gap: 16px;
@@ -1883,6 +2111,60 @@ const layoutTemplate = nunjucks.compile(
   </body>
 </html>`,
   env,
+);
+
+const readinessTemplate = nunjucks.compile(
+  `<section class="section">
+    <h2>Hazırlık Endeksi</h2>
+    <p class="section-lead">{{ explanation }}</p>
+    <div class="readiness-grid">
+      <div class="readiness-score">
+        <span class="readiness-score-value">{{ percentile }}</span>
+        <span class="readiness-score-label">{{ percentileLabel }}</span>
+        {% if computedAtLabel %}
+          <span class="readiness-score-meta">{{ computedAtLabel }}</span>
+        {% endif %}
+        {% if badges.length %}
+          <div class="readiness-badges">
+            {% for badge in badges %}
+              <span class="readiness-badge{% if badge.accent %} readiness-badge--accent{% endif %}{% if badge.missing %} readiness-badge--missing{% endif %}">
+                {{ badge.label }}: {{ badge.value }}
+              </span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <p class="readiness-explainer">${readinessExplainer}</p>
+      </div>
+      <div class="readiness-sparkline" role="img" aria-label="{{ sparkline.label }}">
+        {% for bar in sparkline.bars %}
+          <span class="readiness-sparkline-bar{% if bar.missing %} readiness-sparkline-bar--missing{% endif %}" style="height: {{ bar.height }}px" title="{{ bar.title }}"></span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="readiness-breakdown">
+      {% for component in components %}
+        <article class="readiness-component">
+          <header>
+            <h3>{{ component.label }}</h3>
+            {% if component.missing %}
+              <span class="readiness-badge readiness-badge--missing">Veri eksik</span>
+            {% endif %}
+          </header>
+          <dl>
+            <dt>Skor</dt>
+            <dd>{{ component.scoreLabel }}</dd>
+            <dt>Katkı</dt>
+            <dd>{{ component.contributionLabel }}</dd>
+            <dt>Ağırlık</dt>
+            <dd>{{ component.weightLabel }}</dd>
+          </dl>
+          {% if component.details %}
+            <p>{{ component.details }}</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  </section>`
 );
 
 const riskTemplate = nunjucks.compile(
@@ -2161,6 +2443,18 @@ const complianceTemplate = nunjucks.compile(
                             {% if row.regulatoryReferences.ac20115d.length %}
                               <ul class="list">
                                 {% for reference in row.regulatoryReferences.ac20115d %}
+                                  <li class="muted">{{ reference }}</li>
+                                {% endfor %}
+                              </ul>
+                            {% else %}
+                              <span class="muted">—</span>
+                            {% endif %}
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            {% if row.regulatoryReferences.easaAmc_20_152a.length %}
+                              <ul class="list">
+                                {% for reference in row.regulatoryReferences.easaAmc_20_152a %}
                                   <li class="muted">{{ reference }}</li>
                                 {% endfor %}
                               </ul>
@@ -2985,6 +3279,101 @@ const buildChangeImpactView = (
   };
 };
 
+const buildReadinessView = (
+  readiness?: ComplianceReadinessSummary,
+): ReadinessView | undefined => {
+  if (!readiness) {
+    return undefined;
+  }
+
+  const breakdown = readiness.breakdown ?? [];
+  const maxContribution = breakdown.reduce(
+    (max, entry) => Math.max(max, entry.contribution),
+    0,
+  );
+  const missingEntries = breakdown.filter((entry) => entry.missing);
+  const missingLabels = missingEntries
+    .map((entry) => readinessComponentLabels[entry.component] ?? entry.component)
+    .filter((label) => Boolean(label));
+  const leadingComponent = breakdown.length
+    ? breakdown.reduce((best, current) =>
+        current.contribution > best.contribution ? current : best,
+      breakdown[0])
+    : undefined;
+
+  const baseHeight = 28;
+  const heightScale = 60;
+  const sparklineBars: ReadinessSparklineBarView[] = breakdown.map((entry) => {
+    const normalized = maxContribution > 0 ? entry.contribution / maxContribution : 0;
+    const height = Math.round(baseHeight + normalized * heightScale);
+    const label = readinessComponentLabels[entry.component] ?? entry.component;
+    return {
+      height,
+      title: `${label}: skor ${entry.score.toFixed(1)}%, katkı ${entry.contribution.toFixed(1)}%, ağırlık ${(entry.weight * 100).toFixed(1)}%`,
+      missing: Boolean(entry.missing),
+    };
+  });
+
+  const badges: ReadinessBadgeView[] = [];
+  if (leadingComponent) {
+    badges.push({
+      label: 'En güçlü bileşen',
+      value: readinessComponentLabels[leadingComponent.component] ?? leadingComponent.component,
+      accent: true,
+    });
+  } else {
+    badges.push({ label: 'En güçlü bileşen', value: 'Veri yok' });
+  }
+
+  const missingCount = missingEntries.length;
+  badges.push({
+    label: 'Eksik veri',
+    value:
+      missingCount > 0
+        ? missingLabels.length > 0
+          ? missingLabels.join(', ')
+          : `${missingCount} bileşen`
+        : 'Yok',
+    missing: missingCount > 0,
+  });
+
+  if (readiness.seed !== undefined) {
+    badges.push({ label: 'Tohum', value: String(readiness.seed) });
+  }
+
+  const weightSummary = breakdown.length
+    ? `Ağırlıklar: ${breakdown
+        .map((entry) => `${readinessComponentLabels[entry.component] ?? entry.component} ${(entry.weight * 100).toFixed(0)}%`)
+        .join(', ')}.`
+    : 'Ağırlık bilgisi bulunamadı.';
+
+  const missingSummary = missingCount
+    ? `Eksik veri bulunan bileşenler: ${
+        missingLabels.length > 0 ? missingLabels.join(', ') : `${missingCount} bileşen`
+      }.`
+    : 'Tüm bileşenler veri sağladı.';
+
+  return {
+    percentile: readiness.percentile.toFixed(1),
+    percentileLabel: '0-100 arası yüzdelik skor',
+    computedAtLabel: readiness.computedAt ? `Hesaplanma: ${formatDate(readiness.computedAt)}` : undefined,
+    badges,
+    sparkline: {
+      label: 'Hazırlık bileşen katkı eğrisi',
+      bars: sparklineBars,
+    },
+    components: breakdown.map((entry) => ({
+      label: readinessComponentLabels[entry.component] ?? entry.component,
+      scoreLabel: `${entry.score.toFixed(1)}%`,
+      contributionLabel: `${entry.contribution.toFixed(1)}%`,
+      weightLabel: `${(entry.weight * 100).toFixed(1)}%`,
+      details: entry.details,
+      missing: Boolean(entry.missing),
+    })),
+    explanation: `${readinessExplainer} ${weightSummary} ${missingSummary}`.trim(),
+  };
+};
+
 const buildSummaryMetrics = (
   stats: ComplianceStatistics,
   requirementCoverage: RequirementCoverageStatus[] = [],
@@ -2992,8 +3381,24 @@ const buildSummaryMetrics = (
   changeImpact?: ChangeImpactScore[],
   risk?: ComplianceSnapshot['risk'],
   independenceSummary?: ComplianceSnapshot['independenceSummary'],
+  readiness?: ComplianceReadinessSummary,
 ): LayoutSummaryMetric[] => {
   const metrics: LayoutSummaryMetric[] = [];
+
+  if (readiness) {
+    metrics.push({
+      label: 'Hazırlık Skoru',
+      value: `${readiness.percentile.toFixed(1)}/100`,
+      accent: readiness.percentile >= 75,
+    });
+
+    const missingCount = readiness.breakdown.filter((entry) => entry.missing).length;
+    metrics.push({
+      label: 'Hazırlık Eksikleri',
+      value: missingCount > 0 ? `${missingCount} bileşen` : 'Yok',
+      accent: missingCount === 0,
+    });
+  }
 
   if (risk) {
     const classification = riskClassificationMeta[risk.profile.classification] ?? {
@@ -3194,12 +3599,14 @@ const buildComplianceMatrixView = (
       snapshot.changeImpact,
       snapshot.risk,
       snapshot.independenceSummary,
+      options.readiness,
     ),
     stageTabs,
     risk: buildRiskView(snapshot.risk),
     signoffs: buildSignoffTimelineView(options.signoffs),
     toolQualification,
     independence: buildIndependenceSummaryView(snapshot.independenceSummary, objectiveLookup),
+    readiness: buildReadinessView(options.readiness),
   };
 };
 
@@ -3242,6 +3649,25 @@ const createComplianceMatrixCsv = (
   }
   if (options.projectVersion) {
     metadataRecords.push(['Proje Sürümü', options.projectVersion]);
+  }
+
+  if (options.readiness) {
+    metadataRecords.push(['Hazırlık Skoru', `${options.readiness.percentile.toFixed(1)}/100`]);
+    options.readiness.breakdown.forEach((entry) => {
+      const label = readinessComponentLabels[entry.component] ?? entry.component;
+      const detailParts = [
+        `Skor ${entry.score.toFixed(1)}%`,
+        `Katkı ${entry.contribution.toFixed(1)}%`,
+        `Ağırlık ${(entry.weight * 100).toFixed(1)}%`,
+      ];
+      if (entry.missing) {
+        detailParts.push('Veri eksik');
+      }
+      if (entry.details) {
+        detailParts.push(entry.details);
+      }
+      metadataRecords.push([`Hazırlık ${label}`, detailParts.join(' | ')]);
+    });
   }
 
   const metadataLines = metadataRecords.map((row) => {
@@ -3358,6 +3784,7 @@ const buildComplianceMatrixJson = (
     evidenceRefs: [...row.evidenceRefs],
     regulatoryReferences: {
       ac20115d: [...row.regulatoryReferences.ac20115d],
+      easaAmc_20_152a: [...row.regulatoryReferences.easaAmc_20_152a],
       faa8110_49: [...row.regulatoryReferences.faa8110_49],
     },
   })),
@@ -3423,6 +3850,21 @@ const buildComplianceMatrixJson = (
         },
       }
     : {}),
+  readiness: options.readiness
+    ? {
+        percentile: options.readiness.percentile,
+        computedAt: options.readiness.computedAt,
+        seed: options.readiness.seed,
+        breakdown: options.readiness.breakdown.map((entry) => ({
+          component: entry.component,
+          score: entry.score,
+          weight: entry.weight,
+          contribution: entry.contribution,
+          ...(entry.details ? { details: entry.details } : {}),
+          ...(entry.missing ? { missing: true } : {}),
+        })),
+      }
+    : null,
 });
 
 const renderLayout = (context: LayoutContext): string => {
@@ -3442,6 +3884,9 @@ export const renderComplianceMatrix = (
   const view = buildComplianceMatrixView(snapshot, options);
 
   const sections: string[] = [];
+  if (view.readiness) {
+    sections.push(readinessTemplate.render(view.readiness));
+  }
   if (view.risk) {
     sections.push(riskTemplate.render(view.risk));
   }
@@ -3497,6 +3942,9 @@ export const renderComplianceCoverageReport = (
   const ledgerDiffs = options.ledgerDiffs ?? [];
 
   const sections: string[] = [];
+  if (view.readiness) {
+    sections.push(readinessTemplate.render(view.readiness));
+  }
   if (view.risk) {
     sections.push(riskTemplate.render(view.risk));
   }

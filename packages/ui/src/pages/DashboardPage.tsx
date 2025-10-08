@@ -280,9 +280,41 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
   const formattedComplianceTimestamp = complianceTimestamp
     ? new Date(complianceTimestamp).toLocaleString()
     : '—';
-  const readinessPercent = complianceSummary?.summary.total
+  const objectiveCoveragePercent = complianceSummary?.summary.total
     ? Math.round((complianceSummary.summary.covered / complianceSummary.summary.total) * 100)
     : 0;
+  const readinessSummary = complianceSummary?.readiness ?? null;
+  const readinessPercentile = readinessSummary
+    ? Math.max(0, Math.min(100, Math.round(readinessSummary.percentile * 10) / 10))
+    : null;
+  const readinessDisplayPercentile =
+    readinessPercentile !== null
+      ? `${Number.isInteger(readinessPercentile) ? readinessPercentile.toFixed(0) : readinessPercentile.toFixed(1)}%`
+      : null;
+  const readinessGaugeLabel = readinessPercentile !== null
+    ? `${t('dashboard.readinessGaugeAriaLabelPrefix')} ${readinessDisplayPercentile}`
+    : t('dashboard.readinessGaugeAriaUnavailable');
+  const readinessComputedAt = readinessSummary?.computedAt ?? null;
+  const readinessFormattedComputedAt = readinessComputedAt
+    ? new Date(readinessComputedAt).toLocaleString()
+    : null;
+  const readinessBreakdown = readinessSummary?.breakdown ?? [];
+  const readinessComponentLabels = useMemo(
+    () => ({
+      objectives: t('dashboard.readinessComponent.objectives'),
+      independence: t('dashboard.readinessComponent.independence'),
+      structuralCoverage: t('dashboard.readinessComponent.structuralCoverage'),
+      riskTrend: t('dashboard.readinessComponent.riskTrend'),
+    }),
+    [t],
+  );
+  const formatReadinessBreakdownPercent = useCallback((value: number) => {
+    const normalized = Math.max(0, Math.min(1, value));
+    const scaled = Math.round(normalized * 1000) / 10;
+    return Number.isInteger(scaled) ? `${scaled.toFixed(0)}%` : `${scaled.toFixed(1)}%`;
+  }, []);
+  const readinessGaugeRadius = 56;
+  const readinessGaugeCircumference = 2 * Math.PI * readinessGaugeRadius;
   const complianceReady =
     complianceSummary?.summary.missing === 0 &&
     complianceSummary?.gaps.openObjectiveCount === 0;
@@ -746,10 +778,189 @@ export default function DashboardPage({ token = '', license = '' }: DashboardPag
                 {t('dashboard.complianceLastComputed')} {formattedComplianceTimestamp}
               </span>
             </div>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,260px)_1fr]">
+              <div
+                className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+                data-testid="readiness-gauge-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">
+                      {t('dashboard.readinessGaugeTitle')}
+                    </h3>
+                    <p className="text-xs text-neutral-400">
+                      {t('dashboard.readinessGaugeSubtitle')}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-col items-center">
+                  {readinessSummary ? (
+                    <>
+                      <div className="relative h-36 w-36" data-testid="readiness-gauge">
+                        <svg
+                          viewBox="0 0 140 140"
+                          role="img"
+                          aria-label={readinessGaugeLabel}
+                          className="h-full w-full"
+                        >
+                          <title>{readinessGaugeLabel}</title>
+                          <circle
+                            cx="70"
+                            cy="70"
+                            r={readinessGaugeRadius}
+                            fill="transparent"
+                            stroke="#1e293b"
+                            strokeWidth="12"
+                            opacity="0.4"
+                          />
+                          <circle
+                            cx="70"
+                            cy="70"
+                            r={readinessGaugeRadius}
+                            fill="transparent"
+                            stroke={
+                              readinessPercentile !== null && readinessPercentile >= 85
+                                ? '#22c55e'
+                                : readinessPercentile !== null && readinessPercentile >= 70
+                                  ? '#38bdf8'
+                                  : readinessPercentile !== null && readinessPercentile >= 50
+                                    ? '#facc15'
+                                    : '#f87171'
+                            }
+                            strokeWidth="12"
+                            strokeDasharray={`${readinessGaugeCircumference}`}
+                            strokeDashoffset={
+                              readinessPercentile !== null
+                                ? readinessGaugeCircumference * (1 - readinessPercentile / 100)
+                                : readinessGaugeCircumference
+                            }
+                            strokeLinecap="round"
+                            transform="rotate(-90 70 70)"
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center">
+                          <span className="text-3xl font-semibold text-white">
+                            {readinessDisplayPercentile}
+                          </span>
+                          <span className="text-xs uppercase tracking-wide text-neutral-400">
+                            {t('dashboard.readinessGaugePercentLabel')}
+                          </span>
+                        </div>
+                      </div>
+                      {readinessFormattedComputedAt ? (
+                        <p className="mt-3 text-xs text-neutral-400">
+                          {t('dashboard.readinessComputedAt')} {readinessFormattedComputedAt}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p
+                      className="text-sm text-neutral-400"
+                      data-testid="readiness-gauge-unavailable"
+                    >
+                      {t('dashboard.readinessUnavailable')}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div
+                className="rounded-xl border border-slate-800/60 bg-slate-900/40 p-4"
+                data-testid="readiness-detail-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">
+                      {t('dashboard.readinessDetailTitle')}
+                    </h3>
+                    <p className="text-xs text-neutral-400">
+                      {t('dashboard.readinessDetailSubtitle')}
+                    </p>
+                  </div>
+                </div>
+                {readinessSummary ? (
+                  readinessBreakdown.length > 0 ? (
+                    <ul
+                      className="mt-4 space-y-4 text-sm text-neutral-300"
+                      data-testid="readiness-breakdown-list"
+                    >
+                      {readinessBreakdown.map((entry) => {
+                        const componentKey =
+                          entry.component.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'component';
+                        const componentLabel =
+                          readinessComponentLabels[
+                            entry.component as keyof typeof readinessComponentLabels
+                          ] ?? entry.component;
+                        return (
+                          <li
+                            key={`${entry.component}-${entry.details}`}
+                            className="rounded-lg border border-slate-800/60 bg-slate-900/60 p-3"
+                            data-testid={`readiness-component-${componentKey}`}
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <p className="text-sm font-semibold text-white">{componentLabel}</p>
+                                <p className="text-xs text-neutral-400">
+                                  {entry.details || t('dashboard.readinessDetailNoDetails')}
+                                </p>
+                              </div>
+                              {entry.missing ? (
+                                <Badge variant="warning">
+                                  {t('dashboard.readinessMissingBadge')}
+                                </Badge>
+                              ) : null}
+                            </div>
+                            <dl className="mt-3 grid gap-2 text-xs text-neutral-400 md:grid-cols-3">
+                              <div>
+                                <dt className="uppercase tracking-wide">
+                                  {t('dashboard.readinessDetailScore')}
+                                </dt>
+                                <dd className="font-semibold text-white">
+                                  {formatReadinessBreakdownPercent(entry.score)}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="uppercase tracking-wide">
+                                  {t('dashboard.readinessDetailWeight')}
+                                </dt>
+                                <dd className="font-semibold text-white">
+                                  {formatReadinessBreakdownPercent(entry.weight)}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="uppercase tracking-wide">
+                                  {t('dashboard.readinessDetailContribution')}
+                                </dt>
+                                <dd className="font-semibold text-white">
+                                  {formatReadinessBreakdownPercent(entry.contribution)}
+                                </dd>
+                              </div>
+                            </dl>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p
+                      className="mt-4 text-sm text-neutral-400"
+                      data-testid="readiness-breakdown-empty"
+                    >
+                      {t('dashboard.readinessDetailEmpty')}
+                    </p>
+                  )
+                ) : (
+                  <p
+                    className="mt-4 text-sm text-neutral-400"
+                    data-testid="readiness-breakdown-unavailable"
+                  >
+                    {t('dashboard.readinessDetailUnavailable')}
+                  </p>
+                )}
+              </div>
+            </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Card
                 title={t('dashboard.complianceCoverage')}
-                description={`${readinessPercent}%`}
+                description={`${objectiveCoveragePercent}%`}
               />
               <Card
                 title={t('dashboard.complianceCovered')}

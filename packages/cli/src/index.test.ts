@@ -16,7 +16,7 @@ jest.setTimeout(1200000);
 import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
 import { Manifest, SnapshotVersion } from '@soipack/core';
-import { ImportBundle, TraceEngine, computeRemediationPlan } from '@soipack/engine';
+import { ComplianceSnapshot, ImportBundle, TraceEngine, computeRemediationPlan } from '@soipack/engine';
 import {
   buildManifest,
   signManifestBundle,
@@ -158,6 +158,7 @@ import {
   runRiskSimulate,
   runManifestDiff,
   runLedgerReport,
+  runComplianceCompare,
   __internal,
 } from './index';
 import * as cliModule from './index';
@@ -1519,6 +1520,217 @@ describe('CLI pipeline workflows', () => {
     expect(changeControl?.status).toBe('covered');
   });
 
+  describe('ParasoftIntegration', () => {
+    const defaultObjectives = path.resolve(
+      __dirname,
+      '../../../data/objectives/do178c_objectives.min.json',
+    );
+
+    it('runImport persists Parasoft artefacts and evidence', async () => {
+      const workDir = path.join(tempRoot, 'parasoft-import-workspace');
+      const parasoftReport = path.join(tempRoot, 'parasoft-report.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftCoverage: StructuralCoverageSummary = {
+        tool: 'parasoft',
+        files: [
+          {
+            path: 'src/control.c',
+            stmt: { covered: 18, total: 20 },
+            dec: { covered: 9, total: 10 },
+            mcdc: { covered: 4, total: 5 },
+          },
+        ],
+        objectiveLinks: ['A-5-08', 'A-5-09', 'A-5-10'],
+      };
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: ['Module Control missing MC/DC data'],
+        data: {
+          coverage: parasoftCoverage,
+          findings: [
+            {
+              tool: 'parasoft',
+              id: 'F-001',
+              file: 'src/control.c',
+              severity: 'warn',
+              message: 'Possible null dereference',
+              objectiveLinks: ['A-5-05'],
+            },
+          ],
+          testResults: [
+            {
+              tool: 'parasoft',
+              testId: 'ControlSuite#initializesOutputs',
+              name: 'initializesOutputs',
+              status: 'passed',
+              durationMs: 120,
+              requirementsRefs: ['REQ-CTRL-1'],
+            },
+          ],
+          fileHashes: [
+            {
+              artifact: 'cm_record',
+              path: 'src/control.c',
+              hash: 'abcdef1234567890abcdef1234567890abcdef12',
+            },
+          ],
+        },
+      });
+
+      const result = await runImport({ output: workDir, parasoft: [parasoftReport] });
+
+      expect(parasoftSpy).toHaveBeenCalledWith(parasoftReport);
+      expect(result.warnings).toContain('Module Control missing MC/DC data');
+      expect(result.workspace.metadata.inputs.parasoft).toEqual(
+        expect.arrayContaining([expect.stringMatching(/parasoft-report\.xml$/)]),
+      );
+      expect(result.workspace.structuralCoverage?.tool).toBe('parasoft');
+      expect(result.workspace.structuralCoverage?.files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: 'src/control.c' })]),
+      );
+      expect(result.workspace.findings).toEqual(
+        expect.arrayContaining([expect.objectContaining({ tool: 'parasoft', id: 'F-001' })]),
+      );
+      expect(result.workspace.fileHashes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'src/control.c', hash: 'abcdef1234567890abcdef1234567890abcdef12' }),
+        ]),
+      );
+
+      const evidence = result.workspace.evidenceIndex;
+      expect(evidence.test).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_stmt).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_dec).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.coverage_mcdc).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.review).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+      expect(evidence.cm_record).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'parasoft' })]),
+      );
+
+      expect(result.workspace.metadata.sources?.parasoft).toEqual(
+        expect.objectContaining({
+          totalTests: 1,
+          totalFindings: 1,
+          coverageFiles: 1,
+          fileHashes: 1,
+        }),
+      );
+
+      parasoftSpy.mockRestore();
+    });
+
+    it('runAnalyze merges Parasoft bundles provided at runtime', async () => {
+      const workspaceDir = path.join(tempRoot, 'parasoft-analyze-workspace');
+      const analysisDir = path.join(tempRoot, 'parasoft-analyze-output');
+      await runImport({ output: workspaceDir });
+
+      const parasoftReport = path.join(tempRoot, 'parasoft-analysis-report.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: ['Generated additional Parasoft insights'],
+        data: {
+          coverage: {
+            tool: 'parasoft',
+            files: [
+              { path: 'src/runtime.c', stmt: { covered: 10, total: 12 } },
+            ],
+            objectiveLinks: ['A-5-08'],
+          },
+          findings: [],
+          testResults: [
+            {
+              tool: 'parasoft',
+              testId: 'RuntimeSuite#initializes',
+              name: 'initializes',
+              status: 'passed',
+              durationMs: 45,
+            },
+          ],
+          fileHashes: [],
+        },
+      });
+
+      const analysisResult = await runAnalyze({
+        input: workspaceDir,
+        output: analysisDir,
+        objectives: defaultObjectives,
+        parasoft: [parasoftReport],
+      });
+
+      expect(analysisResult.exitCode).toBe(exitCodes.success);
+      expect(parasoftSpy).toHaveBeenCalledWith(parasoftReport);
+
+      const analysisData = JSON.parse(
+        await fs.readFile(path.join(analysisDir, 'analysis.json'), 'utf8'),
+      ) as {
+        tests: Array<{ testId: string }>;
+        warnings: string[];
+        coverage?: CoverageReport;
+      };
+
+      expect(analysisData.tests).toEqual(
+        expect.arrayContaining([expect.objectContaining({ testId: 'RuntimeSuite#initializes' })]),
+      );
+      expect(analysisData.warnings).toEqual(
+        expect.arrayContaining(['Generated additional Parasoft insights']),
+      );
+
+      parasoftSpy.mockRestore();
+    });
+
+    it('runIngestPipeline forwards Parasoft inputs to runImport', async () => {
+      const inputDir = path.join(tempRoot, 'parasoft-ingest-input');
+      const outputDir = path.join(tempRoot, 'parasoft-ingest-output');
+      await fs.mkdir(inputDir, { recursive: true });
+      const parasoftReport = path.join(inputDir, 'parasoft-ingest.xml');
+      await fs.writeFile(parasoftReport, '<parasoftReport/>', 'utf8');
+
+      const parasoftSpy = jest.spyOn(adapters, 'importParasoft').mockResolvedValue({
+        warnings: [],
+        data: {
+          coverage: undefined,
+          findings: [],
+          testResults: [],
+          fileHashes: [],
+        },
+      });
+
+      const originalRunImport = cliModule.runImport;
+      const runImportSpy = jest
+        .spyOn(cliModule, 'runImport')
+        .mockImplementation(async (options) => {
+          expect(options.parasoft).toEqual(
+            expect.arrayContaining([expect.stringContaining('parasoft-ingest.xml')]),
+          );
+          return originalRunImport(options);
+        });
+
+      try {
+        await runIngestPipeline({
+          inputDir,
+          outputDir,
+          objectives: defaultObjectives,
+          parasoft: [parasoftReport],
+        });
+      } finally {
+        runImportSpy.mockRestore();
+        parasoftSpy.mockRestore();
+      }
+    });
+  });
+
   it('emits change impact insights when a baseline snapshot is supplied', async () => {
     const fixtureDir = path.join(__dirname, '__fixtures__', 'change-impact');
     const inputDir = path.join(tempRoot, 'change-impact-input');
@@ -2268,6 +2480,249 @@ describe('CLI pipeline workflows', () => {
         expect.arrayContaining([expect.stringContaining('Statement coverage evidence')]),
       );
     });
+  });
+});
+
+describe('compare command', () => {
+  let tempRoot: string;
+
+  beforeAll(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-compare-'));
+  });
+
+  afterAll(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  const cloneSnapshot = (snapshot: ComplianceSnapshot): ComplianceSnapshot =>
+    JSON.parse(JSON.stringify(snapshot)) as ComplianceSnapshot;
+
+  const setObjectiveStatus = (
+    snapshot: ComplianceSnapshot,
+    objectiveId: string,
+    status: ComplianceSnapshot['objectives'][number]['status'],
+    missingArtifacts: ComplianceSnapshot['objectives'][number]['missingArtifacts'] = [],
+  ): void => {
+    const entry = snapshot.objectives.find((item) => item.objectiveId === objectiveId);
+    if (!entry) {
+      throw new Error(`Objective ${objectiveId} not found`);
+    }
+    entry.status = status;
+    entry.missingArtifacts = [...missingArtifacts];
+  };
+
+  const setIndependenceStatus = (
+    snapshot: ComplianceSnapshot,
+    objectiveId: string,
+    status: ComplianceSnapshot['independenceSummary']['objectives'][number]['status'],
+    missingArtifacts: ComplianceSnapshot['independenceSummary']['objectives'][number]['missingArtifacts'] = [],
+  ): void => {
+    const entry = snapshot.independenceSummary.objectives.find((item) => item.objectiveId === objectiveId);
+    if (!entry) {
+      throw new Error(`Independence entry ${objectiveId} not found`);
+    }
+    entry.status = status;
+    entry.missingArtifacts = [...missingArtifacts];
+  };
+
+  const recomputeSummaries = (snapshot: ComplianceSnapshot): void => {
+    const objectiveTotals = { covered: 0, partial: 0, missing: 0 } as Record<
+      ComplianceSnapshot['objectives'][number]['status'],
+      number
+    >;
+    snapshot.objectives.forEach((item) => {
+      objectiveTotals[item.status] += 1;
+    });
+    snapshot.stats.objectives = {
+      total: snapshot.objectives.length,
+      covered: objectiveTotals.covered,
+      partial: objectiveTotals.partial,
+      missing: objectiveTotals.missing,
+    };
+
+    const independenceTotals = { covered: 0, partial: 0, missing: 0 } as Record<
+      ComplianceSnapshot['independenceSummary']['objectives'][number]['status'],
+      number
+    >;
+    snapshot.independenceSummary.objectives.forEach((entry) => {
+      independenceTotals[entry.status] += 1;
+    });
+    snapshot.independenceSummary.totals = {
+      covered: independenceTotals.covered,
+      partial: independenceTotals.partial,
+      missing: independenceTotals.missing,
+    };
+  };
+
+  const writeSnapshotFile = async (dir: string, snapshot: ComplianceSnapshot): Promise<string> => {
+    const workDir = path.join(tempRoot, dir);
+    await fs.mkdir(workDir, { recursive: true });
+    const snapshotPath = path.join(workDir, 'snapshot.json');
+    await fs.writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+    return snapshotPath;
+  };
+
+  const writeManifestFixture = async (
+    dir: string,
+    snapshot: ComplianceSnapshot,
+    files: Array<{ path: string; contents: string }>,
+    createdAt: string,
+  ): Promise<string> => {
+    const workDir = path.join(tempRoot, dir);
+    await fs.mkdir(workDir, { recursive: true });
+
+    const allFiles = [
+      { path: 'reports/snapshot.json', contents: `${JSON.stringify(snapshot, null, 2)}\n` },
+      ...files,
+    ];
+
+    const manifestFiles: Manifest['files'] = [];
+    for (const file of allFiles) {
+      const targetPath = path.join(workDir, ...file.path.split('/'));
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, file.contents, 'utf8');
+      const sha = createHash('sha256').update(file.contents).digest('hex');
+      manifestFiles.push({ path: file.path, sha256: sha });
+    }
+
+    const manifest: Manifest = {
+      files: manifestFiles,
+      createdAt,
+      toolVersion: 'cli-test',
+    };
+
+    const manifestPath = path.join(workDir, 'manifest.json');
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    return manifestPath;
+  };
+
+  const buildSnapshots = () => {
+    const fixture = createReportFixture();
+    const base = cloneSnapshot(fixture.snapshot);
+    const target = cloneSnapshot(fixture.snapshot);
+
+    base.version = {
+      ...base.version,
+      id: '20240101T000000Z-base00000000',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      isFrozen: false,
+      frozenAt: undefined,
+    };
+    base.generatedAt = '2024-01-01T00:00:00.000Z';
+
+    target.version = {
+      ...target.version,
+      id: '20240201T000000Z-target000000',
+      createdAt: '2024-02-01T00:00:00.000Z',
+      fingerprint: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      isFrozen: false,
+      frozenAt: undefined,
+    };
+    target.generatedAt = '2024-02-01T00:00:00.000Z';
+
+    setObjectiveStatus(base, 'A-3-04', 'covered');
+    setObjectiveStatus(base, 'A-4-01', 'missing', ['analysis']);
+    setIndependenceStatus(base, 'A-3-04', 'covered');
+    setIndependenceStatus(base, 'A-4-01', 'missing', ['analysis']);
+
+    setObjectiveStatus(target, 'A-3-04', 'missing', ['plan', 'review']);
+    setObjectiveStatus(target, 'A-4-01', 'partial', ['analysis']);
+    setIndependenceStatus(target, 'A-3-04', 'missing', ['plan']);
+    setIndependenceStatus(target, 'A-4-01', 'partial', ['analysis']);
+
+    recomputeSummaries(base);
+    recomputeSummaries(target);
+
+    return { base, target };
+  };
+
+  it('diffs snapshot files and reports objective and independence deltas', async () => {
+    const { base, target } = buildSnapshots();
+
+    const basePath = await writeSnapshotFile('snapshot-base', base);
+    const targetPath = await writeSnapshotFile('snapshot-target', target);
+
+    const result = await runComplianceCompare({ basePath, targetPath });
+
+    expect(result.base.kind).toBe('snapshot');
+    expect(result.target.kind).toBe('snapshot');
+    expect(result.objectives.improvements).toEqual([
+      {
+        objectiveId: 'A-4-01',
+        previousStatus: 'missing',
+        currentStatus: 'partial',
+      },
+    ]);
+    expect(result.objectives.regressions).toEqual([
+      {
+        objectiveId: 'A-3-04',
+        previousStatus: 'covered',
+        currentStatus: 'missing',
+      },
+    ]);
+    expect(result.objectives.unchanged).toBe(base.objectives.length - 2);
+
+    expect(result.independenceRegressions).toEqual([
+      {
+        objectiveId: 'A-3-04',
+        independence: 'required',
+        previousStatus: 'covered',
+        currentStatus: 'missing',
+        missingArtifacts: ['plan'],
+      },
+    ]);
+
+    expect(result.evidenceChanges).toBeUndefined();
+  });
+
+  it('diffs manifests and highlights evidence hash changes', async () => {
+    const { base, target } = buildSnapshots();
+
+    const baseManifestPath = await writeManifestFixture(
+      'manifest-base',
+      base,
+      [
+        { path: 'reports/plan.html', contents: 'Base plan v1' },
+        { path: 'reports/legacy.txt', contents: 'Legacy evidence' },
+      ],
+      '2024-01-01T00:00:00.000Z',
+    );
+
+    const targetManifestPath = await writeManifestFixture(
+      'manifest-target',
+      target,
+      [
+        { path: 'reports/plan.html', contents: 'Updated plan v2' },
+        { path: 'reports/new-evidence.txt', contents: 'Fresh evidence' },
+      ],
+      '2024-02-01T00:00:00.000Z',
+    );
+
+    const result = await runComplianceCompare({ basePath: baseManifestPath, targetPath: targetManifestPath });
+
+    expect(result.base.kind).toBe('manifest');
+    expect(result.target.kind).toBe('manifest');
+    expect(result.evidenceChanges).toBeDefined();
+    expect(result.evidenceChanges?.added).toEqual([
+      {
+        path: 'reports/new-evidence.txt',
+        sha256: createHash('sha256').update('Fresh evidence').digest('hex'),
+      },
+    ]);
+    expect(result.evidenceChanges?.removed).toEqual([
+      {
+        path: 'reports/legacy.txt',
+        sha256: createHash('sha256').update('Legacy evidence').digest('hex'),
+      },
+    ]);
+    expect(result.evidenceChanges?.changed).toEqual([
+      {
+        path: 'reports/plan.html',
+        baseSha256: createHash('sha256').update('Base plan v1').digest('hex'),
+        targetSha256: createHash('sha256').update('Updated plan v2').digest('hex'),
+      },
+    ]);
   });
 });
 

@@ -897,6 +897,11 @@ components:
         updatedAt:
           type: string
           format: date-time
+        warnings:
+          type: array
+          description: İşlemler sırasında oluşan uyarı mesajları.
+          items:
+            type: string
     JobError:
       type: object
       required:
@@ -1181,6 +1186,9 @@ components:
         independence:
           $ref: '#/components/schemas/ComplianceIndependenceSummary'
           nullable: true
+        readiness:
+          $ref: '#/components/schemas/ComplianceReadinessSummary'
+          nullable: true
     ComplianceSummaryResponse:
       type: object
       required:
@@ -1239,6 +1247,55 @@ components:
           type: array
           items:
             type: string
+    ComplianceReadinessSummary:
+      type: object
+      required:
+        - percentile
+        - seed
+        - computedAt
+        - breakdown
+      properties:
+        percentile:
+          type: number
+          format: double
+          description: Readiness index percentile score.
+        seed:
+          type: integer
+          format: int32
+          description: Deterministic seed used for fallback weighting.
+        computedAt:
+          type: string
+          format: date-time
+        breakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceReadinessComponent'
+    ComplianceReadinessComponent:
+      type: object
+      required:
+        - component
+        - score
+        - weight
+        - contribution
+        - details
+      properties:
+        component:
+          type: string
+          enum: [objectives, independence, structuralCoverage, riskTrend]
+        score:
+          type: number
+          format: double
+        weight:
+          type: number
+          format: double
+        contribution:
+          type: number
+          format: double
+        details:
+          type: string
+        missing:
+          type: boolean
+          nullable: true
     RemediationPlanResponse:
       type: object
       required:
@@ -1679,7 +1736,7 @@ components:
       properties:
         type:
           type: string
-          enum: [riskProfile, ledgerEntry, queueState]
+          enum: [riskProfile, ledgerEntry, queueState, manifestProof, readinessIndex]
         tenantId:
           type: string
         emittedAt:
@@ -1695,6 +1752,8 @@ components:
             $ref: '#/components/schemas/ComplianceQueueJob'
         counts:
           $ref: '#/components/schemas/ComplianceQueueCounts'
+        readiness:
+          $ref: '#/components/schemas/ComplianceReadinessSummary'
     JobMutationResponse:
       type: object
       required:
@@ -2487,6 +2546,12 @@ paths:
                   items:
                     type: string
                     format: binary
+                parasoft:
+                  type: array
+                  description: Parasoft C/C++test XML raporları; çoklu dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
                 reqif:
                   type: string
                   format: binary
@@ -2696,6 +2761,12 @@ paths:
                 jiraDefects:
                   type: array
                   description: Jira hata CSV dışa aktarımları; birden fazla dosya desteklenir.
+                  items:
+                    type: string
+                    format: binary
+                parasoft:
+                  type: array
+                  description: Parasoft C/C++test XML raporları; alan birden fazla dosya alır.
                   items:
                     type: string
                     format: binary

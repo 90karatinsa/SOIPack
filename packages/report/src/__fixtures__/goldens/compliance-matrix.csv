@@ -1,6 +1,11 @@
 Program,Flight Control Modernizasyonu,,,,,
 Sertifikasyon Seviyesi,DO-178C Seviye A,,,,,
 Proje Sürümü,v2.3.1,,,,,
+Hazırlık Skoru,72.5/100,,,,,
+Hazırlık Hedefler,Skor 82.1% | Katkı 32.8% | Ağırlık 40.0% | HLR kapsamı %85 seviyesinde.,,,,,
+Hazırlık Bağımsızlık,Skor 61.4% | Katkı 15.4% | Ağırlık 25.0% | Bağımsız gözden geçirme eksikleri azaltıldı.,,,,,
+Hazırlık Yapısal kapsam,Skor 55.2% | Katkı 11.0% | Ağırlık 20.0% | Veri eksik | MC/DC kapsama raporları güncellendi.,,,,,
+Hazırlık Risk eğilimi,Skor 70.5% | Katkı 13.3% | Ağırlık 15.0% | Audit uyarılarında aşağı yönlü trend.,,,,,
 Objective ID,Table,Stage,Status,Satisfied Artifacts,Missing Artifacts,Evidence References
 A-3-04,A-3,SOI-1,Eksik,Plan,Plan | Gözden Geçirme,plan:docs/verification-plan.md
 A-4-01,A-4,SOI-2,Eksik,Analiz | İzlenebilirlik,Analiz | İzlenebilirlik | Gözden Geçirme,analysis:reports/safety-analysis.pdf | trace:artifacts/trace-map.csv

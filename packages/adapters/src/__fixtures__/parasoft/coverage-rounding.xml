@@ -1,0 +1,11 @@
+<parasoftReport>
+  <module name="Edge">
+    <coverage>
+      <file path="src/math.c" hash="001122">
+        <metric type="line" covered="62.5%" total="100" />
+        <metric type="branch" covered="2.4" total="4.6" />
+        <metric type="mcdc" covered="1.6" total="2.4" />
+      </file>
+    </coverage>
+  </module>
+</parasoftReport>
