@@ -26,6 +26,7 @@ import pino from 'pino';
 import { Registry } from 'prom-client';
 import request from 'supertest';
 import { Agent, setGlobalDispatcher } from 'undici';
+import { __setMockMulterFiles, type MulterMockFileMap } from 'multer';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
@@ -701,6 +702,30 @@ Z/bzenvXPNe+zu8uumrKWmwy+w3kTw==
 
 const minimalExample = (...segments: string[]): string =>
   path.resolve(__dirname, '../../..', 'examples', 'minimal', ...segments);
+
+const createMockMulterFileMap = (
+  entries: Array<{ field: string; filePath: string; mimetype?: string }>,
+): MulterMockFileMap => {
+  const map: MulterMockFileMap = {};
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soipack-mock-upload-'));
+  entries.forEach(({ field, filePath, mimetype }) => {
+    const destinationPath = path.join(tempDir, path.basename(filePath));
+    fs.copyFileSync(filePath, destinationPath);
+    const stats = fs.statSync(destinationPath);
+    const fileEntry = {
+      fieldname: field,
+      originalname: path.basename(filePath),
+      encoding: '7bit',
+      mimetype: mimetype ?? 'application/octet-stream',
+      size: stats.size,
+      destination: tempDir,
+      filename: path.basename(destinationPath),
+      path: destinationPath,
+    };
+    map[field] = [...(map[field] ?? []), fileEntry];
+  });
+  return map;
+};
 
 const demoLicensePath = path.resolve(__dirname, '../../..', 'data', 'licenses', 'demo-license.key');
 
@@ -6060,6 +6085,22 @@ describe('@soipack/server REST API', () => {
   });
 
   it('prevents path traversal when serving report assets', async () => {
+    __setMockMulterFiles(
+      createMockMulterFileMap([
+        { field: 'reqif', filePath: minimalExample('spec.reqif'), mimetype: 'application/xml' },
+        { field: 'junit', filePath: minimalExample('results.xml'), mimetype: 'application/xml' },
+        { field: 'lcov', filePath: minimalExample('lcov.info'), mimetype: 'text/plain' },
+      ]),
+    );
+
+    __setMockMulterFiles(
+      createMockMulterFileMap([
+        { field: 'reqif', filePath: minimalExample('spec.reqif'), mimetype: 'application/xml' },
+        { field: 'junit', filePath: minimalExample('results.xml'), mimetype: 'application/xml' },
+        { field: 'lcov', filePath: minimalExample('lcov.info'), mimetype: 'text/plain' },
+      ]),
+    );
+
     const importResponse = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
@@ -6147,7 +6188,15 @@ describe('@soipack/server REST API', () => {
     expect(reuseResponse.body.result.outputs.workspace).toBe(job.result.outputs.workspace);
   });
 
-  it('processes pipeline jobs asynchronously with idempotent reuse', async () => {
+  it('processes pipeline jobs asynchronously with idempotent reuse (PackageAttestation)', async () => {
+    __setMockMulterFiles(
+      createMockMulterFileMap([
+        { field: 'reqif', filePath: minimalExample('spec.reqif'), mimetype: 'application/xml' },
+        { field: 'junit', filePath: minimalExample('results.xml'), mimetype: 'application/xml' },
+        { field: 'lcov', filePath: minimalExample('lcov.info'), mimetype: 'text/plain' },
+      ]),
+    );
+
     const importResponse = await request(app)
       .post('/v1/import')
       .set('Authorization', `Bearer ${token}`)
@@ -6185,6 +6234,14 @@ describe('@soipack/server REST API', () => {
     expect(importSummary.hash).toBe(importJob.hash);
     expect(new Date(importSummary.createdAt).getTime()).not.toBeNaN();
     expect(new Date(importSummary.updatedAt).getTime()).not.toBeNaN();
+
+    __setMockMulterFiles(
+      createMockMulterFileMap([
+        { field: 'reqif', filePath: minimalExample('spec.reqif'), mimetype: 'application/xml' },
+        { field: 'junit', filePath: minimalExample('results.xml'), mimetype: 'application/xml' },
+        { field: 'lcov', filePath: minimalExample('lcov.info'), mimetype: 'text/plain' },
+      ]),
+    );
 
     const importReuse = await request(app)
       .post('/v1/import')
@@ -6302,11 +6359,33 @@ describe('@soipack/server REST API', () => {
     expect(packJob.result.postQuantumSignature?.signature.length).toBeGreaterThan(0);
     expect(packJob.result.sbomSha256).toMatch(/^[0-9a-f]{64}$/i);
     expect(packJob.result.outputs.sbom).toMatch(/^packages\//);
+    expect(packJob.result.outputs.attestation).toMatch(/^packages\//);
+    expect(packJob.result.attestation).toEqual(
+      expect.objectContaining({
+        digest: expect.stringMatching(/^[0-9a-f]{64}$/i),
+        statementDigest: expect.stringMatching(/^[0-9a-f]{64}$/i),
+        signature: expect.objectContaining({
+          algorithm: 'EdDSA',
+          publicKeySha256: expect.stringMatching(/^[0-9a-f]{64}$/i),
+        }),
+      }),
+    );
 
     const sbomAbsolutePath = path.resolve(storageDir, packJob.result.outputs.sbom!);
     const sbomContent = await fsPromises.readFile(sbomAbsolutePath, 'utf8');
     const sbomDigest = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
     expect(packJob.result.sbomSha256).toBe(sbomDigest);
+
+    const attestationAbsolutePath = path.resolve(storageDir, packJob.result.outputs.attestation!);
+    const attestationContent = await fsPromises.readFile(attestationAbsolutePath, 'utf8');
+    const attestationDigest = createHash('sha256').update(attestationContent, 'utf8').digest('hex');
+    const attestationJson = JSON.parse(attestationContent) as {
+      statementDigest?: { digest?: string };
+    };
+    expect(packJob.result.attestation?.digest).toBe(attestationDigest);
+    expect(packJob.result.attestation?.statementDigest).toBe(
+      attestationJson.statementDigest?.digest,
+    );
 
     const ledgerAbsolutePath = path.resolve(storageDir, packJob.result.outputs.ledger!);
     const ledgerContent = JSON.parse(await fsPromises.readFile(ledgerAbsolutePath, 'utf8')) as {
@@ -6339,6 +6418,7 @@ describe('@soipack/server REST API', () => {
     expect(packDetails.body.result.manifestDigest).toBe(packJob.result.manifestDigest);
     expect(packDetails.body.result.outputs.ledger).toBe(packJob.result.outputs.ledger);
     expect(packDetails.body.result.outputs.sbom).toBe(packJob.result.outputs.sbom);
+    expect(packDetails.body.result.outputs.attestation).toBe(packJob.result.outputs.attestation);
     expect(packDetails.body.result.sbomSha256).toBe(packJob.result.sbomSha256);
     expect(packDetails.body.result.cmsSignature).toMatchObject({
       path: cmsMetadata.path,
@@ -6351,6 +6431,7 @@ describe('@soipack/server REST API', () => {
         publicKey: postQuantumMaterial.publicKey,
       }),
     );
+    expect(packDetails.body.result.attestation).toEqual(packJob.result.attestation);
 
     const packReuse = await request(app)
       .post('/v1/pack')
@@ -6360,6 +6441,8 @@ describe('@soipack/server REST API', () => {
       .expect(200);
     expect(packReuse.body.reused).toBe(true);
     expect(packReuse.body.id).toBe(packQueued.body.id);
+    expect(packReuse.body.result.outputs.attestation).toBe(packJob.result.outputs.attestation);
+    expect(packReuse.body.result.attestation).toEqual(packJob.result.attestation);
 
     const archivePath = path.resolve(storageDir, packJob.result.outputs.archive);
     await expect(fsPromises.access(archivePath, fs.constants.F_OK)).resolves.toBeUndefined();
@@ -6518,6 +6601,20 @@ describe('@soipack/server REST API', () => {
     expect(sbomDownload.headers['content-disposition']).toContain('sbom');
     expect((sbomDownload.body as Buffer).toString('utf8')).toBe(sbomContent);
 
+    const attestationDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/attestation`)
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      })
+      .expect('Content-Type', /application\/json/)
+      .expect(200);
+    expect(attestationDownload.headers['content-disposition']).toContain('attestation.json');
+    expect((attestationDownload.body as Buffer).toString('utf8')).toBe(attestationContent);
+
     const cmsDownload = await request(app)
       .get(`/v1/packages/${packQueued.body.id}/manifest.cms`)
       .set('Authorization', `Bearer ${token}`)
@@ -6555,6 +6652,12 @@ describe('@soipack/server REST API', () => {
       .set('Authorization', `Bearer ${otherTenantToken}`)
       .expect(404);
     expect(sbomForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
+
+    const attestationForbiddenDownload = await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/attestation`)
+      .set('Authorization', `Bearer ${otherTenantToken}`)
+      .expect(404);
+    expect(attestationForbiddenDownload.body.error.code).toBe('PACKAGE_NOT_FOUND');
 
     const reportAsset = await request(app)
       .get(`/v1/reports/${reportQueued.body.id}/compliance.html`)
@@ -6643,6 +6746,11 @@ describe('@soipack/server REST API', () => {
 
     await request(app)
       .get(`/v1/packages/${packQueued.body.id}/manifest`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    await request(app)
+      .get(`/v1/packages/${packQueued.body.id}/attestation`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
   });

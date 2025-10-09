@@ -23,6 +23,12 @@ export { importParasoft } from './parasoft';
 export type { ImportParasoftOptions } from './parasoft';
 export { fetchPolarionArtifacts } from './polarion';
 export type { PolarionClientOptions, PolarionAttachmentMetadata } from './polarion';
+export { fetchAzureDevOpsArtifacts } from './azureDevOps';
+export type {
+  AzureDevOpsClientOptions,
+  AzureDevOpsArtifactBundle,
+  AzureDevOpsAttachmentMetadata,
+} from './azureDevOps';
 export { fetchJamaArtifacts } from './jama';
 export type { JamaClientOptions, JamaImportBundle, JamaTraceLink } from './jama';
 export { fetchJenkinsArtifacts } from './jenkins';

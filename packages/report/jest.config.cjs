@@ -11,7 +11,10 @@ module.exports = {
     '^yazl$': '<rootDir>/../../test/shims/yazl.ts',
     '^playwright$': '<rootDir>/../../test/shims/playwright.ts',
     '^html-validator$': '<rootDir>/../../test/shims/html-validator.ts',
-    '^node-forge$': '<rootDir>/../../test/shims/node-forge.ts'
+    '^node-forge$': '<rootDir>/../../test/shims/node-forge.ts',
+    '^fast-xml-parser$': '<rootDir>/../../test/shims/fast-xml-parser.ts',
+    '^jszip$': '<rootDir>/../../test/shims/jszip.ts',
+    '^docx$': '<rootDir>/../../test/shims/docx.ts'
   },
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]

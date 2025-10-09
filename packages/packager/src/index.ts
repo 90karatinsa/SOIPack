@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID, X509Certificate } from 'crypto';
 import { promises as fsPromises, createReadStream, createWriteStream } from 'fs';
 import path from 'path';
 import { finished } from 'stream/promises';
@@ -25,8 +25,9 @@ import {
   verifyManifestSignatureWithSecuritySigner,
   computeManifestDigestHex,
 } from './security/signer';
+import { generateAttestation, serializeAttestationDocument } from './attestation';
 
-const { readdir, stat, readFile, mkdir } = fsPromises;
+const { readdir, stat, readFile, mkdir, writeFile } = fsPromises;
 
 interface FileForPackaging {
   absolutePath: string;
@@ -93,11 +94,28 @@ export interface ManifestSbomMetadata {
   } | null;
 }
 
+export interface ManifestProvenanceSignatureMetadata {
+  algorithm: 'EdDSA';
+  publicKeySha256: string;
+  keyId?: string;
+}
+
+export interface ManifestProvenanceMetadata {
+  provenance?: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+    statementDigest: string;
+    signature: ManifestProvenanceSignatureMetadata;
+  } | null;
+}
+
 export type LedgerAwareManifest = Manifest &
   ManifestLedgerMetadata &
   ManifestMerkleMetadata &
   ManifestStageMetadata &
-  ManifestSbomMetadata;
+  ManifestSbomMetadata &
+  ManifestProvenanceMetadata;
 
 const MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
 
@@ -421,6 +439,19 @@ export interface PackageCreationResult {
     certificates: string[];
     digestAlgorithm: string;
   };
+  attestation: {
+    path: string;
+    algorithm: 'sha256';
+    digest: string;
+    statementDigest: string;
+    jws: string;
+    signature: {
+      algorithm: 'EdDSA';
+      keyId?: string;
+      publicKey: string;
+      publicKeySha256: string;
+    };
+  };
 }
 
 interface SpdxFileEntry {
@@ -596,6 +627,7 @@ export const createSoiDataPack = async ({
   const signingOptions: SecuritySignerOptions = {
     bundlePem: credentialsPem,
     ledger: ledgerForSigning,
+    postQuantum: false,
   };
   if (resolvedCmsOptions !== undefined) {
     signingOptions.cms = resolvedCmsOptions;
@@ -622,6 +654,46 @@ export const createSoiDataPack = async ({
       throw new Error('Manifest ledger önceki kökü imza bağlamıyla eşleşmiyor.');
     }
   }
+
+  const certificate = new X509Certificate(bundle.certificate);
+  const publicKeyPem = certificate.publicKey.export({ format: 'pem', type: 'spki' }).toString();
+
+  const attestationResult = await generateAttestation({
+    manifest: manifestWithSbom,
+    manifestDigest: bundle.manifestDigest.hash,
+    sbom: sbomMetadata,
+    files: manifestWithSbom.files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+    packageName: packageLabel,
+    manifestSignature: bundle,
+    signing: {
+      privateKeyPem: credentialsPem,
+      publicKeyPem,
+    },
+  });
+
+  const attestationSerialized = serializeAttestationDocument(attestationResult.document);
+  const attestationDigest = createHash('sha256').update(attestationSerialized, 'utf8').digest('hex');
+  const attestationFilename = 'attestation.json';
+  const attestationOutputPath = path.join(targetOutputDir, attestationFilename);
+  await writeFile(attestationOutputPath, attestationSerialized, 'utf8');
+
+  const publicKeySha256 = createHash('sha256')
+    .update(attestationResult.signature.publicKey, 'utf8')
+    .digest('hex');
+
+  const provenanceSignature: ManifestProvenanceSignatureMetadata = {
+    algorithm: 'EdDSA',
+    publicKeySha256,
+    ...(attestationResult.signature.keyId ? { keyId: attestationResult.signature.keyId } : {}),
+  };
+
+  manifestWithSbom.provenance = {
+    path: attestationFilename,
+    algorithm: 'sha256',
+    digest: attestationDigest,
+    statementDigest: attestationResult.document.statementDigest.digest,
+    signature: provenanceSignature,
+  };
 
   const finalName = packageLabel;
   const outputPath = path.join(targetOutputDir, finalName);
@@ -664,6 +736,19 @@ export const createSoiDataPack = async ({
     outputPath,
     sbom: { ...sbomMetadata, content: serializedSbom },
     cmsSignature: cmsSignatureMetadata,
+    attestation: {
+      path: attestationFilename,
+      algorithm: 'sha256',
+      digest: attestationDigest,
+      statementDigest: attestationResult.document.statementDigest.digest,
+      jws: attestationResult.signature.jws,
+      signature: {
+        algorithm: 'EdDSA',
+        keyId: attestationResult.signature.keyId,
+        publicKey: attestationResult.signature.publicKey,
+        publicKeySha256,
+      },
+    },
   };
 };
 

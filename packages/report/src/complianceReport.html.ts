@@ -1,5 +1,7 @@
 import type { CoverageMetric, CoverageReport } from '@soipack/adapters';
 
+import type { StaleEvidenceHeatmapView } from './staleHeatmap';
+
 export interface ChangeImpactSectionContext {
   entries: Array<{
     key: string;
@@ -160,6 +162,96 @@ export const renderChangeImpactSection = ({
         ${rows}
       </tbody>
     </table>
+  </section>`;
+};
+
+export const renderStaleEvidenceHeatmapSection = (
+  heatmap: StaleEvidenceHeatmapView,
+): string => {
+  if (!heatmap.stages.length || heatmap.totalFindings === 0) {
+    return '';
+  }
+
+  const gradientId = 'stale-evidence-legend';
+  const headerCells = heatmap.bands
+    .map((band) => `<th scope="col">${escapeHtml(band.label)}</th>`)
+    .join('');
+
+  const rows = heatmap.stages
+    .map((stage) => {
+      const cells = heatmap.bands
+        .map((band) => {
+          const bucket = stage.buckets.find((entry) => entry.bandId === band.id);
+          const count = bucket?.count ?? 0;
+          const intensity = heatmap.maxBucketCount > 0 ? Math.min(count / heatmap.maxBucketCount, 1) : 0;
+          const isEmpty = count === 0;
+          const objectiveList = bucket?.objectiveIds?.length
+            ? `<div class="muted">${escapeHtml(bucket.objectiveIds.join(', '))}</div>`
+            : '<div class="muted">—</div>';
+          const title = `${stage.label} • ${band.label}`;
+          const ariaLabel = `${title}: ${count} bulgu`;
+          return `<td>
+            <div
+              class="heatmap-cell"
+              data-empty="${isEmpty}"
+              style="--intensity: ${intensity.toFixed(2)}"
+              title="${escapeHtml(title)}"
+              aria-label="${escapeHtml(ariaLabel)}"
+            >
+              <strong>${count}</strong>
+              ${objectiveList}
+            </div>
+          </td>`;
+        })
+        .join('');
+
+      return `<tr>
+        <th scope="row">
+          <div class="cell-title">${escapeHtml(stage.label)}</div>
+          <div class="muted">${stage.totals} bulgu</div>
+        </th>
+        ${cells}
+      </tr>`;
+    })
+    .join('');
+
+  const updatedLabel = heatmap.updatedAt
+    ? `<span>Son kanıt güncellemesi: <strong>${formatDateTime(heatmap.updatedAt)}</strong></span>`
+    : '';
+
+  return `<section class="section" aria-labelledby="stale-heatmap-heading">
+    <h2 id="stale-heatmap-heading">Kanıt Tazelik Isı Haritası</h2>
+    <p class="section-lead">DO-178C aşamalarına göre kanıt yaş dağılımını gösterir.</p>
+    <div class="heatmap-legend">
+      <span>Yeni</span>
+      <div class="heatmap-gradient" role="presentation" aria-hidden="true">
+        <svg viewBox="0 0 100 10">
+          <defs>
+            <linearGradient id="${gradientId}" x1="0%" x2="100%" y1="0%" y2="0%">
+              <stop offset="0%" stop-color="#dbeafe" />
+              <stop offset="100%" stop-color="#1d4ed8" />
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width="100" height="10" fill="url(#${gradientId})" rx="5" />
+        </svg>
+      </div>
+      <span>Güncelliği Yitirmiş</span>
+    </div>
+    <table class="heatmap-table" aria-describedby="stale-heatmap-heading">
+      <thead>
+        <tr>
+          <th scope="col">SOI Aşaması</th>
+          ${headerCells}
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+    <div class="heatmap-footnote">
+      <span>Toplam bulgu: <strong>${heatmap.totalFindings}</strong></span>
+      ${updatedLabel}
+    </div>
   </section>`;
 };
 

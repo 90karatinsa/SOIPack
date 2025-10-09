@@ -21,7 +21,7 @@ import {
   type ChangeImpactScore,
   type StaleEvidenceFinding,
 } from '@soipack/engine';
-import nunjucks from 'nunjucks';
+import nunjucks from './nunjucksLoader';
 import type { Browser, Page } from 'playwright';
 
 import packageInfo from '../package.json';
@@ -31,10 +31,12 @@ import {
   renderChangeRequestBacklogSection,
   renderCoverageSummarySection,
   renderLedgerDiffSection,
+  renderStaleEvidenceHeatmapSection,
   type ChangeImpactSectionContext,
   type ChangeRequestBacklogItem,
   type LedgerAttestationDiffItem,
 } from './complianceReport.html';
+import { buildStaleEvidenceHeatmap, type StaleEvidenceHeatmapView } from './staleHeatmap';
 
 type PlaywrightModule = typeof import('playwright');
 
@@ -446,6 +448,7 @@ interface ComplianceMatrixView {
   toolQualification?: ToolQualificationLinkView;
   independence: IndependenceSummaryView;
   readiness?: ReadinessView;
+  staleEvidenceHeatmap?: StaleEvidenceHeatmapView;
 }
 
 interface ReadinessBadgeView {
@@ -703,6 +706,9 @@ export interface ComplianceMatrixJson {
     recommendation?: string;
     relatedTests?: string[];
   }>;
+  analysis?: {
+    staleEvidenceHeatmap: StaleEvidenceHeatmapView | null;
+  };
   changeImpact?: ChangeImpactScore[];
   traceSuggestions: Array<{
     requirementId: string;
@@ -757,11 +763,13 @@ export interface PrintToPdfOptions extends BaseReportOptions {
   };
 }
 
-const env = new nunjucks.Environment(undefined, {
-  autoescape: true,
-  trimBlocks: true,
-  lstripBlocks: true,
-});
+if (typeof (nunjucks as { configure?: (options: Record<string, unknown>) => void }).configure === 'function') {
+  nunjucks.configure({
+    autoescape: true,
+    trimBlocks: true,
+    lstripBlocks: true,
+  });
+}
 
 const statusLabels: Record<ComplianceSnapshot['objectives'][number]['status'], string> = {
   covered: 'Tam Karşılandı',
@@ -1571,6 +1579,100 @@ const baseStyles = `
     margin-bottom: 16px;
   }
 
+  .heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .heatmap-legend span {
+    font-size: 12px;
+    color: #475569;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .heatmap-gradient {
+    width: 200px;
+    height: 14px;
+    border-radius: 999px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+  }
+
+  .heatmap-gradient svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .heatmap-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 8px;
+    margin-bottom: 12px;
+  }
+
+  .heatmap-table th {
+    text-align: center;
+    border: none;
+    background: none;
+    color: #475569;
+  }
+
+  .heatmap-table th:first-child {
+    text-align: left;
+  }
+
+  .heatmap-table td {
+    border: none;
+    padding: 0;
+    background: none;
+  }
+
+  .heatmap-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 12px;
+    padding: 12px 8px;
+    min-height: 72px;
+    background: linear-gradient(135deg, rgba(30, 64, 175, calc(var(--intensity, 0) * 0.55 + 0.05)), rgba(191, 219, 254, calc(var(--intensity, 0) * 0.85 + 0.15)));
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+    transition: transform 0.2s ease-in-out;
+  }
+
+  .heatmap-cell[data-empty='true'] {
+    background: rgba(226, 232, 240, 0.6);
+    color: #475569;
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.45);
+  }
+
+  .heatmap-cell strong {
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .heatmap-cell .muted {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .heatmap-footnote {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -2109,9 +2211,7 @@ const layoutTemplate = nunjucks.compile(
       <span>Sayfa numarası PDF çıktısında görüntülenecektir.</span>
     </footer>
   </body>
-</html>`,
-  env,
-);
+</html>`);
 
 const readinessTemplate = nunjucks.compile(
   `<section class="section">
@@ -2281,9 +2381,7 @@ const riskTemplate = nunjucks.compile(
     {% if missingSignals.length %}
       <p class="muted">Eksik sinyaller: {{ missingSignals | join(', ') }}</p>
     {% endif %}
-  </section>`,
-  env,
-);
+  </section>`);
 
 const toolQualificationTemplate = nunjucks.compile(
   `<section class="section">
@@ -2348,9 +2446,7 @@ const toolQualificationTemplate = nunjucks.compile(
     {% else %}
       <p class="muted">Araç niteliklendirme verisi sağlanmadı.</p>
     {% endif %}
-  </section>`,
-  env,
-);
+  </section>`);
 
 const complianceTemplate = nunjucks.compile(
   `<section class="section">
@@ -2619,9 +2715,7 @@ const complianceTemplate = nunjucks.compile(
         </tbody>
       </table>
     </section>
-  {% endif %}`,
-  env,
-);
+  {% endif %}`);
 
 const traceTemplate = nunjucks.compile(
   `<section class="section">
@@ -2716,9 +2810,7 @@ const traceTemplate = nunjucks.compile(
         </ul>
       </div>
     {% endif %}
-  </section>`,
-  env,
-);
+  </section>`);
 
 const signoffTimelineTemplate = nunjucks.compile(
   `<section class="section">
@@ -2752,9 +2844,7 @@ const signoffTimelineTemplate = nunjucks.compile(
         </article>
       {% endfor %}
     </div>
-  </section>`,
-  env,
-);
+  </section>`);
 
 const gapsTemplate = nunjucks.compile(
   `<section class="section">
@@ -2795,9 +2885,7 @@ const gapsTemplate = nunjucks.compile(
         </article>
       {% endfor %}
     </div>
-  </section>`,
-  env,
-);
+  </section>`);
 
 const formatDate = (value: string): string => {
   const date = new Date(value);
@@ -3504,6 +3592,10 @@ const buildComplianceMatrixView = (
   options: ComplianceMatrixOptions,
 ): ComplianceMatrixView => {
   const objectiveLookup = new Map(options.objectivesMetadata?.map((item) => [item.id, item]));
+  const stageLookup = new Map<string, SoiStage | undefined>();
+  options.objectivesMetadata?.forEach((item) => {
+    stageLookup.set(item.id, item.stage);
+  });
 
   const objectives: ComplianceMatrixRow[] = snapshot.objectives.map((objective) => {
     const metadata = objectiveLookup.get(objective.objectiveId);
@@ -3586,6 +3678,12 @@ const buildComplianceMatrixView = (
     : undefined;
 
   const changeImpact = buildChangeImpactView(snapshot.changeImpact);
+  const staleEvidenceHeatmap = buildStaleEvidenceHeatmap(snapshot.gaps.staleEvidence ?? [], {
+    stageLookup,
+    stageLabels,
+    unknownStageLabel: 'Bilinmeyen Aşama',
+    unknownBandLabel: 'Yaş bilinmiyor',
+  });
 
   return {
     objectives,
@@ -3607,6 +3705,7 @@ const buildComplianceMatrixView = (
     toolQualification,
     independence: buildIndependenceSummaryView(snapshot.independenceSummary, objectiveLookup),
     readiness: buildReadinessView(options.readiness),
+    staleEvidenceHeatmap,
   };
 };
 
@@ -3805,6 +3904,30 @@ const buildComplianceMatrixJson = (
     recommendation: finding.recommendation,
     relatedTests: finding.relatedTests,
   })),
+  analysis: {
+    staleEvidenceHeatmap: view.staleEvidenceHeatmap
+      ? {
+          totalFindings: view.staleEvidenceHeatmap.totalFindings,
+          updatedAt: view.staleEvidenceHeatmap.updatedAt,
+          maxBucketCount: view.staleEvidenceHeatmap.maxBucketCount,
+          bands: view.staleEvidenceHeatmap.bands.map((band) => ({ ...band })),
+          stages: view.staleEvidenceHeatmap.stages.map((stage) => ({
+            id: stage.id,
+            label: stage.label,
+            stage: stage.stage,
+            totals: stage.totals,
+            buckets: stage.buckets.map((bucket) => ({
+              bandId: bucket.bandId,
+              label: bucket.label,
+              count: bucket.count,
+              objectiveIds: [...bucket.objectiveIds],
+            })),
+          })),
+          stageTotals: { ...view.staleEvidenceHeatmap.stageTotals },
+          bandTotals: { ...view.staleEvidenceHeatmap.bandTotals },
+        }
+      : null,
+  },
   ...(snapshot.changeImpact && snapshot.changeImpact.length > 0
     ? {
         changeImpact: snapshot.changeImpact.map((entry) => ({
@@ -3902,6 +4025,9 @@ export const renderComplianceMatrix = (
       independence: view.independence,
     }),
   );
+  if (view.staleEvidenceHeatmap) {
+    sections.push(renderStaleEvidenceHeatmapSection(view.staleEvidenceHeatmap));
+  }
   if (view.changeImpact) {
     sections.push(renderChangeImpactSection(view.changeImpact));
   }
@@ -3960,6 +4086,9 @@ export const renderComplianceCoverageReport = (
       independence: view.independence,
     }),
   );
+  if (view.staleEvidenceHeatmap) {
+    sections.push(renderStaleEvidenceHeatmapSection(view.staleEvidenceHeatmap));
+  }
   if (view.changeImpact) {
     sections.push(renderChangeImpactSection(view.changeImpact));
   }

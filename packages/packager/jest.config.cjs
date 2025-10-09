@@ -8,9 +8,10 @@ module.exports = {
   moduleNameMapper: {
     '^@soipack/([^/]+)(.*)$': '<rootDir>/../$1/src$2',
     '^zod$': '<rootDir>/../../test/shims/zod.ts',
-    '^yazl$': '<rootDir>/../../test/shims/yazl.ts'
+    '^yazl$': '<rootDir>/../../test/shims/yazl.ts',
+    '^node-forge$': '<rootDir>/../../test/shims/node-forge.ts'
   },
   transform: {
-    '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]
+    '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json', diagnostics: false }]
   }
 };

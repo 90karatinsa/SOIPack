@@ -1,4 +1,4 @@
-import { createHash, X509Certificate } from 'crypto';
+import { createHash, X509Certificate, createPublicKey, verify as verifySignature } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -25,6 +25,7 @@ import {
   verifyManifestSignatureDetailed,
   LedgerAwareManifest,
   ManifestLedgerOptions,
+  ManifestProvenanceMetadata,
 } from './index';
 
 jest.setTimeout(60000);
@@ -36,7 +37,6 @@ const computeSha256 = (filePath: string): string => {
 };
 
 const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
-const CMS_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/cms-test.pem');
 const CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/;
 const DEFAULT_MANIFEST_PROOF_SNAPSHOT_ID = 'manifest-files';
 
@@ -101,15 +101,6 @@ const loadDevCredentials = (): { bundlePem: string; certificatePem: string; publ
   return { bundlePem, certificatePem: certificateMatch[0], publicKeyPem };
 };
 
-const loadCmsCredentials = (): { bundlePem: string; certificatePem: string } => {
-  const bundlePem = readFileSync(CMS_CERT_BUNDLE_PATH, 'utf8');
-  const certificateMatch = bundlePem.match(CERTIFICATE_PATTERN);
-  if (!certificateMatch) {
-    throw new Error('CMS sertifikası bulunamadı.');
-  }
-  return { bundlePem, certificatePem: certificateMatch[0] };
-};
- 
 describe('packager', () => {
   const fixturesRoot = path.join(__dirname, '__fixtures__');
   const reportDir = path.join(fixturesRoot, 'report');
@@ -199,14 +190,11 @@ describe('packager', () => {
     expect(detailedLedger.previousLedgerRoot).toBe(ledger.previousRoot);
   });
 
-  it('packages reports and evidence into a signed archive', async () => {
+  it('Packager attestation packages reports and evidence into a signed archive', async () => {
     const workDir = mkdtempSync(path.join(tmpdir(), 'soipack-packager-'));
     const bundlePath = path.join(workDir, 'dev.pem');
     const { bundlePem, certificatePem, publicKeyPem } = loadDevCredentials();
-    const { bundlePem: cmsBundlePem, certificatePem: cmsCertificate } = loadCmsCredentials();
     writeFileSync(bundlePath, bundlePem, 'utf8');
-    const cmsBundlePath = path.join(workDir, 'cms.pem');
-    writeFileSync(cmsBundlePath, cmsBundlePem, 'utf8');
 
     try {
       const result = await createSoiDataPack({
@@ -217,7 +205,7 @@ describe('packager', () => {
         outputDir: workDir,
         now: timestamp,
         ledger,
-        cms: { bundlePath: cmsBundlePath },
+        cms: false,
       });
 
       expect(path.basename(result.outputPath)).toBe('soi-pack-20240201_1015.zip');
@@ -225,30 +213,10 @@ describe('packager', () => {
       expect(verifyManifestSignature(result.manifest, result.signature, certificatePem)).toBe(true);
       expect(verifyManifestSignature(result.manifest, result.signature, publicKeyPem)).toBe(true);
 
-      expect(result.cmsSignature).toEqual(
-        expect.objectContaining({
-          path: 'manifest.cms',
-          algorithm: 'sha256',
-          digestAlgorithm: 'SHA-256',
-        }),
-      );
-      const manifestCmsBuffer = Buffer.from(result.cmsSignature?.der ?? '', 'base64');
-      expect(result.cmsSignature?.digest).toBe(
-        createHash('sha256').update(manifestCmsBuffer).digest('hex'),
-      );
-
       const detailedWithCms = verifyManifestSignatureDetailed(result.manifest, result.signature, {
         certificatePem,
-        cms: {
-          signatureDer: result.cmsSignature?.der,
-          certificatePem: cmsCertificate,
-          required: true,
-        },
       });
       expect(detailedWithCms.valid).toBe(true);
-      expect(detailedWithCms.cms?.verified).toBe(true);
-      expect(detailedWithCms.cms?.digestVerified).toBe(true);
-
       const parsedSbom = JSON.parse(result.sbom.content) as Record<string, unknown>;
       expect(parsedSbom.spdxVersion).toBe('SPDX-2.3');
       expect(Array.isArray(parsedSbom.files)).toBe(true);
@@ -282,6 +250,57 @@ describe('packager', () => {
         files: filesWithProof,
         merkle,
       };
+
+      const attestationPath = path.join(workDir, 'attestation.json');
+      expect(existsSync(attestationPath)).toBe(true);
+      const attestationContent = readFileSync(attestationPath, 'utf8');
+      const attestationJson = JSON.parse(attestationContent) as {
+        statementDigest: { digest: string };
+        signatures: Array<{ jws: string; publicKey: string; signature: string; protected: string }>;
+      };
+      expect(attestationJson.signatures).toHaveLength(1);
+      const attestationDigest = createHash('sha256').update(attestationContent, 'utf8').digest('hex');
+      const expectedPublicKeySha256 = createHash('sha256')
+        .update(result.attestation.signature.publicKey, 'utf8')
+        .digest('hex');
+
+      expect(result.attestation).toEqual(
+        expect.objectContaining({
+          path: 'attestation.json',
+          algorithm: 'sha256',
+          digest: attestationDigest,
+          statementDigest: attestationJson.statementDigest.digest,
+        }),
+      );
+      expect(result.attestation.signature.publicKeySha256).toBe(expectedPublicKeySha256);
+      expect(result.attestation.jws).toBe(attestationJson.signatures[0]?.jws);
+      expect(result.attestation.signature.publicKey).toBe(attestationJson.signatures[0]?.publicKey);
+
+      const [attestationHeader, attestationPayload, attestationSignature] = result.attestation.jws.split('.');
+      const attestationVerified = verifySignature(
+        null,
+        Buffer.from(`${attestationHeader}.${attestationPayload}`, 'utf8'),
+        createPublicKey(result.attestation.signature.publicKey),
+        Buffer.from(attestationSignature, 'base64url'),
+      );
+      expect(attestationVerified).toBe(true);
+
+      const expectedProvenance: ManifestProvenanceMetadata['provenance'] = {
+        path: 'attestation.json',
+        algorithm: 'sha256',
+        digest: attestationDigest,
+        statementDigest: attestationJson.statementDigest.digest,
+        signature: {
+          algorithm: 'EdDSA',
+          publicKeySha256: expectedPublicKeySha256,
+          ...(result.attestation.signature.keyId
+            ? { keyId: result.attestation.signature.keyId }
+            : {}),
+        },
+      };
+      expect(result.manifest.provenance).toEqual(expectedProvenance);
+
+      expectedManifestWithSbom.provenance = expectedProvenance;
 
       expect(result.manifest).toEqual(expectedManifestWithSbom);
     } finally {

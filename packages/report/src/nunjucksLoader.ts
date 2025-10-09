@@ -1,8 +1,10 @@
-import { createRequire } from 'module';
+import { createRequire } from 'node:module';
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 
-const projectRequire = createRequire(require.resolve('../../package.json'));
+import type * as Nunjucks from 'nunjucks';
+
+const projectRequire = createRequire(require.resolve('../../../package.json'));
 
 const resolveFromPnpm = (moduleName: string): unknown => {
   const pnpmDir = path.resolve(__dirname, '../../node_modules/.pnpm');
@@ -18,15 +20,12 @@ const resolveFromPnpm = (moduleName: string): unknown => {
   return projectRequire(modulePath);
 };
 
-let docx: any;
+let nunjucks: typeof Nunjucks;
 
 try {
-  docx = projectRequire('docx');
+  nunjucks = projectRequire('nunjucks') as typeof Nunjucks;
 } catch (error) {
-  docx = resolveFromPnpm('docx');
+  nunjucks = resolveFromPnpm('nunjucks') as typeof Nunjucks;
 }
 
-Object.defineProperty(docx, '__esModule', { value: true });
-docx.default = docx;
-
-export = docx;
+export default nunjucks;

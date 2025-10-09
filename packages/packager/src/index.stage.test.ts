@@ -21,12 +21,21 @@ jest.mock('@soipack/core', () => {
 
 jest.mock('./security/signer', () => {
   const { createHash } = require('crypto');
+  const { readFileSync } = require('fs');
+  const path = require('path');
+
+  const DEV_CERT_BUNDLE_PATH = path.resolve(__dirname, '../../../test/certs/dev.pem');
+  const bundlePem = readFileSync(DEV_CERT_BUNDLE_PATH, 'utf8');
+  const certificateMatch = bundlePem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/);
+  const certificatePem = certificateMatch ? certificateMatch[0] : '-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n';
 
   const computeManifestDigestHex = (manifest: unknown): string =>
     createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
 
   const signManifestBundle = (manifest: unknown) => ({
     signature: `stub:${computeManifestDigestHex(manifest)}`,
+    manifestDigest: { algorithm: 'SHA-256', hash: computeManifestDigestHex(manifest) },
+    certificate: certificatePem,
   });
 
   const verifyManifestSignature = () => true;
@@ -172,6 +181,10 @@ describe('packager stage routing', () => {
 
       const digest = result.manifest.merkle?.manifestDigest ?? computeManifestDigestHex(result.manifest);
       expect(result.manifest.merkle?.snapshotId).toBe(buildManifestSnapshotId(digest, stage));
+      expect(result.attestation.path).toBe('attestation.json');
+      expect(result.manifest.provenance?.path).toBe('attestation.json');
+      expect(result.manifest.provenance?.statementDigest).toBe(result.attestation.statementDigest);
+      expect(result.attestation.signature.algorithm).toBe('EdDSA');
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }

@@ -102,12 +102,28 @@ class MockSchema<T = any> {
     return this;
   }
 
-  refine(): MockSchema<T> {
-    return this;
+  refine(predicate: (value: T) => boolean, message?: string): MockSchema<T> {
+    const refinement: Refinement<T> = (value) => {
+      if (!predicate(value)) {
+        throw new ZodError([{ message: message ?? 'Refinement failed.', path: [] }]);
+      }
+    };
+    return this.withRefinement(refinement);
   }
 
   superRefine(): MockSchema<T> {
     return this;
+  }
+
+  int(message?: string): MockSchema<T> {
+    const refinement: Refinement<T> = (value) => {
+      if (typeof value === 'number' && !Number.isInteger(value)) {
+        throw new ZodError([
+          { message: message ?? 'Value must be an integer.', path: [] },
+        ]);
+      }
+    };
+    return this.withRefinement(refinement);
   }
 
   transform(fn: (value: T, ctx: { addIssue: (...args: any[]) => void }) => any): MockSchema<any> {
@@ -117,6 +133,14 @@ class MockSchema<T = any> {
 
 const string = () => new MockSchema<string>((value) => (value != null ? String(value) : ''));
 const boolean = () => new MockSchema<boolean>((value) => Boolean(value));
+const number = () =>
+  new MockSchema<number>((value) => {
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) {
+      throw new ZodError([{ message: 'Value must be a number.', path: [] }]);
+    }
+    return parsed;
+  });
 
 const enumFactory = (values: readonly string[]) =>
   new MockSchema<string>((value) => (values.includes(String(value)) ? String(value) : values[0]));
@@ -143,13 +167,18 @@ const object = (shape: Record<string, MockSchema<any>>) =>
 
 const literal = <T>(value: T) => new MockSchema<T>(() => value);
 
+const preprocess = <T>(transform: (value: unknown) => unknown, schema: MockSchema<T>) =>
+  new MockSchema<T>((value) => schema.parse(transform(value)));
+
 const z = {
   object,
   array,
   enum: enumFactory,
   string,
   boolean,
+  number,
   literal,
+  preprocess,
 };
 
 type ZodIssueCode = string;
