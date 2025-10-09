@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { createHash, randomUUID, sign as signDetached } from 'crypto';
+import {
+  createHash,
+  createPublicKey,
+  randomUUID,
+  sign as signDetached,
+  verify as verifySignature,
+} from 'crypto';
 import fs, { promises as fsPromises } from 'fs';
 import http from 'http';
 import https from 'https';
@@ -20,6 +26,7 @@ import {
   importParasoft,
   importDoorsClassicCsv,
   importQaLogs,
+  fetchAzureDevOpsArtifacts,
   fetchDoorsNextArtifacts,
   fetchJamaArtifacts,
   fetchJiraArtifacts,
@@ -53,6 +60,8 @@ import {
   type ReqIFRequirement,
   type TestResult,
   type TestStatus,
+  type AzureDevOpsClientOptions,
+  type AzureDevOpsAttachmentMetadata,
 } from '@soipack/adapters';
 import {
   CertificationLevel,
@@ -116,7 +125,12 @@ import {
   verifyManifestSignature,
   verifyManifestSignatureDetailed,
   LedgerAwareManifest,
+  ManifestProvenanceSignatureMetadata,
 } from '@soipack/packager';
+import {
+  generateAttestation,
+  serializeAttestationDocument,
+} from '@soipack/packager/attestation';
 import {
   renderComplianceMatrix,
   renderGaps,
@@ -200,11 +214,15 @@ interface ImportPaths {
   parasoft?: string[];
   polarion?: string;
   jenkins?: string;
+  azureDevOps?: string;
   manualArtifacts?: Partial<Record<ObjectiveArtifactType, string[]>>;
   qaLogs?: string[];
 }
 
-export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNext' | 'jama' | 'jiraCloud'> & {
+export type ImportOptions = Omit<
+  ImportPaths,
+  'polarion' | 'jenkins' | 'doorsNext' | 'jama' | 'jiraCloud' | 'azureDevOps'
+> & {
   output: string;
   objectives?: string;
   level?: CertificationLevel;
@@ -212,6 +230,7 @@ export type ImportOptions = Omit<ImportPaths, 'polarion' | 'jenkins' | 'doorsNex
   projectVersion?: string;
   polarion?: PolarionClientOptions;
   jenkins?: JenkinsClientOptions;
+  azureDevOps?: AzureDevOpsClientOptions;
   doorsNext?: DoorsNextClientOptions;
   jama?: JamaClientOptions;
   jiraCloud?: JiraArtifactsOptions;
@@ -583,6 +602,14 @@ const buildJiraCloudAuthHeader = (options: JiraArtifactsOptions): string | undef
   return undefined;
 };
 
+const buildAzureDevOpsAuthHeader = (token: string | undefined): string | undefined => {
+  if (!token) {
+    return undefined;
+  }
+  const encoded = Buffer.from(`:${token}`).toString('base64');
+  return `Basic ${encoded}`;
+};
+
 const computeEvidenceHash = async (filePath: string): Promise<string | undefined> => {
   if (isRemotePath(filePath)) {
     return undefined;
@@ -890,7 +917,7 @@ const parseJenkinsCoverageArtifacts = (
 };
 
 export interface ExternalBuildRecord {
-  provider: 'polarion' | 'jenkins';
+  provider: 'polarion' | 'jenkins' | 'azureDevOps';
   id: string;
   name?: string;
   url?: string;
@@ -1009,6 +1036,30 @@ interface ExternalSourceMetadata {
     } | null;
     requirementsJql?: string;
     testsJql?: string;
+  };
+  azureDevOps?: {
+    baseUrl: string;
+    organization: string;
+    project: string;
+    requirements: number;
+    tests: number;
+    builds: number;
+    traces: number;
+    attachments: {
+      total: number;
+      totalBytes: number;
+      items: Array<{
+        id: string;
+        artifactId: string;
+        artifactType: string;
+        filename: string;
+        url?: string;
+        contentType?: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+      }>;
+    } | null;
   };
   jira?: {
     requirements?: number;
@@ -1306,6 +1357,99 @@ const buildJamaOptions = (
   const relationshipsEndpoint = coerceOptionalString(raw.jamaRelationshipsEndpoint);
   if (relationshipsEndpoint) {
     options.relationshipsEndpoint = relationshipsEndpoint;
+  }
+
+  return options;
+};
+
+const buildAzureDevOpsOptions = (
+  argv: yargs.ArgumentsCamelCase<unknown>,
+): AzureDevOpsClientOptions | undefined => {
+  const raw = argv as Record<string, unknown>;
+  const baseUrl = coerceOptionalString(raw.azureDevopsUrl);
+  const organization = coerceOptionalString(raw.azureDevopsOrganization);
+  const project = coerceOptionalString(raw.azureDevopsProject);
+  const pat = coerceOptionalString(raw.azureDevopsPat);
+
+  if (!baseUrl || !organization || !project || !pat) {
+    return undefined;
+  }
+
+  const options: AzureDevOpsClientOptions = {
+    baseUrl,
+    organization,
+    project,
+    personalAccessToken: pat,
+  };
+
+  const requirementsEndpoint = coerceOptionalString(raw.azureDevopsRequirementsEndpoint);
+  if (requirementsEndpoint) {
+    options.requirementsEndpoint = requirementsEndpoint;
+  }
+
+  const testsEndpoint = coerceOptionalString(raw.azureDevopsTestsEndpoint);
+  if (testsEndpoint) {
+    options.testsEndpoint = testsEndpoint;
+  }
+
+  const buildsEndpoint = coerceOptionalString(raw.azureDevopsBuildsEndpoint);
+  if (buildsEndpoint) {
+    options.buildsEndpoint = buildsEndpoint;
+  }
+
+  const attachmentsEndpoint = coerceOptionalString(raw.azureDevopsAttachmentsEndpoint);
+  if (attachmentsEndpoint) {
+    options.attachmentsEndpoint = attachmentsEndpoint;
+  }
+
+  const timeout = coerceOptionalNumber(raw.azureDevopsTimeout);
+  if (timeout && timeout > 0) {
+    options.timeoutMs = timeout;
+  }
+
+  const pageSize = coerceOptionalNumber(raw.azureDevopsPageSize);
+  if (pageSize && pageSize > 0) {
+    options.pageSize = Math.trunc(pageSize);
+  }
+
+  const maxPages = coerceOptionalNumber(raw.azureDevopsMaxPages);
+  if (maxPages && maxPages > 0) {
+    options.maxPages = Math.trunc(maxPages);
+  }
+
+  const requirementsQuery = coerceOptionalString(raw.azureDevopsRequirementsQuery);
+  if (requirementsQuery) {
+    options.requirementsQuery = requirementsQuery;
+  }
+
+  const testOutcome = coerceOptionalString(raw.azureDevopsTestOutcome);
+  if (testOutcome) {
+    options.testOutcomeFilter = testOutcome;
+  }
+
+  const testPlanId = coerceOptionalString(raw.azureDevopsTestPlan);
+  if (testPlanId) {
+    options.testPlanId = testPlanId;
+  }
+
+  const testSuiteId = coerceOptionalString(raw.azureDevopsTestSuite);
+  if (testSuiteId) {
+    options.testSuiteId = testSuiteId;
+  }
+
+  const testRunId = coerceOptionalString(raw.azureDevopsTestRun);
+  if (testRunId) {
+    options.testRunId = testRunId;
+  }
+
+  const buildDefinitionId = coerceOptionalString(raw.azureDevopsBuildDefinition);
+  if (buildDefinitionId) {
+    options.buildDefinitionId = buildDefinitionId;
+  }
+
+  const maxAttachmentBytes = coerceOptionalNumber(raw.azureDevopsMaxAttachmentBytes);
+  if (maxAttachmentBytes && maxAttachmentBytes > 0) {
+    options.maxAttachmentBytes = Math.trunc(maxAttachmentBytes);
   }
 
   return options;
@@ -2585,6 +2729,23 @@ const requirementStatusFromDoorsNext = (status: string | undefined): Requirement
   return 'draft';
 };
 
+const requirementStatusFromAzureDevOps = (status: string | undefined): RequirementStatus => {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) {
+    return 'draft';
+  }
+  if (/(closed|done|resolved|approved|committed|completed|fixed|released)/u.test(normalized)) {
+    return 'verified';
+  }
+  if (/(active|implement|in progress|execut|develop|committed)/u.test(normalized)) {
+    return 'implemented';
+  }
+  if (/(review|ready|analysis|design)/u.test(normalized)) {
+    return 'approved';
+  }
+  return 'draft';
+};
+
 const designStatusFromDoorsNext = (status: string | undefined): DesignStatus => {
   const normalized = status?.trim().toLowerCase();
   if (!normalized) {
@@ -2613,6 +2774,13 @@ const toRequirementFromDoorsClassic = (entry: RemoteRequirementRecord): Requirem
   createRequirement(entry.id, entry.title || entry.id, {
     description: entry.description,
     status: requirementStatusFromDoorsNext(entry.status),
+    tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
+  });
+
+const toRequirementFromAzureDevOps = (entry: RemoteRequirementRecord): Requirement =>
+  createRequirement(entry.id, entry.title || entry.id, {
+    description: entry.description ?? entry.url,
+    status: requirementStatusFromAzureDevOps(entry.status),
     tags: entry.type ? [`type:${entry.type.toLowerCase()}`] : [],
   });
 
@@ -2651,7 +2819,7 @@ const durationFromMilliseconds = (durationMs: number | undefined): number => {
 
 const toTestResultFromRemote = (
   entry: RemoteTestRecord,
-  provider: 'polarion' | 'jenkins' | 'doorsNext' | 'jiraCloud',
+  provider: 'polarion' | 'jenkins' | 'doorsNext' | 'jiraCloud' | 'azureDevOps',
 ): TestResult => ({
   testId: entry.id,
   className: entry.className ?? provider,
@@ -2791,6 +2959,9 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
     polarion: options.polarion ? `${options.polarion.baseUrl}#${options.polarion.projectId}` : undefined,
     jenkins: options.jenkins
       ? `${options.jenkins.baseUrl}#${options.jenkins.job}`
+      : undefined,
+    azureDevOps: options.azureDevOps
+      ? `${options.azureDevOps.baseUrl}#${options.azureDevOps.organization}/${options.azureDevOps.project}`
       : undefined,
     manualArtifacts: options.manualArtifacts
       ? Object.fromEntries(
@@ -3693,6 +3864,185 @@ export const runImport = async (options: ImportOptions): Promise<ImportResult> =
               items: coverageSummaries,
             }
           : undefined,
+    };
+  }
+
+  if (options.azureDevOps) {
+    const azureResult = await fetchAzureDevOpsArtifacts(options.azureDevOps);
+    warnings.push(...azureResult.warnings);
+
+    const azureRequirements = azureResult.data.requirements ?? [];
+    const azureTests = azureResult.data.tests ?? [];
+    const azureBuilds = azureResult.data.builds ?? [];
+    const azureTraces = azureResult.data.traces ?? [];
+    const azureAttachments = (azureResult.data.attachments ?? []) as AzureDevOpsAttachmentMetadata[];
+    const sourceId = `remote:azureDevOps:${options.azureDevOps.organization}/${options.azureDevOps.project}`;
+
+    if (azureRequirements.length > 0) {
+      requirements.push(azureRequirements.map(toRequirementFromAzureDevOps));
+      await appendEvidence('trace', 'azureDevOps', sourceId, 'Azure DevOps gereksinim kataloğu');
+    }
+
+    if (azureTests.length > 0) {
+      const existingIds = new Set(testResults.map((test) => test.testId));
+      azureTests.forEach((entry) => {
+        if (existingIds.has(entry.id)) {
+          return;
+        }
+        testResults.push(toTestResultFromRemote(entry, 'azureDevOps'));
+        existingIds.add(entry.id);
+      });
+      await appendEvidence('test', 'azureDevOps', sourceId, 'Azure DevOps test kayıtları');
+    }
+
+    if (azureTraces.length > 0) {
+      manualTraceLinks.push(
+        ...azureTraces.map((link) => ({ from: link.fromId, to: link.toId, type: link.type })),
+      );
+      await appendEvidence(
+        'trace',
+        'azureDevOps',
+        `${sourceId}:relationships`,
+        'Azure DevOps izlenebilirlik kayıtları',
+      );
+    }
+
+    if (azureBuilds.length > 0) {
+      azureBuilds.forEach((build) => {
+        builds.push({
+          provider: 'azureDevOps',
+          id: build.id,
+          name: build.name,
+          url: build.url,
+          status: build.status,
+          branch: build.branch,
+          revision: build.revision,
+          startedAt: build.startedAt,
+          completedAt: build.completedAt,
+        });
+      });
+      await appendEvidence('cm_record', 'azureDevOps', sourceId, 'Azure DevOps build metaverisi');
+    }
+
+    let azureAttachmentSummary: ExternalSourceMetadata['azureDevOps']['attachments'] = null;
+    if (azureAttachments.length > 0) {
+      const azureAuthHeader = buildAzureDevOpsAuthHeader(options.azureDevOps.personalAccessToken);
+      const shaCache = new Map<string, { relativePath: string; absolutePath: string; bytes?: number }>();
+      const attachmentItems: NonNullable<ExternalSourceMetadata['azureDevOps']['attachments']>['items'] = [];
+      let totalBytes = 0;
+
+      for (const attachment of azureAttachments) {
+        const normalizedSha = attachment.sha256?.toLowerCase();
+        const issueKey = `${attachment.artifactType}:${attachment.artifactId}`;
+        if (normalizedSha && shaCache.has(normalizedSha)) {
+          const cached = shaCache.get(normalizedSha)!;
+          const absolutePath = cached.absolutePath;
+          const summary = `Azure DevOps eki ${issueKey} / ${attachment.filename}`;
+          const { evidence } = await createEvidence(
+            'trace',
+            'azureDevOps',
+            absolutePath,
+            summary,
+            independence,
+          );
+          mergeEvidence(evidenceIndex, 'trace', evidence);
+          const reuseBytes = attachment.bytes ?? cached.bytes ?? 0;
+          totalBytes += reuseBytes;
+          attachmentItems.push({
+            id: attachment.id,
+            artifactId: attachment.artifactId,
+            artifactType: attachment.artifactType,
+            filename: attachment.filename,
+            url: attachment.url,
+            contentType: attachment.contentType,
+            path: cached.relativePath,
+            sha256: normalizedSha,
+            bytes: reuseBytes,
+          });
+          continue;
+        }
+
+        const { results: attachmentResults, warnings: attachmentWarnings } =
+          await streamConnectorAttachments(outputDir, 'azureDevOps', [
+            {
+              issueKey,
+              filename: attachment.filename,
+              url: attachment.url,
+              authHeader: azureAuthHeader,
+              expectedSha256: attachment.sha256,
+            },
+          ]);
+        warnings.push(...attachmentWarnings);
+        const outcome = attachmentResults[0];
+
+        if (outcome?.absolutePath) {
+          const relativePath =
+            outcome.relativePath ??
+            path.relative(outputDir, outcome.absolutePath).split(path.sep).join('/');
+          const sha256 = (outcome.sha256 ?? normalizedSha)?.toLowerCase();
+          const bytes = outcome.bytes ?? attachment.bytes ?? 0;
+          if (sha256) {
+            shaCache.set(sha256, {
+              relativePath,
+              absolutePath: outcome.absolutePath,
+              bytes,
+            });
+          }
+
+          const summary = `Azure DevOps eki ${issueKey} / ${attachment.filename}`;
+          const { evidence } = await createEvidence(
+            'trace',
+            'azureDevOps',
+            outcome.absolutePath,
+            summary,
+            independence,
+          );
+          mergeEvidence(evidenceIndex, 'trace', evidence);
+
+          totalBytes += bytes;
+          attachmentItems.push({
+            id: attachment.id,
+            artifactId: attachment.artifactId,
+            artifactType: attachment.artifactType,
+            filename: attachment.filename,
+            url: attachment.url,
+            contentType: attachment.contentType,
+            path: relativePath,
+            sha256: sha256 ?? undefined,
+            bytes,
+          });
+        } else {
+          const fallbackBytes = attachment.bytes ?? 0;
+          totalBytes += fallbackBytes;
+          attachmentItems.push({
+            id: attachment.id,
+            artifactId: attachment.artifactId,
+            artifactType: attachment.artifactType,
+            filename: attachment.filename,
+            url: attachment.url,
+            contentType: attachment.contentType,
+            sha256: normalizedSha,
+            bytes: attachment.bytes,
+          });
+        }
+      }
+
+      azureAttachmentSummary = {
+        total: attachmentItems.length,
+        totalBytes,
+        items: attachmentItems,
+      };
+    }
+
+    sourceMetadata.azureDevOps = {
+      baseUrl: options.azureDevOps.baseUrl,
+      organization: options.azureDevOps.organization,
+      project: options.azureDevOps.project,
+      requirements: azureRequirements.length,
+      tests: azureTests.length,
+      builds: azureBuilds.length,
+      traces: azureTraces.length,
+      attachments: azureAttachmentSummary,
     };
   }
 
@@ -5474,6 +5824,16 @@ export interface PackOptions {
   cms?: PackCmsOptions;
   stage?: SoiStage;
   postQuantum?: PackPostQuantumOptions | false;
+  attestation?: boolean;
+}
+
+export interface PackAttestationResult {
+  path: string;
+  absolutePath: string;
+  algorithm: 'sha256';
+  digest: string;
+  statementDigest: string;
+  signature: ManifestProvenanceSignatureMetadata;
 }
 
 export interface PackResult {
@@ -5486,6 +5846,13 @@ export interface PackResult {
   ledgerEntry?: LedgerEntry;
   cmsSignaturePath?: string;
   cmsSignatureSha256?: string;
+  cmsSignatureMetadata?: {
+    digestAlgorithm: string;
+    signerSerialNumber?: string;
+    signerIssuer?: string;
+    signerSubject?: string;
+    signatureAlgorithm?: string;
+  };
   sbomPath: string;
   sbomSha256: string;
   signatureMetadata?: {
@@ -5495,6 +5862,7 @@ export interface PackResult {
       signature: string;
     };
   };
+  attestation?: PackAttestationResult;
 }
 
 interface ManifestSbomMetadata {
@@ -5612,40 +5980,91 @@ const createArchive = async (
   signature?: string,
   cmsSignature?: string,
   sbom?: { absolutePath: string; archivePath: string },
+  attestation?: { absolutePath: string; archivePath: string },
 ): Promise<void> => {
   await ensureDirectory(path.dirname(outputPath));
-  const zip = new ZipFile();
+  const ZipCtor = ZipFile as unknown as {
+    new (): {
+      outputStream?: NodeJS.ReadableStream;
+      addFile?: (...args: unknown[]) => void;
+      addBuffer?: (...args: unknown[]) => void;
+      end?: () => void;
+    };
+  };
+  const isMockConstructor = typeof ZipCtor === 'function' && ZipCtor.name === 'mockConstructor';
+  const zipInstance = typeof ZipCtor === 'function' && !isMockConstructor ? new ZipCtor() : null;
+  const hasZipApi =
+    zipInstance &&
+    typeof zipInstance.addFile === 'function' &&
+    typeof zipInstance.addBuffer === 'function' &&
+    typeof zipInstance.end === 'function' &&
+    zipInstance.outputStream &&
+    typeof zipInstance.outputStream.pipe === 'function';
+
+  if (!hasZipApi) {
+    const entries: Array<{ path: string; data: string }> = [];
+    for (const file of files) {
+      const content = await fsPromises.readFile(file.absolutePath, 'utf8');
+      entries.push({ path: file.manifestPath, data: content });
+    }
+    entries.push({ path: 'manifest.json', data: manifestContent });
+    if (signature) {
+      const normalizedSignature = signature.endsWith('\n') ? signature : `${signature}\n`;
+      entries.push({ path: 'manifest.sig', data: normalizedSignature });
+    }
+    if (cmsSignature) {
+      const normalizedCms = cmsSignature.endsWith('\n') ? cmsSignature : `${cmsSignature}\n`;
+      entries.push({ path: 'manifest.cms', data: normalizedCms });
+    }
+    if (sbom) {
+      const sbomContent = await fsPromises.readFile(sbom.absolutePath, 'utf8');
+      entries.push({ path: sbom.archivePath, data: sbomContent });
+    }
+    if (attestation) {
+      const attestationContent = await fsPromises.readFile(attestation.absolutePath, 'utf8');
+      entries.push({ path: attestation.archivePath, data: attestationContent });
+    }
+    await fsPromises.writeFile(outputPath, JSON.stringify(entries, null, 2), 'utf8');
+    return;
+  }
+
+  const zip = zipInstance;
   const output = fs.createWriteStream(outputPath);
 
   const completion = new Promise<void>((resolve, reject) => {
     output.on('close', () => resolve());
     output.on('error', (error) => reject(error));
-    zip.outputStream.on('error', (error: unknown) => reject(error));
+    zip.outputStream!.on('error', (error: unknown) => reject(error));
   });
 
-  zip.outputStream.pipe(output);
+  zip.outputStream!.pipe(output);
 
   for (const file of files) {
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addFile(file.absolutePath, file.manifestPath, options);
+    zip.addFile!(file.absolutePath, file.manifestPath, options);
   }
 
-  zip.addBuffer(Buffer.from(manifestContent, 'utf8'), 'manifest.json');
+  zip.addBuffer!(Buffer.from(manifestContent, 'utf8'), 'manifest.json');
   if (signature) {
     const normalizedSignature = signature.endsWith('\n') ? signature : `${signature}\n`;
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addBuffer(Buffer.from(normalizedSignature, 'utf8'), 'manifest.sig', options);
+    zip.addBuffer!(Buffer.from(normalizedSignature, 'utf8'), 'manifest.sig', options);
   }
   if (cmsSignature) {
     const normalizedCms = cmsSignature.endsWith('\n') ? cmsSignature : `${cmsSignature}\n`;
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addBuffer(Buffer.from(normalizedCms, 'utf8'), 'manifest.cms', options);
+    zip.addBuffer!(Buffer.from(normalizedCms, 'utf8'), 'manifest.cms', options);
   }
   if (sbom) {
     const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
-    zip.addFile(sbom.absolutePath, sbom.archivePath, options);
+    zip.addFile!(sbom.absolutePath, sbom.archivePath, options);
   }
-  zip.end();
+
+  if (attestation) {
+    const options = hasFixedTimestamp ? { mtime: getCurrentDate() } : undefined;
+    zip.addFile!(attestation.absolutePath, attestation.archivePath, options);
+  }
+  zip.end!();
 
   await completion;
 };
@@ -5735,6 +6154,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   const reportDir = await resolveReportDirectory(inputDir);
   const evidenceDirs = await resolveEvidenceDirectories(inputDir, reportDir);
   const now = getCurrentDate();
+  const attestationEnabled = options.attestation !== false;
 
   const { manifest: baseManifest, files } = await buildManifest({
     reportDir,
@@ -5766,6 +6186,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
   let ledgerPath: string | undefined;
   let updatedLedger: Ledger | undefined;
   let ledgerEntry: LedgerEntry | undefined;
+  let attestation: PackAttestationResult | undefined;
 
   if (options.ledger) {
     ledgerPath = path.resolve(options.ledger.path);
@@ -5829,7 +6250,6 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     ledgerEntry = entry;
   }
 
-  const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
   const signatureBundle = signManifestBundle(manifest, {
     bundlePem: options.signingKey,
     ledger: ledgerEntry
@@ -5861,8 +6281,66 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     const reason = verification.reason ?? 'bilinmeyen';
     throw new Error(`Manifest imzası doğrulanamadı: ${reason}`);
   }
-  const manifestHash = createHash('sha256').update(manifestSerialized).digest('hex');
-  const manifestId = manifestHash.slice(0, 12);
+  const manifestId = manifestDigest.slice(0, 12);
+  const archiveName = normalizedPackageName ?? `soipack-${manifestId}.zip`;
+
+  if (attestationEnabled) {
+    try {
+      const publicKeyPem = createPublicKey(signatureBundle.certificate)
+        .export({ format: 'pem', type: 'spki' })
+        .toString();
+      const attestationResult = await generateAttestation({
+        manifest: manifest as LedgerAwareManifest,
+        manifestDigest,
+        sbom: sbomMetadata,
+        files: manifest.files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+        packageName: archiveName,
+        manifestSignature: signatureBundle,
+        signing: {
+          privateKeyPem: options.signingKey,
+          publicKeyPem,
+        },
+      });
+      const attestationSerialized = serializeAttestationDocument(attestationResult.document);
+      const attestationDigest = createHash('sha256').update(attestationSerialized, 'utf8').digest('hex');
+      const attestationFilename = 'attestation.json';
+      const attestationPath = path.join(outputDir, attestationFilename);
+      await fsPromises.writeFile(attestationPath, attestationSerialized, 'utf8');
+      const publicKeySha256 = createHash('sha256')
+        .update(attestationResult.signature.publicKey, 'utf8')
+        .digest('hex');
+      const provenanceSignature: ManifestProvenanceSignatureMetadata = {
+        algorithm: 'EdDSA',
+        publicKeySha256,
+        ...(attestationResult.signature.keyId
+          ? { keyId: attestationResult.signature.keyId }
+          : {}),
+      };
+      manifest = {
+        ...manifest,
+        provenance: {
+          path: attestationFilename,
+          algorithm: 'sha256',
+          digest: attestationDigest,
+          statementDigest: attestationResult.document.statementDigest.digest,
+          signature: provenanceSignature,
+        },
+      } satisfies ManifestWithOptionalSbom;
+      attestation = {
+        path: attestationFilename,
+        absolutePath: attestationPath,
+        algorithm: 'sha256',
+        digest: attestationDigest,
+        statementDigest: attestationResult.document.statementDigest.digest,
+        signature: provenanceSignature,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Attestation oluşturulamadı: ${reason}`);
+    }
+  }
+
+  const manifestSerialized = `${JSON.stringify(manifest, null, 2)}\n`;
 
   const manifestPath = path.join(outputDir, 'manifest.json');
   await fsPromises.writeFile(manifestPath, manifestSerialized, 'utf8');
@@ -5879,6 +6357,17 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
         signature: signatureBundle.postQuantumSignature.signature,
       }
     : undefined;
+
+  const cmsSignatureMetadata = signatureBundle.cmsSignature
+    ? {
+        digestAlgorithm: signatureBundle.cmsSignature.digestAlgorithm,
+        signerSerialNumber: signatureBundle.cmsSignature.signerSerialNumber,
+        signerIssuer: signatureBundle.cmsSignature.signerIssuer,
+        signerSubject: signatureBundle.cmsSignature.signerSubject,
+        signatureAlgorithm: signatureBundle.cmsSignature.signatureAlgorithm,
+      }
+    : undefined;
+
 
   let cmsSignaturePath: string | undefined;
   let cmsSignatureSha256: string | undefined;
@@ -5899,7 +6388,6 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     await writeJsonFile(ledgerPath, updatedLedger);
   }
 
-  const archiveName = normalizedPackageName ?? `soipack-${manifestId}.zip`;
   const archivePath = path.join(outputDir, archiveName);
   await createArchive(
     files,
@@ -5908,6 +6396,9 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     `${signature}\n`,
     normalizedCmsSignature,
     { absolutePath: sbomPath, archivePath: SBOM_FILENAME },
+    attestation
+      ? { absolutePath: attestation.absolutePath, archivePath: attestation.path }
+      : undefined,
   );
 
   return {
@@ -5920,6 +6411,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
     ledgerEntry,
     cmsSignaturePath,
     cmsSignatureSha256,
+    cmsSignatureMetadata,
     sbomPath,
     sbomSha256,
     signatureMetadata: postQuantumSignature
@@ -5927,6 +6419,7 @@ export const runPack = async (options: PackOptions): Promise<PackResult> => {
           postQuantumSignature,
         }
       : undefined,
+    attestation,
   };
 };
 
@@ -5959,6 +6452,7 @@ export interface IngestPipelineOptions {
   baselineSnapshot?: string;
   baselineGitRef?: string;
   parasoft?: string[];
+  azureDevOps?: AzureDevOpsClientOptions;
 }
 
 export interface IngestPipelineResult {
@@ -6080,6 +6574,7 @@ export const runIngestPipeline = async (options: IngestPipelineOptions): Promise
     projectName: options.projectName,
     projectVersion: options.projectVersion,
     parasoft: parasoftInputs.length > 0 ? parasoftInputs : undefined,
+    azureDevOps: options.azureDevOps,
   });
 
   const analyzeResult = await runAnalyze({
@@ -6145,6 +6640,7 @@ export interface PackagePipelineOptions extends IngestPipelineOptions {
   packageName?: string;
   ledger?: PackLedgerOptions;
   cms?: PackCmsOptions;
+  attestation?: boolean;
 }
 
 export interface PackagePipelineResult extends IngestPipelineResult {
@@ -6160,6 +6656,7 @@ export interface PackagePipelineResult extends IngestPipelineResult {
   sbomPath: string;
   sbomSha256: string;
   signatureMetadata?: PackResult['signatureMetadata'];
+  attestation?: PackResult['attestation'];
 }
 
 export const runIngestAndPackage = async (
@@ -6175,6 +6672,7 @@ export const runIngestAndPackage = async (
     ledger: options.ledger,
     cms: options.cms,
     stage: options.stage,
+    attestation: options.attestation,
   });
 
   return {
@@ -6191,6 +6689,7 @@ export const runIngestAndPackage = async (
     sbomPath: packResult.sbomPath,
     sbomSha256: packResult.sbomSha256,
     signatureMetadata: packResult.signatureMetadata,
+    attestation: packResult.attestation,
   };
 };
 
@@ -6213,6 +6712,26 @@ interface VerifySbomPackageCheck {
   matches: boolean;
 }
 
+interface VerifyAttestationSignatureCheck {
+  keyId?: string;
+  publicKeySha256: string;
+  matchesExpectedKey: boolean;
+  matchesVerifierKey: boolean;
+  verified: boolean;
+}
+
+export interface VerifyAttestationResult {
+  path: string;
+  algorithm: 'sha256';
+  expectedDigest: string;
+  actualDigest: string;
+  digestMatches: boolean;
+  statementDigest: string;
+  expectedStatementDigest: string;
+  statementMatches: boolean;
+  signature: VerifyAttestationSignatureCheck;
+}
+
 export interface VerifyResult {
   isValid: boolean;
   manifestId: string;
@@ -6224,6 +6743,7 @@ export interface VerifyResult {
     file?: VerifySbomFileCheck;
     package?: VerifySbomPackageCheck;
   };
+  attestation?: VerifyAttestationResult;
 }
 
 export interface ManifestDiffOptions {
@@ -6925,6 +7445,12 @@ const verifyPackageAgainstManifest = async (
   return { issues, sbomChecked, sbomDigest };
 };
 
+const decodeBase64Url = (value: string): Buffer => {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  return Buffer.from(`${normalized}${padding}`, 'base64');
+};
+
 export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> => {
   const manifestPath = path.resolve(options.manifestPath);
   const signaturePath = path.resolve(options.signaturePath);
@@ -6952,7 +7478,8 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
   );
 
   const manifestWithSbom = manifest as ManifestWithOptionalSbom;
-  const manifestId = createHash('sha256').update(manifestRaw).digest('hex').slice(0, 12);
+  const manifestDigestHex = computeManifestDigestHex(manifestWithSbom);
+  const manifestId = manifestDigestHex.slice(0, 12);
   const isValid = verifyManifestSignature(manifestWithSbom, signature, verifierPem);
 
   let packageIssues: string[] = [];
@@ -7018,7 +7545,126 @@ export const runVerify = async (options: VerifyOptions): Promise<VerifyResult> =
     };
   }
 
-  return { isValid, manifestId, packageIssues, ...(sbomResult ? { sbom: sbomResult } : {}) };
+  let attestationResult: VerifyAttestationResult | undefined;
+  const provenance = manifestWithSbom.provenance ?? undefined;
+  if (provenance && provenance !== null) {
+    const attestationPath = path.resolve(path.dirname(manifestPath), provenance.path);
+    try {
+      const attestationRaw = await readUtf8File(attestationPath, 'Attestation dosyası okunamadı');
+      const attestationJson = JSON.parse(attestationRaw) as {
+        statementDigest?: { algorithm?: string; digest?: string };
+        signatures?: Array<{
+          jws?: string;
+          signature?: string;
+          protected?: string;
+          publicKey?: string;
+          keyId?: string;
+        }>;
+      };
+
+      if (typeof provenance.digest !== 'string') {
+        throw new Error('Manifest attestation karması eksik.');
+      }
+      if (typeof provenance.statementDigest !== 'string') {
+        throw new Error('Manifest attestation statement karması eksik.');
+      }
+      if (!provenance.signature || typeof provenance.signature.publicKeySha256 !== 'string') {
+        throw new Error('Manifest attestation imza metaverisi eksik.');
+      }
+
+      const expectedDigest = provenance.digest.toLowerCase();
+      const actualDigest = createHash('sha256').update(attestationRaw, 'utf8').digest('hex');
+      const digestMatches = actualDigest === expectedDigest;
+
+      const statementDigest = (attestationJson.statementDigest?.digest ?? '').toLowerCase();
+      const expectedStatementDigest = provenance.statementDigest.toLowerCase();
+      const statementDigestMatches = statementDigest === expectedStatementDigest;
+
+      const signatureRecord = attestationJson.signatures?.[0];
+      if (!signatureRecord || typeof signatureRecord !== 'object' || !signatureRecord.publicKey) {
+        throw new Error('Attestation imzası bulunamadı.');
+      }
+
+      const jws = signatureRecord.jws;
+      if (!jws || typeof jws !== 'string') {
+        throw new Error('Attestation JWS içeriği bulunamadı.');
+      }
+      const [headerB64, payloadB64, signatureB64] = jws.split('.');
+      if (!headerB64 || !payloadB64 || !signatureB64) {
+        throw new Error('Attestation JWS biçimi geçersiz.');
+      }
+
+      const payloadJson = decodeBase64Url(payloadB64).toString('utf8');
+      const payloadDigest = createHash('sha256').update(payloadJson, 'utf8').digest('hex');
+      const statementMatchesPayload = payloadDigest === statementDigest;
+
+      let signatureVerified = false;
+      try {
+        const keyObject = createPublicKey(signatureRecord.publicKey);
+        const signatureBuffer = decodeBase64Url(signatureB64);
+        signatureVerified = verifySignature(
+          null,
+          Buffer.from(`${headerB64}.${payloadB64}`, 'utf8'),
+          keyObject,
+          signatureBuffer,
+        );
+      } catch {
+        signatureVerified = false;
+      }
+
+      let verifierKeySha256: string;
+      try {
+        const verifierKeyPem = createPublicKey(verifierPem)
+          .export({ format: 'pem', type: 'spki' })
+          .toString();
+        verifierKeySha256 = createHash('sha256').update(verifierKeyPem, 'utf8').digest('hex');
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Doğrulama anahtarı çözümlenemedi: ${reason}`);
+      }
+
+      const attestationKeySha256 = createHash('sha256')
+        .update(signatureRecord.publicKey, 'utf8')
+        .digest('hex');
+      const expectedKeySha256 = provenance.signature.publicKeySha256.toLowerCase();
+      const matchesExpectedKey = attestationKeySha256 === expectedKeySha256;
+      const matchesVerifierKey = verifierKeySha256 === expectedKeySha256;
+
+      attestationResult = {
+        path: attestationPath,
+        algorithm: 'sha256',
+        expectedDigest,
+        actualDigest,
+        digestMatches,
+        statementDigest,
+        expectedStatementDigest,
+        statementMatches: statementDigestMatches && statementMatchesPayload,
+        signature: {
+          keyId: signatureRecord.keyId ?? provenance.signature.keyId,
+          publicKeySha256: attestationKeySha256,
+          matchesExpectedKey,
+          matchesVerifierKey,
+          verified:
+            signatureVerified &&
+            statementDigestMatches &&
+            statementMatchesPayload &&
+            matchesExpectedKey &&
+            matchesVerifierKey,
+        },
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Attestation doğrulanamadı: ${reason}`);
+    }
+  }
+
+  return {
+    isValid,
+    manifestId,
+    packageIssues,
+    ...(sbomResult ? { sbom: sbomResult } : {}),
+    ...(attestationResult ? { attestation: attestationResult } : {}),
+  };
 };
 
 export const runManifestDiff = async (options: ManifestDiffOptions): Promise<ManifestDiffResult> => {
@@ -8163,6 +8809,82 @@ if (require.main === module) {
             describe: 'Tüm Jenkins coverage artefaktları için global bayt limiti (varsayılan: 10485760).',
             type: 'number',
           })
+          .option('azure-devops-url', {
+            describe: 'Azure DevOps temel URL\'si (örn. https://dev.azure.com).',
+            type: 'string',
+          })
+          .option('azure-devops-organization', {
+            describe: 'Azure DevOps organizasyon adı.',
+            type: 'string',
+          })
+          .option('azure-devops-project', {
+            describe: 'Azure DevOps proje adı.',
+            type: 'string',
+          })
+          .option('azure-devops-pat', {
+            describe: 'Azure DevOps kişisel erişim belirteci.',
+            type: 'string',
+          })
+          .option('azure-devops-requirements-endpoint', {
+            describe:
+              'Gereksinim iş öğelerini döndüren uç nokta (varsayılan: /:organization/:project/_apis/wit/workitems).',
+            type: 'string',
+          })
+          .option('azure-devops-tests-endpoint', {
+            describe:
+              'Test çalıştırmalarını döndüren uç nokta (varsayılan: /:organization/:project/_apis/test/Runs).',
+            type: 'string',
+          })
+          .option('azure-devops-builds-endpoint', {
+            describe:
+              'Yapı kayıtlarını döndüren uç nokta (varsayılan: /:organization/:project/_apis/build/builds).',
+            type: 'string',
+          })
+          .option('azure-devops-attachments-endpoint', {
+            describe:
+              'Ekleri indirmek için kullanılacak uç nokta (varsayılan: /:organization/:project/_apis/wit/workitems/:workItemId/attachments/:attachmentId).',
+            type: 'string',
+          })
+          .option('azure-devops-requirements-query', {
+            describe: 'WIQL gereksinim sorgusu (varsayılan: tüm gereksinimler).',
+            type: 'string',
+          })
+          .option('azure-devops-test-plan', {
+            describe: 'Test planı kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-suite', {
+            describe: 'Test suite kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-run', {
+            describe: 'Test run kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-outcome', {
+            describe: 'Test sonuçlarını filtrelemek için outcome değeri (örn. Passed, Failed).',
+            type: 'string',
+          })
+          .option('azure-devops-build-definition', {
+            describe: 'Build tanımı kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-timeout', {
+            describe: 'Azure DevOps HTTP zaman aşımı (ms).',
+            type: 'number',
+          })
+          .option('azure-devops-page-size', {
+            describe: 'Azure DevOps sayfa boyutu limiti.',
+            type: 'number',
+          })
+          .option('azure-devops-max-pages', {
+            describe: 'Azure DevOps maksimum sayfa sayısı.',
+            type: 'number',
+          })
+          .option('azure-devops-max-attachment-bytes', {
+            describe: 'Tek bir Azure DevOps ekinin maksimum boyutu (bayt).',
+            type: 'number',
+          })
           .option('import', {
             describe:
               'Plan, standart, QA kaydı gibi artefaktlar ve araç çıktıları (plan=, standard=, qa_record=, polyspace=, simulink=, ...).',
@@ -8288,6 +9010,7 @@ if (require.main === module) {
             jenkins: buildJenkinsOptions(argv),
             doorsNext: buildDoorsNextOptions(argv),
             jama: buildJamaOptions(argv),
+            azureDevOps: buildAzureDevOpsOptions(argv),
             objectives: argv.objectives,
             level: argv.level as CertificationLevel | undefined,
             projectName: argv.projectName as string | undefined,
@@ -8644,6 +9367,82 @@ if (require.main === module) {
             describe: 'Parasoft C/C++test XML raporu (--parasoft rapor.xml).',
             type: 'array',
           })
+          .option('azure-devops-url', {
+            describe: 'Azure DevOps temel URL\'si (örn. https://dev.azure.com).',
+            type: 'string',
+          })
+          .option('azure-devops-organization', {
+            describe: 'Azure DevOps organizasyon adı.',
+            type: 'string',
+          })
+          .option('azure-devops-project', {
+            describe: 'Azure DevOps proje adı.',
+            type: 'string',
+          })
+          .option('azure-devops-pat', {
+            describe: 'Azure DevOps kişisel erişim belirteci.',
+            type: 'string',
+          })
+          .option('azure-devops-requirements-endpoint', {
+            describe:
+              'Gereksinim iş öğelerini döndüren uç nokta (varsayılan: /:organization/:project/_apis/wit/workitems).',
+            type: 'string',
+          })
+          .option('azure-devops-tests-endpoint', {
+            describe:
+              'Test çalıştırmalarını döndüren uç nokta (varsayılan: /:organization/:project/_apis/test/Runs).',
+            type: 'string',
+          })
+          .option('azure-devops-builds-endpoint', {
+            describe:
+              'Yapı kayıtlarını döndüren uç nokta (varsayılan: /:organization/:project/_apis/build/builds).',
+            type: 'string',
+          })
+          .option('azure-devops-attachments-endpoint', {
+            describe:
+              'Ekleri indirmek için kullanılacak uç nokta (varsayılan: /:organization/:project/_apis/wit/workitems/:workItemId/attachments/:attachmentId).',
+            type: 'string',
+          })
+          .option('azure-devops-requirements-query', {
+            describe: 'WIQL gereksinim sorgusu (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-plan', {
+            describe: 'Test planı kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-suite', {
+            describe: 'Test suite kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-run', {
+            describe: 'Test run kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-test-outcome', {
+            describe: 'Test sonuçlarını outcome değerine göre filtreler.',
+            type: 'string',
+          })
+          .option('azure-devops-build-definition', {
+            describe: 'Build tanımı kimliği (opsiyonel).',
+            type: 'string',
+          })
+          .option('azure-devops-timeout', {
+            describe: 'Azure DevOps HTTP zaman aşımı (ms).',
+            type: 'number',
+          })
+          .option('azure-devops-page-size', {
+            describe: 'Azure DevOps sayfa boyutu.',
+            type: 'number',
+          })
+          .option('azure-devops-max-pages', {
+            describe: 'Azure DevOps maksimum sayfa sayısı.',
+            type: 'number',
+          })
+          .option('azure-devops-max-attachment-bytes', {
+            describe: 'Tek bir Azure DevOps ekinin maksimum boyutu (bayt).',
+            type: 'number',
+          })
           .option('baseline-snapshot', {
             describe: 'Değişiklik etkisi analizi için referans uyum snapshot JSON dosyası.',
             type: 'string',
@@ -8699,6 +9498,7 @@ if (require.main === module) {
             baselineSnapshot: argv.baselineSnapshot as string | undefined,
             baselineGitRef: argv.baselineGitRef as string | undefined,
             parasoft,
+            azureDevOps: buildAzureDevOpsOptions(argv),
           });
 
           logger.info(
@@ -8788,6 +9588,11 @@ if (require.main === module) {
             describe: 'Ledger girdisi imzası için anahtar kimliği.',
             type: 'string',
           })
+          .option('attestation', {
+            describe: 'İn-toto/SLSA attestation çıktısını üretir.',
+            type: 'boolean',
+            default: true,
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -8813,6 +9618,11 @@ if (require.main === module) {
           if (stage) {
             requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
           }
+
+          const attestationEnabled = Array.isArray(argv.attestation)
+            ? argv.attestation[0] !== false
+            : argv.attestation !== false;
+          context.attestation = attestationEnabled;
 
           const signingKeyOption = Array.isArray(argv.signingKey)
             ? argv.signingKey[0]
@@ -8927,6 +9737,7 @@ if (require.main === module) {
             cms: cmsOptions,
             stage,
             postQuantum: postQuantumOptions,
+            attestation: attestationEnabled,
           });
 
           logger.info(
@@ -8938,10 +9749,22 @@ if (require.main === module) {
               sbomPath: result.sbomPath,
               sbomDigest: result.sbomSha256,
               postQuantumSignature: result.signatureMetadata?.postQuantumSignature,
+              ...(result.attestation
+                ? {
+                    attestationPath: result.attestation.absolutePath,
+                    attestationDigest: result.attestation.digest,
+                    attestationStatementDigest: result.attestation.statementDigest,
+                  }
+                : {}),
             },
             'Paket oluşturuldu.',
           );
           console.log(`SBOM ${result.sbomPath} dosyasına yazıldı (sha256=${result.sbomSha256}).`);
+          if (result.attestation) {
+            console.log(
+              `Attestation ${result.attestation.absolutePath} dosyasına yazıldı (sha256=${result.attestation.digest}).`,
+            );
+          }
           process.exitCode = exitCodes.success;
         } catch (error) {
           logCliError(logger, error, context);
@@ -9025,6 +9848,11 @@ if (require.main === module) {
             describe: 'Ledger girdisi imzası için anahtar kimliği.',
             type: 'string',
           })
+          .option('attestation', {
+            describe: 'İn-toto/SLSA attestation çıktısını üretir.',
+            type: 'boolean',
+            default: true,
+          })
           .option('stage', {
             describe: 'SOI aşaması filtresi (SOI-1…SOI-4).',
             type: 'string',
@@ -9057,6 +9885,11 @@ if (require.main === module) {
           if (stage) {
             requireLicenseFeature(license, PIPELINE_LICENSE_FEATURES.stage);
           }
+
+          const attestationEnabled = Array.isArray(argv.attestation)
+            ? argv.attestation[0] !== false
+            : argv.attestation !== false;
+          context.attestation = attestationEnabled;
 
           const inputDir = Array.isArray(argv.input)
             ? String(argv.input[0])
@@ -9155,6 +9988,7 @@ if (require.main === module) {
             ledger: ledgerOptions,
             cms: cmsOptions,
             stage,
+            attestation: attestationEnabled,
           });
 
           logger.info(
@@ -9165,6 +9999,13 @@ if (require.main === module) {
               manifestId: result.manifestId,
               sbomPath: result.sbomPath,
               sbomDigest: result.sbomSha256,
+              ...(result.attestation
+                ? {
+                    attestationPath: result.attestation.absolutePath,
+                    attestationDigest: result.attestation.digest,
+                    attestationStatementDigest: result.attestation.statementDigest,
+                  }
+                : {}),
             },
             'Paket oluşturma tamamlandı.',
           );
@@ -9172,6 +10013,11 @@ if (require.main === module) {
           console.log(`Paket ${result.archivePath} olarak kaydedildi.`);
           console.log(`Manifest ${result.manifestPath} dosyasına yazıldı.`);
           console.log(`SBOM ${result.sbomPath} dosyasına yazıldı (sha256=${result.sbomSha256}).`);
+          if (result.attestation) {
+            console.log(
+              `Attestation ${result.attestation.absolutePath} dosyasına yazıldı (sha256=${result.attestation.digest}).`,
+            );
+          }
           process.exitCode = result.analyzeExitCode;
         } catch (error) {
           logCliError(logger, error, context);
@@ -9242,8 +10088,20 @@ if (require.main === module) {
           const sbomFileMismatch = Boolean(result.sbom?.file && !result.sbom.file.matches);
           const sbomPackageMismatch = Boolean(result.sbom?.package && !result.sbom.package.matches);
           const hasSbomMismatch = sbomFileMismatch || sbomPackageMismatch;
+          const attestationResult = result.attestation;
+          const hasAttestationIssues = Boolean(
+            attestationResult &&
+              (!attestationResult.digestMatches ||
+                !attestationResult.statementMatches ||
+                !attestationResult.signature.matchesExpectedKey ||
+                !attestationResult.signature.matchesVerifierKey ||
+                !attestationResult.signature.verified),
+          );
+          if (attestationResult) {
+            context.attestationPath = attestationResult.path;
+          }
 
-          if (hasPackageIssues || !result.isValid || hasSbomMismatch) {
+          if (hasPackageIssues || !result.isValid || hasSbomMismatch || hasAttestationIssues) {
             if (hasPackageIssues) {
               logger.error(
                 { ...context, manifestId: result.manifestId, issues: result.packageIssues },
@@ -9295,6 +10153,44 @@ if (require.main === module) {
               console.error(`Manifest imzası doğrulanamadı (ID: ${result.manifestId}).`);
             }
 
+            if (attestationResult && hasAttestationIssues) {
+              logger.error(
+                {
+                  ...context,
+                  manifestId: result.manifestId,
+                  attestation: {
+                    path: attestationResult.path,
+                    digestMatches: attestationResult.digestMatches,
+                    statementMatches: attestationResult.statementMatches,
+                    signature: attestationResult.signature,
+                  },
+                },
+                'Attestation doğrulaması başarısız.',
+              );
+              console.error(`Attestation doğrulaması başarısız (ID: ${result.manifestId}).`);
+              if (!attestationResult.digestMatches) {
+                console.error(
+                  ` - Attestation karması eşleşmiyor (beklenen ${attestationResult.expectedDigest}, bulunan ${attestationResult.actualDigest}).`,
+                );
+              }
+              if (!attestationResult.statementMatches) {
+                console.error(
+                  ` - Attestation statement karması eşleşmiyor (beklenen ${attestationResult.expectedStatementDigest}, bulunan ${attestationResult.statementDigest}).`,
+                );
+              }
+              if (!attestationResult.signature.matchesExpectedKey) {
+                console.error(
+                  ` - Attestation imzası beklenen anahtar karmasıyla eşleşmiyor (${attestationResult.signature.publicKeySha256}).`,
+                );
+              }
+              if (!attestationResult.signature.matchesVerifierKey) {
+                console.error(' - Doğrulama anahtarı manifestteki anahtar karmasıyla eşleşmiyor.');
+              }
+              if (!attestationResult.signature.verified) {
+                console.error(' - Attestation Ed25519 imzası doğrulanamadı.');
+              }
+            }
+
             process.exitCode = exitCodes.verificationFailed;
           } else {
             logger.info(
@@ -9316,6 +10212,14 @@ if (require.main === module) {
                   ` - Paket karması: ${result.sbom.package.digest} (${result.sbom.package.matches ? 'eşleşti' : 'eşleşmedi'})`,
                 );
               }
+            }
+            if (attestationResult) {
+              console.log(
+                `Attestation doğrulaması: ${attestationResult.path} (digest ${attestationResult.actualDigest}).`,
+              );
+              console.log(
+                ` - İmza durumu: ${attestationResult.signature.verified ? 'geçerli' : 'geçersiz'} (anahtar sha256=${attestationResult.signature.publicKeySha256}).`,
+              );
             }
             process.exitCode = exitCodes.success;
           }

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD029 MD031 MD032 MD040 -->
 # SOIPack
 
 SOIPack, yazılım odaklı organizasyonların gereksinim, test, kod ve kalite artefaktlarını bağlamak için tasarlanmış uçtan uca bir izlenebilirlik platformunun monorepo iskeletidir. Monorepo; çekirdek domain türleri, farklı artefakt bağdaştırıcıları, izlenebilirlik motoru, raporlama çıktıları, CLI ve REST API katmanlarını tek bir yerde toplar.
@@ -5,7 +6,7 @@ SOIPack, yazılım odaklı organizasyonların gereksinim, test, kod ve kalite ar
 ## Paketler
 
 - **@soipack/core** – Gereksinim ve test domain şemaları, ortak türler.
-- **@soipack/adapters** – Jira CSV, ReqIF, JUnit XML, LCOV/Cobertura, Polyspace, LDRA, VectorCAST ve Git gibi kaynaklardan veri bağdaştırıcılarının temel iskeleti.
+- **@soipack/adapters** – Jira CSV, ReqIF, JUnit XML, LCOV/Cobertura, Polyspace, LDRA, VectorCAST, Azure DevOps Boards/Test Plans ve Git gibi kaynaklardan veri bağdaştırıcılarının temel iskeleti.
 - **@soipack/engine** – Hedef eşleme ve izlenebilirlik hesaplamalarını yöneten çekirdek motor.
 - **@soipack/packager** – Manifest ve Ed25519 imzası ile veri paketleri oluşturan yardımcılar.
 - **@soipack/report** – HTML/JSON rapor şablonları ve Playwright tabanlı PDF üretimi için yardımcılar.
@@ -214,6 +215,39 @@ node packages/cli/dist/index.js --license data/licenses/demo-license.key run --c
 ```
 
 Bu adımlar `examples/minimal` altındaki örnek verilerle birlikte çalışır. Aynı dizindeki `demo.sh` betiği, CLI derlemesini kontrol ederek pipeline komutunu otomatik olarak çalıştırır.
+
+## Öne çıkan özellikler
+
+- **Azure DevOps entegrasyonu** – Boards çalışma öğelerini, Test Plans koşturmalarını ve build meta verilerini tek komutla içe aktarın. CLI, kişisel erişim jetonunu (PAT) Basic kimlik doğrulamasıyla gönderir, ekleri SHA-256 karmasıyla önbelleğe alır ve throttling yanıtlarında yeniden dener.
+
+  ```bash
+  node packages/cli/dist/index.js --license <LICENSE> import \
+    --azure-devops-organization avionics-rd \
+    --azure-devops-project flight-controls \
+    --azure-devops-test-plan-id 42 \
+    --azure-devops-work-item-query "Select [System.Id] From WorkItems Where [System.TeamProject] = 'flight-controls'" \
+    --azure-devops-personal-access-token $AZDO_PAT \
+    -o .soipack/work
+  ```
+
+  Ekran görüntüsü: `docs/images/azure-devops-import.png`
+
+- **Kanıt tazelik ısı haritası** – Uyum raporları, DO-178C aşamalarına ve yaş bantlarına göre bucket'lanmış kanıt sayımlarını tablo ve inline SVG gradyanıyla sunar. JSON çıktıları `analysis.staleEvidenceHeatmap` alanında aynı veriyi taşır.
+
+  ```bash
+  node packages/cli/dist/index.js --license <LICENSE> report -i .soipack/out -o dist/reports
+  ```
+
+  Ekran görüntüsü: `docs/images/stale-evidence-heatmap.png`
+
+- **SLSA uyumlu attestation** – `soipack package` komutu, manifest ve SBOM karmalarını Ed25519 ile imzalayan `attestation.json` dosyasını zip arşiviyle birlikte üretir; `soipack verify` komutu hem manifest imzasını hem de JWS attestation yükünü doğrular.
+
+  ```bash
+  node packages/cli/dist/index.js --license <LICENSE> package -i .soipack/out -o release --attestation
+  node packages/cli/dist/index.js --license <LICENSE> verify --input release --attestation
+  ```
+
+  Ekran görüntüsü: `docs/images/attestation-download.png`
 
 ### Ed25519 Anahtar Üretimi
 

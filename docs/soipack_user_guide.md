@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD022 MD029 MD031 MD032 MD040 -->
 # SOIPack Kullanıcı Rehberi
 
 SOIPack, gereksinim-test izlenebilirliği, uyumluluk raporlaması ve imzalı dağıtım paketleri oluşturmak üzere tasarlanmış bir komut satırı araç seti sunar. Bu rehber, depoyu klonladıktan sonra aracı devreye almak, örnek veriyle uçtan uca çalıştırmak ve tipik hata kodlarını anlamak için gerekli adımları özetler.
@@ -98,6 +99,14 @@ Aşağıdaki adımlar aynı çıktıları üretir ve kendi veri kümelerinizi ku
   `--ldra`, `--vectorcast` bayraklarıyla ve kalite denetim günlüklerini birden
   fazla `--qa` parametresi vererek ekleyebilirsiniz. Bu alanlar web arayüzünde
   ilgili dosya türleri seçildiğinde otomatik olarak sınıflandırılır.
+  Azure DevOps Boards ve Test Plans kayıtlarını almak için `--azure-devops-organization`,
+  `--azure-devops-project`, `--azure-devops-work-item-query`, `--azure-devops-test-plan-id`
+  ve `--azure-devops-personal-access-token` bayraklarını ekleyin. CLI, PAT değerini
+  HTTP Basic kimlik doğrulamasıyla gönderir, sayfalı REST uç noktalarını otomatik
+  dolaşır ve ekleri `attachments/azureDevOps/` dizinine SHA-256 karmalarıyla indirir.
+  Aynı karma daha önce indirildiyse dosya yeniden indirilmez; böylece throttling
+  sınırları aşıldığında tekrar denemeler sırasında zaman kazanılır. Build özetleri
+  `analysis.json` içindeki `sources.azureDevOps.builds` alanında listelenir.
   Bağımsız inceleme gereksinimleri için `--independent-source junit` veya
   `--independent-artifact analysis=reports/safety-analysis.pdf` gibi bayrakları
   ekleyerek belirli kanıt kayıtlarını bağımsız olarak işaretleyebilirsiniz;
@@ -230,6 +239,7 @@ görüntüleyebilir.【F:packages/report/src/index.ts†L2915-L3211】【F:packa
     -i dist \
     -o release \
     --name soipack-demo.zip \
+    --attestation \
     --cms-bundle data/certs/cms-test.pem \
     --pqc-key secrets/sphincs-private.key \
     --pqc-algorithm SPHINCS+-SHA2-128s
@@ -246,16 +256,17 @@ görüntüleyebilir.【F:packages/report/src/index.ts†L2915-L3211】【F:packa
   otomatik olarak türetir. Komut çıktısında logger, üretilen post-kuantum imza algoritmasını ve kamu anahtarını içeren
   metaveriyi raporlar ve `manifest.sig` dosyasının JWS başlığına SPHINCS+ imza segmenti eklenir.
 
-6. **Manifest imzasını ve paket içeriğini doğrulayın**
+6. **Manifest, attestation ve paket içeriğini doğrulayın**
   ```bash
   node packages/cli/dist/index.js verify \
     --manifest release/manifest.json \
     --signature release/manifest.sig \
     --package release/soipack-demo.zip \
+    --attestation \
     --public-key data/certs/demo-signing.pub.pem \
     --sbom release/sbom.spdx.json
   ```
-  Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini ve SBOM dosyasının karmasının manifestteki `sbom.digest` değeriyle uyuştuğunu doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar ile SBOM tutarsızlıkları CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır. SBOM dosyası paketin içinde de bulunuyorsa CLI, paket içindeki SBOM karmasını ayrıca raporlar.
+  Bu komut, Ed25519 imzasının geçerliliğini kontrol ederken `release/soipack-demo.zip` arşivindeki tüm dosyaların manifestteki SHA-256 karmalarıyla eşleştiğini ve SBOM dosyasının karmasının manifestteki `sbom.digest` değeriyle uyuştuğunu doğrular. Arşivden eksilen veya içeriği değiştirilmiş dosyalar ile SBOM tutarsızlıkları CLI tarafından ayrıntılı hatalarla raporlanır ve komut `verificationFailed` çıkış kodu ile sonlanır. SBOM dosyası paketin içinde de bulunuyorsa CLI, paket içindeki SBOM karmasını ayrıca raporlar. `--attestation` bayrağı etkinleştirildiğinde `attestation.json` JWS yükü açılır ve listedeki `subject` karmalarının hem manifest hem de SBOM dosyalarıyla eşleştiği doğrulanır.
 
   CMS imza doğrulaması için `@soipack/packager` kütüphanesindeki `verifyManifestSignatureDetailed` fonksiyonuna `cms.signaturePem`
   ve `cms.certificatePem` alanları verilerek `release/manifest.cms` dosyası kontrol edilebilir.

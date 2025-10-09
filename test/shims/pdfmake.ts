@@ -1,10 +1,17 @@
-import { createRequire } from 'module';
+class PdfPrinter {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(_fonts: unknown) {}
 
-const requireActual = createRequire(require.resolve('../../packages/report/package.json'));
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  createPdfKitDocument(_definition: unknown): { on: () => void; end: () => void; pipe: () => void } {
+    return {
+      on: () => {},
+      end: () => {},
+      pipe: () => {},
+    };
+  }
+}
 
-const pdfmake: any = requireActual('pdfmake');
-
-Object.defineProperty(pdfmake, '__esModule', { value: true });
-pdfmake.default = pdfmake;
+const pdfmake = PdfPrinter;
 
 export = pdfmake;

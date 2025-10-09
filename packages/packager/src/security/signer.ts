@@ -736,6 +736,28 @@ const verifyCmsSignatureArtifact = (
     }
   }
 
+  if (!signerX509) {
+    const capture = (signedMessage as unknown as {
+      rawCapture?: {
+        certificatePem?: string;
+        signerSerialNumber?: string;
+        signerIssuer?: string;
+        signerSubject?: string;
+      };
+    }).rawCapture;
+    const fallbackPem = capture?.certificatePem;
+    if (fallbackPem) {
+      try {
+        signerX509 = new X509Certificate(fallbackPem);
+        if (!signerForgeCertificate) {
+          signerForgeCertificate = forge.pki.certificateFromPem(fallbackPem);
+        }
+      } catch (error) {
+        signerX509 = undefined;
+      }
+    }
+  }
+
   const signerInputs = extractCmsSignerVerificationInputs(signedMessage);
   const digestAlgorithm = resolveNodeDigestAlgorithm(signerInputs.digestOid);
 

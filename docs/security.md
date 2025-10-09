@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # SOIPack Sunucusu Güvenlik Modeli
 
 SOIPack REST API'si tenant bazlı yetkilendirme için iki katmanlı bir kimlik doğrulama modeli uygular:
@@ -38,7 +39,7 @@ API anahtarları `SOIPACK_API_KEYS` ortam değişkeni üzerinden yapılandırıl
 
 Örnek yapılandırma:
 
-```
+```bash
 SOIPACK_API_KEYS="ci=ci-token-123:maintainer,ops=operations-secret:admin|operator,partner=partner-demo"
 ```
 
@@ -103,5 +104,27 @@ kitaplığı Ed25519 imzasının yanına isteğe bağlı olarak bir CMS yükü e
    tutarlılığı kontrol edilir ve beklenen sertifika belirtildiyse karşılaştırma yapılır. Eksik CMS imzası `CMS_SIGNATURE_MISSING`,
    yanlış sertifika `CMS_CERTIFICATE_MISMATCH` gibi deterministik hata kodları üretir.
 
-CMS çıktısı, uyum paketi dizinine `manifest.cms` adıyla kopyalanarak harici araçların kullanımı için saklanmalıdır (bkz. CLI
-rehberi).
+CMS çıktısı, uyum paketi dizinine `manifest.cms` adıyla kopyalanarak harici araçların kullanımı için saklanmalıdır (bkz. CLI rehberi).
+
+## SLSA uyumlu provenance ve attestation
+
+Manifest imzalamaya ek olarak SOIPack, SLSA Level 3 hedeflerine uyum sağlayan bir in-toto attestation yükü üretir. `soipack pack` ve sunucu paketleme kuyruğu `--attestation` parametresi etkinleştirildiğinde `attestation.json` dosyasını aşağıdaki ilkelerle oluşturur:
+
+1. **Anahtar yönetimi** – Varsayılan olarak `test/certs/ed25519_private.pem` geliştirme anahtarı kullanılır. Üretim ortamlarında, `SOIPACK_SIGNING_KEY_PATH` veya CLI `--signing-key` bayrağıyla sağlanan Ed25519 özel anahtar PEM dosyası kullanılmalı, anahtarlar HSM ya da gizli depo (örn. HashiCorp Vault) üzerinden okunmalıdır. İsteğe bağlı olarak `--external-signer` hook'u verilerek anahtar materyali SOIPack dışına çıkarılmadan imzalama yapılabilir.
+2. **Kaynak karmaları** – Attestation gövdesi manifest karmasını, SBOM SHA-256 özetini, kullanılan build girdilerini (`inputs`) ve ledger köklerini içerir. Payload deterministik olarak sıralanır; her alan `subject` altındaki `digest` haritasında kaydedilir.
+3. **JWS imzalama** – Ed25519 anahtarıyla JSON Canonicalization Scheme (JCS) uygulanmış gövde üzerinde JWS oluşturulur. İmza başlığı, kullanılan anahtar tanımlayıcısını (`kid`) ve isteğe bağlı olarak X.509 zincirini (`x5c`) taşır.
+4. **Tedarik zinciri meta verisi** – `predicateType`, [SLSA Provenance v1](https://slsa.dev/spec/v1.0/provenance) şemasına eşittir; `builder.id` alanı SOIPack sürümü ve platformunu, `invocation.configSource` ise kullanılan packager konfigürasyonunu (örn. Git commit karması) referans verir.
+
+### Doğrulama akışı
+
+- `soipack verify --attestation` komutu, manifest imzasını doğruladıktan sonra `attestation.json` dosyasını okuyup JWS imzasını çözer, `subject` listesinde yer alan SBOM ve manifest karmalarının yerel dosyalarla eşleştiğini kontrol eder. İmza veya hash uyuşmazlıkları `SlsaAttestationVerificationFailed` hatasını üretir.
+- Sunucu tarafında `/v1/packages/:id/attestation` uç noktası, RBAC ve lisans kontrollerinden sonra aynı `attestation.json` dosyasını indirir. İstekten dönen gövde, CLI doğrulamasıyla aynı yapıyı taşıdığından air-gapped kullanıcılar `curl` ile indirip `soipack verify` komutuna verebilir.
+- CI/CD ortamlarında attestation imzası `jq -r '.subject[] | select(.name=="manifest.json").digest.sha256' attestation.json` komutuyla okunabilir ve paket arşivinin hash'leriyle kıyaslanabilir. Tüm attestation dosyalarının SHA-256 karmaları ayrıca `release/attestation.json.sha256` gibi yan dosyalarda saklanarak supply chain tamlığı doğrulanabilir.
+
+### Anahtar döndürme rehberi
+
+1. Yeni Ed25519 anahtar çifti üretin ve güvenli kasaya yerleştirin.
+2. CLI veya sunucu ortam değişkenlerinde yeni anahtar yolunu tanımlayın (`SOIPACK_SIGNING_KEY_PATH=/secrets/prod-ed25519.pem`).
+3. `soipack pack --attestation` komutunu dry-run olarak çalıştırıp hem manifest hem de attestation imzalarının yeni `kid` değerini doğrulayın.
+4. Eski anahtar için üretilen paketleri referans olarak saklayın; `soipack verify --public-key <eski.pem>` ile imzanın hâlâ doğrulandığını teyit edin.
+5. Döndürme tamamlandığında eski anahtarı revokasyon listesine taşıyın ve sadece attestation doğrulama için tutulması gerekiyorsa salt-okunur kasaya alın.

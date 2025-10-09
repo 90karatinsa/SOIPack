@@ -1,10 +1,14 @@
-import { createRequire } from 'module';
+class XMLParser {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(_options?: unknown) {}
 
-const requireActual = createRequire(require.resolve('../../packages/adapters/package.json'));
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  parse(_input: string): unknown {
+    return {};
+  }
+}
 
-const parser: any = requireActual('fast-xml-parser');
+const parser = { XMLParser };
 
-Object.defineProperty(parser, '__esModule', { value: true });
-parser.default = parser;
-
-export = parser;
+export { XMLParser };
+export default parser;

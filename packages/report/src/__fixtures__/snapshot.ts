@@ -388,6 +388,47 @@ export const createReportFixture = (): ReportFixture => {
   const traces = requirements.map((requirement) => engine.getRequirementTrace(requirement.id));
   const signoffs = signoffTimelineFixture();
 
+  snapshot.gaps.staleEvidence = [
+    {
+      objectiveId: 'A-1-01',
+      artifactType: 'plan',
+      latestEvidenceTimestamp: '2023-12-28T10:00:00Z',
+      reasons: ['exceedsMaxAge'],
+      ageDays: 95,
+      maxAgeDays: 60,
+    },
+    {
+      objectiveId: 'A-2-05',
+      artifactType: 'analysis',
+      latestEvidenceTimestamp: '2023-11-15T09:00:00Z',
+      reasons: ['beforeSnapshot'],
+      ageDays: 140,
+      maxAgeDays: 120,
+    },
+    {
+      objectiveId: 'A-3-04',
+      artifactType: 'test',
+      latestEvidenceTimestamp: '2023-07-03T09:00:00Z',
+      reasons: ['exceedsMaxAge'],
+      ageDays: 210,
+      maxAgeDays: 150,
+    },
+    {
+      objectiveId: 'A-3-04',
+      artifactType: 'trace',
+      latestEvidenceTimestamp: '2023-12-05T09:00:00Z',
+      reasons: ['beforeSnapshot'],
+    },
+    {
+      objectiveId: 'A-5-06',
+      artifactType: 'test',
+      latestEvidenceTimestamp: '2023-09-18T09:00:00Z',
+      reasons: ['exceedsMaxAge'],
+      ageDays: 285,
+      maxAgeDays: 150,
+    },
+  ];
+
   return {
     snapshot,
     traces,

@@ -898,6 +898,296 @@ describe('CLI pipeline workflows', () => {
     expect(ingestCsvLines[2]).toBe('Proje Sürümü,1.0.0,,,,,');
   });
 
+  describe('Azure DevOps integration', () => {
+    const startAttachmentServer = async (
+      handlers: Record<string, { body: Buffer; contentType: string }>,
+    ): Promise<{ baseUrl: string; counts: Map<string, number>; close: () => Promise<void> }> => {
+      const counts = new Map<string, number>();
+      const server = http.createServer((req, res) => {
+        const url = req.url ?? '';
+        counts.set(url, (counts.get(url) ?? 0) + 1);
+        const handler = handlers[url];
+        if (!handler) {
+          res.statusCode = 404;
+          res.end('not found');
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader('Content-Type', handler.contentType);
+        res.end(handler.body);
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
+      });
+
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Server address unavailable');
+      }
+
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const close = async () =>
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+
+      return { baseUrl, counts, close };
+    };
+
+    it('imports Azure DevOps artifacts and caches attachments by hash', async () => {
+      const workspaceDir = path.join(tempRoot, 'azure-devops-workspace');
+      const specContent = Buffer.from('# Specification\nFunctional details');
+      const logContent = Buffer.from('Test run passed');
+      const specSha = createHash('sha256').update(specContent).digest('hex');
+      const logSha = createHash('sha256').update(logContent).digest('hex');
+
+      const server = await startAttachmentServer({
+        '/attachments/spec.md': { body: specContent, contentType: 'text/markdown' },
+        '/attachments/log.txt': { body: logContent, contentType: 'text/plain' },
+      });
+
+      const fetchSpy = jest.spyOn(adapters, 'fetchAzureDevOpsArtifacts').mockResolvedValue({
+        warnings: ['Azure DevOps mock warning'],
+        data: {
+          requirements: [
+            {
+              id: 'REQ-AZ-1',
+              title: 'Engine shall start',
+              status: 'Approved',
+              type: 'Requirement',
+              url: `${server.baseUrl}/workitems/REQ-AZ-1`,
+            },
+          ],
+          tests: [
+            {
+              id: 'AZ-Test-1',
+              name: 'Start engine',
+              status: 'Passed',
+              durationMs: 2500,
+              requirementIds: ['REQ-AZ-1'],
+            },
+          ],
+          builds: [
+            {
+              id: 'AZ-Build-1',
+              name: 'CI Build',
+              status: 'succeeded',
+              branch: 'main',
+              revision: 'abc123',
+              startedAt: '2024-01-01T00:00:00Z',
+              completedAt: '2024-01-01T00:05:00Z',
+            },
+          ],
+          traces: [{ fromId: 'REQ-AZ-1', toId: 'AZ-Test-1', type: 'verifies' as const }],
+          attachments: [
+            {
+              id: 'ATT-REQ',
+              artifactId: 'REQ-AZ-1',
+              artifactType: 'requirement',
+              filename: 'spec.md',
+              url: `${server.baseUrl}/attachments/spec.md`,
+              contentType: 'text/markdown',
+              bytes: specContent.length,
+              sha256: specSha,
+            },
+            {
+              id: 'ATT-TEST-LOG',
+              artifactId: 'AZ-Test-1',
+              artifactType: 'test',
+              filename: 'log.txt',
+              url: `${server.baseUrl}/attachments/log.txt`,
+              contentType: 'text/plain',
+              bytes: logContent.length,
+              sha256: logSha,
+            },
+            {
+              id: 'ATT-TEST-SHARED',
+              artifactId: 'AZ-Test-1',
+              artifactType: 'test',
+              filename: 'spec-copy.md',
+              url: `${server.baseUrl}/attachments/spec.md`,
+              contentType: 'text/markdown',
+              bytes: specContent.length,
+              sha256: specSha,
+            },
+          ],
+        },
+      });
+
+      const result = await runImport({
+        output: workspaceDir,
+        azureDevOps: {
+          baseUrl: server.baseUrl,
+          organization: 'demo-org',
+          project: 'flight-control',
+          personalAccessToken: 'secret-pat',
+        },
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: server.baseUrl,
+          organization: 'demo-org',
+          project: 'flight-control',
+          personalAccessToken: 'secret-pat',
+        }),
+      );
+      expect(result.warnings).toContain('Azure DevOps mock warning');
+      expect(result.workspace.requirements.map((req) => req.id)).toContain('REQ-AZ-1');
+      expect(result.workspace.testResults.map((test) => test.testId)).toContain('AZ-Test-1');
+      expect(result.workspace.traceLinks).toEqual(
+        expect.arrayContaining([{ from: 'REQ-AZ-1', to: 'AZ-Test-1', type: 'verifies' }]),
+      );
+      expect(result.workspace.builds).toEqual(
+        expect.arrayContaining([expect.objectContaining({ provider: 'azureDevOps', id: 'AZ-Build-1' })]),
+      );
+
+      const metadata = result.workspace.metadata.sources?.azureDevOps;
+      expect(metadata).toEqual(
+        expect.objectContaining({
+          baseUrl: server.baseUrl,
+          organization: 'demo-org',
+          project: 'flight-control',
+          requirements: 1,
+          tests: 1,
+          builds: 1,
+          traces: 1,
+          attachments: expect.objectContaining({ total: 3, totalBytes: expect.any(Number) }),
+        }),
+      );
+      expect(metadata?.attachments?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ filename: 'spec.md', path: expect.stringContaining('azureDevOps') }),
+          expect.objectContaining({ filename: 'log.txt', sha256: logSha }),
+          expect.objectContaining({ filename: 'spec-copy.md', path: expect.any(String), sha256: specSha }),
+        ]),
+      );
+      const sharedItem = metadata?.attachments?.items.find((item) => item.filename === 'spec-copy.md');
+      const originalItem = metadata?.attachments?.items.find((item) => item.filename === 'spec.md');
+      expect(sharedItem?.path).toBeDefined();
+      expect(originalItem?.path).toBeDefined();
+      expect(sharedItem?.path).toBe(originalItem?.path);
+
+      const traceEvidence = result.workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence.filter((entry) => entry.source === 'azureDevOps')).toHaveLength(3);
+
+      const specRequests = server.counts.get('/attachments/spec.md') ?? 0;
+      expect(specRequests).toBe(1);
+
+      await server.close();
+      fetchSpy.mockRestore();
+    });
+
+    it('runIngestPipeline persists Azure DevOps metadata and reuses attachment hashes', async () => {
+      const inputDir = path.join(tempRoot, 'azure-ingest-input');
+      await fs.mkdir(inputDir, { recursive: true });
+      const outputDir = path.join(tempRoot, 'azure-ingest-output');
+      const specContent = Buffer.from('Updated specification');
+      const logContent = Buffer.from('Log details');
+      const specSha = createHash('sha256').update(specContent).digest('hex');
+      const logSha = createHash('sha256').update(logContent).digest('hex');
+
+      const server = await startAttachmentServer({
+        '/attachments/spec.md': { body: specContent, contentType: 'text/markdown' },
+        '/attachments/log.txt': { body: logContent, contentType: 'text/plain' },
+      });
+
+      const fetchSpy = jest.spyOn(adapters, 'fetchAzureDevOpsArtifacts').mockResolvedValue({
+        warnings: [],
+        data: {
+          requirements: [
+            {
+              id: 'REQ-AZ-2',
+              title: 'Navigation shall be redundant',
+              status: 'Committed',
+            },
+          ],
+          tests: [
+            {
+              id: 'AZ-Test-2',
+              name: 'Validate redundancy',
+              status: 'Passed',
+            },
+          ],
+          builds: [],
+          traces: [{ fromId: 'REQ-AZ-2', toId: 'AZ-Test-2', type: 'verifies' as const }],
+          attachments: [
+            {
+              id: 'ATT-REQ-2',
+              artifactId: 'REQ-AZ-2',
+              artifactType: 'requirement',
+              filename: 'spec.md',
+              url: `${server.baseUrl}/attachments/spec.md`,
+              bytes: specContent.length,
+              sha256: specSha,
+            },
+            {
+              id: 'ATT-TEST-2',
+              artifactId: 'AZ-Test-2',
+              artifactType: 'test',
+              filename: 'log.txt',
+              url: `${server.baseUrl}/attachments/log.txt`,
+              bytes: logContent.length,
+              sha256: logSha,
+            },
+            {
+              id: 'ATT-TEST-3',
+              artifactId: 'AZ-Test-2',
+              artifactType: 'test',
+              filename: 'spec-duplicate.md',
+              url: `${server.baseUrl}/attachments/spec.md`,
+              bytes: specContent.length,
+              sha256: specSha,
+            },
+          ],
+        },
+      });
+
+      const result = await runIngestPipeline({
+        inputDir,
+        outputDir,
+        azureDevOps: {
+          baseUrl: server.baseUrl,
+          organization: 'demo-org',
+          project: 'navigation',
+          personalAccessToken: 'secret-pat',
+        },
+      });
+
+      const workspaceRaw = await fs.readFile(path.join(result.workspaceDir, 'workspace.json'), 'utf8');
+      const workspace = JSON.parse(workspaceRaw) as ImportWorkspace;
+      expect(workspace.metadata.sources?.azureDevOps?.requirements).toBe(1);
+      expect(workspace.metadata.sources?.azureDevOps?.attachments?.items).toHaveLength(3);
+      const attachmentPaths = workspace.metadata.sources?.azureDevOps?.attachments?.items ?? [];
+      const duplicate = attachmentPaths.find((item) => item.filename === 'spec-duplicate.md');
+      const original = attachmentPaths.find((item) => item.filename === 'spec.md');
+      expect(duplicate?.path).toBeDefined();
+      expect(original?.path).toBeDefined();
+      expect(duplicate?.path).toBe(original?.path);
+
+      const outputSpecPath = path.join(outputDir, duplicate?.path ?? '');
+      const outputStats = await fs.stat(outputSpecPath);
+      expect(outputStats.isFile()).toBe(true);
+
+      const traceEvidence = workspace.evidenceIndex.trace ?? [];
+      expect(traceEvidence.filter((entry) => entry.source === 'azureDevOps')).not.toHaveLength(0);
+
+      const specRequests = server.counts.get('/attachments/spec.md') ?? 0;
+      expect(specRequests).toBe(1);
+
+      await server.close();
+      fetchSpy.mockRestore();
+    });
+  });
+
   it('archives demo data into a signed release with consistent manifest hashes', async () => {
     const packageOutput = path.join(tempRoot, 'ingest-package');
 
@@ -3839,6 +4129,123 @@ describe('pack CLI post-quantum metadata', () => {
 
     const manifestSignature = await fs.readFile(path.join(releaseDir, 'manifest.sig'), 'utf8');
     expect(manifestSignature.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe('AttestationWorkflow', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-attestation-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('pack emits attestation and verify validates signature', async () => {
+    const { distDir, releaseDir } = await createMinimalPackInputs(tempDir);
+
+    const packResult = await runPack({
+      input: distDir,
+      output: releaseDir,
+      packageName: 'attestation.zip',
+      signingKey: TEST_SIGNING_BUNDLE,
+      postQuantum: false,
+    });
+
+    expect(packResult.attestation).toBeDefined();
+    const attestation = packResult.attestation!;
+    await expect(fs.stat(attestation.absolutePath)).resolves.toBeDefined();
+
+    const manifestJson = JSON.parse(
+      await fs.readFile(packResult.manifestPath, 'utf8'),
+    ) as Manifest & {
+      provenance?: {
+        path: string;
+        algorithm: string;
+        digest: string;
+        statementDigest: string;
+        signature: { publicKeySha256: string; keyId?: string };
+      } | null;
+    };
+
+    expect(manifestJson.provenance).toBeDefined();
+    expect(manifestJson.provenance?.path).toBe('attestation.json');
+    expect(manifestJson.provenance?.digest).toBe(attestation.digest);
+    expect(manifestJson.provenance?.statementDigest).toBe(attestation.statementDigest);
+    expect(manifestJson.provenance?.signature.publicKeySha256).toBe(
+      attestation.signature.publicKeySha256,
+    );
+
+    const publicKeyPath = path.join(tempDir, 'verify-public.pem');
+    await fs.writeFile(publicKeyPath, TEST_SIGNING_PUBLIC_KEY, 'utf8');
+
+    const verifyResult = await runVerify({
+      manifestPath: packResult.manifestPath,
+      signaturePath: path.join(releaseDir, 'manifest.sig'),
+      publicKeyPath,
+    });
+
+    expect(verifyResult.attestation).toBeDefined();
+    expect(verifyResult.attestation?.path).toBe(attestation.absolutePath);
+    expect(verifyResult.attestation?.digestMatches).toBe(true);
+    expect(verifyResult.attestation?.statementMatches).toBe(true);
+    expect(verifyResult.attestation?.signature.matchesExpectedKey).toBe(true);
+    expect(verifyResult.attestation?.signature.matchesVerifierKey).toBe(true);
+    expect(verifyResult.attestation?.signature.verified).toBe(true);
+  });
+
+  it('verify flags tampered attestation artifacts', async () => {
+    const { distDir, releaseDir } = await createMinimalPackInputs(tempDir);
+
+    const packResult = await runPack({
+      input: distDir,
+      output: releaseDir,
+      packageName: 'attestation-tampered.zip',
+      signingKey: TEST_SIGNING_BUNDLE,
+      postQuantum: false,
+    });
+
+    expect(packResult.attestation).toBeDefined();
+    const attestationPath = packResult.attestation!.absolutePath;
+    const attestationContent = await fs.readFile(attestationPath, 'utf8');
+    const attestationJson = JSON.parse(attestationContent) as {
+      signatures?: Array<{ jws?: string }>;
+    };
+    expect(attestationJson.signatures?.[0]?.jws).toBeDefined();
+    const segments = attestationJson.signatures![0]!.jws!.split('.');
+    expect(segments).toHaveLength(3);
+    const signatureSegment = segments[2]!;
+    const signatureBuffer = Buffer.from(
+      signatureSegment.replace(/-/g, '+').replace(/_/g, '/'),
+      'base64',
+    );
+    signatureBuffer[0] = (signatureBuffer[0] ?? 0) ^ 0xff;
+    const tamperedSignature = signatureBuffer
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    segments[2] = tamperedSignature;
+    attestationJson.signatures![0]!.jws = segments.join('.');
+    await fs.writeFile(attestationPath, `${JSON.stringify(attestationJson, null, 2)}\n`, 'utf8');
+
+    const publicKeyPath = path.join(tempDir, 'verify-public.pem');
+    await fs.writeFile(publicKeyPath, TEST_SIGNING_PUBLIC_KEY, 'utf8');
+
+    const verifyResult = await runVerify({
+      manifestPath: packResult.manifestPath,
+      signaturePath: path.join(releaseDir, 'manifest.sig'),
+      publicKeyPath,
+    });
+
+    expect(verifyResult.attestation).toBeDefined();
+    expect(verifyResult.attestation?.digestMatches).toBe(false);
+    expect(verifyResult.attestation?.statementMatches).toBe(true);
+    expect(verifyResult.attestation?.signature.matchesExpectedKey).toBe(true);
+    expect(verifyResult.attestation?.signature.matchesVerifierKey).toBe(true);
+    expect(verifyResult.attestation?.signature.verified).toBe(false);
   });
 });
 

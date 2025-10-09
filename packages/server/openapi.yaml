@@ -217,6 +217,7 @@ components:
             - doorsNext
             - jama
             - jiraCloud
+            - azureDevOps
         options:
           description: Bağlayıcıya özgü kimlik doğrulama ve kapsam ayarları.
           oneOf:
@@ -225,6 +226,7 @@ components:
             - $ref: '#/components/schemas/DoorsNextConnectorOptions'
             - $ref: '#/components/schemas/JamaConnectorOptions'
             - $ref: '#/components/schemas/JiraCloudConnectorOptions'
+            - $ref: '#/components/schemas/AzureDevOpsConnectorOptions'
     PolarionConnectorOptions:
       type: object
       description: Polarion ALM projelerinden gereksinim ve kanıt almak için gerekli ayarlar.
@@ -378,6 +380,98 @@ components:
           type: string
           format: uri
           description: Opsiyonel özel Jira taban URL’si. Varsayılan olarak site alan adı kullanılır.
+    AzureDevOpsConnectorOptions:
+      type: object
+      description: >-
+        Azure DevOps Boards ve Test Plans API’lerinden gereksinim, test ve build
+        verilerini almak için gereken kimlik doğrulama ve kapsam seçenekleri.
+      required:
+        - baseUrl
+        - organization
+        - project
+        - personalAccessToken
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: Azure DevOps REST API çağrıları için taban URL (örn. https://dev.azure.com).
+        organization:
+          type: string
+          description: Azure DevOps organizasyon adı.
+        project:
+          type: string
+          description: Verilerin alınacağı proje adı veya kimliği.
+        personalAccessToken:
+          type: string
+          description: PAT değeri. Temel kimlik doğrulamasında parola alanına gömülür.
+        requirementsEndpoint:
+          type: string
+          format: uri
+          description: >-
+            Opsiyonel özel gereksinim uç noktası. Varsayılan olarak Boards çalışma öğesi
+            arayüzleri kullanılır.
+        testsEndpoint:
+          type: string
+          format: uri
+          description: Opsiyonel Test Plans uç noktası. Varsayılan API yolunu override eder.
+        buildsEndpoint:
+          type: string
+          format: uri
+          description: Opsiyonel build listesi uç noktası. Varsayılan Pipelines API’sini değiştirir.
+        attachmentsEndpoint:
+          type: string
+          format: uri
+          description: Opsiyonel ek indirme uç noktası. Varsayılan Test Attachment API’sini değiştirir.
+        requirementsQuery:
+          type: string
+          description: >-
+            Boards gereksinimlerini sınırlamak için WIQL sorgusu. Çıktıda "workItemQuery"
+            olarak raporlanır.
+        testPlanId:
+          type: string
+          description: İndirilecek Test Plan kimliği. Test Suite/Test Run filtreleri ile kombinlenebilir.
+        testSuiteId:
+          type: string
+          description: Belirli bir Test Suite’i hedeflemek için kimlik.
+        testRunId:
+          type: string
+          description: Test sonuçlarını belirli bir çalıştırma ile sınırlayan kimlik.
+        buildDefinitionId:
+          type: string
+          description: Son build listesini belirli bir tanıma/boru hattına sınırlar.
+        maxAttachmentBytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            Her bir ek dosyasının boyut üst sınırı (bayt). Sınırı aşan dosyalar indirilmeye çalışılmaz.
+        timeoutMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: HTTP istekleri için zaman aşımı değeri (ms).
+        pageSize:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Sayfalanmış REST çağrılarında kullanılacak öğe sayısı.
+        maxPages:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            Her uç nokta için getirilecek maksimum sayfa sayısı. Limit, uzun süren
+            senkronizasyonları engellemek için kullanılabilir.
+        apiVersion:
+          type: string
+          description: Varsayılan API sürümünü override eden query parametresi değeri.
+        rateLimitDelaysMs:
+          type: array
+          items:
+            type: integer
+            format: int64
+            minimum: 0
+          description: 429 yanıtlarından sonra uygulanacak bekleme süresi dizisi (ms).
                   required:
                     - generatedAt
                     - tools
@@ -2609,9 +2703,9 @@ paths:
                 connector:
                   $ref: '#/components/schemas/ImportConnectorPayload'
                   description: >-
-                    Polarion, Jenkins, DOORS Next, Jama veya Jira Cloud bağlayıcılarından kanıt
-                    toplamak için kullanılan yapılandırma. Değer multipart gövde içinde JSON
-                    olarak gönderilmelidir.
+                    Polarion, Jenkins, DOORS Next, Jama, Jira Cloud veya Azure DevOps
+                    bağlayıcılarından kanıt toplamak için kullanılan yapılandırma. Değer
+                    multipart gövde içinde JSON olarak gönderilmelidir.
                 independentSources:
                   type: array
                   description: Bağımsız kaynak kanıt kimlikleri listesi.
@@ -2709,8 +2803,9 @@ paths:
       description: |
         Aynı dosya ve seçenek kombinasyonu tekrar gönderildiğinde aynı kimlikte sonuç üretir.
         İsteğe bağlı olarak, dosya yüklemeden bağımsız biçimde uzaktan bağlayıcı
-        yapılandırması (`connector`) sağlayarak Polarion, Jenkins, DOORS Next, Jama
-        veya Jira Cloud sistemlerinden kanıt toplanması tetiklenebilir.
+        yapılandırması (`connector`) sağlayarak Polarion, Jenkins, DOORS Next,
+        Jama, Jira Cloud veya Azure DevOps sistemlerinden kanıt toplanması
+        tetiklenebilir.
       security:
         - BearerAuth: []
       parameters:
@@ -2791,9 +2886,9 @@ paths:
                 connector:
                   $ref: '#/components/schemas/ImportConnectorPayload'
                   description: >-
-                    Polarion, Jenkins, DOORS Next, Jama veya Jira Cloud üzerinde barındırılan
-                    kanıtları senkronize etmek için kullanılacak bağlayıcı yapılandırması.
-                    Alan multipart form verisinde JSON olarak gönderilmelidir.
+                    Polarion, Jenkins, DOORS Next, Jama, Jira Cloud veya Azure DevOps üzerinde
+                    barındırılan kanıtları senkronize etmek için kullanılacak bağlayıcı
+                    yapılandırması. Alan multipart form verisinde JSON olarak gönderilmelidir.
                   example:
                     type: polarion
                     options:

@@ -1,4 +1,5 @@
 # Veri İçeri Aktarıcıları
+<!-- markdownlint-disable MD013 -->
 
 SOIPack dış araçlardan gelen kalite verilerini `@soipack/adapters` paketindeki dönüştürücülerle işler. Bu belge, JUnit XML, LCOV ve ReqIF veri akışlarının yeni akış (streaming) temelli dönüştürücülerini özetler.
 
@@ -46,6 +47,59 @@ gizli alanlardan arındırılmış seçenekler deterministik biçimde hash’len
 üretilir. Bu fingerprint hem iş karmasına (job hash) eklenir hem de aynı bağlayıcı seçenekleriyle
 tekrarlanan isteklerin deduplikasyonuna olanak tanır; seçenekler değiştirildiğinde yeni bir fingerprint
 hesaplanarak farklı bir iş kimliği üretilir.
+
+### Azure DevOps Boards/Test Plans bağlayıcısı
+
+Azure DevOps bağlayıcısı Boards çalışma öğeleri, Test Plans testleri ve Pipelines build kayıtlarını tek
+bir import paketinde toplayabilir. REST API çağrıları kişisel erişim belirteci (PAT) ile temel kimlik
+doğrulaması kullanarak yapılır; ekler (attachments) SHA-256 karmasıyla diskte önbelleğe alınır ve
+`maxAttachmentBytes` sınırı sayesinde gereksiz indirmeler engellenir.
+
+| Parametre | Tip | Zorunlu | Açıklama |
+| --- | --- | --- | --- |
+| `baseUrl` | string (URI) | ✔️ | Azure DevOps API taban adresi (örn. `https://dev.azure.com`). |
+| `organization` | string | ✔️ | Organizasyon (collection) adı. |
+| `project` | string | ✔️ | Boards/Test Plans verisinin alınacağı proje adı veya kimliği. |
+| `personalAccessToken` | string | ✔️ | PAT değeri; iş metaverisinde maskelenir. |
+| `requirementsQuery` | string | ⬜️ | WIQL sorgusu; raporlarda `workItemQuery` olarak görünür. |
+| `testPlanId` | string | ⬜️ | Belirli bir Test Plan kimliği. `testSuiteId`/`testRunId` ile birlikte kullanılabilir. |
+| `maxAttachmentBytes` | integer | ⬜️ | Ek dosyaları için bayt cinsinden üst sınır. |
+| `pageSize` | integer | ⬜️ | Sayfalanmış REST çağrılarında kullanılacak öğe sayısı. |
+| `maxPages` | integer | ⬜️ | Her uç noktadan getirilecek maksimum sayfa adedi. |
+| `timeoutMs` | integer | ⬜️ | HTTP zaman aşımı değeri (ms). |
+| `apiVersion` | string | ⬜️ | Varsayılan Azure DevOps API sürümünü override eder. |
+| `rateLimitDelaysMs` | integer[] | ⬜️ | 429 yanıtları sonrası bekleme süreleri (ms). |
+
+Örnek bir `connector` JSON gövdesi:
+
+```json
+{
+  "type": "azureDevOps",
+  "options": {
+    "baseUrl": "https://dev.azure.com",
+    "organization": "soipack",
+    "project": "flight-software",
+    "personalAccessToken": "<pat>",
+    "requirementsQuery": "Select [System.Id] From WorkItems Where [System.TeamProject] = 'flight-software'",
+    "testPlanId": "12345",
+    "maxAttachmentBytes": 5242880
+  }
+}
+```
+
+`/v1/import` uç noktasına multipart bir istek göndermek için aşağıdaki örnek kullanılabilir:
+
+```bash
+curl -X POST https://soipack.example.com/v1/import \
+  -H 'Authorization: Bearer <JWT>' \
+  -H 'X-SOIPACK-License: <lisans>' \
+  -F 'connector={"type":"azureDevOps","options":{"baseUrl":"https://dev.azure.com","organization":"soipack","project":"flight-software","personalAccessToken":"<pat>","requirementsQuery":"Select [System.Id] From WorkItems"}};type=application/json'
+```
+
+İlk import tamamlandığında çalışma alanındaki `metadata.inputs.connectors.azureDevOps` kaydı, gizli alanlar
+maskelenmiş olarak `organization`, `project`, `workItemQuery` ve indirilen eklerin SHA-256 karmalarıyla
+güncellenir. Aynı PAT ve sorgu parametreleriyle yapılan tekrar importlar, iş karması değişmediği için otomatik
+olarak yeniden kullanılır.
 
 ### Manuel DO-178C artefaktları ve Simulink kapsamı
 
@@ -274,3 +328,4 @@ Dosya: `packages/adapters/src/qaLogs.ts`
 - Yanlış biçimlendirilmiş dosyalar beklenen hata mesajlarıyla reddedilir ve testler bu durumları denetler.
 
 Akış tabanlı yaklaşım, CI ortamında büyük verileri içe aktarırken bellek taşmalarını önler ve kullanıcıya daha güçlü geri bildirim sağlar.
+<!-- markdownlint-enable MD013 -->

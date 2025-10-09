@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Raporlama
 
 SOIPack raporlama paketi; uyum matrisi, izlenebilirlik ve kapsam çıktıları için yeniden kullanılabilir şablonlar sunar. Bu doküman, yeni uyum+kapsam raporu dahil olmak üzere desteklenen biçimleri ve alanları açıklar.
@@ -16,6 +17,7 @@ SOIPack raporlama paketi; uyum matrisi, izlenebilirlik ve kapsam çıktıları i
 - **Signoff Zaman Çizelgesi** – Workspace belgeleri için kimlerin signoff talep edip onayladığını gösteren kronolojik akış.
 - **Değişiklik Talepleri Birikimi** – Jira üzerinden takip edilen DO-178C değişiklik isteklerinin durumu, atanan kişi ve ekleriyle birlikte listelenir.
 - **Ledger Attestasyon Özeti** – Kanıt defteri attestation farkları sayesinde hangi kanıtların eklendiği ya da çıkarıldığı hızlıca gözlemlenir.
+- **Kanıt Tazelik Isı Haritası** – DO-178C aşamaları ve yaş bantlarına göre bucket'lanmış kanıt kayıtlarını tablo ve inline SVG gradyanıyla görselleştirir.
 
 Rapor başlığında versiyon, manifest kimliği ve otomatik olarak `YYYY-MM-DD HH:MM UTC` formatında yazılmış rapor tarihi yer alır. Özet bölümünde hem uyum hem de kapsam metrikleri (ör. “Satır Kapsamı 68.8%”) tek satırda gösterilir.
 
@@ -28,6 +30,22 @@ Operasyon ekipleri raporu açtığında üst bölümdeki sekmeler üzerinden pla
 ### Bağımsızlık göstergeleri
 
 Uyum matrisi artık DO-178C bağımsız doğrulama gereksinimlerini özetleyen ayrı bir bölüm içerir. Rapordaki “Bağımsızlık Uyarıları” bloğunda toplam etkilenen hedef sayısı, kısmi/eksik durumlar ve hedeflerin zorunlu/önerilen bağımsızlık seviyeleri rozetlerle vurgulanır. Kırmızı (`Zorunlu`) rozetler sertifikasyon için kritik eksiklikleri, sarı (`Önerilen`) rozetler ise bağımsız inceleme bekleyen alanları gösterir. Tablo satırlarında eksik kanıt türleri (ör. `Gözden Geçirme`, `MC/DC Kapsamı`) ayrı rozetler halinde listelenir ve denetçilerin hangi kanıtların bağımsız gözden geçirme gerektirdiğini hızlıca görmesini sağlar. Eğer bağımsızlık eksikliği kalmamışsa bölüm “Bağımsızlık gerektiren hedeflerde eksik bulunamadı.” mesajıyla kapanır.
+
+### Kanıt tazelik ısı haritası
+
+Uyum raporları, `staleEvidenceHeatmap` yardımcıları sayesinde kanıt yaşını görselleştirir. HTML çıktısındaki "Kanıt Tazelik Isı Haritası" bölümü, DO-178C Stage of Involvement (SOI) aşamalarını satır, yaş bantlarını sütun olarak kullanır ve her hücrede kaç kanıt kaydının ilgili aralıkta kaldığını gösterir. Hücreler, 0 → maksimum değer arasında otomatik normalize edilen mor→turuncu bir gradyanla boyanır; kullanıcılar yoğunlukları tablo başlıklarından hızlıca okuyabilir.
+
+JSON çıktısında aynı veri `analysis.staleEvidenceHeatmap` alanı altına eklenir. Alan, `bands` (etiket, gün aralığı, eşik vurgusu), `stages` (SOI kimlikleri, hedef sayıları) ve `cells` (stage-band eşleşmelerindeki toplam kanıt) koleksiyonlarını içerir. Harita oluşturucusu, işlenmiş yaş bantlarını kopyalayarak döndürdüğünden, komutu çağıran kod bu nesneleri yeniden sıralasa bile orijinal yapı değişmez.
+
+```bash
+node packages/cli/dist/index.js --license <LICENSE> report \
+  -i .soipack/out \
+  -o dist/reports \
+  --level C \
+  --objectives data/objectives/do178c_objectives.min.json
+```
+
+HTML raporunda bölüm, uyum matrisi sekmelerinin hemen ardından yer alır; böylece denetçiler önce hedef durumunu, ardından hangi kanıtların yaşlandığını görebilir. PDF üreticisi de aynı HTML fragmanını kullandığından, renkli gradyanlar Playwright üzerinden alınan baskı çıktısında da korunur. Ek olarak UI dokümantasyonu için `docs/images/stale-evidence-heatmap.png` ekran görüntüsü referans alınabilir.
 
 ## GSN exports
 

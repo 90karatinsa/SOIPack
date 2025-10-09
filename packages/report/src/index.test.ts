@@ -126,6 +126,7 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Hazırlık bileşen katkı eğrisi');
     expect(result.html).toContain('En güçlü bileşen');
     expect(result.html).toContain('Hazırlık Skoru');
+    expect(result.html).toContain('Kanıt Tazelik Isı Haritası');
     expect(result.html).toContain('TC-AUDIT-NEW');
     expect(result.html).toContain(fixture.programName);
     expect(result.html).toContain(fixture.certificationLevel);
@@ -136,6 +137,8 @@ describe('@soipack/report', () => {
     expect(result.json.complianceDelta?.steps.length).toBeGreaterThan(0);
     expect(result.json.complianceDelta?.regressions.length).toBeGreaterThan(0);
     expect(result.json.independenceSummary.objectives.length).toBeGreaterThan(0);
+    expect(result.json.analysis?.staleEvidenceHeatmap?.totalFindings).toBeGreaterThan(0);
+    expect(result.json.analysis?.staleEvidenceHeatmap?.stages[0]?.buckets.length).toBeGreaterThan(0);
     expect(result.json.programName).toBe(fixture.programName);
     expect(result.json.certificationLevel).toBe(fixture.certificationLevel);
     expect(result.json.projectVersion).toBe(fixture.projectVersion);
@@ -192,6 +195,43 @@ describe('@soipack/report', () => {
     expect(stageCsv?.records[0]?.[3]).toBe('Eksik');
     const soi1Record = result.csv.stages['SOI-1'];
     expect(soi1Record?.records[0]?.[2]).toBe('SOI-1');
+  });
+
+  it('Kanıt Tazelik Isı Haritası heatmap groups stale evidence by stage', () => {
+    const fixture = createReportFixture();
+    fixture.snapshot.gaps.staleEvidence.push({
+      objectiveId: 'A-4-01',
+      artifactType: 'trace',
+      latestEvidenceTimestamp: '2023-06-01T09:00:00Z',
+      reasons: ['exceedsMaxAge'],
+      ageDays: 400,
+      maxAgeDays: 180,
+    });
+
+    const report = renderComplianceMatrix(fixture.snapshot, {
+      manifestId: fixture.manifestId,
+      objectivesMetadata: fixture.objectives,
+      signoffs: fixture.signoffs,
+    });
+
+    expect(report.html).toContain('Kanıt Tazelik Isı Haritası');
+    expect(report.html).toContain('SOI-2 Geliştirme');
+    expect(report.html).toContain('366+ gün');
+
+    const heatmap = report.json.analysis?.staleEvidenceHeatmap;
+    expect(heatmap).toBeDefined();
+    expect(heatmap?.bands.map((band) => band.id)).toEqual([
+      '0-30',
+      '31-90',
+      '91-180',
+      '181-365',
+      '366+',
+      'unknown',
+    ]);
+    expect(heatmap?.stages.map((stage) => stage.id)).toEqual(['SOI-1', 'SOI-2', 'SOI-3', 'unknown']);
+    const soi2 = heatmap?.stages.find((stage) => stage.id === 'SOI-2');
+    expect(soi2?.buckets.find((bucket) => bucket.bandId === '366+')?.count).toBeGreaterThan(0);
+    expect(soi2?.buckets.find((bucket) => bucket.bandId === '366+')?.objectiveIds).toContain('A-4-01');
   });
 
   it('renderComplianceMatrix includes the regulator crosswalk data', () => {

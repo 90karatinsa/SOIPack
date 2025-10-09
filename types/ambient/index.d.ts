@@ -10,3 +10,5 @@ declare module 'pg' {
     setTypeParser: (...args: unknown[]) => void;
   };
 }
+
+declare module '@noble/post-quantum/slh-dsa.js';
