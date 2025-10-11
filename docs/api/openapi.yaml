@@ -208,6 +208,290 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '429':
           $ref: '#/components/responses/RateLimitedError'
+  /v1/service/metadata:
+    get:
+      summary: Son pack job’ın SBOM ve attestation özetini getir
+      description: >-
+        Tenant bearer belirteci ve lisans başlığı doğrulanan istemcilere, en güncel pack
+        job’dan SBOM URL’si, SHA-256 özeti ve attestation sinyalleri döner. Yanıt 60 saniye
+        boyunca istemci önbelleğinde tutulabilir ve `If-None-Match` başlığıyla 304 Not
+        Modified alınabilir.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/licenseHeader'
+        - $ref: '#/components/parameters/ifNoneMatch'
+      responses:
+        '200':
+          description: Son pack job metadatası.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceMetadata'
+        '304':
+          description: İçerik değişmedi.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+        '401':
+          description: Kimlik doğrulaması veya lisans başlığı eksik.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: Lisans süresi dolmuş ya da doğrulanamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: İstenen metadata farklı bir kiracıya ait.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: SBOM veya attestation dosyası bulunamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: En güncel pack job artık güncel değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Lisans başlığı izin verilen boyutu aştı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/license:
+    get:
+      summary: Lisans parmak izi ve geçerlilik durumunu getir
+      description: >-
+        Bearer belirteci ve gönderilen lisans anahtarını doğrulayıp fingerprint, bitiş
+        zamanı ve geçerlilik durumunu döndürür. Yanıt 60 saniyeye kadar özel önbelleğe
+        uygundur.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/licenseHeader'
+        - $ref: '#/components/parameters/ifNoneMatch'
+      responses:
+        '200':
+          description: Lisans özeti.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseMetadata'
+        '304':
+          description: Lisans özeti değişmedi.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+        '401':
+          description: Kimlik doğrulaması veya lisans başlığı eksik.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: Lisans süresi dolmuş ya da doğrulanamadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Lisans başlığı izin verilen boyutu aştı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/admin/security:
+    get:
+      summary: Tenant güvenlik ayarlarını getir
+      description: >-
+        Yönetici scope’lu bearer belirteci ve geçerli lisans sağlayan `admin` veya
+        `operator` rollerindeki kullanıcılar, incident contact, saklama ve bakım
+        yapılandırmalarını görüntüleyebilir.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/licenseHeader'
+        - $ref: '#/components/parameters/ifNoneMatch'
+      responses:
+        '200':
+          description: Tenant güvenlik ayarları.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSecuritySettingsResponse'
+        '304':
+          description: Ayarlar değişmedi.
+          headers:
+            Cache-Control:
+              description: Yanıtın yalnızca istemci tarafında 60 saniye önbelleğe alınabileceğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+        '401':
+          description: Kimlik doğrulaması başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Lisans geçersiz veya istemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Güvenlik ayarları henüz oluşturulmadı.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Tenant güvenlik ayarlarını güncelle
+      description: >-
+        Yalnızca `admin` rolündeki kullanıcılar geçerli lisansla birlikte güvenlik
+        ayarlarını oluşturabilir veya güncelleyebilir. `If-Match` başlığı zorunludur ve
+        çatışma durumunda istemci yeni ETag ile tekrar denemelidir.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/licenseHeader'
+        - $ref: '#/components/parameters/ifMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSecuritySettingsRequest'
+      responses:
+        '200':
+          description: Ayarlar güncellendi.
+          headers:
+            Cache-Control:
+              description: Yanıtın önbelleğe alınmaması gerektiğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSecuritySettingsResponse'
+        '201':
+          description: Ayarlar ilk kez oluşturuldu.
+          headers:
+            Cache-Control:
+              description: Yanıtın önbelleğe alınmaması gerektiğini belirtir.
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSecuritySettingsResponse'
+        '400':
+          description: Gönderilen kurallar şema doğrulamasından geçmedi.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Kimlik doğrulaması başarısız.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Lisans geçersiz veya istemci gerekli role sahip değil.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Gönderilen revizyon mevcut kayıtla uyuşmuyor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '412':
+          description: `If-Match` başlığı eksik veya geçersiz.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/analyses/{id}/gsn.dot:
     get:
       operationId: getAnalysisGsnDot
@@ -405,6 +689,28 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  parameters:
+    licenseHeader:
+      name: X-SOIPACK-License
+      in: header
+      required: false
+      description: Base64 kodlu lisans anahtarı. Gönderilmezse uç nokta 401 veya 403 döner.
+      schema:
+        type: string
+    ifMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: ETag tabanlı revizyon kontrolü için gönderilir. `*` değeri kaynak yoksa oluşturulmasına izin verir.
+      schema:
+        type: string
+    ifNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: Yanıt gövdesi değişmediğinde 304 Not Modified almak için kullanılabilir.
+      schema:
+        type: string
   responses:
     UnauthorizedError:
       description: JWT kimlik doğrulaması başarısız oldu.
@@ -781,3 +1087,166 @@ components:
           type: string
           format: uri
           description: Opsiyonel özel Jira taban URL’si. Varsayılan olarak site alanı kullanılır.
+    ServiceMetadata:
+      type: object
+      required: [sbom, attestation, packJob]
+      properties:
+        sbom:
+          type: object
+          required: [url, sha256]
+          properties:
+            url:
+              type: string
+              description: SBOM artefaktını indirmek için relatif URL.
+            sha256:
+              type: string
+              pattern: '^[a-f0-9]{64}$'
+              description: SBOM dosyasının SHA-256 özeti.
+        attestation:
+          type: object
+          required: [present, signals]
+          properties:
+            present:
+              type: boolean
+            signals:
+              type: object
+              description: Attestation digest ve imza gibi doğrulama ipuçları.
+              additionalProperties: true
+        packJob:
+          type: object
+          required: [id, createdAt]
+          properties:
+            id:
+              type: string
+              pattern: '^[a-f0-9]{16}$'
+            createdAt:
+              type: string
+              format: date-time
+              description: Pack job tamamlanma zamanı.
+    LicenseMetadata:
+      type: object
+      required: [fingerprint, expiresAt, tenantId, valid]
+      properties:
+        fingerprint:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Lisansın sona erme zamanı. Süresiz lisanslarda null döner.
+        tenantId:
+          type: string
+        valid:
+          type: boolean
+          description: Lisansın şu anda geçerli olup olmadığını gösterir.
+    SecurityIncidentContactConfig:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type:
+            - string
+            - 'null'
+    SecurityRetentionPolicyConfig:
+      type: object
+      description: En az bir saklama penceresi belirtilmelidir.
+      properties:
+        uploadsDays:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        analysesDays:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        reportsDays:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        packagesDays:
+          type: integer
+          minimum: 1
+          maximum: 3650
+    SecurityMaintenanceConfig:
+      type: object
+      required: [dayOfWeek, startTime, durationMinutes, timezone]
+      properties:
+        dayOfWeek:
+          type: string
+          enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        startTime:
+          type: string
+          pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$'
+        durationMinutes:
+          type: integer
+          minimum: 15
+          maximum: 1440
+        timezone:
+          type: string
+    SecurityIncidentContactRule:
+      type: object
+      required: [type, config]
+      properties:
+        type:
+          type: string
+          const: incidentContact
+        config:
+          $ref: '#/components/schemas/SecurityIncidentContactConfig'
+    SecurityRetentionRule:
+      type: object
+      required: [type, config]
+      properties:
+        type:
+          type: string
+          const: retention
+        config:
+          $ref: '#/components/schemas/SecurityRetentionPolicyConfig'
+    SecurityMaintenanceRule:
+      type: object
+      required: [type, config]
+      properties:
+        type:
+          type: string
+          const: maintenance
+        config:
+          $ref: '#/components/schemas/SecurityMaintenanceConfig'
+    SecurityRule:
+      oneOf:
+        - $ref: '#/components/schemas/SecurityIncidentContactRule'
+        - $ref: '#/components/schemas/SecurityRetentionRule'
+        - $ref: '#/components/schemas/SecurityMaintenanceRule'
+      discriminator:
+        propertyName: type
+        mapping:
+          incidentContact: '#/components/schemas/SecurityIncidentContactRule'
+          retention: '#/components/schemas/SecurityRetentionRule'
+          maintenance: '#/components/schemas/SecurityMaintenanceRule'
+    AdminSecuritySettingsRequest:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRule'
+        revision:
+          type:
+            - string
+            - 'null'
+    AdminSecuritySettingsResponse:
+      type: object
+      required: [rules, revision]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRule'
+        revision:
+          type: string

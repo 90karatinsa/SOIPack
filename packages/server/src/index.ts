@@ -140,6 +140,13 @@ import {
 } from './workspaces/service';
 import { ComplianceEventStream } from './events';
 import { verifyManifestSignatureWithSecuritySigner } from './security/signer';
+import {
+  SecuritySettingsConflictError,
+  SecuritySettingsStore,
+  SecuritySettingsValidationError,
+  type SecuritySettings,
+  type SecuritySettingsInput,
+} from './security/settings';
 
 type FileMap = Record<string, Express.Multer.File[]>;
 
@@ -202,6 +209,60 @@ const etagMatches = (headerValue: string | undefined, etag: string): boolean => 
     .split(',')
     .map((value) => value.trim())
     .some((candidate) => candidate === etag || candidate === '*');
+};
+
+const extractStrongEtagValue = (candidate: string): string | null => {
+  if (!candidate) {
+    return null;
+  }
+  let normalized = candidate.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith('W/')) {
+    normalized = normalized.slice(2).trim();
+  }
+  if (normalized === '*') {
+    return '*';
+  }
+  if (normalized.startsWith('"') && normalized.endsWith('"') && normalized.length >= 2) {
+    return normalized.slice(1, -1);
+  }
+  return null;
+};
+
+const parseIfMatchHeader = (
+  headerValue: string | string[] | undefined,
+): { provided: boolean; any: boolean; revisions: string[] } => {
+  if (!headerValue) {
+    return { provided: false, any: false, revisions: [] };
+  }
+
+  const entries = Array.isArray(headerValue) ? headerValue : [headerValue];
+  const tokens = entries
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  if (tokens.length === 0) {
+    return { provided: false, any: false, revisions: [] };
+  }
+
+  let any = false;
+  const revisions = new Set<string>();
+  tokens.forEach((token) => {
+    const value = extractStrongEtagValue(token);
+    if (!value) {
+      return;
+    }
+    if (value === '*') {
+      any = true;
+      return;
+    }
+    revisions.add(value);
+  });
+
+  return { provided: true, any, revisions: Array.from(revisions) };
 };
 
 export const writePersistedJson = async (
@@ -454,6 +515,35 @@ const complianceSummaryCacheRegistry = new Set<Map<string, ComplianceSummaryCach
 
 export const __clearComplianceSummaryCacheForTesting = (): void => {
   complianceSummaryCacheRegistry.forEach((cache) => cache.clear());
+};
+
+interface ServiceMetadataResponsePayload {
+  sbom: { url: string; sha256: string };
+  attestation: { present: boolean; signals: Record<string, unknown> };
+  packJob: { id: string; createdAt: string };
+}
+
+interface ServiceMetadataCacheEntry {
+  payload: ServiceMetadataResponsePayload;
+  etag: string;
+  payloadDigest: string;
+  lastModified: string;
+  jobId: string;
+  jobCreatedAt: string;
+  sbomSha256: string;
+  attestationDigest: string | null;
+  attestationStatementDigest: string | null;
+  signatureFingerprint: string | null;
+  expiresAt: number;
+}
+
+const SERVICE_METADATA_RESPONSE_CACHE_TTL_MS = 60_000;
+const SERVICE_METADATA_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+const serviceMetadataCacheRegistry = new Set<Map<string, ServiceMetadataCacheEntry>>();
+
+export const __clearServiceMetadataCacheForTesting = (): void => {
+  serviceMetadataCacheRegistry.forEach((cache) => cache.clear());
 };
 
 export const __clearReadinessIndexCacheForTesting = (): void => {
@@ -3112,6 +3202,46 @@ const resolvePackageMetadata = async (
   return { metadata, directory: packageDir };
 };
 
+const findLatestPackJobMetadata = async (
+  storage: StorageProvider,
+  directories: PipelineDirectories,
+  tenantId: string,
+): Promise<{ metadata: PackJobMetadata; directory: string; stage?: SoiStage | null } | null> => {
+  const entries = await listStageAwareJobEntries(storage, directories.packages, tenantId);
+  let latest: { metadata: PackJobMetadata; directory: string; stage?: SoiStage | null } | null = null;
+  let latestCreatedAt = -Infinity;
+
+  for (const entry of entries) {
+    const metadataPath = path.join(entry.directory, METADATA_FILE);
+    if (!(await storage.fileExists(metadataPath))) {
+      continue;
+    }
+
+    let metadata: PackJobMetadata;
+    try {
+      metadata = await storage.readJson<PackJobMetadata>(metadataPath);
+    } catch {
+      continue;
+    }
+
+    if (metadata.kind !== 'pack' || metadata.tenantId !== tenantId) {
+      continue;
+    }
+
+    const createdAtMs = Date.parse(metadata.createdAt);
+    if (Number.isNaN(createdAtMs)) {
+      continue;
+    }
+
+    if (createdAtMs > latestCreatedAt) {
+      latestCreatedAt = createdAtMs;
+      latest = { metadata, directory: entry.directory, stage: entry.stage ?? null };
+    }
+  }
+
+  return latest;
+};
+
 const streamStorageFile = async (
   res: Response,
   storage: StorageProvider,
@@ -3559,6 +3689,8 @@ export const createServer = (config: ServerConfig): Express => {
   };
 
   const licenseCache = new Map<string, LicenseCacheEntry>();
+  const serviceMetadataCache = new Map<string, ServiceMetadataCacheEntry>();
+  serviceMetadataCacheRegistry.add(serviceMetadataCache);
   const auditLogStore: AuditLogAdapter = config.auditLogStore ?? new AuditLogStore(config.database);
   const jobLicenses = new Map<string, VerifiedLicense>();
   const knownTenants = new Set<string>();
@@ -3568,6 +3700,7 @@ export const createServer = (config: ServerConfig): Express => {
   const rbacStore = new RbacStore(config.database);
   const reviewStore = new ReviewStore(config.database);
   const workspaceService = new WorkspaceService(config.database);
+  const securitySettingsStore = new SecuritySettingsStore(storage);
 
   const jwtUserLoader: JwtUserLoader = {
     loadUser: async (tenantId, subject) => {
@@ -3638,6 +3771,75 @@ export const createServer = (config: ServerConfig): Express => {
         'Audit log entry could not be persisted.',
       );
     }
+  };
+
+  const SECURITY_RULE_TYPES = ['incidentContact', 'retention', 'maintenance'] as const;
+  type SecurityRuleType = (typeof SECURITY_RULE_TYPES)[number];
+
+  type SecurityRulePayload =
+    | { type: 'incidentContact'; config: SecuritySettings['incidentContact'] }
+    | { type: 'retention'; config: SecuritySettings['retention'] }
+    | { type: 'maintenance'; config: SecuritySettings['maintenance'] };
+
+  const isSecurityRuleType = (value: unknown): value is SecurityRuleType => {
+    switch (value) {
+      case 'incidentContact':
+      case 'retention':
+      case 'maintenance':
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  const serializeSecurityRules = (settings: SecuritySettings): SecurityRulePayload[] => [
+    { type: 'incidentContact', config: settings.incidentContact },
+    { type: 'retention', config: settings.retention },
+    { type: 'maintenance', config: settings.maintenance },
+  ];
+
+  const toSecuritySettingsInput = (rules: unknown): SecuritySettingsInput => {
+    if (!Array.isArray(rules)) {
+      throw new HttpError(400, 'INVALID_REQUEST', '"rules" alanı dizi olmalıdır.');
+    }
+
+    const entries = new Map<SecurityRuleType, unknown>();
+
+    for (const rule of rules) {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Her güvenlik kuralı bir nesne olmalıdır.');
+      }
+      const { type } = rule as { type?: unknown };
+      if (!isSecurityRuleType(type)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Bilinmeyen güvenlik kuralı türü belirtildi.', {
+          rule: typeof type === 'string' ? type : null,
+        });
+      }
+      if (entries.has(type)) {
+        throw new HttpError(400, 'INVALID_REQUEST', `Güvenlik kuralı birden fazla kez belirtildi: ${type}`);
+      }
+      if (!Object.prototype.hasOwnProperty.call(rule, 'config')) {
+        throw new HttpError(400, 'INVALID_REQUEST', `"${type}" kuralı config alanını içermelidir.`);
+      }
+      const { config } = rule as { config?: unknown };
+      entries.set(type, config);
+    }
+
+    const missing = SECURITY_RULE_TYPES.filter((type) => !entries.has(type));
+    if (missing.length > 0) {
+      throw new HttpError(
+        400,
+        'INVALID_REQUEST',
+        'Tüm güvenlik kuralı türleri sağlanmalıdır.',
+        { missingRules: missing },
+      );
+    }
+
+    return {
+      incidentContact: entries.get('incidentContact') as SecuritySettingsInput['incidentContact'],
+      retention: entries.get('retention') as SecuritySettingsInput['retention'],
+      maintenance: entries.get('maintenance') as SecuritySettingsInput['maintenance'],
+    } satisfies SecuritySettingsInput;
   };
 
   const toJobTarget = (jobId: string): string => `job:${jobId}`;
@@ -5966,6 +6168,26 @@ export const createServer = (config: ServerConfig): Express => {
     }
   };
 
+  const requireSecuritySettingsLicense = async (req: Request): Promise<VerifiedLicense> => {
+    try {
+      return await requireLicenseToken(req);
+    } catch (error) {
+      const normalized = error instanceof HttpError ? error : toHttpError(error);
+      const status = normalized instanceof HttpError ? normalized.statusCode : (normalized as { status?: number }).status;
+      if (status === 401 || status === 402) {
+        throw new HttpError(
+          403,
+          'SECURITY_SETTINGS_LICENSE_REQUIRED',
+          'Güvenlik yapılandırmasına erişmek için geçerli bir lisans gereklidir.',
+          {
+            cause: normalized.code ?? normalized.message,
+          },
+        );
+      }
+      throw normalized;
+    }
+  };
+
   const maxUploadSize = config.maxUploadSizeBytes ?? 25 * 1024 * 1024;
   const uploadPolicies = mergeUploadPolicies(maxUploadSize, config.uploadPolicies);
   const scanner = config.scanner ?? createNoopScanner();
@@ -6238,6 +6460,181 @@ export const createServer = (config: ServerConfig): Express => {
   app.get('/v1/openapi.json', requireAuth, (req, res, next) =>
     serveOpenApi(req, res, next, 'json'),
   );
+
+  app.get(
+    '/v1/service/metadata',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const license = await requireLicenseToken(req);
+
+      const nowMs = Date.now();
+      const cachedEntry = serviceMetadataCache.get(tenantId);
+      if (cachedEntry && cachedEntry.expiresAt <= nowMs) {
+        serviceMetadataCache.delete(tenantId);
+      }
+
+      const latest = await findLatestPackJobMetadata(storage, directories, tenantId);
+      if (!latest) {
+        throw new HttpError(404, 'SERVICE_METADATA_NOT_FOUND', 'Tamamlanmış paket işine ait veri bulunamadı.');
+      }
+
+      const { metadata, stage } = latest;
+
+      hydrateJobLicense(metadata, tenantId);
+      ensureJobLicense(tenantId, metadata.id, license);
+
+      const createdAtMs = Date.parse(metadata.createdAt);
+      if (Number.isNaN(createdAtMs)) {
+        throw new HttpError(500, 'SERVICE_METADATA_INVALID', 'Paket işinin oluşturulma tarihi geçersiz.');
+      }
+
+      if (Date.now() - createdAtMs > SERVICE_METADATA_STALE_AFTER_MS) {
+        throw new HttpError(410, 'SERVICE_METADATA_STALE', 'Son paket işi artık güncel değil.');
+      }
+
+      const sbomPath = metadata.outputs?.sbomPath;
+      const sbomSha256 = metadata.outputs?.sbomSha256 ?? null;
+      if (!sbomPath || !sbomSha256 || !(await storage.fileExists(sbomPath))) {
+        throw new HttpError(404, 'SERVICE_METADATA_NOT_AVAILABLE', 'Son paket işine ait SBOM bulunamadı.');
+      }
+
+      const attestationMeta = metadata.outputs?.attestation;
+      if (!attestationMeta || !attestationMeta.path || !(await storage.fileExists(attestationMeta.path))) {
+        throw new HttpError(404, 'SERVICE_METADATA_NOT_AVAILABLE', 'Son paket işine ait attestation bulunamadı.');
+      }
+
+      const attestationDigest = attestationMeta.digest ?? null;
+      const statementDigest = attestationMeta.statementDigest ?? null;
+      const signatureFingerprint = JSON.stringify(attestationMeta.signature ?? null);
+
+      const cacheControlValue = 'private, max-age=60';
+
+      const encodeComponent = (value: string): string => encodeURIComponent(value);
+      const packageIdSegment =
+        stage && stage.length > 0
+          ? `${encodeComponent(stage)}/${encodeComponent(metadata.id)}`
+          : encodeComponent(metadata.id);
+
+      const signals: Record<string, unknown> = {};
+      if (attestationMeta.digest) {
+        signals.digest = attestationMeta.digest;
+      }
+      if (attestationMeta.statementDigest) {
+        signals.statementDigest = attestationMeta.statementDigest;
+      }
+      if (attestationMeta.signature) {
+        signals.signature = attestationMeta.signature;
+      }
+
+      const payload: ServiceMetadataResponsePayload = {
+        sbom: {
+          url: `/v1/packages/${packageIdSegment}/sbom`,
+          sha256: sbomSha256,
+        },
+        attestation: {
+          present: true,
+          signals,
+        },
+        packJob: {
+          id: metadata.id,
+          createdAt: metadata.createdAt,
+        },
+      };
+
+      const payloadDigest = createHash('sha256')
+        .update(JSON.stringify(payload), 'utf8')
+        .digest('hex');
+      const etag = `"${metadata.id}:${payloadDigest}"`;
+      const lastModified = new Date(createdAtMs).toUTCString();
+
+      const existing = serviceMetadataCache.get(tenantId);
+      if (existing && existing.etag === etag && existing.expiresAt > nowMs) {
+        existing.expiresAt = nowMs + SERVICE_METADATA_RESPONSE_CACHE_TTL_MS;
+        serviceMetadataCache.set(tenantId, existing);
+        res.setHeader('Cache-Control', cacheControlValue);
+        res.setHeader('ETag', existing.etag);
+        res.setHeader('Last-Modified', existing.lastModified);
+        if (etagMatches(req.headers['if-none-match'], existing.etag)) {
+          res.status(304).end();
+          return;
+        }
+        res.json(existing.payload);
+        return;
+      }
+
+      serviceMetadataCache.set(tenantId, {
+        payload,
+        etag,
+        payloadDigest,
+        lastModified,
+        jobId: metadata.id,
+        jobCreatedAt: metadata.createdAt,
+        sbomSha256,
+        attestationDigest,
+        attestationStatementDigest: statementDigest,
+        signatureFingerprint,
+        expiresAt: nowMs + SERVICE_METADATA_RESPONSE_CACHE_TTL_MS,
+      });
+
+      res.setHeader('Cache-Control', cacheControlValue);
+      res.setHeader('ETag', etag);
+      res.setHeader('Last-Modified', lastModified);
+      if (etagMatches(req.headers['if-none-match'], etag)) {
+        res.status(304).end();
+        return;
+      }
+
+      res.json(payload);
+    }),
+  );
+
+  app.get(
+    '/v1/license',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      const { tenantId } = getAuthContext(req);
+      const license = await requireLicenseToken(req);
+
+      const expiresAt = license.payload.expiresAt ?? null;
+      const fingerprint = license.hash;
+
+      let valid = true;
+      if (expiresAt) {
+        const expiresMs = Date.parse(expiresAt);
+        valid = Number.isNaN(expiresMs) ? false : expiresMs > Date.now();
+      }
+
+      const cacheControlValue = 'private, max-age=60';
+      const payload = { fingerprint, expiresAt, tenantId, valid };
+      const payloadDigest = createHash('sha256')
+        .update(JSON.stringify(payload), 'utf8')
+        .digest('hex');
+      const etag = `"${fingerprint}:${payloadDigest}"`;
+      const issuedAt = license.payload.issuedAt ?? null;
+      let lastModified: string;
+      if (issuedAt) {
+        const issuedAtMs = Date.parse(issuedAt);
+        lastModified = Number.isNaN(issuedAtMs)
+          ? new Date().toUTCString()
+          : new Date(issuedAtMs).toUTCString();
+      } else {
+        lastModified = new Date().toUTCString();
+      }
+
+      res.setHeader('Cache-Control', cacheControlValue);
+      res.setHeader('ETag', etag);
+      res.setHeader('Last-Modified', lastModified);
+
+      if (etagMatches(req.headers['if-none-match'], etag)) {
+        res.status(304).end();
+        return;
+      }
+
+      res.json(payload);
+    }),
+  );
+
   const maxQueuedJobsPerTenant = Math.max(1, config.maxQueuedJobsPerTenant ?? 5);
   const maxQueuedJobsTotal =
     config.maxQueuedJobsTotal !== undefined ? Math.max(1, config.maxQueuedJobsTotal) : undefined;
@@ -6679,6 +7076,173 @@ export const createServer = (config: ServerConfig): Express => {
           latencyMs,
         },
       });
+    }),
+  );
+
+  app.get(
+    '/v1/admin/security',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      await requireSecuritySettingsLicense(req);
+      await ensureRole(req, ['admin', 'operator']);
+      const { tenantId } = getAuthContext(req);
+      const record = await securitySettingsStore.get(tenantId);
+      if (!record) {
+        throw new HttpError(404, 'SECURITY_SETTINGS_NOT_FOUND', 'Güvenlik yapılandırması bulunamadı.');
+      }
+
+      const payload = {
+        rules: serializeSecurityRules(record.settings),
+        revision: record.revision.id,
+      };
+      const etag = `"${record.revision.id}"`;
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      res.setHeader('Last-Modified', new Date(record.revision.updatedAt).toUTCString());
+      if (etagMatches(req.headers['if-none-match'], etag)) {
+        res.status(304).end();
+        return;
+      }
+
+      res.json(payload);
+    }),
+  );
+
+  app.put(
+    '/v1/admin/security',
+    requireAuth,
+    createAsyncHandler(async (req, res) => {
+      ensureAdminScope(req);
+      const principal = await ensureRole(req, ['admin']);
+      const context = getAuthContext(req);
+      await requireSecuritySettingsLicense(req);
+      const { tenantId, subject } = context;
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new HttpError(400, 'INVALID_REQUEST', 'Geçerli bir JSON gövdesi gereklidir.');
+      }
+
+      const { rules, revision } = body as { rules?: unknown; revision?: unknown };
+      if (rules === undefined) {
+        throw new HttpError(400, 'INVALID_REQUEST', '"rules" alanı gereklidir.');
+      }
+
+      const settingsInput = toSecuritySettingsInput(rules);
+      const existing = await securitySettingsStore.get(tenantId);
+
+      const ifMatch = parseIfMatchHeader(req.headers['if-match']);
+      const hasIfMatch = ifMatch.any || ifMatch.revisions.length > 0;
+      if (existing) {
+        if (!hasIfMatch) {
+          throw new HttpError(
+            412,
+            'SECURITY_SETTINGS_PRECONDITION_FAILED',
+            'Güncelleme yaparken If-Match başlığı gereklidir.',
+            { currentRevision: existing.revision.id },
+          );
+        }
+        if (!ifMatch.any && !ifMatch.revisions.includes(existing.revision.id)) {
+          throw new HttpError(
+            412,
+            'SECURITY_SETTINGS_PRECONDITION_FAILED',
+            'Belirtilen revizyon güncel güvenlik ayarlarıyla eşleşmiyor.',
+            { currentRevision: existing.revision.id },
+          );
+        }
+      } else if (hasIfMatch && !ifMatch.any) {
+        throw new HttpError(
+          412,
+          'SECURITY_SETTINGS_PRECONDITION_FAILED',
+          'Güvenlik ayarları henüz oluşturulmadı, If-Match başlığı * olarak ayarlanmalıdır.',
+          { currentRevision: null },
+        );
+      }
+
+      let normalizedRevision: string | undefined;
+      if (revision !== undefined && revision !== null) {
+        if (typeof revision !== 'string') {
+          throw new HttpError(400, 'INVALID_REQUEST', 'revision değeri metin olmalıdır.');
+        }
+        normalizedRevision = revision.trim();
+      }
+
+      let expectedRevision: number | undefined;
+      if (existing) {
+        if (!normalizedRevision) {
+          throw new HttpError(
+            409,
+            'SECURITY_SETTINGS_CONFLICT',
+            'Güncelleme yaparken mevcut revizyon değeri belirtilmelidir.',
+            { currentRevision: existing.revision.id },
+          );
+        }
+        if (normalizedRevision !== existing.revision.id) {
+          throw new HttpError(
+            409,
+            'SECURITY_SETTINGS_CONFLICT',
+            'Güvenlik ayarları başka bir işlem tarafından güncellendi.',
+            { currentRevision: existing.revision.id },
+          );
+        }
+        expectedRevision = existing.revision.number;
+      } else if (normalizedRevision && normalizedRevision.length > 0) {
+        throw new HttpError(
+          409,
+          'SECURITY_SETTINGS_CONFLICT',
+          'Güvenlik ayarları henüz oluşturulmadı, revizyon belirtilmemelidir.',
+          { currentRevision: null },
+        );
+      }
+
+      try {
+        const saved = await securitySettingsStore.save({
+          tenantId,
+          settings: settingsInput,
+          expectedRevision,
+        });
+        const payload = {
+          rules: serializeSecurityRules(saved.settings),
+          revision: saved.revision.id,
+        };
+        const etag = `"${saved.revision.id}"`;
+        res.setHeader('ETag', etag);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Last-Modified', new Date(saved.revision.updatedAt).toUTCString());
+
+        const actor = getActorIdentifier(principal, subject);
+        await appendAuditLog({
+          tenantId,
+          actor,
+          action: 'admin.security_settings.updated',
+          target: `tenant:${tenantId}`,
+          payload: {
+            who: actor,
+            when: saved.revision.updatedAt,
+            oldRevision: existing ? existing.revision.id : null,
+            newRevision: saved.revision.id,
+            diff: {
+              previous: existing ? serializeSecurityRules(existing.settings) : null,
+              current: serializeSecurityRules(saved.settings),
+            },
+          },
+        });
+
+        res.status(existing ? 200 : 201).json(payload);
+      } catch (error) {
+        if (error instanceof SecuritySettingsValidationError) {
+          throw new HttpError(400, 'SECURITY_SETTINGS_INVALID', 'Güvenlik ayarları doğrulamadan geçemedi.', {
+            issues: error.issues,
+          });
+        }
+        if (error instanceof SecuritySettingsConflictError) {
+          const latest = await securitySettingsStore.get(tenantId);
+          throw new HttpError(409, 'SECURITY_SETTINGS_CONFLICT', error.message, {
+            currentRevision: latest?.revision.id ?? existing?.revision.id ?? null,
+          });
+        }
+        throw error;
+      }
     }),
   );
 

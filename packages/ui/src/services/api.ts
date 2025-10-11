@@ -184,12 +184,69 @@ export interface ManifestProofResponse {
   verified: boolean;
 }
 
+export interface ServiceMetadataAttestation {
+  present: boolean;
+  signals: Record<string, unknown>;
+}
+
+export interface ServiceMetadataPackJob {
+  id: string;
+  createdAt: string;
+}
+
 export interface ServiceMetadata {
   sbom?: {
-    url?: string | null;
-    sha256?: string | null;
-    verified?: boolean | null;
+    url: string | null;
+    sha256: string | null;
+    verified: boolean | null;
   } | null;
+  attestation?: ServiceMetadataAttestation | null;
+  packJob?: ServiceMetadataPackJob | null;
+}
+
+export interface LicenseMetadata {
+  fingerprint: string;
+  expiresAt: string | null;
+  tenantId: string;
+  valid: boolean;
+}
+
+export type SecurityRuleType = 'incidentContact' | 'retention' | 'maintenance';
+
+export interface IncidentContactRule {
+  type: 'incidentContact';
+  config: {
+    name: string;
+    email: string;
+    phone?: string | null;
+  };
+}
+
+export interface RetentionRule {
+  type: 'retention';
+  config: {
+    uploadsDays?: number | null;
+    analysesDays?: number | null;
+    reportsDays?: number | null;
+    packagesDays?: number | null;
+  };
+}
+
+export interface MaintenanceRule {
+  type: 'maintenance';
+  config: {
+    dayOfWeek: string;
+    startTime: string;
+    durationMinutes: number | null;
+    timezone: string;
+  };
+}
+
+export type SecurityRule = IncidentContactRule | RetentionRule | MaintenanceRule;
+
+export interface AdminSecuritySettings {
+  rules: SecurityRule[];
+  revision: string;
 }
 
 export interface StageRiskSparklinePointPayload {
@@ -792,8 +849,16 @@ const sanitizeComplianceReadinessSummary = (
       const contribution = Math.round(clamp01(record.contribution) * 1000) / 1000;
       const details = typeof record.details === 'string' ? record.details.trim() : '';
       const missing = record.missing === true;
+      const sanitized: ComplianceReadinessBreakdown = {
+        component,
+        score,
+        weight,
+        contribution,
+        details,
+        missing,
+      };
 
-      return { component, score, weight, contribution, details, missing };
+      return sanitized;
     })
     .filter((entry): entry is ComplianceReadinessBreakdown => entry !== null);
 
@@ -1156,6 +1221,192 @@ const sanitizeChangeRequestListResponse = (
     : [];
 
   return { fetchedAt, items };
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const normalizeSha256Digest = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const sanitizeAttestationSignals = (value: unknown): Record<string, unknown> => {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(Object.entries(value));
+};
+
+const sanitizeServiceMetadataPayload = (payload: unknown): ServiceMetadata => {
+  if (!isRecord(payload)) {
+    return { sbom: null, attestation: null, packJob: null };
+  }
+
+  const sbomValue = (payload as Record<string, unknown>)['sbom'];
+  let sbom: ServiceMetadata['sbom'] = null;
+  if (isRecord(sbomValue)) {
+    const url = typeof sbomValue['url'] === 'string' ? sbomValue['url'] : null;
+    const sha256 = normalizeSha256Digest(sbomValue['sha256']);
+    const verifiedValue = sbomValue['verified'];
+    const verified = typeof verifiedValue === 'boolean' ? verifiedValue : null;
+    sbom = { url, sha256, verified };
+  }
+
+  const attestationValue = (payload as Record<string, unknown>)['attestation'];
+  let attestation: ServiceMetadata['attestation'] = null;
+  if (isRecord(attestationValue)) {
+    const present = attestationValue['present'] === true;
+    const signals = sanitizeAttestationSignals(attestationValue['signals']);
+    attestation = { present, signals };
+  }
+
+  const packJobValue = (payload as Record<string, unknown>)['packJob'];
+  let packJob: ServiceMetadata['packJob'] = null;
+  if (isRecord(packJobValue)) {
+    const id = typeof packJobValue['id'] === 'string' ? packJobValue['id'] : null;
+    const createdAt =
+      typeof packJobValue['createdAt'] === 'string' ? packJobValue['createdAt'] : null;
+    if (id && createdAt) {
+      packJob = { id, createdAt };
+    }
+  }
+
+  return { sbom, attestation, packJob };
+};
+
+const sanitizeLicenseMetadataPayload = (payload: unknown): LicenseMetadata => {
+  if (!isRecord(payload)) {
+    return { fingerprint: '', expiresAt: null, tenantId: '', valid: false };
+  }
+
+  const fingerprintValue = (payload as Record<string, unknown>)['fingerprint'];
+  const fingerprint = typeof fingerprintValue === 'string' ? fingerprintValue.trim() : '';
+  const expiresValue = (payload as Record<string, unknown>)['expiresAt'];
+  let expiresAt: string | null = null;
+  if (typeof expiresValue === 'string') {
+    const trimmed = expiresValue.trim();
+    expiresAt = trimmed.length > 0 ? trimmed : null;
+  } else if (expiresValue instanceof Date) {
+    expiresAt = expiresValue.toISOString();
+  }
+  const tenantValue = (payload as Record<string, unknown>)['tenantId'];
+  const tenantId = typeof tenantValue === 'string' ? tenantValue.trim() : '';
+  const validValue = (payload as Record<string, unknown>)['valid'];
+  const valid = typeof validValue === 'boolean' ? validValue : false;
+
+  return { fingerprint, expiresAt, tenantId, valid };
+};
+
+const parseRetentionDays = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
+const sanitizeSecurityRule = (rule: unknown): SecurityRule | null => {
+  if (!isRecord(rule)) {
+    return null;
+  }
+
+  const type = typeof rule.type === 'string' ? (rule.type.trim() as SecurityRuleType) : '';
+  const config = isRecord(rule.config) ? rule.config : {};
+
+  switch (type) {
+    case 'incidentContact': {
+      const nameValue = config.name;
+      const emailValue = config.email;
+      const phoneValue = config.phone;
+      const name = typeof nameValue === 'string' ? nameValue.trim() : '';
+      const email = typeof emailValue === 'string' ? emailValue.trim() : '';
+      const phone = typeof phoneValue === 'string' ? phoneValue.trim() : null;
+      return {
+        type: 'incidentContact',
+        config: {
+          name,
+          email,
+          ...(phone ? { phone } : {}),
+        },
+      } satisfies IncidentContactRule;
+    }
+    case 'retention': {
+      const uploadsDays = parseRetentionDays(config.uploadsDays);
+      const analysesDays = parseRetentionDays(config.analysesDays);
+      const reportsDays = parseRetentionDays(config.reportsDays);
+      const packagesDays = parseRetentionDays(config.packagesDays);
+      const normalized: RetentionRule['config'] = {};
+      if (uploadsDays !== null) {
+        normalized.uploadsDays = uploadsDays;
+      }
+      if (analysesDays !== null) {
+        normalized.analysesDays = analysesDays;
+      }
+      if (reportsDays !== null) {
+        normalized.reportsDays = reportsDays;
+      }
+      if (packagesDays !== null) {
+        normalized.packagesDays = packagesDays;
+      }
+      return { type: 'retention', config: normalized } satisfies RetentionRule;
+    }
+    case 'maintenance': {
+      const dayValue = config.dayOfWeek;
+      const startValue = config.startTime;
+      const durationValue = config.durationMinutes;
+      const timezoneValue = config.timezone;
+      const dayOfWeek = typeof dayValue === 'string' ? dayValue.trim().toLowerCase() : '';
+      const startTime = typeof startValue === 'string' ? startValue.trim() : '';
+      let durationMinutes: number | null = null;
+      if (typeof durationValue === 'number' && Number.isFinite(durationValue)) {
+        durationMinutes = Math.trunc(durationValue);
+      } else if (typeof durationValue === 'string') {
+        const parsed = Number.parseInt(durationValue.trim(), 10);
+        if (Number.isFinite(parsed)) {
+          durationMinutes = parsed;
+        }
+      }
+      const timezone = typeof timezoneValue === 'string' ? timezoneValue.trim() : '';
+      return {
+        type: 'maintenance',
+        config: {
+          dayOfWeek,
+          startTime,
+          durationMinutes,
+          timezone,
+        },
+      } satisfies MaintenanceRule;
+    }
+    default:
+      return null;
+  }
+};
+
+const sanitizeAdminSecurityPayload = (payload: unknown): AdminSecuritySettings => {
+  if (!isRecord(payload)) {
+    return { rules: [], revision: '' };
+  }
+
+  const rulesValue = (payload as Record<string, unknown>).rules;
+  const revisionValue = (payload as Record<string, unknown>).revision;
+  const revision = typeof revisionValue === 'string' ? revisionValue.trim() : '';
+  const rules = Array.isArray(rulesValue)
+    ? rulesValue
+        .map(sanitizeSecurityRule)
+        .filter((entry): entry is SecurityRule => entry !== null)
+    : [];
+
+  return { rules, revision };
 };
 
 const readJson = async <T>(response: Response): Promise<T> => {
@@ -1687,7 +1938,127 @@ export const fetchServiceMetadata = async ({
     signal,
   });
 
-  return readJson<ServiceMetadata>(response);
+  const payload = await readJson<unknown>(response);
+  return sanitizeServiceMetadataPayload(payload);
+};
+
+interface FetchLicenseMetadataOptions {
+  token: string;
+  license: string;
+  signal?: AbortSignal;
+}
+
+export const fetchLicenseMetadata = async ({
+  token,
+  license,
+  signal,
+}: FetchLicenseMetadataOptions): Promise<LicenseMetadata> => {
+  const response = await fetch(joinUrl('/v1/license'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  const payload = await readJson<unknown>(response);
+  return sanitizeLicenseMetadataPayload(payload);
+};
+
+export const getServiceMetadata = fetchServiceMetadata;
+export const getLicense = fetchLicenseMetadata;
+
+interface GetAdminSecurityOptions {
+  token: string;
+  license: string;
+  signal?: AbortSignal;
+}
+
+export interface GetAdminSecurityResult {
+  settings: AdminSecuritySettings | null;
+  etag: string | null;
+  lastModified: string | null;
+}
+
+export const getAdminSecurity = async ({
+  token,
+  license,
+  signal,
+}: GetAdminSecurityOptions): Promise<GetAdminSecurityResult> => {
+  const response = await fetch(joinUrl('/v1/admin/security'), {
+    method: 'GET',
+    headers: buildAuthHeaders({ token, license }),
+    signal,
+  });
+
+  const etag = response.headers.get('ETag');
+  const lastModified = response.headers.get('Last-Modified');
+  if (response.status === 404) {
+    return { settings: null, etag, lastModified };
+  }
+
+  await ensureOk(response);
+  const payload = (await response.json()) as unknown;
+  return {
+    settings: sanitizeAdminSecurityPayload(payload),
+    etag,
+    lastModified,
+  };
+};
+
+interface PutAdminSecurityOptions {
+  token: string;
+  license: string;
+  ifMatch?: string | null;
+  signal?: AbortSignal;
+}
+
+interface PutAdminSecurityPayload {
+  rules: SecurityRule[];
+  revision?: string | null;
+}
+
+export interface PutAdminSecurityResult {
+  settings: AdminSecuritySettings;
+  etag: string | null;
+  lastModified: string | null;
+}
+
+export const putAdminSecurity = async (
+  payload: PutAdminSecurityPayload,
+  { token, license, ifMatch, signal }: PutAdminSecurityOptions,
+): Promise<PutAdminSecurityResult> => {
+  const headers: Record<string, string> = {
+    ...buildAuthHeaders({ token, license }),
+    'Content-Type': 'application/json',
+  };
+
+  const normalizedIfMatch = typeof ifMatch === 'string' ? ifMatch.trim() : '';
+  headers['If-Match'] = normalizedIfMatch.length > 0 ? normalizedIfMatch : '*';
+
+  const requestBody: Record<string, unknown> = { rules: payload.rules };
+  if (typeof payload.revision === 'string') {
+    const trimmedRevision = payload.revision.trim();
+    if (trimmedRevision.length > 0) {
+      requestBody.revision = trimmedRevision;
+    }
+  }
+
+  const response = await fetch(joinUrl('/v1/admin/security'), {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+
+  const etag = response.headers.get('ETag');
+  const lastModified = response.headers.get('Last-Modified');
+
+  await ensureOk(response);
+  const responsePayload = (await response.json()) as unknown;
+  return {
+    settings: sanitizeAdminSecurityPayload(responsePayload),
+    etag,
+    lastModified,
+  };
 };
 
 interface FetchChangeRequestsOptions {
