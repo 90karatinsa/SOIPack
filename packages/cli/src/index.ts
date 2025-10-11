@@ -5278,6 +5278,162 @@ export const runRemediationPlan = async (
   };
 };
 
+type GraphObjectiveMeta = {
+  status: ObjectiveCoverageStatus;
+  confidence?: number;
+};
+
+const escapeGraphml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+const getTraceNodeLabel = (node: TraceGraph['nodes'][number]): string => {
+  if (node.type === 'requirement') {
+    return node.data.title ?? node.id;
+  }
+  if (node.type === 'test') {
+    return node.data.name ?? node.id;
+  }
+  if (node.type === 'code') {
+    return node.data.path ?? node.id;
+  }
+  if (node.type === 'design') {
+    return node.data.title ?? node.id;
+  }
+  return node.id;
+};
+
+const buildTraceGraphGraphml = (
+  graph: TraceGraph,
+  objectives: Map<string, GraphObjectiveMeta>,
+): { xml: string; nodeCount: number; edgeCount: number } => {
+  const lines: string[] = [];
+  const nodeKeys = new Set(graph.nodes.map((node) => node.key));
+  const edges: Array<{ source: string; target: string }> = [];
+  const edgeKeys = new Set<string>();
+
+  graph.nodes.forEach((node) => {
+    node.links.forEach((targetKey) => {
+      if (!nodeKeys.has(targetKey) || targetKey === node.key) {
+        return;
+      }
+      const pair = node.key < targetKey ? `${node.key}→${targetKey}` : `${targetKey}→${node.key}`;
+      if (edgeKeys.has(pair)) {
+        return;
+      }
+      edgeKeys.add(pair);
+      edges.push({ source: node.key, target: targetKey });
+    });
+  });
+
+  lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+  lines.push(
+    '<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">',
+  );
+  lines.push('  <key id="d0" for="node" attr.name="type" attr.type="string"/>');
+  lines.push('  <key id="d1" for="node" attr.name="label" attr.type="string"/>');
+  lines.push('  <key id="d2" for="node" attr.name="objective_status" attr.type="string"/>');
+  lines.push('  <key id="d3" for="node" attr.name="objective_confidence" attr.type="double"/>');
+  lines.push('  <key id="d4" for="edge" attr.name="kind" attr.type="string"/>');
+  lines.push('  <graph id="compliance-trace" edgedefault="undirected">');
+
+  graph.nodes.forEach((node) => {
+    const objective = objectives.get(node.id);
+    const label = getTraceNodeLabel(node);
+    lines.push(`    <node id="${escapeGraphml(node.key)}">`);
+    lines.push(`      <data key="d0">${escapeGraphml(node.type)}</data>`);
+    if (label) {
+      lines.push(`      <data key="d1">${escapeGraphml(label)}</data>`);
+    }
+    if (objective) {
+      lines.push(`      <data key="d2">${escapeGraphml(objective.status)}</data>`);
+      if (objective.confidence !== undefined) {
+        lines.push(
+          `      <data key="d3">${escapeGraphml(objective.confidence.toString())}</data>`,
+        );
+      }
+    }
+    lines.push('    </node>');
+  });
+
+  edges.forEach((edge, index) => {
+    lines.push(
+      `    <edge id="e${index}" source="${escapeGraphml(edge.source)}" target="${escapeGraphml(edge.target)}">`,
+    );
+    lines.push('      <data key="d4">trace</data>');
+    lines.push('    </edge>');
+  });
+
+  lines.push('  </graph>');
+  lines.push('</graphml>');
+
+  return {
+    xml: `${lines.join('\n')}\n`,
+    nodeCount: graph.nodes.length,
+    edgeCount: edges.length,
+  };
+};
+
+export interface GraphExportOptions {
+  snapshot: string;
+  output: string;
+}
+
+export interface GraphExportResult {
+  outputPath: string;
+  nodeCount: number;
+  edgeCount: number;
+  bytesWritten: number;
+}
+
+export const runGraphExport = async (
+  options: GraphExportOptions,
+): Promise<GraphExportResult> => {
+  const snapshotPath = path.resolve(options.snapshot);
+  const outputPath = path.resolve(options.output);
+
+  let snapshot: ComplianceSnapshot;
+  try {
+    snapshot = await readJsonFile<ComplianceSnapshot>(snapshotPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Snapshot dosyası okunamadı: ${message}`);
+  }
+
+  const traceGraph = snapshot.traceGraph;
+  if (!traceGraph || !Array.isArray(traceGraph.nodes)) {
+    throw new Error('Snapshot iz grafiği eksik veya geçersiz.');
+  }
+
+  const objectiveMeta = new Map<string, GraphObjectiveMeta>();
+  snapshot.objectives.forEach((entry) => {
+    if (!entry || typeof entry.objectiveId !== 'string') {
+      return;
+    }
+    const rawConfidence = (entry as { confidence?: unknown }).confidence;
+    const confidence =
+      typeof rawConfidence === 'number' && Number.isFinite(rawConfidence)
+        ? rawConfidence
+        : undefined;
+    objectiveMeta.set(entry.objectiveId, {
+      status: entry.status,
+      ...(confidence !== undefined ? { confidence } : {}),
+    });
+  });
+
+  const { xml, nodeCount, edgeCount } = buildTraceGraphGraphml(traceGraph, objectiveMeta);
+
+  await fsPromises.mkdir(path.dirname(outputPath), { recursive: true });
+  const bytesWritten = Buffer.byteLength(xml, 'utf8');
+  await fsPromises.writeFile(outputPath, xml, 'utf8');
+
+  return { outputPath, nodeCount, edgeCount, bytesWritten };
+};
+
 export const runReport = async (options: ReportOptions): Promise<ReportResult> => {
   const inputDir = path.resolve(options.input);
   const analysisPath = path.join(inputDir, 'analysis.json');
@@ -8370,6 +8526,78 @@ const normalizeSingleOption = (value: string | string[] | undefined): string | u
   return String(value);
 };
 
+interface GraphExportCommandOptions extends GlobalArguments {
+  snapshot: string | string[];
+  output: string | string[];
+}
+
+export const graphExportCommand: CommandModule<GlobalArguments, GraphExportCommandOptions> = {
+  command: 'graph export',
+  describe: 'Uyum izlenebilirlik grafiğini GraphML olarak dışa aktarır.',
+  builder: (yargsCommand) =>
+    yargsCommand
+      .option('snapshot', {
+        alias: 's',
+        describe: 'Uyum snapshot JSON dosyası.',
+        type: 'string',
+        demandOption: true,
+      })
+      .option('output', {
+        alias: 'o',
+        describe: 'Üretilen GraphML çıktısının yazılacağı dosya.',
+        type: 'string',
+        demandOption: true,
+      }),
+  handler: async (argv) => {
+    const logger = getLogger(argv);
+    const snapshotOption = normalizeSingleOption(argv.snapshot);
+    const outputOption = normalizeSingleOption(argv.output);
+
+    if (!snapshotOption || !outputOption) {
+      console.error('GraphML dışa aktarımı için --snapshot ve --output seçenekleri belirtilmelidir.');
+      process.exit(1);
+    }
+
+    const snapshotPath = path.resolve(snapshotOption);
+    const outputPath = path.resolve(outputOption);
+    const context = {
+      command: 'graph export',
+      snapshotPath,
+      outputPath,
+    } as const;
+
+    try {
+      await ensureReadableFile(snapshotPath, 'Snapshot dosyası');
+      await ensureWritableParentDirectory(outputPath);
+
+      const result = await runGraphExport({ snapshot: snapshotPath, output: outputPath });
+
+      console.log(
+        `İzlenebilirlik grafiği GraphML çıktısı ${path.relative(process.cwd(), result.outputPath) || '.'} dosyasına yazıldı.`,
+      );
+
+      logger.info(
+        {
+          ...context,
+          nodes: result.nodeCount,
+          edges: result.edgeCount,
+          bytesWritten: result.bytesWritten,
+        },
+        'İzlenebilirlik grafiği GraphML olarak dışa aktarıldı.',
+      );
+
+      process.exitCode = exitCodes.success;
+    } catch (error) {
+      logCliError(logger, error, context);
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith('process.exit')) {
+        console.error(`İzlenebilirlik grafiği dışa aktarılırken hata oluştu: ${message}`);
+      }
+      process.exitCode = exitCodes.error;
+    }
+  },
+};
+
 export const renderGsnCommand: CommandModule<GlobalArguments, RenderGsnCommandOptions> = {
   command: 'render-gsn',
   describe: 'Uyum snapshot ve hedef metaverileriyle GSN grafiğini Graphviz DOT olarak dışa aktarır.',
@@ -10798,6 +11026,7 @@ if (require.main === module) {
         }
       },
     )
+    .command(graphExportCommand)
     .command(renderGsnCommand)
     .command(
       'run',

@@ -15,8 +15,14 @@ jest.setTimeout(1200000);
 
 import * as adapters from '@soipack/adapters';
 import type { CoverageReport, CoverageSummary as StructuralCoverageSummary } from '@soipack/adapters';
-import { Manifest, SnapshotVersion } from '@soipack/core';
-import { ComplianceSnapshot, ImportBundle, TraceEngine, computeRemediationPlan } from '@soipack/engine';
+import { Manifest, ObjectiveArtifactType, SnapshotVersion } from '@soipack/core';
+import {
+  ComplianceSnapshot,
+  ImportBundle,
+  TraceEngine,
+  ObjectiveCoverage,
+  computeRemediationPlan,
+} from '@soipack/engine';
 import {
   buildManifest,
   signManifestBundle,
@@ -159,6 +165,7 @@ import {
   runManifestDiff,
   runLedgerReport,
   runComplianceCompare,
+  runGraphExport,
   __internal,
 } from './index';
 import * as cliModule from './index';
@@ -187,8 +194,286 @@ const TEST_SIGNING_PUBLIC_KEY = new X509Certificate(TEST_SIGNING_CERTIFICATE)
   .publicKey.export({ format: 'pem', type: 'spki' })
   .toString();
 
+const writeJsonTestFile = async (filePath: string, value: unknown): Promise<void> => {
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+};
+
+const createGraphSnapshotFixture = (): ComplianceSnapshot => {
+  const objectives = [
+    {
+      objectiveId: 'REQ-TRACE-1',
+      status: 'covered',
+      evidenceRefs: ['EVID-1'],
+      satisfiedArtifacts: ['plan' as ObjectiveArtifactType],
+      missingArtifacts: [],
+      confidence: 0.82,
+    },
+  ] as Array<ObjectiveCoverage & { confidence?: number }>;
+
+  return {
+    version: {
+      id: 'snapshot-trace-1',
+      fingerprint: 'snapshot-trace-fingerprint',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      isFrozen: false,
+    },
+    generatedAt: '2024-01-02T00:00:00.000Z',
+    objectives: objectives,
+    stats: {
+      objectives: { total: 1, covered: 1, partial: 0, missing: 0 },
+      requirements: { total: 1 },
+      tests: { total: 1, passed: 1, failed: 0, skipped: 0 },
+      codePaths: { total: 0 },
+      designs: { total: 0 },
+    },
+    gaps: {
+      plans: [],
+      standards: [],
+      reviews: [],
+      analysis: [],
+      tests: [],
+      coverage: [],
+      trace: [],
+      configuration: [],
+      quality: [],
+      issues: [],
+      conformity: [],
+      staleEvidence: [],
+    },
+    traceGraph: {
+      nodes: [
+        {
+          key: 'requirement:REQ-TRACE-1',
+          id: 'REQ-TRACE-1',
+          type: 'requirement',
+          data: { id: 'REQ-TRACE-1', title: 'Traceable requirement', status: 'approved', tags: [] },
+          links: ['test:TC-TRACE-1'],
+        },
+        {
+          key: 'test:TC-TRACE-1',
+          id: 'TC-TRACE-1',
+          type: 'test',
+          data: {
+            testId: 'TC-TRACE-1',
+            className: 'TraceSuite',
+            name: 'validates trace requirement',
+            status: 'passed',
+            duration: 5,
+            requirementsRefs: ['REQ-TRACE-1'],
+          },
+          links: ['requirement:REQ-TRACE-1'],
+        },
+      ],
+    },
+    requirementCoverage: [],
+    qualityFindings: [],
+    traceSuggestions: [],
+    independenceSummary: { objectives: [], totals: { covered: 0, partial: 0, missing: 0 } },
+  };
+};
+
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+describe('runGraphExport', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-run-graph-export-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes GraphML with objective attributes from the snapshot trace graph', async () => {
+    const snapshot = createGraphSnapshotFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const outputPath = path.join(tempDir, 'graph.graphml');
+    await writeJsonTestFile(snapshotPath, snapshot);
+
+    const result = await runGraphExport({ snapshot: snapshotPath, output: outputPath });
+
+    expect(result.nodeCount).toBe(snapshot.traceGraph.nodes.length);
+    expect(result.edgeCount).toBe(1);
+    expect(result.bytesWritten).toBeGreaterThan(0);
+
+    const graphml = await fs.readFile(outputPath, 'utf8');
+    expect(graphml).toContain('<graphml');
+    expect(graphml).toContain('objective_status');
+    expect(graphml).toContain('covered');
+    expect(graphml).toContain('objective_confidence');
+    expect(graphml).toContain('0.82');
+  });
+
+  it('throws an error when the snapshot lacks a trace graph', async () => {
+    const invalidSnapshot = {
+      ...createGraphSnapshotFixture(),
+      traceGraph: undefined,
+    } as unknown as ComplianceSnapshot;
+    const snapshotPath = path.join(tempDir, 'invalid.json');
+    await writeJsonTestFile(snapshotPath, invalidSnapshot);
+
+    await expect(
+      runGraphExport({ snapshot: snapshotPath, output: path.join(tempDir, 'graph.graphml') }),
+    ).rejects.toThrow(/iz grafiği/i);
+  });
+});
+
+describe('graph export command', () => {
+  class ProcessExitError extends Error {
+    code: number;
+
+    constructor(code: number) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  interface CliRunResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }
+
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soipack-graph-export-'));
+    process.exitCode = undefined;
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  const runGraphCommand = async (args: string[]): Promise<CliRunResult> => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let exitCode = 0;
+
+    const logSpy = jest.spyOn(console, 'log').mockImplementation((...messages: unknown[]) => {
+      stdout.push(messages.join(' '));
+    });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation((...messages: unknown[]) => {
+      stderr.push(messages.join(' '));
+    });
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitError(code ?? 0);
+    }) as never);
+
+    let failureMessage: string | undefined;
+
+    const parser = yargsFactory(args)
+      .command(cliModule.graphExportCommand)
+      .exitProcess(false)
+      .showHelpOnFail(false)
+      .fail((msg, err) => {
+        if (msg) {
+          console.error(msg);
+          failureMessage = msg;
+        }
+        if (err) {
+          throw err;
+        }
+        throw new ProcessExitError(1);
+      });
+
+    try {
+      await parser.parseAsync();
+      exitCode = typeof process.exitCode === 'number' ? process.exitCode : 0;
+    } catch (error) {
+      if (error instanceof ProcessExitError) {
+        exitCode = error.code;
+      } else {
+        throw error;
+      }
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+      process.exitCode = undefined;
+    }
+
+    if (failureMessage && !stderr.includes(failureMessage)) {
+      stderr.push(failureMessage);
+    }
+
+    return {
+      exitCode,
+      stdout: stdout.join('\n'),
+      stderr: stderr.join('\n'),
+    };
+  };
+
+  it('exports the trace graph to GraphML output', async () => {
+    const snapshot = createGraphSnapshotFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const outputDir = path.join(tempDir, 'out');
+    const outputPath = path.join(outputDir, 'graph.graphml');
+    await fs.mkdir(outputDir, { recursive: true });
+    await writeJsonTestFile(snapshotPath, snapshot);
+
+    const result = await runGraphCommand([
+      'graph',
+      'export',
+      '--snapshot',
+      snapshotPath,
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(result.stdout).toContain('GraphML');
+    const graphml = await fs.readFile(outputPath, 'utf8');
+    expect(graphml).toContain('REQ-TRACE-1');
+  });
+
+  it('propagates runGraphExport failures to the CLI', async () => {
+    const snapshot = createGraphSnapshotFixture();
+    const snapshotPath = path.join(tempDir, 'snapshot.json');
+    const outputDir = path.join(tempDir, 'out');
+    const outputPath = path.join(outputDir, 'graph.graphml');
+    await fs.mkdir(outputDir, { recursive: true });
+    await writeJsonTestFile(snapshotPath, snapshot);
+
+    jest.spyOn(cliModule, 'runGraphExport').mockRejectedValue(new Error('Graph export failure'));
+
+    const result = await runGraphCommand([
+      'graph',
+      'export',
+      '--snapshot',
+      snapshotPath,
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(exitCodes.error);
+    expect(result.stderr).toContain('GraphML');
+    expect(result.stderr).toContain('Graph export failure');
+    await expect(fs.access(outputPath)).rejects.toBeDefined();
+  });
+
+  it('exits with an error when the snapshot path is unreadable', async () => {
+    const outputDir = path.join(tempDir, 'out');
+    const outputPath = path.join(outputDir, 'graph.graphml');
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const result = await runGraphCommand([
+      'graph',
+      'export',
+      '--snapshot',
+      path.join(tempDir, 'missing.json'),
+      '--output',
+      outputPath,
+    ]);
+
+    expect(result.exitCode).toBe(exitCodes.error);
+    expect(result.stderr).toContain('Snapshot dosyası');
+    await expect(fs.access(outputPath)).rejects.toBeDefined();
+  });
 });
 
 describe('render-gsn command', () => {

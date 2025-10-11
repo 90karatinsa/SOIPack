@@ -110,6 +110,100 @@
     margin-bottom: 16px;
   }
 
+  .heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .heatmap-legend span {
+    font-size: 12px;
+    color: #475569;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .heatmap-gradient {
+    width: 200px;
+    height: 14px;
+    border-radius: 999px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+  }
+
+  .heatmap-gradient svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .heatmap-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 8px;
+    margin-bottom: 12px;
+  }
+
+  .heatmap-table th {
+    text-align: center;
+    border: none;
+    background: none;
+    color: #475569;
+  }
+
+  .heatmap-table th:first-child {
+    text-align: left;
+  }
+
+  .heatmap-table td {
+    border: none;
+    padding: 0;
+    background: none;
+  }
+
+  .heatmap-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 12px;
+    padding: 12px 8px;
+    min-height: 72px;
+    background: linear-gradient(135deg, rgba(30, 64, 175, calc(var(--intensity, 0) * 0.55 + 0.05)), rgba(191, 219, 254, calc(var(--intensity, 0) * 0.85 + 0.15)));
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+    transition: transform 0.2s ease-in-out;
+  }
+
+  .heatmap-cell[data-empty='true'] {
+    background: rgba(226, 232, 240, 0.6);
+    color: #475569;
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.45);
+  }
+
+  .heatmap-cell strong {
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .heatmap-cell .muted {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .heatmap-footnote {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -325,6 +419,154 @@
     color: #1e293b;
   }
 
+  .readiness-grid {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    align-items: stretch;
+  }
+
+  .readiness-score {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(14, 116, 144, 0.08));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-score-value {
+    font-size: 40px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-score-label {
+    font-size: 13px;
+    color: #1e293b;
+  }
+
+  .readiness-score-meta {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .readiness-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .readiness-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+  }
+
+  .readiness-badge--accent {
+    background: rgba(59, 130, 246, 0.2);
+    color: #1d4ed8;
+  }
+
+  .readiness-badge--missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .readiness-explainer {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .readiness-sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px;
+    background: #f8fafc;
+  }
+
+  .readiness-sparkline-bar {
+    width: 22px;
+    border-radius: 8px 8px 0 0;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.8), rgba(59, 130, 246, 0.35));
+    transition: opacity 0.2s ease-in-out;
+  }
+
+  .readiness-sparkline-bar--missing {
+    background: repeating-linear-gradient(
+      180deg,
+      rgba(248, 113, 113, 0.85),
+      rgba(248, 113, 113, 0.85) 10px,
+      rgba(254, 226, 226, 0.7) 10px,
+      rgba(254, 226, 226, 0.7) 20px
+    );
+  }
+
+  .readiness-breakdown {
+    margin-top: 24px;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .readiness-component {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 18px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-component header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .readiness-component h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  .readiness-component dl {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .readiness-component dt {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+  }
+
+  .readiness-component dd {
+    margin: 0;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-component p {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
   .risk-grid {
     display: grid;
     gap: 16px;
@@ -425,89 +667,126 @@
     <header class="report-header">
       <div>
         <h1>Kurumsal Uyum Matrisi</h1>
+        
           <p class="report-meta">Denetlenebilir uyum için kanıt özet matrisi</p>
+        
+        
           <p class="report-meta">Program: <strong>Flight Control Modernizasyonu</strong></p>
+        
+        
           <p class="report-meta">Sertifikasyon Seviyesi: <strong>DO-178C Seviye A</strong></p>
+        
+        
           <p class="report-meta">Proje Sürümü: <strong>v2.3.1</strong></p>
+        
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
           Snapshot: <strong>20240201T120000Z-83e26294b06b</strong>
+          
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
+        
           <div class="git-meta">
             <p class="report-meta">
               Commit:
               <strong>
                 <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
               </strong>
+              
             </p>
+            
               <p class="report-meta">Dallar: main</p>
+            
+            
+            
               <p class="report-meta">Origin: https://example.com/repo.git</p>
+            
+            
               <p class="report-meta">Yazar: Stage Bot • 2024-03-15 10:00 UTC</p>
+            
+            
               <p class="report-meta">Mesaj: Implement stage filtering</p>
+            
           </div>
+        
       </div>
       <div class="summary-grid">
+        
           <div class="summary-card">
             <span>Risk Skoru</span>
             <strong>80.2/100 (Kritik Risk)</strong>
           </div>
+        
           <div class="summary-card">
             <span>Hedefler</span>
             <strong>5</strong>
           </div>
+        
           <div class="summary-card">
             <span>Tamamlanan</span>
             <strong>0</strong>
           </div>
+        
           <div class="summary-card">
             <span>Kısmi</span>
             <strong>0</strong>
           </div>
+        
           <div class="summary-card">
             <span>Eksik</span>
             <strong>5</strong>
           </div>
+        
           <div class="summary-card">
             <span>Testler</span>
             <strong>5</strong>
           </div>
+        
           <div class="summary-card">
             <span>Kod Yolları</span>
             <strong>3</strong>
           </div>
+        
           <div class="summary-card">
             <span>Tasarım Kayıtları</span>
             <strong>0</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Değişiklik Etkileri</span>
             <strong>12</strong>
           </div>
+        
           <div class="summary-card">
             <span>Kapsamlı Gereksinimler</span>
             <strong>0/3</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Eksik/Kısmi Kapsam</span>
             <strong>0/3</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Kalite Bulguları</span>
             <strong>4</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Kritik/Uyarı</span>
             <strong>3/1</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Bağımsızlık Eksikleri</span>
             <strong>4 hedef</strong>
           </div>
+        
           <div class="summary-card summary-card--accent">
             <span>Kısmi/Eksik Bağımsızlık</span>
             <strong>0/4</strong>
           </div>
+        
       </div>
     </header>
     <main>
@@ -525,6 +804,7 @@
         </div>
         <p class="muted">0 en düşük, 100 en yüksek riski temsil eder.</p>
       </article>
+      
         <article class="risk-card">
           <h3>Kapsam Eğilimi</h3>
           <div class="cell-title">Kapsam İyileşiyor</div>
@@ -535,10 +815,12 @@
             <span class="badge badge-soft">Güven: 100%</span>
           </div>
         </article>
+      
     </div>
     <div class="risk-breakdown">
       <h3>Faktör Katkıları</h3>
       <ul class="list">
+        
           <li>
             <div class="cell-title">Kapsam</div>
             <div class="muted">3 missing, 0 partial across 3 items</div>
@@ -547,6 +829,7 @@
               <span class="badge status-missing">Katkı 35.0 puan</span>
             </div>
           </li>
+        
           <li>
             <div class="cell-title">quality</div>
             <div class="muted">3 error, 1 warn findings of 4 evaluated</div>
@@ -555,6 +838,7 @@
               <span class="badge status-missing">Katkı 13.1 puan</span>
             </div>
           </li>
+        
           <li>
             <div class="cell-title">Statik Analiz</div>
             <div class="muted">2 findings (error, warn)</div>
@@ -563,6 +847,7 @@
               <span class="badge status-missing">Katkı 12.9 puan</span>
             </div>
           </li>
+        
           <li>
             <div class="cell-title">Testler</div>
             <div class="muted">2 failing, 1 quarantined of 5 tests</div>
@@ -571,6 +856,7 @@
               <span class="badge status-partial">Katkı 12.0 puan</span>
             </div>
           </li>
+        
           <li>
             <div class="cell-title">Denetim Bulguları</div>
             <div class="muted">2 active audit flags</div>
@@ -579,17 +865,22 @@
               <span class="badge status-partial">Katkı 7.2 puan</span>
             </div>
           </li>
+        
       </ul>
     </div>
+    
       <div class="risk-breakdown">
         <h3>Uyum Delta Panosu</h3>
         <p class="muted">İyileşme: 5, Gerileme: 5</p>
+        
           <div class="risk-delta-sparkline" role="img" aria-label="Regresyon trendi: 0, 5">
             <svg viewBox="0 0 60 32" width="60" height="32" xmlns="http://www.w3.org/2000/svg" class="sparkline-graph"><polygon points="0,32 0.0,28.0 60.0,4.0 60.0,32" fill="rgba(244,63,94,0.18)" /><polyline points="0.0,28.0 60.0,4.0" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linecap="round" /></svg>
           </div>
+        
         <div class="risk-delta-panels">
           <div class="risk-delta-panel">
             <h4>Adım Özeti</h4>
+            
               <table>
                 <thead>
                   <tr>
@@ -599,27 +890,36 @@
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">20240110T000000Z-fc6c26ac6fdd → 20240120T000000Z-5b9f872311d5</div>
+                        
                           <div class="muted">2024-01-10 00:00 UTC → 2024-01-20 00:00 UTC</div>
+                        
                       </td>
                       <td style="text-align:right;">5</td>
                       <td style="text-align:right;">0</td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b</div>
+                        
                           <div class="muted">2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC</div>
+                        
                       </td>
                       <td style="text-align:right;">0</td>
                       <td style="text-align:right;">5</td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
           <div class="risk-delta-panel">
             <h4>Regresyonlar</h4>
+            
               <table>
                 <thead>
                   <tr>
@@ -629,87 +929,113 @@
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td><span class="cell-title">A-3-04</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
                       <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
+                  
                     <tr>
                       <td><span class="cell-title">A-4-01</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
                       <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
+                  
                     <tr>
                       <td><span class="cell-title">A-5-06</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
                       <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
+                  
                     <tr>
                       <td><span class="cell-title">A-5-08</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
                       <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
+                  
                     <tr>
                       <td><span class="cell-title">A-6-02</span></td>
                       <td><span class="badge status-missing">Kısmen Karşılandı → Eksik</span></td>
                       <td><span class="muted">20240120T000000Z-5b9f872311d5 → 20240201T120000Z-83e26294b06b (2024-01-20 00:00 UTC → 2024-02-01 12:00 UTC)</span></td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
         </div>
       </div>
+    
+    
   </section><section class="section">
     <h2>Uyum Matrisi</h2>
     <p class="section-lead">
       Hedeflerin kanıt durumunu gösteren kurumsal görünüm. Her satır bir uyumluluk hedefini, sağlanan kanıtları ve açık kalan boşlukları özetler.
     </p>
     <div class="stage-tabs">
+      
         <input
           type="radio"
           id="stage-tab-0"
           name="stage-tabs"
-checked        />
+          checked
+        />
+      
         <input
           type="radio"
           id="stage-tab-1"
           name="stage-tabs"
+          
         />
+      
         <input
           type="radio"
           id="stage-tab-2"
           name="stage-tabs"
+          
         />
+      
         <input
           type="radio"
           id="stage-tab-3"
           name="stage-tabs"
+          
         />
+      
       <div class="stage-tabs-nav">
+        
           <label class="stage-tab-label" for="stage-tab-0">
             <span class="stage-tab-title">Tüm Stajlar</span>
             <span class="stage-tab-summary">0/5 hedef tamamlandı</span>
           </label>
+        
           <label class="stage-tab-label" for="stage-tab-1">
             <span class="stage-tab-title">SOI-1 Planlama</span>
             <span class="stage-tab-summary">0/1 hedef tamamlandı</span>
           </label>
+        
           <label class="stage-tab-label" for="stage-tab-2">
             <span class="stage-tab-title">SOI-2 Geliştirme</span>
             <span class="stage-tab-summary">0/1 hedef tamamlandı</span>
           </label>
+        
           <label class="stage-tab-label" for="stage-tab-3">
             <span class="stage-tab-title">SOI-3 Doğrulama</span>
             <span class="stage-tab-summary">0/3 hedef tamamlandı</span>
           </label>
+        
       </div>
       <div class="stage-panels">
+        
           <div class="stage-panel">
+            
               <table>
                 <thead>
                   <tr>
                     <th>Hedef</th>
                     <th>Durum</th>
+                    <th>Güven</th>
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
@@ -717,216 +1043,465 @@ checked        />
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-3-04</div>
+                        
                           <div class="cell-subtitle">
-A-3 • Doğrulama Stratejisi                          </div>
+                            A-3
+                             • 
+                            Doğrulama Stratejisi
+                          </div>
+                        
+                        
                           <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-covered">Güven 92%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Plan</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Plan</span>
+                          
                             <span class="badge badge-critical">Gözden Geçirme</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">plan:docs/verification-plan.md</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§5.1.1</li>
+                                
+                                  <li class="muted">§5.1.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§2.3</li>
-                                <li class="muted">§3.4</li>
+                                
+                                  <li class="muted">§2.3</li>
+                                
+                                  <li class="muted">§3.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-4-01</div>
+                        
                           <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                          </div>
+                            A-4
+                             • 
+                            Üst Düzey Gereksinimler
+                          </div>
+                        
+                        
                           <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-partial">Güven 68%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
                             <span class="badge badge-soft">İzlenebilirlik</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
                             <span class="badge badge-critical">İzlenebilirlik</span>
+                          
                             <span class="badge badge-critical">Gözden Geçirme</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                               <li class="muted">trace:artifacts/trace-map.csv</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.6</li>
-                                <li class="muted">§6.7</li>
+                                
+                                  <li class="muted">§6.6</li>
+                                
+                                  <li class="muted">§6.7</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.2.1</li>
+                                
+                                  <li class="muted">§6.2.2</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§5.4</li>
+                                
+                                  <li class="muted">§5.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-5-06</div>
+                        
                           <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                          </div>
+                            A-5
+                             • 
+                            Test Stratejisi Uygulandı
+                          </div>
+                        
+                        
                           <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge badge-soft">Güven 41%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Test</span>
+                          
                             <span class="badge badge-soft">İzlenebilirlik</span>
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Test</span>
+                          
                             <span class="badge badge-critical">İzlenebilirlik</span>
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">test:reports/junit.xml</li>
+                            
                               <li class="muted">trace:artifacts/trace-map.csv</li>
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.1</li>
-                                <li class="muted">§7.2</li>
+                                
+                                  <li class="muted">§7.1</li>
+                                
+                                  <li class="muted">§7.2</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.3.1</li>
+                                
+                                  <li class="muted">§6.3.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-5-08</div>
+                        
                           <div class="cell-subtitle">
-A-5 • Yapısal Kapsam—Statement                          </div>
+                            A-5
+                             • 
+                            Yapısal Kapsam—Statement
+                          </div>
+                        
+                        
                           <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-missing">Güven 27%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Satır Kapsamı</span>
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Satır Kapsamı</span>
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">coverage_stmt:reports/coverage-summary.json</li>
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.1</li>
-                                <li class="muted">§7.2</li>
+                                
+                                  <li class="muted">§7.1</li>
+                                
+                                  <li class="muted">§7.2</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.3.1</li>
+                                
+                                  <li class="muted">§6.3.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-6-02</div>
+                        
                           <div class="cell-subtitle">
-A-6 • Değişiklik Kontrolü                          </div>
+                            A-6
+                             • 
+                            Değişiklik Kontrolü
+                          </div>
+                        
+                        
                           <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="muted">—</span>
+                        
+                      </td>
+                      <td>
+                        
                           <span class="muted">Kanıt bulunmuyor</span>
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                          
                             <span class="badge badge-critical">Problem Raporu</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <span class="muted">Referans bulunmuyor</span>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.3</li>
-                                <li class="muted">§7.4</li>
+                                
+                                  <li class="muted">§7.3</li>
+                                
+                                  <li class="muted">§7.4</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.4.1</li>
+                                
+                                  <li class="muted">§6.4.2</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.4</li>
+                                
+                                  <li class="muted">§7.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
+        
           <div class="stage-panel">
+            
               <table>
                 <thead>
                   <tr>
                     <th>Hedef</th>
                     <th>Durum</th>
+                    <th>Güven</th>
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
@@ -934,54 +1509,107 @@ A-6 • Değişiklik Kontrolü                          </div>
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-3-04</div>
+                        
                           <div class="cell-subtitle">
-A-3 • Doğrulama Stratejisi                          </div>
+                            A-3
+                             • 
+                            Doğrulama Stratejisi
+                          </div>
+                        
+                        
                           <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-covered">Güven 92%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Plan</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Plan</span>
+                          
                             <span class="badge badge-critical">Gözden Geçirme</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">plan:docs/verification-plan.md</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§5.1.1</li>
+                                
+                                  <li class="muted">§5.1.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§2.3</li>
-                                <li class="muted">§3.4</li>
+                                
+                                  <li class="muted">§2.3</li>
+                                
+                                  <li class="muted">§3.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
+        
           <div class="stage-panel">
+            
               <table>
                 <thead>
                   <tr>
                     <th>Hedef</th>
                     <th>Durum</th>
+                    <th>Güven</th>
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
@@ -989,56 +1617,111 @@ A-3 • Doğrulama Stratejisi                          </div>
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-4-01</div>
+                        
                           <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                          </div>
+                            A-4
+                             • 
+                            Üst Düzey Gereksinimler
+                          </div>
+                        
+                        
                           <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-partial">Güven 68%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
                             <span class="badge badge-soft">İzlenebilirlik</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
                             <span class="badge badge-critical">İzlenebilirlik</span>
+                          
                             <span class="badge badge-critical">Gözden Geçirme</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                               <li class="muted">trace:artifacts/trace-map.csv</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.6</li>
-                                <li class="muted">§6.7</li>
+                                
+                                  <li class="muted">§6.6</li>
+                                
+                                  <li class="muted">§6.7</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.2.1</li>
+                                
+                                  <li class="muted">§6.2.2</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§5.4</li>
+                                
+                                  <li class="muted">§5.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
+        
           <div class="stage-panel">
+            
               <table>
                 <thead>
                   <tr>
                     <th>Hedef</th>
                     <th>Durum</th>
+                    <th>Güven</th>
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
@@ -1046,133 +1729,283 @@ A-4 • Üst Düzey Gereksinimler                          </div>
                   </tr>
                 </thead>
                 <tbody>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-5-06</div>
+                        
                           <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                          </div>
+                            A-5
+                             • 
+                            Test Stratejisi Uygulandı
+                          </div>
+                        
+                        
                           <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge badge-soft">Güven 41%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Test</span>
+                          
                             <span class="badge badge-soft">İzlenebilirlik</span>
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Test</span>
+                          
                             <span class="badge badge-critical">İzlenebilirlik</span>
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">test:reports/junit.xml</li>
+                            
                               <li class="muted">trace:artifacts/trace-map.csv</li>
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.1</li>
-                                <li class="muted">§7.2</li>
+                                
+                                  <li class="muted">§7.1</li>
+                                
+                                  <li class="muted">§7.2</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.3.1</li>
+                                
+                                  <li class="muted">§6.3.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-5-08</div>
+                        
                           <div class="cell-subtitle">
-A-5 • Yapısal Kapsam—Statement                          </div>
+                            A-5
+                             • 
+                            Yapısal Kapsam—Statement
+                          </div>
+                        
+                        
                           <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="badge status-missing">Güven 27%</span>
+                        
+                      </td>
+                      <td>
+                        
+                          
                             <span class="badge badge-soft">Satır Kapsamı</span>
+                          
                             <span class="badge badge-soft">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Satır Kapsamı</span>
+                          
                             <span class="badge badge-critical">Analiz</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <ul class="list">
+                            
                               <li class="muted">coverage_stmt:reports/coverage-summary.json</li>
+                            
                               <li class="muted">analysis:reports/safety-analysis.pdf</li>
+                            
                           </ul>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.1</li>
-                                <li class="muted">§7.2</li>
+                                
+                                  <li class="muted">§7.1</li>
+                                
+                                  <li class="muted">§7.2</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.3.1</li>
+                                
+                                  <li class="muted">§6.3.3</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§6.3</li>
-                                <li class="muted">§6.5</li>
+                                
+                                  <li class="muted">§6.3</li>
+                                
+                                  <li class="muted">§6.5</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                     <tr>
                       <td>
                         <div class="cell-title">A-6-02</div>
+                        
                           <div class="cell-subtitle">
-A-6 • Değişiklik Kontrolü                          </div>
+                            A-6
+                             • 
+                            Değişiklik Kontrolü
+                          </div>
+                        
+                        
                           <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                        
                       </td>
                       <td><span class="badge status-missing">Eksik</span></td>
                       <td>
+                        
+                          <span class="muted">—</span>
+                        
+                      </td>
+                      <td>
+                        
                           <span class="muted">Kanıt bulunmuyor</span>
+                        
                       </td>
                       <td>
+                        
+                          
                             <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                          
                             <span class="badge badge-critical">Problem Raporu</span>
+                          
+                        
                       </td>
                       <td>
+                        
                           <span class="muted">Referans bulunmuyor</span>
+                        
                       </td>
                       <td>
                         <div class="regulatory-group">
                           <div class="regulatory-item">
                             <div class="muted">AC 20-115D</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.3</li>
-                                <li class="muted">§7.4</li>
+                                
+                                  <li class="muted">§7.3</li>
+                                
+                                  <li class="muted">§7.4</li>
+                                
                               </ul>
+                            
+                          </div>
+                          <div class="regulatory-item">
+                            <div class="muted">AMC 20-152A</div>
+                            
+                              <ul class="list">
+                                
+                                  <li class="muted">§6.4.1</li>
+                                
+                                  <li class="muted">§6.4.2</li>
+                                
+                              </ul>
+                            
                           </div>
                           <div class="regulatory-item">
                             <div class="muted">FAA 8110.49</div>
+                            
                               <ul class="list">
-                                <li class="muted">§7.4</li>
+                                
+                                  <li class="muted">§7.4</li>
+                                
                               </ul>
+                            
                           </div>
                         </div>
                       </td>
                     </tr>
+                  
                 </tbody>
               </table>
+            
           </div>
+        
       </div>
     </div>
   </section>
+  
     <section class="section" aria-labelledby="independence-summary">
       <h2 id="independence-summary">Bağımsızlık Uyarıları</h2>
       <p class="section-lead">Bağımsız doğrulama gerektiren hedeflerde eksik veya bağımsız olmayan kanıtları vurgular. Zorunlu eksikler sertifikasyon için kritik kabul edilir.</p>
@@ -1180,9 +2013,14 @@ A-6 • Değişiklik Kontrolü                          </div>
         <span class="badge status-missing">Bağımsızlık Sağlanamadı</span>
         <span class="muted">Etkilenen hedef: 4 • Kısmi: 0 • Eksik: 4</span>
       </div>
+      
         <div class="independence-badges">
+          
             <span class="badge status-missing">Zorunlu: 4</span>
+          
         </div>
+      
+      
         <table>
           <thead>
             <tr>
@@ -1193,104 +2031,186 @@ A-6 • Değişiklik Kontrolü                          </div>
             </tr>
           </thead>
           <tbody>
+            
               <tr>
                 <td>
                   <div class="cell-title">A-3-04</div>
+                  
                     <div class="cell-subtitle">
-A-3 • Doğrulama Stratejisi                    </div>
+                      A-3
+                       • 
+                      Doğrulama Stratejisi
+                    </div>
+                  
+                  
                     <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                  
                 </td>
                 <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
                 <td><span class="badge status-missing">Eksik</span></td>
                 <td>
+                  
+                    
                       <span class="badge badge-critical">Plan</span>
+                    
+                  
                 </td>
               </tr>
+            
               <tr>
                 <td>
                   <div class="cell-title">A-4-01</div>
+                  
                     <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                    </div>
+                      A-4
+                       • 
+                      Üst Düzey Gereksinimler
+                    </div>
+                  
+                  
                     <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                  
                 </td>
                 <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
                 <td><span class="badge status-missing">Eksik</span></td>
                 <td>
+                  
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
                       <span class="badge badge-critical">İzlenebilirlik</span>
+                    
+                  
                 </td>
               </tr>
+            
               <tr>
                 <td>
                   <div class="cell-title">A-5-06</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                    </div>
+                      A-5
+                       • 
+                      Test Stratejisi Uygulandı
+                    </div>
+                  
+                  
                     <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                  
                 </td>
                 <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
                 <td><span class="badge status-missing">Eksik</span></td>
                 <td>
+                  
+                    
                       <span class="badge badge-critical">Test</span>
+                    
                       <span class="badge badge-critical">İzlenebilirlik</span>
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
+                  
                 </td>
               </tr>
+            
               <tr>
                 <td>
                   <div class="cell-title">A-5-08</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Yapısal Kapsam—Statement                    </div>
+                      A-5
+                       • 
+                      Yapısal Kapsam—Statement
+                    </div>
+                  
+                  
                     <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                  
                 </td>
                 <td><span class="badge status-missing">Zorunlu Bağımsızlık</span></td>
                 <td><span class="badge status-missing">Eksik</span></td>
                 <td>
+                  
+                    
                       <span class="badge badge-critical">Satır Kapsamı</span>
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
+                  
                 </td>
               </tr>
+            
           </tbody>
         </table>
+      
     </section>
+  
+  
     <section class="section">
       <h2>Kalite Bulguları</h2>
       <p class="section-lead">
         Gereksinim durumu, test sonuçları ve kapsam verileri arasındaki tutarsızlıkları vurgular. Bulgular düzeltici eylem gerektiren alanları önceliklendirmenizi sağlar.
       </p>
       <ul class="list">
+        
           <li>
             <div>
               <span class="badge status-missing">Kritik</span>
               <span class="cell-title">REQ-AUTH-2 doğrulandı olarak işaretli ancak başarısız testler mevcut.</span>
             </div>
+            
               <div class="muted">Gereksinim: REQ-AUTH-2</div>
+            
+            
               <div class="muted">İlgili Testler: TC-LOGIN-2</div>
+            
+            
               <div class="cell-description">Başarısız testleri analiz edin ve gereksinim doğrulama kanıtını güncelleyin.</div>
+            
           </li>
+        
           <li>
             <div>
               <span class="badge status-missing">Kritik</span>
               <span class="cell-title">REQ-AUTH-2 için kapsama verisi bulunamadı.</span>
             </div>
+            
               <div class="muted">Gereksinim: REQ-AUTH-2</div>
+            
+            
+            
               <div class="cell-description">Kod izlerini ve kapsam raporlarını gereksinime bağlayın veya durumu yeniden değerlendirin.</div>
+            
           </li>
+        
           <li>
             <div>
               <span class="badge status-missing">Kritik</span>
               <span class="cell-title">Polyspace bulgusu FND-SEC-001 (error) açık durumda: Null pointer analizi başarısız oldu.</span>
             </div>
+            
+            
+            
               <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+            
           </li>
+        
           <li>
             <div>
               <span class="badge status-partial">Uyarı</span>
               <span class="cell-title">VectorCAST bulgusu FND-SEC-002 (warn) açık durumda: Zamanlama toleransı azalıyor.</span>
             </div>
+            
+            
+            
               <div class="cell-description">Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin.</div>
+            
           </li>
+        
       </ul>
     </section>
+  
+  
     <section class="section">
       <h2>Gereksinim Kapsamı</h2>
       <p class="section-lead">
@@ -1305,6 +2225,7 @@ A-5 • Yapısal Kapsam—Statement                    </div>
           </tr>
         </thead>
         <tbody>
+          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-1</div>
@@ -1312,15 +2233,23 @@ A-5 • Yapısal Kapsam—Statement                    </div>
               </td>
               <td>
                 <span class="badge status-missing">Kapsam Yok</span>
+                
                   <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
+                
               </td>
               <td>
+                
                   <ul class="list">
+                    
                       <li><code class="code-pill">src/auth/login.ts</code></li>
+                    
                       <li><code class="code-pill">src/security/audit.ts</code></li>
+                    
                   </ul>
+                
               </td>
             </tr>
+          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-2</div>
@@ -1328,15 +2257,23 @@ A-5 • Yapısal Kapsam—Statement                    </div>
               </td>
               <td>
                 <span class="badge status-missing">Kapsam Yok</span>
+                
                   <div class="muted">Satır: 68.75% | Dallanma: 64.29% | Fonksiyon: 66.67% | MC/DC: 62.5%</div>
+                
               </td>
               <td>
+                
                   <ul class="list">
+                    
                       <li><code class="code-pill">src/auth/login.ts</code></li>
+                    
                       <li><code class="code-pill">src/security/audit.ts</code></li>
+                    
                   </ul>
+                
               </td>
             </tr>
+          
             <tr>
               <td>
                 <div class="cell-title">REQ-AUTH-3</div>
@@ -1344,19 +2281,276 @@ A-5 • Yapısal Kapsam—Statement                    </div>
               </td>
               <td>
                 <span class="badge status-missing">Kapsam Yok</span>
+                
                   <div class="muted">Satır: 50% | Dallanma: 50% | Fonksiyon: 50% | MC/DC: 50%</div>
+                
               </td>
               <td>
+                
                   <ul class="list">
+                    
                       <li><code class="code-pill">src/security/audit.ts</code></li>
+                    
                       <li><code class="code-pill">src/security/new-audit.ts</code></li>
+                    
                   </ul>
+                
               </td>
             </tr>
+          
         </tbody>
       </table>
     </section>
-<section class="section" aria-labelledby="change-impact-heading">
+  <section class="section" aria-labelledby="stale-heatmap-heading">
+    <h2 id="stale-heatmap-heading">Kanıt Tazelik Isı Haritası</h2>
+    <p class="section-lead">DO-178C aşamalarına göre kanıt yaş dağılımını gösterir.</p>
+    <div class="heatmap-legend">
+      <span>Yeni</span>
+      <div class="heatmap-gradient" role="presentation" aria-hidden="true">
+        <svg viewBox="0 0 100 10">
+          <defs>
+            <linearGradient id="stale-evidence-legend" x1="0%" x2="100%" y1="0%" y2="0%">
+              <stop offset="0%" stop-color="#dbeafe" />
+              <stop offset="100%" stop-color="#1d4ed8" />
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width="100" height="10" fill="url(#stale-evidence-legend)" rx="5" />
+        </svg>
+      </div>
+      <span>Güncelliği Yitirmiş</span>
+    </div>
+    <table class="heatmap-table" aria-describedby="stale-heatmap-heading">
+      <thead>
+        <tr>
+          <th scope="col">SOI Aşaması</th>
+          <th scope="col">0-30 gün</th><th scope="col">31-90 gün</th><th scope="col">91-180 gün</th><th scope="col">181-365 gün</th><th scope="col">366+ gün</th><th scope="col">Yaş bilinmiyor</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+        <th scope="row">
+          <div class="cell-title">SOI-1 Planlama</div>
+          <div class="muted">2 bulgu</div>
+        </th>
+        <td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-1 Planlama • 0-30 gün"
+              aria-label="SOI-1 Planlama • 0-30 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-1 Planlama • 31-90 gün"
+              aria-label="SOI-1 Planlama • 31-90 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-1 Planlama • 91-180 gün"
+              aria-label="SOI-1 Planlama • 91-180 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="false"
+              style="--intensity: 0.50"
+              title="SOI-1 Planlama • 181-365 gün"
+              aria-label="SOI-1 Planlama • 181-365 gün: 1 bulgu"
+            >
+              <strong>1</strong>
+              <div class="muted">A-3-04</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-1 Planlama • 366+ gün"
+              aria-label="SOI-1 Planlama • 366+ gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="false"
+              style="--intensity: 0.50"
+              title="SOI-1 Planlama • Yaş bilinmiyor"
+              aria-label="SOI-1 Planlama • Yaş bilinmiyor: 1 bulgu"
+            >
+              <strong>1</strong>
+              <div class="muted">A-3-04</div>
+            </div>
+          </td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">SOI-3 Doğrulama</div>
+          <div class="muted">1 bulgu</div>
+        </th>
+        <td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-3 Doğrulama • 0-30 gün"
+              aria-label="SOI-3 Doğrulama • 0-30 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-3 Doğrulama • 31-90 gün"
+              aria-label="SOI-3 Doğrulama • 31-90 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-3 Doğrulama • 91-180 gün"
+              aria-label="SOI-3 Doğrulama • 91-180 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="false"
+              style="--intensity: 0.50"
+              title="SOI-3 Doğrulama • 181-365 gün"
+              aria-label="SOI-3 Doğrulama • 181-365 gün: 1 bulgu"
+            >
+              <strong>1</strong>
+              <div class="muted">A-5-06</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-3 Doğrulama • 366+ gün"
+              aria-label="SOI-3 Doğrulama • 366+ gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="SOI-3 Doğrulama • Yaş bilinmiyor"
+              aria-label="SOI-3 Doğrulama • Yaş bilinmiyor: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td>
+      </tr><tr>
+        <th scope="row">
+          <div class="cell-title">Bilinmeyen Aşama</div>
+          <div class="muted">2 bulgu</div>
+        </th>
+        <td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="Bilinmeyen Aşama • 0-30 gün"
+              aria-label="Bilinmeyen Aşama • 0-30 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="Bilinmeyen Aşama • 31-90 gün"
+              aria-label="Bilinmeyen Aşama • 31-90 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="false"
+              style="--intensity: 1.00"
+              title="Bilinmeyen Aşama • 91-180 gün"
+              aria-label="Bilinmeyen Aşama • 91-180 gün: 2 bulgu"
+            >
+              <strong>2</strong>
+              <div class="muted">A-1-01, A-2-05</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="Bilinmeyen Aşama • 181-365 gün"
+              aria-label="Bilinmeyen Aşama • 181-365 gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="Bilinmeyen Aşama • 366+ gün"
+              aria-label="Bilinmeyen Aşama • 366+ gün: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td><td>
+            <div
+              class="heatmap-cell"
+              data-empty="true"
+              style="--intensity: 0.00"
+              title="Bilinmeyen Aşama • Yaş bilinmiyor"
+              aria-label="Bilinmeyen Aşama • Yaş bilinmiyor: 0 bulgu"
+            >
+              <strong>0</strong>
+              <div class="muted">—</div>
+            </div>
+          </td>
+      </tr>
+      </tbody>
+    </table>
+    <div class="heatmap-footnote">
+      <span>Toplam bulgu: <strong>5</strong></span>
+      <span>Son kanıt güncellemesi: <strong>2023-12-28 10:00 UTC</strong></span>
+    </div>
+  </section><section class="section" aria-labelledby="change-impact-heading">
     <h2 id="change-impact-heading">Değişiklik Etki Analizi</h2>
     <p class="section-lead">Baseline karşılaştırmasına göre en yüksek riskli iz öğeleri listelenmiştir.</p>
     <div class="risk-breakdown-stats" role="list">
@@ -1550,6 +2744,7 @@ A-5 • Yapısal Kapsam—Statement                    </div>
       Workspace belgelerindeki signoff istekleri ve imza onayları denetim izi için tutulur.
     </p>
     <div class="timeline-grid">
+      
         <article class="timeline-card">
           <header>
             <div class="cell-title">DOC-SEC-PLAN</div>
@@ -1560,20 +2755,28 @@ A-5 • Yapısal Kapsam—Statement                    </div>
             <div class="muted">Revizyon Hash: a9f4c2d1e3b56789</div>
           </div>
           <ul class="list timeline-events">
+            
               <li>
                 <div class="cell-title">İstek Gönderildi</div>
                 <div class="muted">2024-01-15 09:45 UTC</div>
                 <div class="muted">Aktör: auditor-istanbul</div>
+                
                   <div class="cell-description">Onay talep edilen kişi: lead-reviewer</div>
+                
               </li>
+            
               <li>
                 <div class="cell-title">İmza Doğrulandı</div>
                 <div class="muted">2024-01-16 13:20 UTC</div>
                 <div class="muted">Aktör: lead-reviewer</div>
+                
                   <div class="cell-description">Anahtar: …ment123456== • İmza: SIG-APPROVED…</div>
+                
               </li>
+            
           </ul>
         </article>
+      
         <article class="timeline-card">
           <header>
             <div class="cell-title">DOC-SEC-REPORT</div>
@@ -1584,14 +2787,19 @@ A-5 • Yapısal Kapsam—Statement                    </div>
             <div class="muted">Revizyon Hash: b1e2c3d4f5a67890</div>
           </div>
           <ul class="list timeline-events">
+            
               <li>
                 <div class="cell-title">İstek Gönderildi</div>
                 <div class="muted">2024-01-20 10:15 UTC</div>
                 <div class="muted">Aktör: auditor-istanbul</div>
+                
                   <div class="cell-description">Onay talep edilen kişi: compliance-owner</div>
+                
               </li>
+            
           </ul>
         </article>
+      
     </div>
   </section>
     </main>

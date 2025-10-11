@@ -121,6 +121,10 @@ interface ComplianceMatrixRow {
   status: ComplianceSnapshot['objectives'][number]['status'];
   statusLabel: string;
   statusClass: string;
+  confidence?: number;
+  confidenceLabel?: string;
+  confidenceBadgeLabel?: string;
+  confidenceClass?: string;
   table?: string;
   name?: string;
   desc?: string;
@@ -152,6 +156,7 @@ interface ComplianceMatrixCsvRow {
   stage?: SoiStage;
   stageLabel?: string;
   status: string;
+  confidence?: string;
   satisfiedArtifacts: string[];
   missingArtifacts: string[];
   evidenceRefs: string[];
@@ -858,11 +863,48 @@ const suggestionTypeLabels: Record<TraceSuggestion['type'], string> = {
   code: 'Kod',
 };
 
+const resolveObjectiveConfidenceClass = (value: number): string => {
+  if (value >= 0.85) {
+    return 'status-covered';
+  }
+  if (value >= 0.6) {
+    return 'status-partial';
+  }
+  if (value >= 0.35) {
+    return 'badge-soft';
+  }
+  return 'status-missing';
+};
+
+const formatObjectiveConfidence = (
+  value: number | undefined,
+):
+  | {
+      value: number;
+      label: string;
+      badgeLabel: string;
+      className: string;
+    }
+  | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.min(Math.max(value, 0), 1);
+  const percentage = Math.round(normalized * 100);
+  return {
+    value: normalized,
+    label: `${percentage}%`,
+    badgeLabel: `Güven ${percentage}%`,
+    className: resolveObjectiveConfidenceClass(normalized),
+  };
+};
+
 const complianceCsvHeaders = [
   'Objective ID',
   'Table',
   'Stage',
   'Status',
+  'Confidence',
   'Satisfied Artifacts',
   'Missing Artifacts',
   'Evidence References',
@@ -2480,6 +2522,7 @@ const complianceTemplate = nunjucks.compile(
                   <tr>
                     <th>Hedef</th>
                     <th>Durum</th>
+                    <th>Güven</th>
                     <th>Sağlanan Kanıtlar</th>
                     <th>Eksik Kanıtlar</th>
                     <th>Kanıt Referansları</th>
@@ -2503,6 +2546,13 @@ const complianceTemplate = nunjucks.compile(
                         {% endif %}
                       </td>
                       <td><span class="badge {{ row.statusClass }}">{{ row.statusLabel }}</span></td>
+                      <td>
+                        {% if row.confidenceBadgeLabel %}
+                          <span class="badge {{ row.confidenceClass }}">{{ row.confidenceBadgeLabel }}</span>
+                        {% else %}
+                          <span class="muted">—</span>
+                        {% endif %}
+                      </td>
                       <td>
                         {% if row.satisfiedArtifacts.length %}
                           {% for artifact in row.satisfiedArtifacts %}
@@ -3599,6 +3649,7 @@ const buildComplianceMatrixView = (
 
   const objectives: ComplianceMatrixRow[] = snapshot.objectives.map((objective) => {
     const metadata = objectiveLookup.get(objective.objectiveId);
+    const confidenceMeta = formatObjectiveConfidence((objective as { confidence?: number }).confidence);
     return {
       id: objective.objectiveId,
       status: objective.status,
@@ -3609,6 +3660,14 @@ const buildComplianceMatrixView = (
           : objective.status === 'partial'
             ? 'status-partial'
             : 'status-missing',
+      ...(confidenceMeta
+        ? {
+            confidence: confidenceMeta.value,
+            confidenceLabel: confidenceMeta.label,
+            confidenceBadgeLabel: confidenceMeta.badgeLabel,
+            confidenceClass: confidenceMeta.className,
+          }
+        : {}),
       table: metadata?.table,
       name: metadata?.name,
       desc: metadata?.desc,
@@ -3720,6 +3779,7 @@ const createComplianceMatrixCsv = (
     stage: row.stage,
     stageLabel: row.stage ? stageLabels[row.stage] ?? row.stage : undefined,
     status: row.statusLabel,
+    confidence: row.confidenceLabel,
     satisfiedArtifacts: [...row.satisfiedArtifacts],
     missingArtifacts: [...row.missingArtifacts],
     evidenceRefs: [...row.evidenceRefs],
@@ -3732,6 +3792,7 @@ const createComplianceMatrixCsv = (
     row.table,
     row.stage ?? '',
     row.status,
+    row.confidence ?? '',
     joinValues(row.satisfiedArtifacts),
     joinValues(row.missingArtifacts),
     joinValues(row.evidenceRefs),
@@ -3878,6 +3939,9 @@ const buildComplianceMatrixJson = (
     table: row.table,
     name: row.name,
     desc: row.desc,
+    ...(row.confidence !== undefined
+      ? { confidence: row.confidence, confidenceLabel: row.confidenceLabel }
+      : {}),
     satisfiedArtifacts: [...row.satisfiedArtifacts],
     missingArtifacts: [...row.missingArtifacts],
     evidenceRefs: [...row.evidenceRefs],

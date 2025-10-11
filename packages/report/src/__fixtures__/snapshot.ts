@@ -384,6 +384,20 @@ export const createReportFixture = (): ReportFixture => {
       changeImpactBaseline: baselineGraph,
     },
   );
+  const objectiveConfidence: Record<string, number> = {
+    'A-3-04': 0.92,
+    'A-4-01': 0.68,
+    'A-5-06': 0.41,
+    'A-5-08': 0.27,
+  };
+  (snapshot.objectives as Array<
+    (typeof snapshot.objectives)[number] & { confidence?: number }
+  >).forEach((objective) => {
+    const value = objectiveConfidence[objective.objectiveId];
+    if (value !== undefined) {
+      objective.confidence = value;
+    }
+  });
   const engine = new TraceEngine(bundle);
   const traces = requirements.map((requirement) => engine.getRequirementTrace(requirement.id));
   const signoffs = signoffTimelineFixture();

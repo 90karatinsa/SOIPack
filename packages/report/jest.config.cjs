@@ -13,8 +13,8 @@ module.exports = {
     '^html-validator$': '<rootDir>/../../test/shims/html-validator.ts',
     '^node-forge$': '<rootDir>/../../test/shims/node-forge.ts',
     '^fast-xml-parser$': '<rootDir>/../../test/shims/fast-xml-parser.ts',
-    '^jszip$': '<rootDir>/../../test/shims/jszip.ts',
-    '^docx$': '<rootDir>/../../test/shims/docx.ts'
+    '^jszip$': '<rootDir>/node_modules/jszip/dist/jszip.js',
+    '^docx$': '<rootDir>/node_modules/docx/build/index.cjs'
   },
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.test.json' }]

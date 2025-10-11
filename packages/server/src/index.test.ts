@@ -3650,6 +3650,362 @@ describe('@soipack/server REST API', () => {
     }
   });
 
+  describe('GET /v1/compliance', () => {
+    let complianceTenantCounter = 0;
+
+    const nextComplianceTenantId = (): string => {
+      complianceTenantCounter += 1;
+      return `tenant-compliance-${complianceTenantCounter}`;
+    };
+
+    type ComplianceMatrixInput = {
+      project?: string;
+      level?: string;
+      generatedAt?: string;
+      requirements: ComplianceRequirementInput[];
+      summary: { total: number; covered: number; partial: number; missing: number };
+    };
+
+    const postComplianceRecord = async ({
+      tenant,
+      token: authToken,
+      matrix,
+      coverage,
+      metadata,
+    }: {
+      tenant: string;
+      token: string;
+      matrix: ComplianceMatrixInput;
+      coverage: Partial<Record<'statements' | 'branches' | 'functions' | 'lines', number>>;
+      metadata?: Record<string, unknown>;
+    }): Promise<request.Response> => {
+      const canonicalPayload = buildCanonicalCompliancePayload(matrix, coverage, metadata);
+      const complianceHash = createHash('sha256')
+        .update(JSON.stringify(canonicalPayload))
+        .digest('hex');
+
+      return request(app)
+        .post('/v1/compliance')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ sha256: complianceHash, matrix, coverage, metadata })
+        .expect(201);
+    };
+
+    it('exposes objective confidence values for admin callers', async () => {
+      const tenant = nextComplianceTenantId();
+      const adminToken = await createAccessToken({ tenant, roles: ['admin'], subject: `${tenant}-admin` });
+
+      const matrix = {
+        project: 'Confidence Admin Demo',
+        level: 'B',
+        generatedAt: '2024-10-12T10:00:00Z',
+        requirements: [
+          { id: 'OBJ-1', status: 'covered' as const, evidenceIds: [] },
+        ],
+        summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      } satisfies ComplianceMatrixInput;
+      const coverage = { statements: 87.654 };
+      const metadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 1, partial: 0, missing: 0 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-1',
+              status: 'covered',
+              independence: 'required',
+              missingArtifacts: [],
+              confidence: 0.6789,
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata });
+
+      const response = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(response.body.redacted).toBe(false);
+      expect(Array.isArray(response.body.items)).toBe(true);
+      expect(response.body.items).toHaveLength(1);
+      const [record] = response.body.items as Array<{
+        matrix: { requirements: Array<{ id: string }> };
+        metadata: { independenceSummary?: { objectives: Array<{ confidence?: number }> } };
+      }>;
+      expect(record.matrix.requirements[0].id).toBe('OBJ-1');
+      const independence = record.metadata.independenceSummary;
+      expect(independence).toBeDefined();
+      const [objective] = independence?.objectives ?? [];
+      expect(typeof objective.confidence).toBe('number');
+      expect(objective.confidence).toBeGreaterThanOrEqual(0);
+      expect(objective.confidence).toBeLessThanOrEqual(1);
+      expect(objective.confidence).toBeCloseTo(0.679, 3);
+    });
+
+    it('redacts confidence values for viewer callers', async () => {
+      const tenant = nextComplianceTenantId();
+      const adminToken = await createAccessToken({ tenant, roles: ['admin'], subject: `${tenant}-admin` });
+      const viewerToken = await createAccessToken({
+        tenant,
+        roles: ['reader'],
+        subject: `${tenant}-viewer`,
+        scope: requiredScope,
+      });
+
+      const matrix = {
+        project: 'Confidence Viewer Demo',
+        level: 'C',
+        generatedAt: '2024-10-13T11:00:00Z',
+        requirements: [
+          { id: 'OBJ-RED', status: 'partial' as const, evidenceIds: [] },
+        ],
+        summary: { total: 1, covered: 0, partial: 1, missing: 0 },
+      } satisfies ComplianceMatrixInput;
+      const coverage = { branches: 45.123 };
+      const metadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 0, partial: 1, missing: 0 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-RED',
+              status: 'partial',
+              independence: 'recommended',
+              missingArtifacts: ['analysis'],
+              confidence: 0.42,
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata });
+
+      const response = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${viewerToken}`)
+        .expect(200);
+
+      expect(response.body.redacted).toBe(true);
+      expect(response.body.items).toHaveLength(1);
+      const [record] = response.body.items as Array<{
+        metadata: { independenceSummary?: { objectives: Array<Record<string, unknown>> } };
+      }>;
+      const objectives = record.metadata.independenceSummary?.objectives ?? [];
+      expect(objectives).toHaveLength(1);
+      expect('confidence' in objectives[0]).toBe(false);
+    });
+
+    it('honors caching headers and updates the ETag when confidence changes', async () => {
+      const tenant = nextComplianceTenantId();
+      const adminToken = await createAccessToken({ tenant, roles: ['admin'], subject: `${tenant}-admin` });
+
+      const matrix = {
+        project: 'Confidence Cache Demo',
+        level: 'A',
+        generatedAt: '2024-10-14T12:00:00Z',
+        requirements: [
+          { id: 'OBJ-CACHE', status: 'covered' as const, evidenceIds: [] },
+        ],
+        summary: { total: 1, covered: 1, partial: 0, missing: 0 },
+      } satisfies ComplianceMatrixInput;
+      const coverage = { lines: 92.1 };
+      const firstMetadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 1, partial: 0, missing: 0 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-CACHE',
+              status: 'covered',
+              independence: 'none',
+              missingArtifacts: [],
+              confidence: 0.3,
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata: firstMetadata });
+
+      const initialResponse = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(initialResponse.headers['cache-control']).toBe('private, max-age=60');
+      const etag = initialResponse.headers.etag as string;
+      expect(typeof etag).toBe('string');
+
+      const cachedResponse = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('If-None-Match', etag)
+        .expect(304);
+
+      expect(cachedResponse.headers['cache-control']).toBe('private, max-age=60');
+      expect(cachedResponse.headers.etag).toBe(etag);
+      expect(cachedResponse.headers['last-modified']).toBeDefined();
+
+      const updatedMetadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 1, partial: 0, missing: 0 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-CACHE',
+              status: 'covered',
+              independence: 'none',
+              missingArtifacts: [],
+              confidence: 0.41,
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata: updatedMetadata });
+
+      const refreshedResponse = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('If-None-Match', etag)
+        .expect(200);
+
+      const refreshedEtag = refreshedResponse.headers.etag as string;
+      expect(refreshedEtag).toBeDefined();
+      expect(refreshedEtag).not.toBe(etag);
+
+      const confidences = (refreshedResponse.body.items as Array<{
+        metadata: { independenceSummary?: { objectives: Array<{ confidence?: number }> } };
+      }>).flatMap((item) =>
+        (item.metadata.independenceSummary?.objectives ?? [])
+          .map((objective) => objective.confidence)
+          .filter((value): value is number => typeof value === 'number'),
+      );
+      expect(confidences).toContain(0.41);
+    });
+
+    it('allows operator callers to view confidence values', async () => {
+      const tenant = nextComplianceTenantId();
+      const adminToken = await createAccessToken({ tenant, roles: ['admin'], subject: `${tenant}-admin` });
+      const operatorToken = await createAccessToken({
+        tenant,
+        roles: ['operator'],
+        subject: `${tenant}-operator`,
+        scope: requiredScope,
+      });
+
+      const matrix = {
+        project: 'Confidence Operator Demo',
+        level: 'D',
+        generatedAt: '2024-10-15T13:00:00Z',
+        requirements: [
+          { id: 'OBJ-OPER', status: 'missing' as const, evidenceIds: [] },
+        ],
+        summary: { total: 1, covered: 0, partial: 0, missing: 1 },
+      } satisfies ComplianceMatrixInput;
+      const coverage = { functions: 12.34 };
+      const metadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 0, partial: 0, missing: 1 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-OPER',
+              status: 'missing',
+              independence: 'required',
+              missingArtifacts: ['evidence'],
+              confidence: 0.12,
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata });
+
+      const response = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${operatorToken}`)
+        .expect(200);
+
+      expect(response.body.redacted).toBe(false);
+      const objectives = (response.body.items[0]?.metadata?.independenceSummary?.objectives ?? []) as Array<{
+        confidence?: number;
+      }>;
+      expect(objectives).toHaveLength(1);
+      expect(objectives[0].confidence).toBe(0.12);
+    });
+
+    it('rejects callers that lack the required scope', async () => {
+      const tenant = nextComplianceTenantId();
+      const unauthorizedToken = await createAccessToken({
+        tenant,
+        roles: [],
+        subject: `${tenant}-unauthorized`,
+        scope: 'other.scope',
+      });
+
+      const response = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${unauthorizedToken}`)
+        .expect(403);
+
+      expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    });
+
+    it('normalizes out-of-range or invalid confidence values without failing', async () => {
+      const tenant = nextComplianceTenantId();
+      const adminToken = await createAccessToken({ tenant, roles: ['admin'], subject: `${tenant}-admin` });
+
+      const matrix = {
+        project: 'Confidence Resilience Demo',
+        level: 'E',
+        generatedAt: '2024-10-16T14:00:00Z',
+        requirements: [
+          { id: 'OBJ-HIGH', status: 'partial' as const, evidenceIds: [] },
+          { id: 'OBJ-BAD', status: 'covered' as const, evidenceIds: [] },
+        ],
+        summary: { total: 2, covered: 1, partial: 1, missing: 0 },
+      } satisfies ComplianceMatrixInput;
+      const coverage = { statements: 55.5 };
+      const metadata: Record<string, unknown> = {
+        independenceSummary: {
+          totals: { covered: 1, partial: 1, missing: 0 },
+          objectives: [
+            {
+              objectiveId: 'OBJ-HIGH',
+              status: 'partial',
+              independence: 'recommended',
+              missingArtifacts: ['analysis'],
+              confidence: 1.7,
+            },
+            {
+              objectiveId: 'OBJ-BAD',
+              status: 'covered',
+              independence: 'none',
+              missingArtifacts: [],
+              confidence: 'not-a-number',
+            },
+          ],
+        },
+      };
+
+      await postComplianceRecord({ tenant, token: adminToken, matrix, coverage, metadata });
+
+      const response = await request(app)
+        .get('/v1/compliance')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(response.body.redacted).toBe(false);
+      const objectives = (response.body.items[0]?.metadata?.independenceSummary?.objectives ?? []) as Array<{
+        objectiveId: string;
+        confidence?: number;
+      }>;
+      const high = objectives.find((objective) => objective.objectiveId === 'OBJ-HIGH');
+      const bad = objectives.find((objective) => objective.objectiveId === 'OBJ-BAD');
+      expect(high?.confidence).toBe(1);
+      expect(bad?.confidence).toBeUndefined();
+    });
+  });
+
   it('rejects evidence uploads after configuration freeze', async () => {
     const buffer = Buffer.from('freeze evidence', 'utf8');
     const sha = createHash('sha256').update(buffer).digest('hex');

@@ -128,6 +128,8 @@ describe('@soipack/report', () => {
     expect(result.html).toContain('Hazırlık Skoru');
     expect(result.html).toContain('Kanıt Tazelik Isı Haritası');
     expect(result.html).toContain('TC-AUDIT-NEW');
+    expect(result.html).toContain('Güven');
+    expect(result.html).toContain('Güven 92%');
     expect(result.html).toContain(fixture.programName);
     expect(result.html).toContain(fixture.certificationLevel);
     expect(result.html).toContain(fixture.projectVersion);
@@ -146,6 +148,14 @@ describe('@soipack/report', () => {
     expect(result.json.readiness?.breakdown).toHaveLength(4);
     expect(result.json.readiness?.breakdown[0]).toEqual(
       expect.objectContaining({ component: 'objectives', score: 82.1, contribution: 32.8, weight: 0.4 }),
+    );
+    const confidenceObjective = result.json.objectives.find((objective) => objective.id === 'A-3-04');
+    expect(confidenceObjective).toEqual(
+      expect.objectContaining({ confidence: 0.92, confidenceLabel: '92%' }),
+    );
+    const lowConfidenceObjective = result.json.objectives.find((objective) => objective.id === 'A-5-08');
+    expect(lowConfidenceObjective).toEqual(
+      expect.objectContaining({ confidence: 0.27, confidenceLabel: '27%' }),
     );
 
     maybeUpdateGolden('compliance-matrix.csv', result.csv.csv);
@@ -173,10 +183,15 @@ describe('@soipack/report', () => {
       'Table',
       'Stage',
       'Status',
+      'Confidence',
       'Satisfied Artifacts',
       'Missing Artifacts',
       'Evidence References',
     ]);
+    const highConfidenceRow = result.csv.records.find((record) => record[0] === 'A-3-04');
+    expect(highConfidenceRow?.[4]).toBe('92%');
+    const lowConfidenceRow = result.csv.records.find((record) => record[0] === 'A-5-08');
+    expect(lowConfidenceRow?.[4]).toBe('27%');
     const coveredRow = result.csv.rows.find((row) => row.objectiveId === 'A-5-06');
     expect(coveredRow).toEqual(
       expect.objectContaining({
