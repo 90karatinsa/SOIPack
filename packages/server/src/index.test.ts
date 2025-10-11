@@ -108,6 +108,7 @@ import {
   __clearRiskProfileCacheForTesting,
   __clearBacklogSeverityCacheForTesting,
   __clearStageRiskForecastCacheForTesting,
+  __clearServiceMetadataCacheForTesting,
   __getStorageProviderForTesting,
   type ServerConfig,
 } from './index';
@@ -985,6 +986,14 @@ describe('@soipack/server REST API', () => {
   let cmsBundlePath: string;
   let licenseHeader: string;
   let licenseExpiresAt: Date | undefined;
+  let licenseHash: string;
+  let licensePayloadData: {
+    licenseId: string;
+    issuedTo: string;
+    issuedAt: string;
+    expiresAt?: string;
+    features?: string[];
+  };
   let privateKey: KeyLike;
   let jwks: JSONWebKeySet;
   let baseConfig: ServerConfig;
@@ -2244,6 +2253,7 @@ describe('@soipack/server REST API', () => {
     __clearRiskProfileCacheForTesting();
     __clearBacklogSeverityCacheForTesting();
     __clearStageRiskForecastCacheForTesting();
+    __clearServiceMetadataCacheForTesting();
   });
 
   beforeAll(async () => {
@@ -2260,10 +2270,20 @@ describe('@soipack/server REST API', () => {
     const licenseContent = await fsPromises.readFile(demoLicensePath, 'utf8');
     licenseHeader = Buffer.from(licenseContent, 'utf8').toString('base64');
     const parsedLicense = JSON.parse(licenseContent) as { payload: string };
-    const decodedPayload = JSON.parse(
+    const decodedLicensePayload = JSON.parse(
       Buffer.from(parsedLicense.payload, 'base64').toString('utf8'),
-    ) as { expiresAt?: string };
-    licenseExpiresAt = decodedPayload.expiresAt ? new Date(decodedPayload.expiresAt) : undefined;
+    ) as {
+      licenseId: string;
+      issuedTo: string;
+      issuedAt: string;
+      expiresAt?: string;
+      features?: string[];
+    };
+    licensePayloadData = decodedLicensePayload;
+    licenseExpiresAt = decodedLicensePayload.expiresAt
+      ? new Date(decodedLicensePayload.expiresAt)
+      : undefined;
+    licenseHash = createHash('sha256').update(licenseContent, 'utf8').digest('hex');
 
     const { publicKey, privateKey: generatedPrivateKey } = await generateKeyPair('RS256');
     privateKey = generatedPrivateKey;
@@ -2407,6 +2427,738 @@ describe('@soipack/server REST API', () => {
     } finally {
       delete process.env.SOIPACK_API_KEYS;
     }
+  });
+
+  describe('service metadata and license endpoints', () => {
+    let createdPackageDirs: string[];
+
+    const writePackArtifacts = async ({
+      jobId,
+      createdAt = new Date().toISOString(),
+      stage,
+      includeSbom = true,
+      includeAttestation = true,
+    }: {
+      jobId: string;
+      createdAt?: string;
+      stage?: string;
+      includeSbom?: boolean;
+      includeAttestation?: boolean;
+    }): Promise<{
+      jobId: string;
+      stage?: string;
+      sbomSha256?: string;
+      attestation?: {
+        digest: string;
+        statementDigest: string;
+        signature: { algorithm: string; publicKeySha256: string; keyId: string };
+      };
+    }> => {
+      const storage = __getStorageProviderForTesting(app);
+      const directories = storage.directories;
+      const baseDir = stage
+        ? path.join(directories.packages, tenantId, stage)
+        : path.join(directories.packages, tenantId);
+      const packageDir = path.join(baseDir, jobId);
+      await storage.ensureDirectory(packageDir);
+      createdPackageDirs.push(packageDir);
+
+      const manifestPath = path.join(packageDir, 'manifest.json');
+      await fsPromises.writeFile(manifestPath, JSON.stringify({ id: jobId }), 'utf8');
+      const archivePath = path.join(packageDir, 'package.zip');
+      await fsPromises.writeFile(archivePath, 'archive', 'utf8');
+
+      let sbomPath: string | undefined;
+      let sbomSha256: string | undefined;
+      if (includeSbom) {
+        sbomPath = path.join(packageDir, 'sbom.json');
+        const sbomContent = JSON.stringify({ components: [] });
+        await fsPromises.writeFile(sbomPath, sbomContent, 'utf8');
+        sbomSha256 = createHash('sha256').update(sbomContent, 'utf8').digest('hex');
+      }
+
+      let attestationMeta:
+        | {
+            path: string;
+            digest: string;
+            statementDigest: string;
+            signature: { algorithm: string; publicKeySha256: string; keyId: string };
+          }
+        | undefined;
+      if (includeAttestation) {
+        const attestationPath = path.join(packageDir, 'attestation.json');
+        const statementDigest = 'e'.repeat(64);
+        const attestationContent = JSON.stringify({
+          statementDigest: { digest: statementDigest },
+          predicateType: 'https://slsa.dev/provenance/v1',
+        });
+        await fsPromises.writeFile(attestationPath, attestationContent, 'utf8');
+        const digest = createHash('sha256').update(attestationContent, 'utf8').digest('hex');
+        attestationMeta = {
+          path: attestationPath,
+          digest,
+          statementDigest,
+          signature: {
+            algorithm: 'EdDSA',
+            publicKeySha256: 'f'.repeat(64),
+            keyId: 'attestation-key',
+          },
+        };
+      }
+
+      const manifestId = (jobId.padEnd(12, '0')).slice(0, 12);
+      const metadata = {
+        tenantId,
+        id: jobId,
+        hash: `hash-${jobId}`,
+        kind: 'pack' as const,
+        createdAt,
+        directory: packageDir,
+        params: {
+          reportId: `report-${jobId}`,
+          packageName: 'demo-package',
+          soiStage: stage ?? null,
+          postQuantumAlgorithm: null,
+        },
+        license: {
+          hash: licenseHash,
+          licenseId: licensePayloadData.licenseId,
+          issuedTo: licensePayloadData.issuedTo,
+          issuedAt: licensePayloadData.issuedAt,
+          expiresAt: licensePayloadData.expiresAt ?? null,
+          features: licensePayloadData.features ?? [],
+        },
+        outputs: {
+          manifestPath,
+          archivePath,
+          manifestId,
+          manifestDigest: 'a'.repeat(64),
+          ledgerRoot: 'b'.repeat(64),
+          previousLedgerRoot: null,
+          ...(sbomPath ? { sbomPath, sbomSha256 } : {}),
+          ...(attestationMeta ? { attestation: attestationMeta } : {}),
+        },
+      };
+
+      await storage.writeJson(path.join(packageDir, 'job.json'), metadata);
+
+      return { jobId, stage, sbomSha256, attestation: attestationMeta };
+    };
+
+    beforeEach(() => {
+      createdPackageDirs = [];
+    });
+
+    afterEach(async () => {
+      const removals = createdPackageDirs.map((dir) =>
+        fsPromises.rm(dir, { recursive: true, force: true }).catch(() => undefined),
+      );
+      await Promise.all(removals);
+      createdPackageDirs = [];
+    });
+
+    describe('service metadata endpoint', () => {
+      it('returns the latest pack job metadata with cache validation', async () => {
+        const jobId = 'packmeta-001';
+        const artifacts = await writePackArtifacts({ jobId });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.headers['cache-control']).toBe('private, max-age=60');
+        const expectedMetadataDigest = createHash('sha256')
+          .update(JSON.stringify(response.body))
+          .digest('hex');
+        expect(response.headers.etag).toBe(`"${jobId}:${expectedMetadataDigest}"`);
+        expect(response.headers['last-modified']).toBe(
+          new Date(response.body.packJob.createdAt).toUTCString(),
+        );
+        expect(response.body.sbom).toEqual({
+          url: `/v1/packages/${encodeURIComponent(jobId)}/sbom`,
+          sha256: artifacts.sbomSha256,
+        });
+        expect(response.body.packJob).toEqual({ id: jobId, createdAt: expect.any(String) });
+        expect(response.body.attestation).toEqual({
+          present: true,
+          signals: expect.objectContaining({
+            digest: artifacts.attestation?.digest,
+            statementDigest: artifacts.attestation?.statementDigest,
+            signature: artifacts.attestation?.signature,
+          }),
+        });
+
+        const metadataEtag = response.headers.etag as string;
+        const notModifiedResponse = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .set('If-None-Match', metadataEtag)
+          .expect(304);
+
+        expect(notModifiedResponse.headers.etag).toBe(metadataEtag);
+        expect(notModifiedResponse.headers['cache-control']).toBe('private, max-age=60');
+        expect(notModifiedResponse.headers['last-modified']).toBe(
+          response.headers['last-modified'],
+        );
+      });
+
+      it('does not leak metadata across tenants', async () => {
+        await writePackArtifacts({ jobId: 'packmeta-tenant-a' });
+
+        const otherTenantToken = await createAccessToken({ tenant: 'tenant-b' });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${otherTenantToken}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(404);
+
+        expect(response.body.error.code).toBe('SERVICE_METADATA_NOT_FOUND');
+      });
+
+      it('includes stage-qualified package identifiers when present', async () => {
+        const stage = 'SOI-1';
+        const jobId = 'packmeta-stage';
+        await writePackArtifacts({ jobId: 'older-pack', createdAt: '2024-01-01T00:00:00.000Z' });
+        const artifacts = await writePackArtifacts({ jobId, stage });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+
+        expect(response.body.sbom.url).toBe(
+          `/v1/packages/${encodeURIComponent(stage)}/${encodeURIComponent(jobId)}/sbom`,
+        );
+        expect(response.body.sbom.sha256).toBe(artifacts.sbomSha256);
+      });
+
+      it('returns 404 when the SBOM artifact is missing', async () => {
+        await writePackArtifacts({ jobId: 'packmeta-nosbom', includeSbom: false });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(404);
+
+        expect(response.body.error.code).toBe('SERVICE_METADATA_NOT_AVAILABLE');
+      });
+
+      it('returns 404 when the attestation artifact is missing', async () => {
+        await writePackArtifacts({ jobId: 'packmeta-noattestation', includeAttestation: false });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(404);
+
+        expect(response.body.error.code).toBe('SERVICE_METADATA_NOT_AVAILABLE');
+      });
+
+      it('returns 410 when the latest pack job is stale', async () => {
+        await writePackArtifacts({ jobId: 'packmeta-stale', createdAt: '2000-01-01T00:00:00.000Z' });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(410);
+
+        expect(response.body.error.code).toBe('SERVICE_METADATA_STALE');
+      });
+
+      it('requires a valid license token', async () => {
+        await writePackArtifacts({ jobId: 'packmeta-auth' });
+
+        const response = await request(app)
+          .get('/v1/service/metadata')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(401);
+
+        expect(response.body.error.code).toBe('LICENSE_REQUIRED');
+      });
+    });
+
+    describe('license endpoint', () => {
+      it('returns license summary with caching headers', async () => {
+        const expectedValid = !licenseExpiresAt || licenseExpiresAt > new Date();
+
+        const response = await request(app)
+          .get('/v1/license')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.headers['cache-control']).toBe('private, max-age=60');
+        const expectedDigest = createHash('sha256')
+          .update(JSON.stringify(response.body))
+          .digest('hex');
+        expect(response.headers.etag).toBe(`"${licenseHash}:${expectedDigest}"`);
+        expect(response.headers['last-modified']).toBe(
+          new Date(licensePayloadData.issuedAt).toUTCString(),
+        );
+        expect(response.body).toEqual({
+          fingerprint: licenseHash,
+          expiresAt: licensePayloadData.expiresAt ?? null,
+          tenantId,
+          valid: expectedValid,
+        });
+
+        const etag = response.headers.etag as string;
+        const notModified = await request(app)
+          .get('/v1/license')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .set('If-None-Match', etag)
+          .expect(304);
+
+        expect(notModified.headers.etag).toBe(etag);
+        expect(notModified.headers['cache-control']).toBe('private, max-age=60');
+        expect(notModified.headers['last-modified']).toBe(response.headers['last-modified']);
+      });
+
+      it('requires a valid license token', async () => {
+        const response = await request(app)
+          .get('/v1/license')
+          .set('Authorization', `Bearer ${token}`)
+          .expect(401);
+
+        expect(response.body.error.code).toBe('LICENSE_REQUIRED');
+      });
+
+      it('rejects tampered license headers', async () => {
+        const licenseJson = JSON.parse(Buffer.from(licenseHeader, 'base64').toString('utf8')) as {
+          payload: string;
+          signature: string;
+        };
+        const payloadBytes = Buffer.from(licenseJson.payload, 'base64');
+        payloadBytes[0] ^= 0xff;
+        licenseJson.payload = Buffer.from(payloadBytes).toString('base64');
+        const tamperedHeader = Buffer.from(JSON.stringify(licenseJson), 'utf8').toString('base64');
+
+        const response = await request(app)
+          .get('/v1/license')
+          .set('Authorization', `Bearer ${token}`)
+          .set('X-SOIPACK-License', tamperedHeader)
+          .expect(402);
+
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.body.error.code).toBe('LICENSE_INVALID');
+      });
+
+      it('scopes license summaries to the requesting tenant', async () => {
+        const otherTenantToken = await createAccessToken({ tenant: 'tenant-b' });
+
+        const response = await request(app)
+          .get('/v1/license')
+          .set('Authorization', `Bearer ${otherTenantToken}`)
+          .set('X-SOIPACK-License', licenseHeader)
+          .expect(200);
+
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.body.tenantId).toBe('tenant-b');
+      });
+    });
+  });
+
+  describe('admin security configuration endpoints', () => {
+    const endpoint = '/v1/admin/security';
+    let tenantCounter = 0;
+
+    const nextTenantId = (): string => {
+      tenantCounter += 1;
+      return `tenant-security-${tenantCounter}`;
+    };
+
+    type RuleOverrides = {
+      incidentContact?: Partial<{ name: string; email: string; phone?: string | null }>;
+      retention?: Partial<{ uploadsDays?: number; analysesDays?: number; reportsDays?: number; packagesDays?: number }>;
+      maintenance?: Partial<{ dayOfWeek?: string; startTime?: string; durationMinutes?: number; timezone?: string }>;
+    };
+
+    const buildRules = (overrides: RuleOverrides = {}) => {
+      const incidentContact = {
+        name: 'Security Bot',
+        email: 'security@example.com',
+        phone: '+1-555-0100',
+        ...overrides.incidentContact,
+      };
+      const retention = {
+        uploadsDays: 30,
+        analysesDays: 60,
+        reportsDays: 90,
+        packagesDays: 120,
+        ...overrides.retention,
+      };
+      const maintenance = {
+        dayOfWeek: 'monday',
+        startTime: '02:00',
+        durationMinutes: 60,
+        timezone: 'UTC',
+        ...overrides.maintenance,
+      };
+      return [
+        { type: 'incidentContact', config: incidentContact },
+        { type: 'retention', config: retention },
+        { type: 'maintenance', config: maintenance },
+      ];
+    };
+
+    const createTamperedLicenseHeader = (): string => {
+      const licenseJson = JSON.parse(Buffer.from(licenseHeader, 'base64').toString('utf8')) as {
+        payload: string;
+        signature: string;
+      };
+      const payloadBytes = Buffer.from(licenseJson.payload, 'base64');
+      payloadBytes[0] ^= 0xff;
+      licenseJson.payload = Buffer.from(payloadBytes).toString('base64');
+      return Buffer.from(JSON.stringify(licenseJson), 'utf8').toString('base64');
+    };
+
+    it('allows administrators to manage security settings with caching, concurrency, and audit logging', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+      const initialRules = buildRules();
+
+      const createResponse = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: initialRules })
+        .expect(201);
+
+      expect(createResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(createResponse.headers['cache-control']).toBe('no-store');
+      expect(createResponse.headers.etag).toBe(`"${createResponse.body.revision}"`);
+      expect(createResponse.headers['last-modified']).toBeDefined();
+      expect(createResponse.body).toEqual({ rules: initialRules, revision: expect.any(String) });
+
+      expect(auditLogMock.appended).toHaveLength(1);
+      const creationLog = auditLogMock.appended[0];
+      expect(creationLog.action).toBe('admin.security_settings.updated');
+      expect(creationLog.tenantId).toBe(tenant);
+      expect(creationLog.actor).toBe(`${tenant}-admin`);
+      expect(creationLog.payload).toMatchObject({
+        who: `${tenant}-admin`,
+        oldRevision: null,
+        newRevision: createResponse.body.revision,
+        diff: { previous: null, current: initialRules },
+      });
+
+      const getResponse = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      expect(getResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(getResponse.headers['cache-control']).toBe('private, max-age=60');
+      expect(getResponse.headers['last-modified']).toBe(createResponse.headers['last-modified']);
+      expect(getResponse.headers.etag).toBe(createResponse.headers.etag);
+      expect(getResponse.body).toEqual(createResponse.body);
+
+      const updatedRules = buildRules({
+        incidentContact: { phone: '+1-555-0199' },
+        retention: { packagesDays: 365 },
+        maintenance: { dayOfWeek: 'tuesday', startTime: '03:30' },
+      });
+
+      const updateResponse = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', getResponse.headers.etag as string)
+        .send({ rules: updatedRules, revision: getResponse.body.revision })
+        .expect(200);
+
+      expect(updateResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(updateResponse.headers['cache-control']).toBe('no-store');
+      expect(updateResponse.headers.etag).not.toBe(getResponse.headers.etag);
+      expect(updateResponse.headers['last-modified']).toBeDefined();
+      expect(updateResponse.body).toEqual({ rules: updatedRules, revision: expect.any(String) });
+
+      expect(auditLogMock.appended).toHaveLength(2);
+      const updateLog = auditLogMock.appended[1];
+      expect(updateLog.tenantId).toBe(tenant);
+      expect(updateLog.actor).toBe(`${tenant}-admin`);
+      expect(updateLog.action).toBe('admin.security_settings.updated');
+      const updatePayload = updateLog.payload as {
+        who?: string;
+        when?: string;
+        oldRevision?: string | null;
+        newRevision?: string;
+        diff?: { previous: unknown; current: unknown };
+      };
+      expect(updatePayload?.who).toBe(`${tenant}-admin`);
+      expect(updatePayload?.oldRevision).toBe(getResponse.body.revision);
+      expect(updatePayload?.newRevision).toBe(updateResponse.body.revision);
+      expect(updatePayload?.diff?.previous).toEqual(initialRules);
+      expect(updatePayload?.diff?.current).toEqual(updatedRules);
+      expect(new Date(updatePayload?.when ?? '').toUTCString()).toBe(updateResponse.headers['last-modified']);
+
+      const verifyResponse = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      expect(verifyResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(verifyResponse.headers['cache-control']).toBe('private, max-age=60');
+      expect(verifyResponse.headers['last-modified']).toBe(updateResponse.headers['last-modified']);
+      expect(verifyResponse.headers.etag).toBe(updateResponse.headers.etag);
+      expect(verifyResponse.body).toEqual(updateResponse.body);
+    });
+
+    it('enforces role restrictions for security settings administration', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+      const initialRules = buildRules();
+
+      await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: initialRules })
+        .expect(201);
+
+      const operatorToken = await createAccessToken({
+        tenant,
+        subject: `${tenant}-operator`,
+        roles: ['operator'],
+      });
+
+      const operatorView = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${operatorToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      expect(operatorView.headers['content-type']).toMatch(/application\/json/);
+      expect(operatorView.body.rules).toEqual(initialRules);
+
+      const forbiddenUpdate = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${operatorToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', operatorView.headers.etag as string)
+        .send({ rules: initialRules, revision: operatorView.body.revision })
+        .expect(403);
+
+      expect(forbiddenUpdate.headers['content-type']).toMatch(/application\/json/);
+      expect(forbiddenUpdate.body.error.code).toBe('FORBIDDEN_ROLE');
+
+      const readerToken = await createAccessToken({
+        tenant,
+        subject: `${tenant}-reader`,
+        roles: ['reader'],
+      });
+
+      const readerResponse = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${readerToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(403);
+
+      expect(readerResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(readerResponse.body.error.code).toBe('FORBIDDEN_ROLE');
+    });
+
+    it('requires a valid license token to access security settings', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+
+      const missingLicenseGet = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(403);
+      expect(missingLicenseGet.headers['content-type']).toMatch(/application\/json/);
+      expect(missingLicenseGet.body.error.code).toBe('SECURITY_SETTINGS_LICENSE_REQUIRED');
+
+      const missingLicensePut = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ rules: buildRules() })
+        .expect(403);
+      expect(missingLicensePut.headers['content-type']).toMatch(/application\/json/);
+      expect(missingLicensePut.body.error.code).toBe('SECURITY_SETTINGS_LICENSE_REQUIRED');
+
+      const tamperedLicense = createTamperedLicenseHeader();
+      const tamperedResponse = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', tamperedLicense)
+        .expect(403);
+      expect(tamperedResponse.headers['content-type']).toMatch(/application\/json/);
+      expect(tamperedResponse.body.error.code).toBe('SECURITY_SETTINGS_LICENSE_REQUIRED');
+    });
+
+    it('rejects malformed security setting payloads', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+
+      const invalidStructure = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: { invalid: true } })
+        .expect(400);
+      expect(invalidStructure.headers['content-type']).toMatch(/application\/json/);
+      expect(invalidStructure.body.error.code).toBe('INVALID_REQUEST');
+
+      const missingRule = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({
+          rules: [
+            { type: 'incidentContact', config: { name: 'Ops', email: 'ops@example.com' } },
+            { type: 'retention', config: { uploadsDays: 10 } },
+          ],
+        })
+        .expect(400);
+      expect(missingRule.headers['content-type']).toMatch(/application\/json/);
+      expect(missingRule.body.error.code).toBe('INVALID_REQUEST');
+      expect(missingRule.body.error.details.missingRules).toContain('maintenance');
+    });
+
+    it('requires If-Match headers and reports the latest revision on missing preconditions', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+      const initialRules = buildRules();
+
+      const createResponse = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: initialRules })
+        .expect(201);
+
+      const missingIfMatch = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: initialRules, revision: createResponse.body.revision })
+        .expect(412);
+
+      expect(missingIfMatch.body.error.code).toBe('SECURITY_SETTINGS_PRECONDITION_FAILED');
+      expect(missingIfMatch.body.error.details.currentRevision).toBe(createResponse.body.revision);
+    });
+
+    it('returns the current revision when updates use stale revision hashes', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+      const initialRules = buildRules();
+
+      await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: initialRules })
+        .expect(201);
+
+      const firstSnapshot = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      const updatedRules = buildRules({ maintenance: { startTime: '05:00' } });
+      const currentRevision = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', firstSnapshot.headers.etag as string)
+        .send({ rules: updatedRules, revision: firstSnapshot.body.revision })
+        .expect(200);
+
+      const staleUpdate = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', firstSnapshot.headers.etag as string)
+        .send({ rules: initialRules, revision: firstSnapshot.body.revision })
+        .expect(412);
+
+      expect(staleUpdate.body.error.code).toBe('SECURITY_SETTINGS_PRECONDITION_FAILED');
+      expect(staleUpdate.body.error.details.currentRevision).toBe(currentRevision.body.revision);
+
+      const retryRules = buildRules({ incidentContact: { phone: '+1-555-0222' } });
+      const retrySuccess = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', currentRevision.headers.etag as string)
+        .send({ rules: retryRules, revision: currentRevision.body.revision })
+        .expect(200);
+
+      expect(retrySuccess.headers['content-type']).toMatch(/application\/json/);
+      expect(retrySuccess.body.rules).toEqual(retryRules);
+
+      const latest = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      expect(latest.body.revision).toBe(retrySuccess.body.revision);
+      expect(latest.body.rules).toEqual(retryRules);
+      expect(auditLogMock.appended).toHaveLength(3);
+    });
+
+    it('returns 409 when the provided revision does not match the latest version', async () => {
+      const tenant = nextTenantId();
+      const adminToken = await createAccessToken({ tenant, subject: `${tenant}-admin`, roles: ['admin'] });
+
+      await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .send({ rules: buildRules() })
+        .expect(201);
+
+      const snapshot = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      const mismatch = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', snapshot.headers.etag as string)
+        .send({ rules: buildRules({ maintenance: { durationMinutes: 120 } }), revision: 'stale-revision' })
+        .expect(409);
+
+      expect(mismatch.body.error.code).toBe('SECURITY_SETTINGS_CONFLICT');
+      expect(mismatch.body.error.details.currentRevision).toBe(snapshot.body.revision);
+
+      const refreshed = await request(app)
+        .get(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .expect(200);
+
+      const resolvedRules = buildRules({ maintenance: { durationMinutes: 240 } });
+      const resolved = await request(app)
+        .put(endpoint)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-SOIPACK-License', licenseHeader)
+        .set('If-Match', refreshed.headers.etag as string)
+        .send({ rules: resolvedRules, revision: refreshed.body.revision })
+        .expect(200);
+
+      expect(resolved.body.rules).toEqual(resolvedRules);
+      expect(resolved.body.revision).not.toBe(snapshot.body.revision);
+    });
   });
 
   it('localizes error responses based on the Accept-Language header', async () => {

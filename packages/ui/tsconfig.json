@@ -5,7 +5,7 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "types": ["vite/client", "node"],
+    "types": ["node"],
     "jsx": "react-jsx",
     "lib": ["ES2021", "DOM"],
     "outDir": "./dist",

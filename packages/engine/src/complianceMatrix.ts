@@ -29,6 +29,7 @@ export interface ComplianceObjectiveResult {
   evidenceList: Evidence[];
   missingArtifacts: ObjectiveArtifactType[];
   warnings: string[];
+  confidenceScore: number;
 }
 
 export interface ComplianceMatrixTable {
@@ -88,6 +89,109 @@ const summarizeStatus = (
     default:
       break;
   }
+};
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max);
+
+const roundToTwo = (value: number): number => Math.round(value * 100) / 100;
+
+const computeCompletenessScore = (
+  bundles: ObjectiveEvidenceBundle[],
+  totalArtifacts: number,
+): number => {
+  if (totalArtifacts === 0) {
+    return 1;
+  }
+
+  const satisfiedArtifacts = bundles.filter((bundle) => bundle.items.length > 0).length;
+  return satisfiedArtifacts / totalArtifacts;
+};
+
+const computeIndependenceScore = (
+  objective: Objective,
+  bundles: ObjectiveEvidenceBundle[],
+): number => {
+  if (objective.independence === 'none') {
+    return 1;
+  }
+
+  const hasIndependentEvidence = bundles.some((bundle) =>
+    bundle.items.some((item) => item.independent !== false),
+  );
+
+  if (hasIndependentEvidence) {
+    return 1;
+  }
+
+  return objective.independence === 'required' ? 0.4 : 0.7;
+};
+
+const computeStalenessScore = (
+  bundles: ObjectiveEvidenceBundle[],
+  now: number = Date.now(),
+): number => {
+  const timestamps: number[] = [];
+  bundles.forEach((bundle) => {
+    bundle.items.forEach((item) => {
+      const parsed = Date.parse(item.timestamp);
+      if (Number.isFinite(parsed)) {
+        timestamps.push(parsed);
+      }
+    });
+  });
+
+  if (timestamps.length === 0) {
+    return 0;
+  }
+
+  const latestEvidence = Math.max(...timestamps);
+  if (!Number.isFinite(latestEvidence)) {
+    return 0.5;
+  }
+
+  const ageMs = now - latestEvidence;
+  if (!Number.isFinite(ageMs)) {
+    return 0.5;
+  }
+
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+  if (ageDays <= 0) {
+    return 1;
+  }
+  if (ageDays <= 30) {
+    return 1;
+  }
+  if (ageDays <= 90) {
+    return 0.85;
+  }
+  if (ageDays <= 180) {
+    return 0.7;
+  }
+  if (ageDays <= 365) {
+    return 0.5;
+  }
+  return 0.2;
+};
+
+const computeConfidenceScore = (
+  objective: Objective,
+  status: ObjectiveComplianceStatus,
+  bundles: ObjectiveEvidenceBundle[],
+): number => {
+  if (status === 'not-applicable') {
+    return 1;
+  }
+
+  const completenessScore = computeCompletenessScore(bundles, objective.artifacts.length);
+  if (completenessScore === 0) {
+    return 0;
+  }
+
+  const independenceScore = computeIndependenceScore(objective, bundles);
+  const stalenessScore = computeStalenessScore(bundles);
+  const combined = completenessScore * independenceScore * stalenessScore;
+  return roundToTwo(clamp(combined, 0, 1));
 };
 
 export const buildComplianceMatrix = ({
@@ -151,6 +255,7 @@ export const buildComplianceMatrix = ({
       evidenceList,
       missingArtifacts: finalMissingArtifacts,
       warnings: entryWarnings,
+      confidenceScore: computeConfidenceScore(objective, status, bundles),
     });
     tables.set(objective.table, tableEntries);
   });

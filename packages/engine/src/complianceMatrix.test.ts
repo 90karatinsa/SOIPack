@@ -14,15 +14,17 @@ const evidence = (
   type: ObjectiveArtifactType,
   path: string,
   source: Evidence['source'],
+  options: Partial<Pick<Evidence, 'timestamp' | 'independent'>> = {},
 ): Evidence => ({
   source,
   path,
   summary: `${type} evidence`,
-  timestamp: '2024-01-10T10:00:00Z',
+  timestamp: options.timestamp ?? '2024-01-10T10:00:00Z',
   snapshotId: createSnapshotIdentifier(
-    '2024-01-10T10:00:00Z',
+    options.timestamp ?? '2024-01-10T10:00:00Z',
     createHash('sha256').update(`${type}:${path}`).digest('hex'),
   ),
+  independent: options.independent,
 });
 
 const objectivesFixture = (): Objective[] => [
@@ -135,6 +137,7 @@ describe('complianceMatrix', () => {
       ?.objectives.find((entry) => entry.objective.id === 'A-5-09');
     expect(decisionCoverage?.status).toBe('partial');
     expect(decisionCoverage?.missingArtifacts).toEqual(['coverage_dec']);
+    expect(decisionCoverage?.confidenceScore).toBeLessThan(1);
   });
 
   it('marks MC/DC objectives as not applicable for level B', () => {
@@ -197,5 +200,96 @@ describe('complianceMatrix', () => {
     expect(matrix.tables).toHaveLength(0);
     expect(matrix.summary).toEqual({ satisfied: 0, partial: 0, missing: 0, notApplicable: 0 });
     expect(matrix.warnings).toHaveLength(0);
+  });
+
+  describe('confidence scoring', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('yields high confidence for complete, independent, and fresh evidence', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-20T00:00:00Z'));
+
+      const matrix = buildComplianceMatrix({
+        level: 'A',
+        evidenceIndex: {
+          analysis: [
+            evidence('analysis', 'analysis/safety.md', 'git', {
+              timestamp: '2024-01-15T12:00:00Z',
+              independent: true,
+            }),
+          ],
+          trace: [evidence('trace', 'traces/hlr.csv', 'git', { timestamp: '2024-01-16T09:00:00Z' })],
+          review: [evidence('review', 'reviews/plan-review.md', 'git', { timestamp: '2024-01-14T10:00:00Z' })],
+        },
+        objectives,
+      });
+
+      const analysisObjective = matrix.tables
+        .find((table) => table.table === 'A-4')
+        ?.objectives.find((entry) => entry.objective.id === 'A-4-01');
+
+      expect(analysisObjective?.confidenceScore).toBe(1);
+    });
+
+    it('drops confidence when independence evidence is missing', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-20T00:00:00Z'));
+
+      const matrix = buildComplianceMatrix({
+        level: 'A',
+        evidenceIndex: {
+          analysis: [
+            evidence('analysis', 'analysis/safety.md', 'git', {
+              timestamp: '2024-01-15T12:00:00Z',
+              independent: false,
+            }),
+          ],
+          trace: [evidence('trace', 'traces/hlr.csv', 'git', { timestamp: '2024-01-16T09:00:00Z', independent: false })],
+          review: [evidence('review', 'reviews/plan-review.md', 'git', { timestamp: '2024-01-14T10:00:00Z', independent: false })],
+        },
+        objectives,
+      });
+
+      const analysisObjective = matrix.tables
+        .find((table) => table.table === 'A-4')
+        ?.objectives.find((entry) => entry.objective.id === 'A-4-01');
+
+      expect(analysisObjective?.confidenceScore).toBeLessThan(0.5);
+    });
+
+    it('reduces confidence when evidence is stale', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-20T00:00:00Z'));
+
+      const matrix = buildComplianceMatrix({
+        level: 'A',
+        evidenceIndex: {
+          analysis: [
+            evidence('analysis', 'analysis/safety.md', 'git', {
+              timestamp: '2022-01-10T12:00:00Z',
+              independent: true,
+            }),
+          ],
+          trace: [
+            evidence('trace', 'traces/hlr.csv', 'git', {
+              timestamp: '2022-01-09T09:00:00Z',
+              independent: true,
+            }),
+          ],
+          review: [
+            evidence('review', 'reviews/plan-review.md', 'git', {
+              timestamp: '2022-01-08T10:00:00Z',
+              independent: true,
+            }),
+          ],
+        },
+        objectives,
+      });
+
+      const analysisObjective = matrix.tables
+        .find((table) => table.table === 'A-4')
+        ?.objectives.find((entry) => entry.objective.id === 'A-4-01');
+
+      expect(analysisObjective?.confidenceScore).toBeLessThan(0.3);
+    });
   });
 });
