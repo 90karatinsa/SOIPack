@@ -29,4 +29,16 @@ try {
 Object.defineProperty(docx, '__esModule', { value: true });
 docx.default = docx;
 
+if (!docx.HeadingLevel) {
+  docx.HeadingLevel = {
+    TITLE: 'TITLE',
+    HEADING_1: 'HEADING_1',
+    HEADING_2: 'HEADING_2',
+    HEADING_3: 'HEADING_3',
+    HEADING_4: 'HEADING_4',
+    HEADING_5: 'HEADING_5',
+    HEADING_6: 'HEADING_6',
+  };
+}
+
 export = docx;

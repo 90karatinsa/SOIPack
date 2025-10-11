@@ -66,7 +66,7 @@ describe('CMS / PKCS#7 manifest signatures', () => {
         digestVerified: true,
         signerSerialNumber: expect.any(String),
         signerSubject: expect.stringContaining('SOIPack CMS Test'),
-        signatureAlgorithm: expect.stringContaining('sha'),
+        signatureAlgorithm: expect.stringMatching(/sha|1\.2\.840\.113549\.1\.1\.11/),
       }),
     );
   });

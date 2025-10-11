@@ -83,10 +83,28 @@ describe('Attestation', () => {
         publicKeyPem,
         keyId: 'test-dev-key',
       },
+      ledgerDeltaSummary: {
+        currentRoot: manifest.ledger?.root ?? null,
+        previousRoot: manifest.ledger?.previousRoot ?? null,
+        objectiveIds: ['OBJ-1', 'OBJ-2'],
+      },
     });
 
     const serialized = serializeAttestationDocument(result.document);
     expect(serialized).toMatchSnapshot('attestation-document');
+
+    const payloadJson = JSON.parse(result.payload) as {
+      predicate: { runDetails: { metadata: { ledgerDelta: unknown; signature: { ledgerDelta: unknown } } } };
+    };
+
+    expect(payloadJson.predicate.runDetails.metadata.ledgerDelta).toEqual({
+      currentRoot: manifest.ledger?.root ?? null,
+      previousRoot: manifest.ledger?.previousRoot ?? null,
+      objectiveIds: ['OBJ-1', 'OBJ-2'],
+    });
+    expect(payloadJson.predicate.runDetails.metadata.signature.ledgerDelta).toEqual(
+      payloadJson.predicate.runDetails.metadata.ledgerDelta,
+    );
 
     const [encodedHeader, encodedPayload, encodedSignature] = result.signature.jws.split('.');
     expect(encodedHeader).toBe(result.signature.protected);
@@ -104,5 +122,90 @@ describe('Attestation', () => {
 
     const expectedDigest = createHash('sha256').update(result.payload, 'utf8').digest('hex');
     expect(result.document.statementDigest).toEqual({ algorithm: 'sha256', digest: expectedDigest });
+  });
+
+  it('includes ledger delta summaries and hybrid signature metadata for post-quantum bundles', async () => {
+    const { bundlePem, certificatePem } = loadDevCredentials();
+    const certificate = new X509Certificate(certificatePem);
+    const publicKeyPem = certificate.publicKey.export({ format: 'pem', type: 'spki' }).toString();
+
+    const pqSignature = Buffer.from('post-quantum-signature');
+    const pqSignatureEncoded = pqSignature.toString('base64url');
+
+    const overrideLedgerDelta = {
+      currentRoot: '9999999999999999999999999999999999999999999999999999999999999999',
+      previousRoot: '8888888888888888888888888888888888888888888888888888888888888888',
+      objectiveIds: ['OBJ-3', 'OBJ-1', 'OBJ-2', 'OBJ-1', ''],
+    };
+
+    const signatureBundle: ManifestSignatureBundle = {
+      signature: 'hybrid-stub-signature',
+      certificate: certificatePem,
+      manifestDigest: { algorithm: 'SHA-256', hash: manifestDigest },
+      ledgerRoot: manifest.ledger?.root ?? null,
+      previousLedgerRoot: manifest.ledger?.previousRoot ?? null,
+      postQuantumSignature: {
+        algorithm: 'SPHINCS+-SHA2-128s',
+        signature: pqSignatureEncoded,
+        publicKey: 'pq-public-key-material',
+      },
+    };
+
+    const result = await generateAttestation({
+      manifest,
+      manifestDigest,
+      sbom: manifest.sbom!,
+      files: manifest.files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+      packageName: 'soi-pack-test.zip',
+      manifestSignature: signatureBundle,
+      signing: {
+        privateKeyPem: bundlePem,
+        publicKeyPem,
+      },
+      ledgerDeltaSummary: overrideLedgerDelta,
+    });
+
+    const payloadJson = JSON.parse(result.payload) as {
+      predicate: {
+        runDetails: {
+          metadata: {
+            ledgerDelta: { currentRoot: string | null; previousRoot: string | null; objectiveIds: string[] };
+            signature: {
+              ledgerDelta: { currentRoot: string | null; previousRoot: string | null; objectiveIds: string[] };
+              postQuantum?: { algorithm: string; signature: string; publicKey: string };
+            };
+          };
+        };
+      };
+    };
+
+    expect(payloadJson.predicate.runDetails.metadata.ledgerDelta).toEqual({
+      currentRoot: overrideLedgerDelta.currentRoot,
+      previousRoot: overrideLedgerDelta.previousRoot,
+      objectiveIds: ['OBJ-1', 'OBJ-2', 'OBJ-3'],
+    });
+    expect(payloadJson.predicate.runDetails.metadata.signature.ledgerDelta).toEqual(
+      payloadJson.predicate.runDetails.metadata.ledgerDelta,
+    );
+    expect(payloadJson.predicate.runDetails.metadata.signature.postQuantum).toEqual({
+      algorithm: 'SPHINCS+-SHA2-128s',
+      signature: pqSignatureEncoded,
+      publicKey: 'pq-public-key-material',
+    });
+
+    const [encodedHeader, encodedPayload, encodedSignature, encodedPostQuantum] = result.signature.jws.split('.');
+    expect(encodedHeader).toBe(result.signature.protected);
+    expect(encodedPayload).toBe(Buffer.from(result.payload, 'utf8').toString('base64url'));
+    expect(encodedSignature).toBe(result.signature.signature);
+    expect(encodedPostQuantum).toBeUndefined();
+
+    const verificationPayload = Buffer.from(`${encodedHeader}.${encodedPayload}`, 'utf8');
+    const verified = verifySignature(
+      null,
+      verificationPayload,
+      createPublicKey(result.signature.publicKey),
+      Buffer.from(encodedSignature, 'base64url'),
+    );
+    expect(verified).toBe(true);
   });
 });

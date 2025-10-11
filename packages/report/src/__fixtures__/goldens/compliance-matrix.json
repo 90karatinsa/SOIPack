@@ -102,6 +102,8 @@
       "table": "A-3",
       "name": "Doğrulama Stratejisi",
       "desc": "Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.",
+      "confidence": 0.92,
+      "confidenceLabel": "92%",
       "satisfiedArtifacts": [
         "Plan"
       ],
@@ -117,13 +119,13 @@
           "§6.3",
           "§6.5"
         ],
-        "faa8110_49": [
-          "§2.3",
-          "§3.4"
-        ],
         "easaAmc_20_152a": [
           "§5.1.1",
           "§5.1.3"
+        ],
+        "faa8110_49": [
+          "§2.3",
+          "§3.4"
         ]
       }
     },
@@ -133,6 +135,8 @@
       "table": "A-4",
       "name": "Üst Düzey Gereksinimler",
       "desc": "HLR doğru, tutarlı, izlenebilir ve test edilebilir.",
+      "confidence": 0.68,
+      "confidenceLabel": "68%",
       "satisfiedArtifacts": [
         "Analiz",
         "İzlenebilirlik"
@@ -151,12 +155,12 @@
           "§6.6",
           "§6.7"
         ],
-        "faa8110_49": [
-          "§5.4"
-        ],
         "easaAmc_20_152a": [
           "§6.2.1",
           "§6.2.2"
+        ],
+        "faa8110_49": [
+          "§5.4"
         ]
       }
     },
@@ -166,6 +170,8 @@
       "table": "A-5",
       "name": "Test Stratejisi Uygulandı",
       "desc": "Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.",
+      "confidence": 0.41,
+      "confidenceLabel": "41%",
       "satisfiedArtifacts": [
         "Test",
         "İzlenebilirlik",
@@ -186,13 +192,13 @@
           "§7.1",
           "§7.2"
         ],
-        "faa8110_49": [
-          "§6.3",
-          "§6.5"
-        ],
         "easaAmc_20_152a": [
           "§6.3.1",
           "§6.3.3"
+        ],
+        "faa8110_49": [
+          "§6.3",
+          "§6.5"
         ]
       }
     },
@@ -202,6 +208,8 @@
       "table": "A-5",
       "name": "Yapısal Kapsam—Statement",
       "desc": "Kod satır kapsamı ölçüldü ve açıklandı.",
+      "confidence": 0.27,
+      "confidenceLabel": "27%",
       "satisfiedArtifacts": [
         "Satır Kapsamı",
         "Analiz"
@@ -219,13 +227,13 @@
           "§7.1",
           "§7.2"
         ],
-        "faa8110_49": [
-          "§6.3",
-          "§6.5"
-        ],
         "easaAmc_20_152a": [
           "§6.3.1",
           "§6.3.3"
+        ],
+        "faa8110_49": [
+          "§6.3",
+          "§6.5"
         ]
       }
     },
@@ -246,12 +254,12 @@
           "§7.3",
           "§7.4"
         ],
-        "faa8110_49": [
-          "§7.4"
-        ],
         "easaAmc_20_152a": [
           "§6.4.1",
           "§6.4.2"
+        ],
+        "faa8110_49": [
+          "§7.4"
         ]
       }
     }
@@ -389,6 +397,203 @@
       "recommendation": "Statik analiz bulgusunu giderin veya araçta kapatıp gerekçelendirin."
     }
   ],
+  "analysis": {
+    "staleEvidenceHeatmap": {
+      "totalFindings": 5,
+      "updatedAt": "2023-12-28T10:00:00.000Z",
+      "maxBucketCount": 2,
+      "bands": [
+        {
+          "id": "0-30",
+          "label": "0-30 gün",
+          "minDays": 0,
+          "maxDays": 30
+        },
+        {
+          "id": "31-90",
+          "label": "31-90 gün",
+          "minDays": 31,
+          "maxDays": 90
+        },
+        {
+          "id": "91-180",
+          "label": "91-180 gün",
+          "minDays": 91,
+          "maxDays": 180
+        },
+        {
+          "id": "181-365",
+          "label": "181-365 gün",
+          "minDays": 181,
+          "maxDays": 365
+        },
+        {
+          "id": "366+",
+          "label": "366+ gün",
+          "minDays": 366
+        },
+        {
+          "id": "unknown",
+          "label": "Yaş bilinmiyor"
+        }
+      ],
+      "stages": [
+        {
+          "id": "SOI-1",
+          "label": "SOI-1 Planlama",
+          "stage": "SOI-1",
+          "totals": 2,
+          "buckets": [
+            {
+              "bandId": "0-30",
+              "label": "0-30 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "31-90",
+              "label": "31-90 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "91-180",
+              "label": "91-180 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "181-365",
+              "label": "181-365 gün",
+              "count": 1,
+              "objectiveIds": [
+                "A-3-04"
+              ]
+            },
+            {
+              "bandId": "366+",
+              "label": "366+ gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "unknown",
+              "label": "Yaş bilinmiyor",
+              "count": 1,
+              "objectiveIds": [
+                "A-3-04"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "SOI-3",
+          "label": "SOI-3 Doğrulama",
+          "stage": "SOI-3",
+          "totals": 1,
+          "buckets": [
+            {
+              "bandId": "0-30",
+              "label": "0-30 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "31-90",
+              "label": "31-90 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "91-180",
+              "label": "91-180 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "181-365",
+              "label": "181-365 gün",
+              "count": 1,
+              "objectiveIds": [
+                "A-5-06"
+              ]
+            },
+            {
+              "bandId": "366+",
+              "label": "366+ gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "unknown",
+              "label": "Yaş bilinmiyor",
+              "count": 0,
+              "objectiveIds": []
+            }
+          ]
+        },
+        {
+          "id": "unknown",
+          "label": "Bilinmeyen Aşama",
+          "totals": 2,
+          "buckets": [
+            {
+              "bandId": "0-30",
+              "label": "0-30 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "31-90",
+              "label": "31-90 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "91-180",
+              "label": "91-180 gün",
+              "count": 2,
+              "objectiveIds": [
+                "A-1-01",
+                "A-2-05"
+              ]
+            },
+            {
+              "bandId": "181-365",
+              "label": "181-365 gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "366+",
+              "label": "366+ gün",
+              "count": 0,
+              "objectiveIds": []
+            },
+            {
+              "bandId": "unknown",
+              "label": "Yaş bilinmiyor",
+              "count": 0,
+              "objectiveIds": []
+            }
+          ]
+        }
+      ],
+      "stageTotals": {
+        "unknown": 2,
+        "SOI-1": 2,
+        "SOI-3": 1
+      },
+      "bandTotals": {
+        "0-30": 0,
+        "31-90": 0,
+        "91-180": 2,
+        "181-365": 2,
+        "366+": 0,
+        "unknown": 1
+      }
+    }
+  },
   "changeImpact": [
     {
       "key": "requirement:REQ-AUTH-3",
@@ -912,34 +1117,41 @@
       }
     ]
   },
-  "signoffs": [
-    {
-      "id": "signoff-001",
-      "documentId": "DOC-SEC-PLAN",
-      "revisionId": "rev-main-001",
-      "revisionHash": "a9f4c2d1e3b56789",
-      "requestedBy": "auditor-istanbul",
-      "requestedFor": "lead-reviewer",
-      "requestedAt": "2024-01-15T09:45:00Z",
-      "status": "approved",
-      "approvedAt": "2024-01-16T13:20:00Z",
-      "signerId": "lead-reviewer",
-      "signerPublicKey": "MCowBQYDK2VwAyEA7L9sExampleKeyFragment123456==",
-      "signature": "SIG-APPROVED-001-BASE64",
-      "workspaceId": "workspace-flight"
-    },
-    {
-      "id": "signoff-002",
-      "documentId": "DOC-SEC-REPORT",
-      "revisionId": "rev-main-002",
-      "revisionHash": "b1e2c3d4f5a67890",
-      "requestedBy": "auditor-istanbul",
-      "requestedFor": "compliance-owner",
-      "requestedAt": "2024-01-20T10:15:00Z",
-      "status": "pending",
-      "signerPublicKey": null,
-      "signature": null,
-      "workspaceId": "workspace-flight"
-    }
-  ]
+  "signoffs": [],
+  "readiness": {
+    "percentile": 72.5,
+    "computedAt": "2024-02-12T10:30:00Z",
+    "seed": 4242,
+    "breakdown": [
+      {
+        "component": "objectives",
+        "score": 82.1,
+        "weight": 0.4,
+        "contribution": 32.8,
+        "details": "HLR kapsamı %85 seviyesinde."
+      },
+      {
+        "component": "independence",
+        "score": 61.4,
+        "weight": 0.25,
+        "contribution": 15.4,
+        "details": "Bağımsız gözden geçirme eksikleri azaltıldı."
+      },
+      {
+        "component": "structuralCoverage",
+        "score": 55.2,
+        "weight": 0.2,
+        "contribution": 11,
+        "details": "MC/DC kapsama raporları güncellendi.",
+        "missing": true
+      },
+      {
+        "component": "riskTrend",
+        "score": 70.5,
+        "weight": 0.15,
+        "contribution": 13.3,
+        "details": "Audit uyarılarında aşağı yönlü trend."
+      }
+    ]
+  }
 }

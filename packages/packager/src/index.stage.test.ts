@@ -50,7 +50,10 @@ jest.mock('./security/signer', () => {
     previousLedgerRoot: options.expectedPreviousLedgerRoot ?? null,
   });
 
-  const signManifestWithSecuritySigner = () => ({ signature: 'stub-signature' });
+  const signManifestWithSecuritySigner = (manifest: unknown) => ({
+    ...signManifestBundle(manifest),
+    signature: 'stub-signature',
+  });
 
   const verifyManifestSignatureWithSecuritySigner = () => ({ valid: true });
 

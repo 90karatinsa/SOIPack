@@ -110,6 +110,100 @@
     margin-bottom: 16px;
   }
 
+  .heatmap-legend {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .heatmap-legend span {
+    font-size: 12px;
+    color: #475569;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .heatmap-gradient {
+    width: 200px;
+    height: 14px;
+    border-radius: 999px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+  }
+
+  .heatmap-gradient svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .heatmap-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 8px;
+    margin-bottom: 12px;
+  }
+
+  .heatmap-table th {
+    text-align: center;
+    border: none;
+    background: none;
+    color: #475569;
+  }
+
+  .heatmap-table th:first-child {
+    text-align: left;
+  }
+
+  .heatmap-table td {
+    border: none;
+    padding: 0;
+    background: none;
+  }
+
+  .heatmap-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-radius: 12px;
+    padding: 12px 8px;
+    min-height: 72px;
+    background: linear-gradient(135deg, rgba(30, 64, 175, calc(var(--intensity, 0) * 0.55 + 0.05)), rgba(191, 219, 254, calc(var(--intensity, 0) * 0.85 + 0.15)));
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+    transition: transform 0.2s ease-in-out;
+  }
+
+  .heatmap-cell[data-empty='true'] {
+    background: rgba(226, 232, 240, 0.6);
+    color: #475569;
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.45);
+  }
+
+  .heatmap-cell strong {
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .heatmap-cell .muted {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .heatmap-footnote {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -325,6 +419,154 @@
     color: #1e293b;
   }
 
+  .readiness-grid {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    align-items: stretch;
+  }
+
+  .readiness-score {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(14, 116, 144, 0.08));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-score-value {
+    font-size: 40px;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-score-label {
+    font-size: 13px;
+    color: #1e293b;
+  }
+
+  .readiness-score-meta {
+    font-size: 12px;
+    color: #475569;
+  }
+
+  .readiness-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .readiness-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(15, 23, 42, 0.08);
+    color: #0f172a;
+  }
+
+  .readiness-badge--accent {
+    background: rgba(59, 130, 246, 0.2);
+    color: #1d4ed8;
+  }
+
+  .readiness-badge--missing {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .readiness-explainer {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .readiness-sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px;
+    background: #f8fafc;
+  }
+
+  .readiness-sparkline-bar {
+    width: 22px;
+    border-radius: 8px 8px 0 0;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.8), rgba(59, 130, 246, 0.35));
+    transition: opacity 0.2s ease-in-out;
+  }
+
+  .readiness-sparkline-bar--missing {
+    background: repeating-linear-gradient(
+      180deg,
+      rgba(248, 113, 113, 0.85),
+      rgba(248, 113, 113, 0.85) 10px,
+      rgba(254, 226, 226, 0.7) 10px,
+      rgba(254, 226, 226, 0.7) 20px
+    );
+  }
+
+  .readiness-breakdown {
+    margin-top: 24px;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .readiness-component {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 18px;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .readiness-component header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .readiness-component h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #1e293b;
+  }
+
+  .readiness-component dl {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .readiness-component dt {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+  }
+
+  .readiness-component dd {
+    margin: 0;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .readiness-component p {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
   .risk-grid {
     display: grid;
     gap: 16px;
@@ -425,71 +667,102 @@
     <header class="report-header">
       <div>
         <h1>Uyum Boşlukları</h1>
+        
           <p class="report-meta">Kanıt eksikliği bulunan alanların özet görünümü</p>
+        
+        
+        
+        
         <p class="report-meta">Kanıt Manifest ID: <strong>MAN-TR-2024-0001</strong></p>
         <p class="report-meta">
           Snapshot: <strong>20240201T120000Z-83e26294b06b</strong>
+          
         </p>
         <p class="report-meta">Rapor Tarihi: 2024-02-01 12:00 UTC</p>
+        
           <div class="git-meta">
             <p class="report-meta">
               Commit:
               <strong>
                 <abbr title="1234567890abcdef1234567890abcdef12345678">1234567890ab</abbr>
               </strong>
+              
             </p>
+            
               <p class="report-meta">Dallar: main</p>
+            
+            
               <p class="report-meta">Etiketler: v1.0.0</p>
+            
+            
               <p class="report-meta">Origin: https://example.com/repo.git</p>
+            
+            
               <p class="report-meta">Yazar: Example Dev • 2024-02-01 09:00 UTC</p>
+            
+            
               <p class="report-meta">Mesaj: Add avionics tests</p>
+            
           </div>
+        
       </div>
       <div class="summary-grid">
+        
           <div class="summary-card">
             <span>Plan Boşlukları</span>
             <strong>1</strong>
           </div>
+        
           <div class="summary-card">
             <span>Standart Boşlukları</span>
             <strong>0</strong>
           </div>
+        
           <div class="summary-card">
             <span>Gözden Geçirme Boşlukları</span>
             <strong>2</strong>
           </div>
+        
           <div class="summary-card">
             <span>Analiz Boşlukları</span>
             <strong>3</strong>
           </div>
+        
           <div class="summary-card">
             <span>Test Boşlukları</span>
             <strong>1</strong>
           </div>
+        
           <div class="summary-card">
             <span>Kapsam Boşlukları</span>
             <strong>1</strong>
           </div>
+        
           <div class="summary-card">
             <span>İzlenebilirlik Boşlukları</span>
             <strong>5</strong>
           </div>
+        
           <div class="summary-card">
             <span>Konfigürasyon Boşlukları</span>
             <strong>1</strong>
           </div>
+        
           <div class="summary-card">
             <span>Kalite Boşlukları</span>
             <strong>0</strong>
           </div>
+        
           <div class="summary-card">
             <span>Problem Takibi Boşlukları</span>
             <strong>1</strong>
           </div>
+        
           <div class="summary-card">
             <span>Uygunluk Boşlukları</span>
             <strong>0</strong>
           </div>
+        
       </div>
     </header>
     <main>
@@ -499,184 +772,361 @@
       Kanıt eksikliklerini kategori bazında gösterir. Boşluklar denetim öncesi tamamlanması gereken alanları belirtir.
     </p>
     <div class="gap-grid">
+      
         <article class="gap-card">
           <h3>Planlama Kanıtları</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-3-04</div>
+                  
                     <div class="cell-subtitle">
-A-3 • Doğrulama Stratejisi                    </div>
+                      A-3
+                       • 
+                      Doğrulama Stratejisi
+                    </div>
+                  
+                  
                     <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Plan</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Standart Referansları</h3>
+          
             <p class="muted">Boşluk tespit edilmedi.</p>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Gözden Geçirme Kanıtları</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-3-04</div>
+                  
                     <div class="cell-subtitle">
-A-3 • Doğrulama Stratejisi                    </div>
+                      A-3
+                       • 
+                      Doğrulama Stratejisi
+                    </div>
+                  
+                  
                     <div class="cell-description">Gözden geçirme, analiz ve test stratejisi ve kriterleri tanımlı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Gözden Geçirme</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">A-4-01</div>
+                  
                     <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                    </div>
+                      A-4
+                       • 
+                      Üst Düzey Gereksinimler
+                    </div>
+                  
+                  
                     <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Gözden Geçirme</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Analiz Kanıtları</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-4-01</div>
+                  
                     <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                    </div>
+                      A-4
+                       • 
+                      Üst Düzey Gereksinimler
+                    </div>
+                  
+                  
                     <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">A-5-06</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                    </div>
+                      A-5
+                       • 
+                      Test Stratejisi Uygulandı
+                    </div>
+                  
+                  
                     <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">A-5-08</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Yapısal Kapsam—Statement                    </div>
+                      A-5
+                       • 
+                      Yapısal Kapsam—Statement
+                    </div>
+                  
+                  
                     <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Analiz</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Test Kanıtları</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-5-06</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                    </div>
+                      A-5
+                       • 
+                      Test Stratejisi Uygulandı
+                    </div>
+                  
+                  
                     <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Test</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Kapsam Kanıtları</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-5-08</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Yapısal Kapsam—Statement                    </div>
+                      A-5
+                       • 
+                      Yapısal Kapsam—Statement
+                    </div>
+                  
+                  
                     <div class="cell-description">Kod satır kapsamı ölçüldü ve açıklandı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Satır Kapsamı</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>İzlenebilirlik</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-4-01</div>
+                  
                     <div class="cell-subtitle">
-A-4 • Üst Düzey Gereksinimler                    </div>
+                      A-4
+                       • 
+                      Üst Düzey Gereksinimler
+                    </div>
+                  
+                  
                     <div class="cell-description">HLR doğru, tutarlı, izlenebilir ve test edilebilir.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">İzlenebilirlik</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">A-5-06</div>
+                  
                     <div class="cell-subtitle">
-A-5 • Test Stratejisi Uygulandı                    </div>
+                      A-5
+                       • 
+                      Test Stratejisi Uygulandı
+                    </div>
+                  
+                  
                     <div class="cell-description">Gereksinim-tabanlı testler koşuldu; sonuçlar kaydedildi.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">İzlenebilirlik</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">REQ-AUTH-1</div>
+                  
+                  
                   <div>
+                    
                       <span class="badge badge-critical">DESIGN</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">REQ-AUTH-2</div>
+                  
+                  
                   <div>
+                    
                       <span class="badge badge-critical">DESIGN</span>
+                    
                   </div>
                 </li>
+              
                 <li>
                   <div class="cell-title">REQ-AUTH-3</div>
+                  
+                  
                   <div>
+                    
                       <span class="badge badge-critical">DESIGN</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Konfigürasyon Yönetimi</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-6-02</div>
+                  
                     <div class="cell-subtitle">
-A-6 • Değişiklik Kontrolü                    </div>
+                      A-6
+                       • 
+                      Değişiklik Kontrolü
+                    </div>
+                  
+                  
                     <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Konfigürasyon Kaydı</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Kalite Güvencesi</h3>
+          
             <p class="muted">Boşluk tespit edilmedi.</p>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Problem Takibi</h3>
+          
             <ul class="list">
+              
                 <li>
                   <div class="cell-title">A-6-02</div>
+                  
                     <div class="cell-subtitle">
-A-6 • Değişiklik Kontrolü                    </div>
+                      A-6
+                       • 
+                      Değişiklik Kontrolü
+                    </div>
+                  
+                  
                     <div class="cell-description">Değişiklikler onaylı, izlenebilir ve kayıtlı.</div>
+                  
                   <div>
+                    
                       <span class="badge badge-critical">Problem Raporu</span>
+                    
                   </div>
                 </li>
+              
             </ul>
+          
         </article>
+      
         <article class="gap-card">
           <h3>Uygunluk Doğrulamaları</h3>
+          
             <p class="muted">Boşluk tespit edilmedi.</p>
+          
         </article>
+      
     </div>
   </section>
     </main>

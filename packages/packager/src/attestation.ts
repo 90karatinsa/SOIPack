@@ -5,6 +5,18 @@ import type { ManifestFileEntry, ManifestMerkleSummary } from '@soipack/core';
 import type { LedgerAwareManifest } from './index';
 import type { ManifestSignatureBundle } from './security/signer';
 
+interface LedgerDeltaSummaryInput {
+  currentRoot?: string | null;
+  previousRoot?: string | null;
+  objectiveIds?: string[];
+}
+
+interface LedgerDeltaSummary {
+  currentRoot: string | null;
+  previousRoot: string | null;
+  objectiveIds: string[];
+}
+
 const base64UrlEncode = (input: Buffer | string): string => {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8');
   return buffer
@@ -150,6 +162,7 @@ export interface AttestationGenerationOptions {
   invocationId?: string;
   environment?: Record<string, unknown>;
   signing: AttestationSigningOptions;
+  ledgerDeltaSummary?: LedgerDeltaSummaryInput;
 }
 
 export interface AttestationGenerationResult {
@@ -181,14 +194,70 @@ const normalizeHeader = (header: Record<string, unknown>): Record<string, unknow
 
 const serializeCanonicalJson = (value: unknown): string => JSON.stringify(canonicalize(pruneUndefined(value)));
 
+const sanitizeObjectiveIds = (input?: unknown): string[] => {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const normalized = input
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  const unique = Array.from(new Set(normalized));
+  unique.sort((a, b) => a.localeCompare(b));
+  return unique;
+};
+
+const buildLedgerDeltaSummary = (
+  manifest: LedgerAwareManifest,
+  manifestSignature: ManifestSignatureBundle,
+  override?: LedgerDeltaSummaryInput,
+): LedgerDeltaSummary => {
+  const manifestLedger = (manifest.ledger ?? undefined) as
+    | (LedgerAwareManifest['ledger'] & { objectiveIds?: unknown; delta?: { objectiveIds?: unknown } })
+    | undefined;
+
+  const signatureLedgerDelta = manifestSignature as ManifestSignatureBundle & {
+    ledgerDeltaSummary?: LedgerDeltaSummaryInput;
+    ledgerDelta?: LedgerDeltaSummaryInput;
+  };
+
+  return {
+    currentRoot:
+      override?.currentRoot ??
+      signatureLedgerDelta.ledgerDeltaSummary?.currentRoot ??
+      signatureLedgerDelta.ledgerDelta?.currentRoot ??
+      manifestSignature.ledgerRoot ??
+      manifestLedger?.root ??
+      null,
+    previousRoot:
+      override?.previousRoot ??
+      signatureLedgerDelta.ledgerDeltaSummary?.previousRoot ??
+      signatureLedgerDelta.ledgerDelta?.previousRoot ??
+      manifestSignature.previousLedgerRoot ??
+      manifestLedger?.previousRoot ??
+      null,
+    objectiveIds: sanitizeObjectiveIds(
+      override?.objectiveIds ??
+        signatureLedgerDelta.ledgerDeltaSummary?.objectiveIds ??
+        signatureLedgerDelta.ledgerDelta?.objectiveIds ??
+        manifestLedger?.objectiveIds ??
+        manifestLedger?.delta?.objectiveIds,
+    ),
+  };
+};
+
 const buildSignatureMetadata = (
   manifestSignature: ManifestSignatureBundle,
+  ledgerDeltaSummary: LedgerDeltaSummary,
 ): Record<string, unknown> => {
   const metadata: Record<string, unknown> = {
     digest: manifestSignature.manifestDigest.hash,
     certificateSha256: computeSha256Hex(manifestSignature.certificate),
     ledgerRoot: manifestSignature.ledgerRoot ?? null,
     previousLedgerRoot: manifestSignature.previousLedgerRoot ?? null,
+    ledgerDelta: ledgerDeltaSummary,
   };
 
   if (manifestSignature.hardware) {
@@ -266,6 +335,7 @@ const buildStatement = (
   builderId: string,
   invocationId?: string,
   environment?: Record<string, unknown>,
+  ledgerDeltaOverride?: LedgerDeltaSummaryInput,
 ): InTotoStatement => {
   const subjects: ProvenanceSubject[] = [
     { name: 'manifest.json', digest: { sha256: manifestDigest } },
@@ -282,6 +352,8 @@ const buildStatement = (
 
   const dependencies = buildResolvedDependencies(files);
 
+  const ledgerDeltaSummary = buildLedgerDeltaSummary(manifest, manifestSignature, ledgerDeltaOverride);
+
   const metadata: Record<string, unknown> = {
     manifestCreatedAt: manifest.createdAt,
     manifestDigest,
@@ -293,7 +365,8 @@ const buildStatement = (
     merkleRoot: (manifest.merkle as ManifestMerkleSummary | undefined)?.root ?? null,
     merkleSnapshot: (manifest.merkle as ManifestMerkleSummary | undefined)?.snapshotId ?? null,
     sbomDigest: sbom.digest,
-    signature: buildSignatureMetadata(manifestSignature),
+    signature: buildSignatureMetadata(manifestSignature, ledgerDeltaSummary),
+    ledgerDelta: ledgerDeltaSummary,
   };
 
   if (invocationId) {
@@ -355,6 +428,7 @@ export const generateAttestation = async (
     builderId,
     options.invocationId,
     options.environment,
+    options.ledgerDeltaSummary,
   );
 
   const payload = serializeCanonicalJson(statement);

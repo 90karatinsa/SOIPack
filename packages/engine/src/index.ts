@@ -42,6 +42,7 @@ import {
 export * from './coverage';
 export * from './gaps';
 export * from './risk';
+export * from './dependencyGraph';
 
 const canonicalStringify = (value: unknown): string => {
   if (Array.isArray(value)) {

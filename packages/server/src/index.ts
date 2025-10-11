@@ -457,6 +457,7 @@ interface ComplianceIndependenceSummaryPayload {
     independence: string;
     status: 'covered' | 'partial' | 'missing';
     missingArtifacts: string[];
+    confidence?: number;
   }>;
 }
 
@@ -4788,6 +4789,28 @@ export const createServer = (config: ServerConfig): Express => {
     const record = value as { totals?: unknown; objectives?: unknown };
     const allowedStatuses = new Set(['covered', 'partial', 'missing']);
     const allowedIndependence = new Set(['none', 'recommended', 'required']);
+    const normalizeConfidence = (objectiveId: string, raw: unknown): number | undefined => {
+      if (raw === undefined || raw === null) {
+        return undefined;
+      }
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric)) {
+        logger.warn(
+          { objectiveId, confidence: raw },
+          'Invalid confidence value encountered for objective; dropping field.',
+        );
+        return undefined;
+      }
+      const clamped = Math.min(Math.max(numeric, 0), 1);
+      if (clamped !== numeric) {
+        logger.warn(
+          { objectiveId, confidence: raw, normalizedConfidence: clamped },
+          'Out of range confidence value encountered for objective; clamping.',
+        );
+      }
+      const rounded = Math.round(clamped * 1000) / 1000;
+      return rounded;
+    };
     const totalsBase: Record<'covered' | 'partial' | 'missing', number> = {
       covered: 0,
       partial: 0,
@@ -4831,12 +4854,17 @@ export const createServer = (config: ServerConfig): Express => {
               .map((artifact) => (typeof artifact === 'string' ? artifact.trim() : ''))
               .filter((artifact): artifact is string => artifact.length > 0)
           : [];
-        objectives.push({
+        const confidence = normalizeConfidence(objectiveId, data.confidence);
+        const sanitizedObjective: (typeof objectives)[number] = {
           objectiveId,
           independence,
           status,
           missingArtifacts,
-        });
+        };
+        if (confidence !== undefined) {
+          sanitizedObjective.confidence = confidence;
+        }
+        objectives.push(sanitizedObjective);
       });
     }
 
@@ -4897,6 +4925,65 @@ export const createServer = (config: ServerConfig): Express => {
     return Array.from(ids)
       .map((id) => objectiveCatalogById.get(id))
       .filter((objective): objective is Objective => Boolean(objective));
+  };
+
+  const canViewObjectiveConfidence = (roles: UserRole[] | undefined): boolean =>
+    roles?.some((role) => role === 'admin' || role === 'operator') ?? false;
+
+  const projectIndependenceSummary = (
+    summary: ComplianceIndependenceSummaryPayload,
+    options: { includeConfidence: boolean },
+  ): ComplianceIndependenceSummaryPayload => {
+    const objectives = summary.objectives.map((entry) => {
+      const projected: ComplianceIndependenceSummaryPayload['objectives'][number] = {
+        objectiveId: entry.objectiveId,
+        independence: entry.independence,
+        status: entry.status,
+        missingArtifacts: [...entry.missingArtifacts],
+      };
+      if (options.includeConfidence && entry.confidence !== undefined) {
+        projected.confidence = entry.confidence;
+      }
+      return projected;
+    });
+    const { totals, ...rest } = summary as ComplianceIndependenceSummaryPayload &
+      Record<string, unknown>;
+    return {
+      ...rest,
+      totals: { ...totals },
+      objectives,
+    } as ComplianceIndependenceSummaryPayload;
+  };
+
+  const toComplianceSummaryResponse = (
+    payload: ComplianceSummaryResponsePayload,
+    options: { includeReadiness: boolean; includeConfidence: boolean },
+  ): { computedAt: string; latest: ComplianceSummaryResponsePayload['latest']; redacted: boolean } => {
+    if (!payload.latest) {
+      return { computedAt: payload.computedAt, latest: null, redacted: !options.includeConfidence };
+    }
+
+    let latestPayload: NonNullable<ComplianceSummaryResponsePayload['latest']> = payload.latest;
+
+    if (!options.includeReadiness && payload.latest.readiness) {
+      latestPayload = { ...latestPayload, readiness: undefined };
+    }
+
+    if (payload.latest.independence) {
+      const independence = projectIndependenceSummary(payload.latest.independence, {
+        includeConfidence: options.includeConfidence,
+      });
+      latestPayload =
+        latestPayload === payload.latest
+          ? { ...latestPayload, independence }
+          : { ...latestPayload, independence };
+    }
+
+    return {
+      computedAt: payload.computedAt,
+      latest: latestPayload,
+      redacted: !options.includeConfidence,
+    };
   };
 
   const buildComplianceSummaryPayload = (
@@ -4990,14 +5077,35 @@ export const createServer = (config: ServerConfig): Express => {
     return base;
   };
 
-  const serializeComplianceRecord = (record: ComplianceRecord): Record<string, unknown> => ({
-    id: record.id,
-    sha256: record.sha256,
-    createdAt: record.createdAt,
-    matrix: record.matrix,
-    coverage: record.coverage,
-    metadata: record.metadata ?? {},
-  });
+  const serializeComplianceRecord = (
+    record: ComplianceRecord,
+    options?: { includeConfidence?: boolean },
+  ): Record<string, unknown> => {
+    const includeConfidence = options?.includeConfidence ?? false;
+    let metadata: Record<string, unknown> | undefined;
+    if (record.metadata && typeof record.metadata === 'object') {
+      metadata = { ...record.metadata } as Record<string, unknown>;
+      if (metadata.independenceSummary !== undefined) {
+        const sanitized = sanitizeIndependenceSummary(metadata.independenceSummary);
+        if (sanitized) {
+          metadata.independenceSummary = projectIndependenceSummary(sanitized, {
+            includeConfidence,
+          });
+        } else {
+          delete metadata.independenceSummary;
+        }
+      }
+    }
+
+    return {
+      id: record.id,
+      sha256: record.sha256,
+      createdAt: record.createdAt,
+      matrix: record.matrix,
+      coverage: record.coverage,
+      metadata: metadata ?? {},
+    };
+  };
 
   const READINESS_INDEX_CACHE_TTL_MS = 60_000;
   const RISK_PROFILE_CACHE_TTL_MS = 180_000;
@@ -8018,6 +8126,7 @@ export const createServer = (config: ServerConfig): Express => {
       const canViewReadiness = principal.roles.some((role) =>
         role === 'maintainer' || role === 'operator' || role === 'admin',
       );
+      const canViewConfidence = canViewObjectiveConfidence(principal.roles);
 
       const now = Date.now();
       const ttlSeconds = Math.floor(COMPLIANCE_SUMMARY_CACHE_TTL_MS / 1000);
@@ -8034,6 +8143,7 @@ export const createServer = (config: ServerConfig): Express => {
             status: entry.status,
             independence: entry.independence,
             missingArtifacts: entry.missingArtifacts,
+            ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
           })),
         };
       }
@@ -8081,16 +8191,10 @@ export const createServer = (config: ServerConfig): Express => {
         ) ||
           (!latest && cached.recordId === undefined))
       ) {
-        const basePayload = cached.payload;
-        const responsePayload =
-          canViewReadiness || !basePayload.latest?.readiness
-            ? basePayload
-            : {
-                ...basePayload,
-                latest: basePayload.latest
-                  ? { ...basePayload.latest, readiness: undefined }
-                  : null,
-              };
+        const responsePayload = toComplianceSummaryResponse(cached.payload, {
+          includeReadiness: canViewReadiness,
+          includeConfidence: canViewConfidence,
+        });
         res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(responsePayload);
         return;
       }
@@ -8136,13 +8240,10 @@ export const createServer = (config: ServerConfig): Express => {
         expiresAt: now + COMPLIANCE_SUMMARY_CACHE_TTL_MS,
       });
 
-      const responsePayload =
-        canViewReadiness || !payload.latest?.readiness
-          ? payload
-          : {
-              ...payload,
-              latest: payload.latest ? { ...payload.latest, readiness: undefined } : null,
-            };
+      const responsePayload = toComplianceSummaryResponse(payload, {
+        includeReadiness: canViewReadiness,
+        includeConfidence: canViewConfidence,
+      });
 
       res.status(200).set('Cache-Control', `private, max-age=${ttlSeconds}`).json(responsePayload);
     }),
@@ -8379,10 +8480,55 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId, subject } = getAuthContext(req);
+      const principal = await ensureRole(req, ['reader', 'maintainer', 'operator', 'admin']);
+      const { tenantId } = getAuthContext(req);
+      const includeConfidence = canViewObjectiveConfidence(principal.roles);
       const store = complianceStore.get(tenantId);
-      const items = store ? Array.from(store.values()).map((record) => serializeComplianceRecord(record)) : [];
-      res.json({ items });
+      const records = store ? Array.from(store.values()) : [];
+      const items = records.map((record) =>
+        serializeComplianceRecord(record, { includeConfidence }),
+      );
+      const payload = { items, redacted: !includeConfidence };
+      const serialized = toStableJson(payload);
+      const hash = createHash('sha256').update(serialized).digest('hex');
+      const etag = `"${hash}"`;
+      const ifNoneMatchHeader = req.headers['if-none-match'];
+      const headerValues = Array.isArray(ifNoneMatchHeader)
+        ? ifNoneMatchHeader
+        : ifNoneMatchHeader
+          ? [ifNoneMatchHeader]
+          : [];
+      const tokens = headerValues.flatMap((raw) =>
+        raw
+          .split(',')
+          .map((segment) => segment.trim())
+          .filter((segment) => segment.length > 0),
+      );
+      const lastModifiedTimestamp = records.reduce((latest, record) => {
+        const parsed = Date.parse(record.createdAt);
+        if (Number.isFinite(parsed)) {
+          return Math.max(latest, parsed);
+        }
+        return latest;
+      }, 0);
+      const lastModified = new Date(lastModifiedTimestamp || 0).toUTCString();
+      const hasMatchingEtag = tokens.some((token) => token === etag || token === `W/${etag}`);
+      if (tokens.includes('*') || hasMatchingEtag) {
+        res
+          .status(304)
+          .set('Cache-Control', 'private, max-age=60')
+          .set('ETag', etag)
+          .set('Last-Modified', lastModified)
+          .end();
+        return;
+      }
+
+      res
+        .status(200)
+        .set('Cache-Control', 'private, max-age=60')
+        .set('ETag', etag)
+        .set('Last-Modified', lastModified)
+        .json(payload);
     }),
   );
 
@@ -8390,7 +8536,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/compliance/:id',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId, subject } = getAuthContext(req);
+      const { tenantId, roles } = getAuthContext(req);
       const { id } = req.params as { id?: string };
       if (!id) {
         throw new HttpError(400, 'INVALID_REQUEST', 'Uyum kaydı kimliği belirtilmelidir.');
@@ -8399,7 +8545,9 @@ export const createServer = (config: ServerConfig): Express => {
       if (!record) {
         throw new HttpError(404, 'COMPLIANCE_NOT_FOUND', 'İstenen uyum kaydı bulunamadı.');
       }
-      res.json(serializeComplianceRecord(record));
+      const includeConfidence = canViewObjectiveConfidence(roles);
+      const payload = serializeComplianceRecord(record, { includeConfidence });
+      res.json({ ...payload, redacted: !includeConfidence });
     }),
   );
 
@@ -8407,7 +8555,7 @@ export const createServer = (config: ServerConfig): Express => {
     '/v1/compliance',
     requireAuth,
     createAsyncHandler(async (req, res) => {
-      const { tenantId, subject } = getAuthContext(req);
+      const { tenantId, roles } = getAuthContext(req);
       const body = req.body as {
         matrix?: unknown;
         coverage?: unknown;
@@ -8624,7 +8772,9 @@ export const createServer = (config: ServerConfig): Express => {
         logger.warn({ err: error, tenantId }, 'Readiness index refresh failed after compliance update.'),
       );
 
-      res.status(201).json(serializeComplianceRecord(record));
+      const includeConfidence = canViewObjectiveConfidence(roles);
+      const payload = serializeComplianceRecord(record, { includeConfidence });
+      res.status(201).json({ ...payload, redacted: !includeConfidence });
 
       void refreshComplianceRisk(tenantId, { force: true }).catch((error) =>
         logger.warn({ err: error, tenantId }, 'Risk profile refresh failed after compliance update.'),
